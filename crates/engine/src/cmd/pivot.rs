@@ -202,7 +202,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Change Data Source",
             ["PivotTable Analyze", "Data"],
             None,
-            "{pivot?, source: \"Sheet1!$A$1:$E$300\" | table name, replace?} (fields missing from the new source are removed)",
+            "{pivot?, source: \"Sheet1$A$1:$E$300\" | sheet table name | data-model table name, replace?} (fields missing from the new source are removed)",
             has_doc,
             change_source
         ),

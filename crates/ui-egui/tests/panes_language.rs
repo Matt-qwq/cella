@@ -90,3 +90,51 @@ fn the_selection_pane_names_a_slicer_in_chinese() {
     assert!(h.query_by_label(&slicer).is_some(), "the pane should list {slicer}");
     assert!(h.query_by_label(&format!("Slicer {name}")).is_none(), "the slicer's row is untranslated");
 }
+
+/// A model with a fact table, a lookup and a measure, and a PivotTable over the model whose active
+/// cell is inside it — the case where the field list must offer model fields and measures.
+fn model_pivot_session() -> Session {
+    let mut session = Session::new();
+    session.new_workbook();
+    session
+        .execute(
+            "data.query.add",
+            json!({
+                "name": "Sales",
+                "source": {"kind": "csv", "text": "RegionId,Amount\n1,10\n2,5\n"},
+                "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["RegionId", "Amount"], "to": "Number"}}],
+                "load": "model",
+            }),
+        )
+        .unwrap();
+    session
+        .execute(
+            "data.query.add",
+            json!({
+                "name": "Region",
+                "source": {"kind": "csv", "text": "Id,Name\n1,West\n2,East\n"},
+                "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}],
+                "load": "model",
+            }),
+        )
+        .unwrap();
+    session
+        .execute("data.relationship.add", json!({"from": {"table": "Sales", "column": "RegionId"}, "to": {"table": "Region", "column": "Id"}}))
+        .unwrap();
+    session.execute("data.measure.add", json!({"name": "Total", "formula": "SUM(Sales[Amount])"})).unwrap();
+    session
+        .execute("insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!D3", "rows": ["Region[Name]"], "values": ["Total"]}))
+        .unwrap();
+    session.execute("selection.set", json!({"cell": "D3"})).unwrap();
+    session
+}
+
+#[test]
+fn the_field_list_offers_a_model_pivots_fields_and_its_measures() {
+    let h = harness(model_pivot_session(), Language::En);
+    // The model's own columns, named the way Excel's field list names them...
+    assert!(h.query_all_by_label_contains("Sales[Amount]").next().is_some(), "a model column");
+    assert!(h.query_all_by_label_contains("Region[Name]").next().is_some(), "a dimension column reached through the relationship");
+    // ...and the measure beside them, which is what a report over the model can put in Values.
+    assert!(h.query_all_by_label_contains("Total").next().is_some(), "the measure");
+}

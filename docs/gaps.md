@@ -886,6 +886,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   → refresh; Excel sees the cells it wrote and no PivotTable, the same limitation the queries part
   has. The exit criterion is now measured: two CSV queries → model tables → relationship → measure
   → a PivotTable → save → reopen → 22, then a source change, a refresh and **30**.
+  **What a model report does not do yet, each refused with a reason rather than guessed:** a field
+  reaches **one relationship hop** (a date or number grouping on a dimension column, or a second
+  hop, would need a range or a path in the filter context that `crates/dax` does not have), a
+  **grouped** axis field does not narrow a measure (same reason), the **Filters area** does not
+  narrow measure cells (a filter holds display labels and the context holds typed equalities), a
+  **value filter** on a measure is refused, and a **slicer** synced to a model report is skipped
+  (`cmd/slicer.rs` still reads sheet sources only). The field list does work: the PivotTable Fields
+  pane lists the model's `Table[Column]` fields (with samples) and its measures, and ticking one
+  adds it to the report.
 - **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
   no query) by design — the pane's button is the query path; adding a step from the pane is
   command-side only, there is no step parameter editor; the model's relationships have no UI (a
