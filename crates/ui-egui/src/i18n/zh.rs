@@ -1835,6 +1835,10 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "This chart's legend entries are its points, not its series, so none of them can be deleted from here." => {
             "此图表的图例项是它的数据点而不是系列，因此无法在此删除其中任何一项。"
         }
+        // The pane's own Get Data: a picked file becomes a query, and the model it fills.
+        "New query from file…" => "从文件新建查询…",
+        "Query added" => "已添加查询",
+        "Data model" => "数据模型",
         // The Queries & Connections pane, the query steps it lists and the Get & Transform
         // commands that drive it.
         "Get Data (Text/CSV)" => "获取数据（文本/CSV）",

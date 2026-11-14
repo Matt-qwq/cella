@@ -231,8 +231,15 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
                 Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
             }
         }
-        if ui.button(crate::widgets::tr(ui, "Get Data (Text/CSV)")).clicked() {
-            app.open_dialog("open", json!({}));
+        if ui.button(crate::widgets::tr(ui, "New query from file…")).clicked()
+            && let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick())
+        {
+            // A query is a recipe over a file, so the pane asks for the file and keeps the recipe:
+            // the Data tab's Get Data opens the same file as a workbook instead.
+            match app.session.run("data.query.add", json!({"source": source_for_path(&path)})) {
+                Ok(_) => app.toast = Some((crate::widgets::tr(ui, "Query added").to_string(), crate::now_ms())),
+                Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+            }
         }
     });
     ui.add_space(4.0);
@@ -311,6 +318,54 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
             }
         });
         ui.add_space(4.0);
+    }
+    model_section(app, ui);
+}
+
+/// The data model, as the pane shows it: the tables a query loaded without a sheet, and the
+/// measures defined over them. Read-only here — the relationships and formulas are commands and a
+/// field list is the next round — but seeing what is in the model is what makes a measure that
+/// reads it explicable.
+fn model_section(app: &mut SheetApp, ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    let tables = app.session.run("data.model.tables", json!({})).unwrap_or(Json::Null);
+    let measures = app.session.run("data.measure.list", json!({})).unwrap_or(Json::Null);
+    let tables = tables.as_array().cloned().unwrap_or_default();
+    let measures = measures.as_array().cloned().unwrap_or_default();
+    if tables.is_empty() && measures.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(egui::RichText::new(crate::widgets::tr(ui, "Data model")).font(theme::ui_bold(13.0)));
+    for table in &tables {
+        let name = table["name"].as_str().unwrap_or("");
+        let rows = table["rows"].as_u64().unwrap_or(0);
+        let cols = table["columns"].as_array().map_or(0, Vec::len);
+        ui.label(egui::RichText::new(format!("{name}  ·  {rows} × {cols}")).size(12.0));
+    }
+    if !measures.is_empty() {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(crate::widgets::tr(ui, "Measures")).strong());
+        for m in &measures {
+            let name = m["name"].as_str().unwrap_or("");
+            let formula = m["formula"].as_str().unwrap_or("");
+            ui.label(egui::RichText::new(format!("{name} = {formula}")).size(12.0).color(t.text_dim));
+        }
+    }
+}
+
+/// The query source a picked file becomes, by extension: a csv (a tab-delimited text file gets a
+/// tab), a json, an xlsx sheet or a parquet file. Anything else is read as csv, which is what the
+/// extension-less export of most tools is.
+fn source_for_path(path: &str) -> Json {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "json" => json!({"kind": "json", "path": path}),
+        "xlsx" | "xlsm" => json!({"kind": "xlsx", "path": path}),
+        "parquet" => json!({"kind": "parquet", "path": path}),
+        "tsv" | "txt" => json!({"kind": "csv", "path": path, "delimiter": "	"}),
+        _ => json!({"kind": "csv", "path": path}),
     }
 }
 

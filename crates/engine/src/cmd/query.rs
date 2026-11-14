@@ -203,9 +203,7 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
             shift_parquet_dates(&t.columns, &mut rows);
             Table::new(names, rows).map_err(pipeline_error)
         }
-        // The folder connector and the data model arrive with N3.4 and N3.3; refusing with the
-        // round that brings them is more useful than a silent empty table.
-        QuerySource::Folder { .. } => Err(EngineError::Other("A folder source arrives with N3.4. Import one file with a csv source for now.".into())),
+        QuerySource::Folder { path, filter } => folder_table(path, filter),
         QuerySource::Table { sheet, name } => {
             let d = s.doc()?;
             let sh = pick_sheet(&d.wb, sheet)?;
@@ -256,6 +254,56 @@ fn pick_sheet<'a>(wb: &'a gridcraft_model::Workbook, name: &str) -> Result<&'a g
         None if name.is_empty() => wb.active().ok_or(EngineError::NoDocument),
         None => Err(EngineError::Other(format!("There is no sheet named \"{name}\"."))),
     }
+}
+
+/// Every file in a folder, stacked: the files that match the filter, read the way a single csv
+/// source is, with a leading Source.Name column naming the file each row came from.
+///
+/// Like every other source the result carries **one header row and then data**: the first file
+/// supplies the names, each file's own header row is dropped (they must agree — stacking two
+/// shapes would silently mis-align a column), and a PromoteHeaders step turns the names into the
+/// table's columns exactly as it does for one csv.
+fn folder_table(path: &str, filter: &str) -> Result<Table> {
+    let files = crate::io::list_files(path, filter)?;
+    if files.is_empty() {
+        return Err(EngineError::Other(format!("No file in {path} matches {filter}.")));
+    }
+    let mut header: Option<Vec<String>> = None;
+    let mut rows: Vec<Vec<Value>> = Vec::new();
+    for file in &files {
+        let bytes = crate::io::read_file(file)?;
+        let opts = gridcraft_xlsx::CsvOptions { delimiter: 0, parse_values: false, ..Default::default() };
+        let wb = gridcraft_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(format!("{file}: {e}")))?;
+        let sh = wb.sheet(0).ok_or(EngineError::NoDocument)?;
+        let grid = grid_from_sheet(sh, None).map_err(|e| EngineError::Other(format!("{file}: {e}")))?;
+        let mut lines = grid.rows.into_iter();
+        let names: Vec<String> = lines.next().unwrap_or_default().iter().map(|v| v.display()).collect();
+        match &header {
+            None => {
+                let mut names = names.clone();
+                names.insert(0, "Source.Name".to_string());
+                rows.push(names.iter().map(|n| Value::text(n.clone())).collect());
+                header = Some(names);
+            }
+            Some(want) => {
+                let want_width = want.len().saturating_sub(1);
+                if names.len() != want_width {
+                    return Err(EngineError::Other(format!("{file} has {} columns where the first file had {want_width}.", names.len())));
+                }
+            }
+        }
+        let name = std::path::Path::new(file).file_name().and_then(|n| n.to_str()).unwrap_or(file).to_string();
+        for line in lines {
+            let mut out = Vec::with_capacity(line.len() + 1);
+            out.push(Value::text(name.clone()));
+            out.extend(line);
+            rows.push(out);
+        }
+        if rows.len() > MAX_ROWS {
+            return Err(EngineError::Other(format!("The folder holds more than {MAX_ROWS} rows; narrow the filter or the folder.")));
+        }
+    }
+    Table::from_rows(rows, false).map_err(pipeline_error)
 }
 
 fn read_source(path: Option<&str>, text: Option<&str>, what: &str) -> Result<Vec<u8>> {

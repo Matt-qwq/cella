@@ -858,14 +858,20 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   cannot wipe a million-row total, and `DISTINCTCOUNT` does not count blanks. Proven end to end: two
   CSV queries → model tables → relationship → measure → a cell, then a source edit, a refresh and a
   recalc (22 → 30), then save → reopen with the same answer.
-- **What N3.1–N3.3 did not do:** a folder source and a **PivotTable over the model** refuse or wait
-  (`N3.4`; a model pivot needs the grouping path to carry a per-cell filter context, and the plan is
-  to reuse the existing pivot layout by synthesising the joined view); `data.getData`/
-  `data.fromTextCsv` still import a table without making a query, so a file opened through Get Data
-  does not appear in the pane yet (N3.4); adding a step from the pane is command-side only, there is
-  no step parameter editor, and the model has no field-list UI (relationships and measures are
-  command-only for now); and Web and SQLite sources need a dependency decision (a TLS stack, a C
-  library) before they can be honest.
+- **Landed 11-14 (N3.4, the folder connector and the pane's data model).** A `folder` source reads
+  every file in a directory whose name matches a wildcard (`*.csv`, `?` one character, matched
+  case-insensitively, no recursion, at most 10,000 files), stacks them with a leading `Source.Name`
+  column naming the file each row came from, and refuses a file whose column count differs from the
+  first one's by name. The Queries & Connections pane gained **New query from file…** (pick a file,
+  and the extension decides the source: csv/text/json/xlsx/parquet — so the flow the pane offers is
+  the query flow rather than the Data tab's *open this file as a workbook*), and a **Data model**
+  section that lists the model's tables with their row × column counts and every measure as
+  `name = formula`, which is what makes a `MEASURE()` cell in the grid explicable.
+- **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
+  no query) by design — the pane's button is the query path; adding a step from the pane is
+  command-side only, there is no step parameter editor; the model's relationships have no UI (a
+  field list is the natural next round); and Web and SQLite sources need a dependency decision (a
+  TLS stack, a C library) before they can be honest.
 - **Landed 11-14 (the file half):** a workbook's `xl/model/*` (the Power Pivot data model) is kept
   and written back byte for byte, related from the workbook with the file's own `powerPivotData`
   type, and it survives deleting every report that used it; PivotTables built on it are carried

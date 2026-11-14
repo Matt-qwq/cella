@@ -788,6 +788,72 @@ fn script_sandbox_check(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The files in \`dir\` whose name matches \`filter\` (\`*.csv\`), sorted by name, as full paths.
+///
+/// The folder connector's listing half: a wildcard is matched against the file *name* only (no
+/// recursion, so a query cannot walk a directory tree by accident), \`?\` matches one character, and
+/// a name that is compared case-insensitively because Windows, macOS and Linux disagree about it
+/// and a folder of \`Jan.CSV\` files is not a reason to import nothing.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn list_files(dir: &str, filter: &str) -> Result<Vec<String>> {
+    script_sandbox_check(dir)?;
+    let entries = std::fs::read_dir(dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
+    let mut out: Vec<String> = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name_matches(name, filter) {
+            continue;
+        }
+        out.push(path.to_string_lossy().to_string());
+        if out.len() > 10_000 {
+            return Err(EngineError::Other(format!("{dir} holds more than 10,000 files; narrow the filter")));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn list_files(dir: &str, _filter: &str) -> Result<Vec<String>> {
+    Err(EngineError::Other(format!("{dir}: a browser has no folders to list")))
+}
+
+/// Whether a file name matches a wildcard: \`*\` is any run of characters, \`?\` one character,
+/// everything else literal, compared case-insensitively.
+fn name_matches(name: &str, filter: &str) -> bool {
+    let filter = if filter.trim().is_empty() { "*" } else { filter.trim() };
+    let n: Vec<char> = name.to_lowercase().chars().collect();
+    let f: Vec<char> = filter.to_lowercase().chars().collect();
+    // Iterative wildcard match: \`star\` remembers the last \`*\` and where it started, so a hostile
+    // filter cannot backtrack exponentially.
+    let (mut ni, mut fi, mut star, mut mark) = (0usize, 0usize, None, 0usize);
+    while ni < n.len() {
+        if fi < f.len() && (f[fi] == '?' || f[fi] == n[ni]) {
+            ni += 1;
+            fi += 1;
+        } else if fi < f.len() && f[fi] == '*' {
+            star = Some(fi);
+            mark = ni;
+            fi += 1;
+        } else if let Some(s) = star {
+            fi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
+    }
+    while fi < f.len() && f[fi] == '*' {
+        fi += 1;
+    }
+    fi == f.len()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_file(path: &str) -> Result<Vec<u8>> {
     script_sandbox_check(path)?;

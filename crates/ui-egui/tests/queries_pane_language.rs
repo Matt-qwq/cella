@@ -78,3 +78,34 @@ fn an_empty_pane_says_how_to_make_a_query() {
     let h = harness(session, Language::Zh);
     assert!(h.query_by_label("还没有查询。用“获取数据（文本/CSV）”新建一个。").is_some(), "the empty pane explains itself");
 }
+
+/// A workbook whose data model holds one table and one measure.
+fn model_session() -> Session {
+    let mut session = Session::new();
+    session.new_workbook();
+    session
+        .execute(
+            "data.query.add",
+            json!({
+                "name": "Sales",
+                "source": {"kind": "csv", "text": "Region,Amount\nWest,10\nEast,5\n"},
+                "steps": ["PromoteHeaders"],
+                "load": "model",
+            }),
+        )
+        .unwrap();
+    session.execute("data.measure.add", json!({"name": "Total", "formula": "SUM(Sales[Amount])"})).unwrap();
+    session
+}
+
+#[test]
+fn the_pane_shows_what_is_in_the_data_model() {
+    let h = harness(model_session(), Language::Zh);
+    for label in ["数据模型", "度量值"] {
+        assert!(h.query_by_label(label).is_some(), "the model section should show {label}");
+    }
+    // The measure reads as its formula, which is data: the names stay as they were written.
+    assert!(h.query_all_by_label_contains("Total = SUM(Sales[Amount])").next().is_some(), "the measure line");
+    // And the model table is listed with its shape.
+    assert!(h.query_all_by_label_contains("Sales  ·  2 × 2").next().is_some(), "the table line");
+}

@@ -215,6 +215,62 @@ fn refresh_all_refreshes_the_queries_as_well_as_the_reports() {
 }
 
 #[test]
+fn a_folder_source_stacks_every_matching_file_and_names_it() {
+    let dir = std::env::temp_dir().join("gridcraft_folder_query");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::write(dir.join("jan.csv"), "Region,Amount\nWest,10\n").expect("write");
+    std::fs::write(dir.join("feb.csv"), "Region,Amount\nEast,5\n").expect("write");
+    std::fs::write(dir.join("notes.txt"), "not a csv\n").expect("write");
+    let mut s = session();
+    let r = run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Months",
+            "source": {"kind": "folder", "path": dir.to_string_lossy(), "filter": "*.csv"},
+            "steps": ["PromoteHeaders"],
+        }),
+    );
+    assert_eq!(r["rows"], 2, "one row from each csv, the notes file skipped");
+    assert_eq!(r["cols"], 3);
+    // The rows carry the file each came from, so a stacked folder stays traceable.
+    let table = table_grid(&s, "Months");
+    assert_eq!(table[0], vec!["Source.Name", "Region", "Amount"]);
+    assert!(table[1][0].starts_with("feb.csv"), "{:?}", table[1]);
+    assert!(table[2][0].starts_with("jan.csv"), "{:?}", table[2]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_folder_with_nothing_matching_says_so() {
+    let dir = std::env::temp_dir().join("gridcraft_folder_empty");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut s = session();
+    let err = s
+        .execute("data.query.add", json!({"name": "Months", "source": {"kind": "folder", "path": dir.to_string_lossy(), "filter": "*.csv"}}))
+        .expect_err("nothing to import");
+    assert!(err.to_string().contains("matches"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn files_of_different_widths_are_refused_by_name() {
+    let dir = std::env::temp_dir().join("gridcraft_folder_mixed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::write(dir.join("a.csv"), "Region,Amount\nWest,10\n").expect("write");
+    std::fs::write(dir.join("b.csv"), "Region,Amount,Day\nEast,5,2024-01-01\n").expect("write");
+    let mut s = session();
+    let err = s
+        .execute("data.query.add", json!({"name": "Months", "source": {"kind": "folder", "path": dir.to_string_lossy(), "filter": "*.csv"}}))
+        .expect_err("the shapes differ");
+    assert!(err.to_string().contains("b.csv"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_model_load_keeps_the_rows_without_touching_a_sheet() {
     let mut s = session();
     let r =
