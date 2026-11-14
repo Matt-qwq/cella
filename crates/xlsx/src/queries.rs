@@ -209,6 +209,11 @@ fn push_source(s: &mut String, source: &QuerySource) {
             push_text(s, name);
             s.push_str("}}");
         }
+        QuerySource::Query { name } => {
+            s.push_str("{\"Query\":{\"name\":");
+            push_text(s, name);
+            s.push_str("}}");
+        }
         QuerySource::Range { sheet, range } => {
             s.push_str("{\"Range\":{\"sheet\":");
             push_text(s, sheet);
@@ -514,6 +519,10 @@ fn as_source(v: &Json) -> Result<QuerySource, String> {
                 sheet: as_text(field(o, "sheet", what)?, "the Table source's sheet")?,
                 name: as_text(field(o, "name", what)?, "the Table source's name")?,
             }
+        }
+        "Query" => {
+            let o = as_object(details(body, name)?, what)?;
+            QuerySource::Query { name: as_text(field(o, "name", what)?, "the Query source's name")? }
         }
         "Range" => {
             let o = as_object(details(body, name)?, what)?;

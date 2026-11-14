@@ -134,6 +134,9 @@ fn parse_source(v: &Json) -> Result<QuerySource> {
                 .ok_or_else(|| bad("data.query", "a table source needs a table name"))?
                 .to_string(),
         }),
+        "query" => Ok(QuerySource::Query {
+            name: v.get("name").and_then(Json::as_str).unwrap_or("").trim().to_string(),
+        }),
         "range" => {
             let sheet = v.get("sheet").and_then(Json::as_str).unwrap_or("").to_string();
             let range = v
@@ -204,6 +207,7 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
             Table::new(names, rows).map_err(pipeline_error)
         }
         QuerySource::Folder { path, filter } => folder_table(path, filter),
+        QuerySource::Query { name } => query_table(s, name, 0, &mut Vec::new()),
         QuerySource::Table { sheet, name } => {
             let d = s.doc()?;
             let sh = pick_sheet(&d.wb, sheet)?;
@@ -254,6 +258,38 @@ fn pick_sheet<'a>(wb: &'a gridcraft_model::Workbook, name: &str) -> Result<&'a g
         None if name.is_empty() => wb.active().ok_or(EngineError::NoDocument),
         None => Err(EngineError::Other(format!("There is no sheet named \"{name}\"."))),
     }
+}
+
+/// Another query's result: its source, then its steps, run without loading anything. This is what
+/// makes a pipeline readable — one query cleans, the next reports from the clean table — and what
+/// makes a cycle possible, so the walk is bounded and remembers the names it has been through.
+fn query_table(s: &mut Session, name: &str, depth: u32, seen: &mut Vec<String>) -> Result<Table> {
+    if name.trim().is_empty() {
+        return Err(bad("data.query", "a query source needs a name"));
+    }
+    if depth > 16 {
+        return Err(EngineError::Other(format!("The queries nest deeper than 16 (at \"{name}\").")));
+    }
+    if seen.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        return Err(EngineError::Other(format!("The query \"{name}\" is used by itself, directly or through another query.")));
+    }
+    let (source, steps) = {
+        let d = s.doc()?;
+        let q = d
+            .wb
+            .queries
+            .iter()
+            .find(|q| q.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| EngineError::Other(format!("There is no query named \"{name}\".")))?;
+        (q.source.clone(), q.steps.clone())
+    };
+    seen.push(name.to_string());
+    let table = match &source {
+        QuerySource::Query { name: inner } => query_table(s, inner, depth + 1, seen)?,
+        other => source_table(s, other)?,
+    };
+    seen.pop();
+    gridcraft_query::apply(table, &steps).map_err(pipeline_error)
 }
 
 /// Every file in a folder, stacked: the files that match the filter, read the way a single csv
@@ -711,15 +747,34 @@ fn remove_step(s: &mut Session, p: &Json) -> Result<Json> {
 fn set_source(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("data.query.setSource", "missing name"))?.to_string();
     let source = parse_source(p.get("source").ok_or_else(|| bad("data.query.setSource", "missing source"))?)?;
+    let before = {
+        let d = s.doc()?;
+        let q = d.wb.queries.get(query_index(&d.wb, &name)?).ok_or_else(|| bad("data.query.setSource", "gone"))?;
+        q.source.clone()
+    };
     let nm = name.clone();
+    let next = source.clone();
     edit(s, |cx| {
         if let Some(q) = cx.wb.queries.iter_mut().find(|q| q.name == nm) {
-            q.source = source;
+            q.source = next;
         }
         Ok(())
     })?;
-    let ran = run_query(s, &name)?;
-    Ok(json!({"name": name, "rows": ran.table.height(), "cols": ran.table.width(), "sheet": ran.sheet}))
+    // A source that does not read back (a file that moved, a query that would read itself) is put
+    // back: a query whose recipe cannot run is a query that cannot be refreshed again either.
+    match run_query(s, &name) {
+        Ok(ran) => Ok(json!({"name": name, "rows": ran.table.height(), "cols": ran.table.width(), "sheet": ran.sheet})),
+        Err(e) => {
+            let nm = name.clone();
+            edit(s, |cx| {
+                if let Some(q) = cx.wb.queries.iter_mut().find(|q| q.name == nm) {
+                    q.source = before;
+                }
+                Ok(())
+            })?;
+            Err(e)
+        }
+    }
 }
 
 fn rename(s: &mut Session, p: &Json) -> Result<Json> {

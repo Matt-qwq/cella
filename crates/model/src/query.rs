@@ -45,6 +45,12 @@ pub enum QuerySource {
     Table { sheet: String, name: String },
     /// A range of a sheet in this workbook (`Sheet1!A1:C9`).
     Range { sheet: String, range: RangeRef },
+    /// Another query's result, as a stage of this one: the reference queries that make a pipeline
+    /// readable — clean once, then report from the clean table.
+    ///
+    /// Unlike a file, whose first row is data like any other, a query arrives **with its columns
+    /// already named**: the upstream query's steps have run, so this one needs no PromoteHeaders.
+    Query { name: String },
 }
 
 impl QuerySource {
@@ -58,6 +64,7 @@ impl QuerySource {
             QuerySource::Folder { .. } => "Folder",
             QuerySource::Table { .. } => "Table",
             QuerySource::Range { .. } => "Range",
+            QuerySource::Query { .. } => "Query",
         }
     }
 
@@ -67,6 +74,7 @@ impl QuerySource {
         match self {
             QuerySource::Csv { path, .. } | QuerySource::Json { path, .. } => path.as_deref(),
             QuerySource::Xlsx { path, .. } | QuerySource::Parquet { path } | QuerySource::Folder { path, .. } => Some(path),
+            QuerySource::Query { name } => Some(name),
             QuerySource::Table { .. } | QuerySource::Range { .. } => None,
         }
     }

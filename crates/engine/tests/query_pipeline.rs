@@ -271,6 +271,45 @@ fn files_of_different_widths_are_refused_by_name() {
 }
 
 #[test]
+fn a_query_can_read_another_query_as_a_stage() {
+    let mut s = session();
+    // The first query cleans the file; the second one reports from the clean table.
+    run(&mut s, "data.query.add", json!({
+        "name": "Raw",
+        "source": {"kind": "csv", "text": "Region,Amount\nWest,10\nEast,5\nWest,7\n"},
+        "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Amount"], "to": "Number"}}],
+        "load": "model",
+    }));
+    let r = run(&mut s, "data.query.add", json!({
+        "name": "Report",
+        "source": {"kind": "query", "name": "Raw"},
+        "steps": [{"Filter": {"column": "Region", "op": "Equals", "value": "West"}}, {"Sort": {"keys": [["Amount", true]]}}],
+    }));
+    assert_eq!(r["rows"], 2);
+    assert_eq!(table_grid(&s, "Report"), vec![vec!["Region", "Amount"], vec!["West", "10"], vec!["West", "7"]]);
+    // Refreshing the second reads the first: an edit to Raw's source flows through.
+    run(&mut s, "data.query.setSource", json!({"name": "Raw", "source": {"kind": "csv", "text": "Region,Amount\nWest,1\n"}}));
+    run(&mut s, "data.query.refresh", json!({"name": "Report"}));
+    assert_eq!(table_grid(&s, "Report"), vec![vec!["Region", "Amount"], vec!["West", "1"]]);
+}
+
+#[test]
+fn a_query_that_reads_itself_is_refused_rather_than_hanging() {
+    let mut s = session();
+    run(&mut s, "data.query.add", json!({"name": "A", "source": {"kind": "csv", "text": "h\n1\n"}, "steps": ["PromoteHeaders"]}));
+    let err = s
+        .execute("data.query.setSource", json!({"name": "A", "source": {"kind": "query", "name": "A"}}))
+        .expect_err("a query cannot be its own source");
+    assert!(err.to_string().contains("used by itself"), "{err}");
+    // Two queries pointing at each other are refused when the second one is pointed at the first.
+    // A query source arrives with its columns already named, so no PromoteHeaders: that step is
+    // for a file, whose first row is data like any other.
+    run(&mut s, "data.query.add", json!({"name": "B", "source": {"kind": "query", "name": "A"}, "steps": []}));
+    let err = s.execute("data.query.setSource", json!({"name": "A", "source": {"kind": "query", "name": "B"}})).expect_err("cycle");
+    assert!(err.to_string().contains("used by itself"), "{err}");
+}
+
+#[test]
 fn a_model_load_keeps_the_rows_without_touching_a_sheet() {
     let mut s = session();
     let r =

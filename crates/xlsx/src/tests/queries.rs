@@ -233,6 +233,7 @@ fn every_source_kind_round_trips() {
         QuerySource::Folder { path: "/tmp/csv".into(), filter: "*.csv".into() },
         QuerySource::Table { sheet: "Data".into(), name: "Table1".into() },
         QuerySource::Range { sheet: "Data".into(), range: RangeRef::new(CellRef::new(0, 0), CellRef::new(8, 2)) },
+        QuerySource::Query { name: "Raw".into() },
     ];
     let queries: Vec<Query> = sources
         .into_iter()
