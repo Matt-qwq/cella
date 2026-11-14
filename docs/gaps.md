@@ -866,7 +866,12 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   and the extension decides the source: csv/text/json/xlsx/parquet — so the flow the pane offers is
   the query flow rather than the Data tab's *open this file as a workbook*), and a **Data model**
   section that lists the model's tables with their row × column counts and every measure as
-  `name = formula`, which is what makes a `MEASURE()` cell in the grid explicable.
+  `name = formula`, which is what makes a `MEASURE()` cell in the grid explicable. **Reference
+  queries** close the pipeline: a `query` source reads another query's result (with its columns
+  already named, so no PromoteHeaders), depth-bounded and cycle-detecting, so one query can clean a
+  folder and the next report from the clean table. A source that does not read back — a file that
+  moved, a query that would read itself — is **rolled back**, the same rule a step and a measure
+  follow: a recipe that cannot run is not kept.
 - **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
   no query) by design — the pane's button is the query path; adding a step from the pane is
   command-side only, there is no step parameter editor; the model's relationships have no UI (a
