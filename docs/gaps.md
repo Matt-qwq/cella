@@ -850,8 +850,14 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   through `Sales[RegionId] → Region[Id]`. On the grid, `=MEASURE("Total", "Region[Name]", "West")`
   (a GridCraft function, not Excel's) evaluates a measure in a cell and recalculates when the model
   changes, because the function is treated as volatile — the rows it reads live outside the cell
-  graph. Proven end to end: two CSV queries → model tables → relationship → measure → a cell, then a
-  source edit, a refresh and a recalc (22 → 30), then save → reopen with the same answer.
+  graph. **Adding or editing a measure validates its formula first** and rolls back a change that
+  would never compute, the same rule a query step follows. Where the subset deliberately differs
+  from DAX, the crate says so and the tests pin it: a blank operand keeps a result blank instead of
+  reading as 0, text that looks numeric is `#VALUE!` in that cell rather than being coerced, an
+  error cell inside an aggregate is skipped (counted by `COUNTA`, not by `COUNT`) so one `#N/A`
+  cannot wipe a million-row total, and `DISTINCTCOUNT` does not count blanks. Proven end to end: two
+  CSV queries → model tables → relationship → measure → a cell, then a source edit, a refresh and a
+  recalc (22 → 30), then save → reopen with the same answer.
 - **What N3.1–N3.3 did not do:** a folder source and a **PivotTable over the model** refuse or wait
   (`N3.4`; a model pivot needs the grouping path to carry a per-cell filter context, and the plan is
   to reuse the existing pivot layout by synthesising the joined view); `data.getData`/

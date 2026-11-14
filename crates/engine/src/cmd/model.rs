@@ -197,7 +197,16 @@ fn measure_add(s: &mut Session, p: &Json) -> Result<Json> {
         // The home table only groups the field list, so it may be left out; it defaults to the
         // model's first table.
         let home = if table.is_empty() { cx.wb.model.tables.first().map(|t| t.name.clone()).unwrap_or_default() } else { table };
-        cx.wb.model.measures.push(Measure { name: name.clone(), table: home, formula, format });
+        let added = Measure { name: name.clone(), table: home, formula, format };
+        let formula = added.formula.clone();
+        cx.wb.model.measures.push(added);
+        // Prove the formula before keeping it: a measure that names a table or column the model
+        // does not have is a formula that will never compute, and finding that out now (while the
+        // person is looking at the formula) is the whole point of validating it here.
+        if let Err(e) = gridcraft_dax::validate(&cx.wb.model, &formula) {
+            cx.wb.model.measures.retain(|m| !m.name.eq_ignore_ascii_case(&name));
+            return Err(EngineError::Other(e.to_string()));
+        }
         cx.structural = true;
         Ok(())
     })?;
@@ -213,14 +222,23 @@ fn measure_set(s: &mut Session, p: &Json) -> Result<Json> {
         let Some(m) = cx.wb.model.measures.iter_mut().find(|m| m.name.eq_ignore_ascii_case(&name)) else {
             return Err(EngineError::Other(format!("There is no measure named \"{name}\".")));
         };
+        let before = m.formula.clone();
         if let Some(f) = formula {
             m.formula = f;
         }
+        let now = m.formula.clone();
         if let Some(f) = format {
             m.format = Some(f);
         }
         if let Some(t) = table {
             m.table = t;
+        }
+        // The same rule as adding: an edit that does not compute is not kept.
+        if let Err(e) = gridcraft_dax::validate(&cx.wb.model, &now) {
+            if let Some(m) = cx.wb.model.measures.iter_mut().find(|m| m.name.eq_ignore_ascii_case(&name)) {
+                m.formula = before;
+            }
+            return Err(EngineError::Other(e.to_string()));
         }
         cx.structural = true;
         Ok(())

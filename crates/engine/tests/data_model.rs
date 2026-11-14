@@ -103,6 +103,34 @@ fn a_relationship_that_would_loop_is_refused() {
 }
 
 #[test]
+fn a_measure_that_does_not_compute_is_refused_before_it_is_kept() {
+    let mut s = model_session();
+    // A table the model does not have: the formula would never compute, so it is refused now.
+    let err = s
+        .execute("data.measure.add", json!({"name": "Broken", "formula": "SUM(Nowhere[Amount])"}))
+        .expect_err("a formula naming a missing table must not be kept");
+    assert!(err.to_string().contains("Nowhere"), "{err}");
+    let list = run(&mut s, "data.measure.list", json!({}));
+    assert_eq!(list.as_array().map(Vec::len), Some(1), "only Total is there");
+
+    // An edit that breaks the formula is rolled back, so the measure still evaluates.
+    let err = s.execute("data.measure.set", json!({"name": "Total", "formula": "SUM(Sales[Nope])"})).expect_err("no such column");
+    assert!(err.to_string().contains("Nope"), "{err}");
+    let v = run(&mut s, "data.measure.evaluate", json!({"name": "Total"}));
+    assert_eq!(v["value"], 22.0, "the old formula still runs");
+}
+
+#[test]
+fn a_measure_may_use_another_measure_and_a_missing_name_says_which() {
+    let mut s = model_session();
+    run(&mut s, "data.measure.add", json!({"name": "Doubled", "formula": "Total * 2"}));
+    let v = run(&mut s, "data.measure.evaluate", json!({"name": "Doubled"}));
+    assert_eq!(v["value"], 44.0);
+    let err = s.execute("data.measure.add", json!({"name": "Bad", "formula": "Total + Missing"})).expect_err("no such measure");
+    assert!(err.to_string().contains("Missing"), "{err}");
+}
+
+#[test]
 fn a_measure_in_a_cell_recalcs_when_the_model_refreshes() {
     let mut s = model_session();
     run(&mut s, "range.setValues", json!({"range": "Sheet1!A1", "values": [["=MEASURE(\"Total\")"]]}));
