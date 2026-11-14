@@ -3,7 +3,7 @@ name = "gridcraft-parquet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft's Parquet export: a sheet as a typed, columnar file DuckDB, pandas and Spark read"
+description = "GridCraft's Parquet connector: a sheet as a typed, columnar file DuckDB, pandas and Spark read, and a file back as rows"
 
 [lints]
 workspace = true
@@ -16,7 +16,6 @@ thiserror.workspace = true
 # arrow compatibility layer and every compression codec are off. Compiling it is the alternative
 # to hand-writing Thrift metadata for a format three other tools will read.
 parquet = { version = "56", default-features = false, features = ["snap"] }
-
-[dev-dependencies]
-# Reading back in tests: `parquet`'s reader takes its own `Bytes` buffer.
+# The buffer type `parquet`'s `ChunkReader` hands back; already in the tree through `parquet`,
+# pure Rust, and it is what lets the reader slice a file in memory instead of copying it.
 bytes = "1"

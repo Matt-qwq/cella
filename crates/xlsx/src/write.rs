@@ -692,6 +692,10 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     root.add("extended-properties", "docProps/app.xml");
     crate::passthrough::write_package_rels(&mut root, &mut out);
     out.part("_rels/.rels", None, root.xml().into_bytes());
+    // The workbook's Get & Transform queries, in a part of our own with its own content type and
+    // no relationship (see `queries`). Written here, after the kept content, so a content
+    // type the kept parts declared first is the one kept.
+    crate::queries::write(wb, &mut out);
 
     // Content types first, then the parts in creation order.
     let mut ct = format!("{XML_DECL}<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">");

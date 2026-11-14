@@ -37,3 +37,7 @@ getrandom = { workspace = true }
 # An independent Compound File Binary reader, used only to prove the encrypted container is valid
 # to software that isn't ours (a test oracle; it ships nowhere).
 cfb = "0.15"
+# The queries part is written and read by the crate's own small JSON codec (a file-format crate
+# takes no dependency it does not need); this is the oracle of tests/queries.rs, which proves the
+# bytes are the model's own serde shape. A dev-dependency only: it ships nowhere.
+serde_json = { workspace = true }

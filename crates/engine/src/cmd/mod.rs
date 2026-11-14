@@ -15,6 +15,7 @@ pub mod insert;
 pub mod inspect;
 pub mod pivot;
 pub mod print;
+pub mod query;
 pub mod review;
 pub mod sheet;
 pub mod slicer;
@@ -136,6 +137,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(view::specs());
         v.extend(inspect::specs());
         v.extend(extra::specs());
+        v.extend(query::specs());
         v.extend(chart::specs());
         v.extend(draw::specs());
         v.extend(spelling::specs());

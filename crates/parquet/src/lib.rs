@@ -19,6 +19,10 @@
 //!
 //! Written with the Apache `parquet` crate — the metadata is Thrift and the pages carry definition
 //! levels, which is not something to hand-roll for a format three other tools have to read.
+//!
+//! The other direction is [`read`]: [`read_table`] turns a file's bytes into rows and column
+//! types for a query source, refusing nested columns, codecs this build does not compile in, and
+//! anything bigger than a sheet.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
@@ -32,15 +36,27 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::types::Type;
 
-/// What a column became in the file.
+/// What a column holds in the file.
+///
+/// Export only ever produces the four a sheet's cells can be (`INT64`, `DOUBLE`, `BOOLEAN`,
+/// `STRING`); import also reports the types a file can hold and a sheet has no equivalent for, so
+/// the query layer can see what it is typing before it changes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColumnType {
     /// Whole numbers, `INT64`.
     Int64,
+    /// Whole numbers from a 32-bit column, `INT32`.
+    Int32,
     /// Numbers, `DOUBLE`.
     Double,
+    /// Numbers from a 32-bit column, `FLOAT`.
+    Float,
     /// `TRUE`/`FALSE`, `BOOLEAN`.
     Bool,
+    /// A date as the number of days since 1970-01-01: `INT32` with the `DATE` annotation.
+    Date,
+    /// A fixed-point number, `DECIMAL` on any physical type, already scaled.
+    Decimal,
     /// Text (and anything that had to be turned into it), `BYTE_ARRAY` with `STRING`.
     Text,
 }
@@ -49,8 +65,12 @@ impl ColumnType {
     pub fn as_str(self) -> &'static str {
         match self {
             ColumnType::Int64 => "INT64",
+            ColumnType::Int32 => "INT32",
             ColumnType::Double => "DOUBLE",
+            ColumnType::Float => "FLOAT",
             ColumnType::Bool => "BOOLEAN",
+            ColumnType::Date => "DATE",
+            ColumnType::Decimal => "DECIMAL",
             ColumnType::Text => "STRING",
         }
     }
@@ -110,9 +130,13 @@ pub fn export_sheet(sheet: &Sheet, opts: Options) -> Result<(Vec<u8>, Report), E
         .iter()
         .zip(&kinds)
         .map(|(name, kind)| {
+            // `infer` only returns the four a sheet can be; the import-only types are mapped to
+            // their nearest neighbour so this stays total without an `unreachable!`.
             let physical = match kind {
+                ColumnType::Int32 => PhysicalType::INT32,
                 ColumnType::Int64 => PhysicalType::INT64,
-                ColumnType::Double => PhysicalType::DOUBLE,
+                ColumnType::Float => PhysicalType::FLOAT,
+                ColumnType::Double | ColumnType::Date | ColumnType::Decimal => PhysicalType::DOUBLE,
                 ColumnType::Bool => PhysicalType::BOOLEAN,
                 ColumnType::Text => PhysicalType::BYTE_ARRAY,
             };
@@ -277,8 +301,10 @@ impl Buffers {
             kinds
                 .iter()
                 .map(|kind| match kind {
-                    ColumnType::Int64 => ColumnBuf::Int(Vec::with_capacity(rows), Vec::with_capacity(rows)),
-                    ColumnType::Double => ColumnBuf::Double(Vec::with_capacity(rows), Vec::with_capacity(rows)),
+                    ColumnType::Int32 | ColumnType::Int64 => ColumnBuf::Int(Vec::with_capacity(rows), Vec::with_capacity(rows)),
+                    ColumnType::Float | ColumnType::Double | ColumnType::Date | ColumnType::Decimal => {
+                        ColumnBuf::Double(Vec::with_capacity(rows), Vec::with_capacity(rows))
+                    }
                     ColumnType::Bool => ColumnBuf::Bool(Vec::with_capacity(rows), Vec::with_capacity(rows)),
                     ColumnType::Text => ColumnBuf::Text(Vec::with_capacity(rows), Vec::with_capacity(rows)),
                 })
@@ -389,6 +415,12 @@ fn error_text(e: CellError) -> &'static str {
         CellError::Circ => "#CIRC!",
     }
 }
+
+pub mod read;
+pub use read::{MAX_COLUMNS, MAX_ROWS, ReadError, Table, read_table};
+
+#[cfg(test)]
+mod read_tests;
 
 #[cfg(test)]
 mod tests;

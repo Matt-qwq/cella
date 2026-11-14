@@ -807,8 +807,32 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   [localization-parity.md](localization-parity.md)
 
 ### 12. Get & Transform, external data, data model (F)
-- No Power Query editor, connections, refresh, From Web/database/folder sources, relationships or
-  data model (`data.fromWeb`, `data.relationships` missing). **Estimate:** 60–100 h.
+- No Power Query *editor*, From Web/database sources, relationships or data model
+  (`data.fromWeb`, `data.relationships` missing). **Estimate:** 60–100 h, of which the pipeline
+  landed on 11-14 (below); what is left is the editor pane, the folder and model loads, the
+  relationships and measures of N3.3, and a dependency decision for Web/SQLite.
+- **Landed 11-14 (N3.1, the query pipeline).** A query is document data (`Query`,
+  `QuerySource` of seven kinds, thirteen `QueryStep`s, `QueryLoad`) and the pipeline is a crate
+  (`crates/query`, L2, no I/O): `apply(table, steps)` runs promote/demote headers, change type,
+  keep/remove columns, rename, filter, sort, remove duplicates, replace values, fill down, unpivot
+  and group by — each total, each error naming its step index and the column it wanted, and the
+  table capped by declared size (4M cells) before anything is allocated. Eleven commands
+  (`data.query.add/refresh/addStep/setStep/removeStep/setSource/rename/delete/load/list/steps`)
+  run a query and **load it onto a sheet as a real table** (the style carried across a refresh, the
+  table replaced when the shape changes so no renamed header is left behind), so the result prints,
+  charts and feeds a pivot table and the next refresh rewrites it in place; a step that does not
+  fit is rolled back rather than kept. Sources: CSV/TSV, JSON, XLSX, **Parquet (read; the reader is
+  new)**, a table or range of the workbook. `range.setValues` gained `raw` so a loaded column keeps
+  the type the pipeline gave it instead of being re-typed as a date on the way out. Persistence is
+  our own part, `xl/gridcraft/queries.json`, read leniently and dropped when the model has none —
+  Excel ignores the part (and **drops it if it saves the file**: its own queries live in a
+  proprietary `customXml` DataMashup blob, which clean-room rules put out of reach). Tests: 28 in
+  the pipeline crate, 13 end-to-end through the engine (including save → reopen → refresh), 10 for
+  the part, 20 for the Parquet reader.
+- **What N3.1 did not do:** a folder source and a data-model load refuse with the round that
+  brings them (`N3.4`, `N3.3`), there is no editor pane yet (N3.2 — the pipeline is reachable from
+  the command palette, the control channel, the CLI and MCP with the same params), and Web and
+  SQLite sources need a dependency decision (a TLS stack, a C library) before they can be honest.
 - **Landed 11-14 (the file half):** a workbook's `xl/model/*` (the Power Pivot data model) is kept
   and written back byte for byte, related from the workbook with the file's own `powerPivotData`
   type, and it survives deleting every report that used it; PivotTables built on it are carried

@@ -339,6 +339,12 @@ pub fn check_package(bytes: &[u8]) -> Result<(), String> {
     check_unpacked(&parts)
 }
 
+/// Parts GridCraft writes that no relationship names, on purpose: the workbook's Get & Transform
+/// queries live in [`crate::queries::PART`], which the package declares a content type for.
+/// A relationship to a part Excel does not understand is what invites a repair prompt, so the
+/// orphan rule below has this one exception.
+const UNREFERENCED_OK: &[&str] = &[crate::queries::PART];
+
 /// [`check_package`] for a package that is already unpacked (part name → bytes).
 pub fn check_unpacked(parts: &std::collections::HashMap<String, Vec<u8>>) -> Result<(), String> {
     use std::collections::{HashMap, HashSet, VecDeque};
@@ -433,7 +439,8 @@ pub fn check_unpacked(parts: &std::collections::HashMap<String, Vec<u8>>) -> Res
             continue;
         }
         if !name.ends_with(".rels") {
-            if !seen.iter().any(|n| normalize(n) == normalize(name)) {
+            let allowed = UNREFERENCED_OK.iter().any(|p| normalize(p) == normalize(name));
+            if !allowed && !seen.iter().any(|n| normalize(n) == normalize(name)) {
                 return Err(format!("{name} is orphaned: no relationship points at it"));
             }
             continue;

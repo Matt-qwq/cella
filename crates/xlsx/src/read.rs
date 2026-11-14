@@ -503,6 +503,9 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
     // kept content (anything it cannot model stays byte-identical). Needs the preserved parts, so
     // it runs after them.
     crate::slicer::read(&mut wb, &mut cx, &wb_xml, &wb_rels);
+    // The workbook's Get & Transform queries, from our own part. A part that is missing, oversized
+    // or broken is a warning, never a failure of the open.
+    crate::queries::read(&mut cx, &mut wb);
     // Calls of LAMBDA names are spelled like the names (the parser upper-cases them).
     wb.apply_name_call_case();
     wb.styles = cx.styles;

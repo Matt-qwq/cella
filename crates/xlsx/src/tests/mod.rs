@@ -23,6 +23,7 @@ mod paging;
 mod passthrough_tests;
 mod phonetic_tests;
 mod pivot_tests;
+mod queries;
 mod richdata_tests;
 mod roundtrip;
 mod rows_scanner;

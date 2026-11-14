@@ -37,6 +37,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("calc", Class::Layer(2)),
     ("xlsx", Class::Layer(2)),
     ("parquet", Class::Layer(2)),
+    // The query pipeline (Get & Transform): pure step-to-table functions over the model's own
+    // step types, no I/O. It may read `model` and nothing that writes a file.
+    ("query", Class::Layer(2)),
     ("chart", Class::Layer(3)),
     ("engine", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
@@ -51,7 +54,7 @@ pub const TABLE: &[(&str, Class)] = &[
 /// Explicit orderings *within* a layer (earlier may be used by later). Each chain is separate:
 /// `calc` and `xlsx` both build on `model` but not on each other.
 pub const INTRA_LAYER_ORDER: &[&[&str]] =
-    &[&["core", "numfmt"], &["formula", "functions"], &["model", "calc"], &["model", "xlsx"], &["model", "parquet"]];
+    &[&["core", "numfmt"], &["formula", "functions"], &["model", "calc"], &["model", "xlsx"], &["model", "parquet"], &["model", "query"]];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
     let (from, to) = (short_name(from), short_name(to));

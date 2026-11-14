@@ -1653,6 +1653,7 @@ dependencies = [
  "gridcraft-numfmt",
  "gridcraft-parquet",
  "gridcraft-pdf",
+ "gridcraft-query",
  "gridcraft-xlsx",
  "image",
  "log",
@@ -1731,6 +1732,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridcraft-query"
+version = "0.11.1"
+dependencies = [
+ "gridcraft-core",
+ "gridcraft-model",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "gridcraft-ui-egui"
 version = "0.11.1"
 dependencies = [
@@ -1783,6 +1794,7 @@ dependencies = [
  "gridcraft-model",
  "memchr",
  "quick-xml",
+ "serde_json",
  "sha1",
  "sha2",
  "thiserror 2.0.21",

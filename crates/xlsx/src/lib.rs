@@ -26,6 +26,7 @@ mod ods;
 mod package;
 mod passthrough;
 mod pivot;
+mod queries;
 mod read;
 mod richdata;
 /// The worksheet row scanner. Public for the benchmark in `examples/scan_probe.rs`; not an API.

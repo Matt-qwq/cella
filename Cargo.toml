@@ -25,6 +25,7 @@ gridcraft-ui-egui = { path = "crates/ui-egui" }
 gridcraft-mcp = { path = "crates/mcp" }
 gridcraft-pdf = { path = "crates/pdf" }
 gridcraft-parquet = { path = "crates/parquet" }
+gridcraft-query = { path = "crates/query" }
 
 # foundation
 thiserror = "2"

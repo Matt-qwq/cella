@@ -16,7 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Values",
             [],
             None,
-            "{range?: \"A1\", values: [[...]] (rows of numbers/strings/bools/null; strings starting with = are formulas)}",
+            "{range?: \"A1\", values: [[...]] (rows of numbers/strings/bools/null; strings starting with = are formulas), raw?: false (write every string as text, with no number, date or formula parsing)}",
             has_doc,
             range_set_values
         ),
@@ -324,6 +324,9 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let cells: u64 = rows.iter().map(|row| row.as_array().map_or(1, |a| a.len()) as u64).sum();
     super::check_bulk(cells)?;
+    // A data import writes what the source holds: "2024-03-04" stays that text instead of
+    // becoming a serial number, and "=A1" stays that text instead of becoming a formula.
+    let raw = bool_param(p, "raw").unwrap_or(false);
     let mut count = 0;
     edit(s, |cx| {
         for (ri, row) in rows.iter().enumerate() {
@@ -343,6 +346,11 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
                     Json::Bool(b) => {
                         Some(Cell { value: Value::Bool(*b), formula: None, style: cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default() })
                     }
+                    Json::String(t) if raw => Some(Cell {
+                        value: Value::text(t.clone()),
+                        formula: None,
+                        style: cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default(),
+                    }),
                     _ => input_to_cell(&input, sheet, at, &mut cx.wb)?,
                 };
                 let sh = cx.sheet_mut(sheet)?;

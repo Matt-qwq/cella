@@ -1835,6 +1835,18 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "This chart's legend entries are its points, not its series, so none of them can be deleted from here." => {
             "此图表的图例项是它的数据点而不是系列，因此无法在此删除其中任何一项。"
         }
+        // Get & Transform command labels (the queries the data platform added).
+        "Add Query" => "添加查询",
+        "Refresh Query" => "刷新查询",
+        "Apply Step" => "应用步骤",
+        "Edit Step" => "编辑步骤",
+        "Remove Step" => "删除步骤",
+        "Change Source" => "更改源",
+        "Rename Query" => "重命名查询",
+        "Delete Query" => "删除查询",
+        "Load To" => "加载到",
+        "Queries" => "查询",
+        "Query Steps" => "查询步骤",
         // zh-grid - entries the grid, the ribbon, the tooltips and the paper view need (wave 4).
         // The UI-only commands `engine.commands` adds (the command palette lists them).
         "Ribbon Tab" => "功能区选项卡",
