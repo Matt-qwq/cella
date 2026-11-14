@@ -20,7 +20,7 @@ including tests, 2026-10-10.
 | L2 | `calc` | ~2.9k | Evaluator (references, names, tables, LET/LAMBDA, special forms like OFFSET/INDIRECT/SUBTOTAL) and dependency-graph recalculation with dynamic arrays, spills and cycle detection; single-threaded |
 | L2 | `xlsx` | ~10.7k | XLSX read/write (transitional and strict read), CSV/TSV, XLSB and ODS data import, PivotTable caches, DrawingML charts and drawings; byte slices only (WASM-safe); lenient reader that reports warnings |
 | L2 | `pdf` | ~1k | Small PDF 1.7 writer (14 standard fonts, vectors, images) for print and export |
-| L2 | `parquet` | ~0.6k | Parquet export: a sheet (or a range) as typed columns with real nulls, Snappy-compressed, written with the Apache `parquet` crate; wasm-clean |
+| L2 | `parquet` | ~1.1k | Parquet both ways, with the Apache `parquet` crate: a sheet (or a range) out as typed columns with real nulls, Snappy; a file back in as rows and column types for a query source (flat columns, `DATE`/`DECIMAL`/unsigned handled, nested and `INT96` refused by name); wasm-clean |
 | L2 | `query` | ~0.7k | The Get & Transform pipeline: a `Table` of values and the 13 steps (promote headers, change type, filter, sort, group, unpivot, …) applied to it. Pure: no I/O, no clock, no file system |
 | L3 | `chart` | ~2.9k | Toolkit-free chart layout to drawing primitives, a rasterizer, sparklines |
 | L5 | `engine` | ~17.7k | `Session`: open workbooks, selection, history (COW snapshots), clipboard, fill, sort, filter, PivotTables, what-if, print, file I/O (`io.rs`), queries (`cmd/query.rs`: read a source, run the pipeline, load the result as a sheet table), and the command registry (`cmd/*`, 370 commands) with the Excel ribbon catalog (`catalog.rs`) |

@@ -190,7 +190,9 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
             let bytes = read_source(Some(path), None, "parquet")?;
             let t = gridcraft_parquet::read_table(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
             let names: Vec<String> = t.columns.iter().map(|(n, _)| n.clone()).collect();
-            Table::new(names, t.rows).map_err(pipeline_error)
+            let mut rows = t.rows;
+            shift_parquet_dates(&t.columns, &mut rows);
+            Table::new(names, rows).map_err(pipeline_error)
         }
         // The folder connector and the data model arrive with N3.4 and N3.3; refusing with the
         // round that brings them is more useful than a silent empty table.
@@ -214,6 +216,27 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
             let sh = pick_sheet(&d.wb, sheet)?;
             let rows = grid_rows(sh, *range)?;
             Table::from_rows(rows, false).map_err(pipeline_error)
+        }
+    }
+}
+
+/// A Parquet `DATE` is a day count from 1970-01-01; a sheet's date is a serial from 1899-12-30.
+/// Read unconverted, every date in an imported file would be 25,569 days off, so the import shifts
+/// the date columns once, here, where the file's own column types are still known.
+fn shift_parquet_dates(columns: &[(String, gridcraft_parquet::ColumnType)], rows: &mut [Vec<Value>]) {
+    use gridcraft_parquet::ColumnType;
+    let offset = gridcraft_core::date::serial_from_ymd(gridcraft_core::DateSystem::D1900, 1970, 1, 1).unwrap_or(0.0);
+    if offset == 0.0 || rows.is_empty() {
+        return;
+    }
+    for (c, (_, ty)) in columns.iter().enumerate() {
+        if *ty != ColumnType::Date {
+            continue;
+        }
+        for row in rows.iter_mut() {
+            if let Some(Value::Number(n)) = row.get_mut(c) {
+                *n += offset;
+            }
         }
     }
 }
@@ -688,4 +711,23 @@ fn steps_of(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc()?;
     let q = d.wb.queries.get(query_index(&d.wb, name)?).ok_or_else(|| bad("data.query.steps", "gone"))?;
     serde_json::to_value(&q.steps).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gridcraft_parquet::ColumnType;
+
+    #[test]
+    fn a_parquet_date_column_is_shifted_to_the_sheets_own_epoch() {
+        let columns = vec![("day".to_string(), ColumnType::Date), ("n".to_string(), ColumnType::Int64)];
+        // 1970-01-01 is day 0 in the file and serial 25,569 in a 1900-date workbook.
+        let mut rows = vec![vec![Value::number(0.0), Value::number(7.0)], vec![Value::Empty, Value::Empty]];
+        shift_parquet_dates(&columns, &mut rows);
+        assert_eq!(rows[0][0], Value::number(25_569.0));
+        // A column that is not a date is left exactly as the file has it.
+        assert_eq!(rows[0][1], Value::number(7.0));
+        // A null stays a null.
+        assert_eq!(rows[1][0], Value::Empty);
+    }
 }
