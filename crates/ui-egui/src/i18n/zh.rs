@@ -1835,6 +1835,32 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "This chart's legend entries are its points, not its series, so none of them can be deleted from here." => {
             "此图表的图例项是它的数据点而不是系列，因此无法在此删除其中任何一项。"
         }
+        // The Queries & Connections pane, the query steps it lists and the Get & Transform
+        // commands that drive it.
+        "Get Data (Text/CSV)" => "获取数据（文本/CSV）",
+        "Steps" => "步骤",
+        "Preview Query" => "预览查询",
+        "Remove step" => "删除步骤",
+        "Show the query" => "展开查询",
+        "No queries yet. Get Data (Text/CSV) makes one." => "还没有查询。用“获取数据（文本/CSV）”新建一个。",
+        "Refreshed {}" => "已刷新 {} 个",
+        "Query deleted" => "已删除查询",
+        "Step removed" => "已删除步骤",
+        "{} rows" => "{} 行",
+        "first 10 shown" => "仅显示前 10 行",
+        "Promoted Headers" => "提升的标题",
+        "Demoted Headers" => "降级的标题",
+        "Changed Type" => "更改的类型",
+        "Removed Columns" => "删除的列",
+        "Kept Columns" => "保留的列",
+        "Renamed Column" => "重命名的列",
+        "Filtered Rows" => "筛选的行",
+        "Sorted Rows" => "排序的行",
+        "Removed Duplicates" => "删除的重复项",
+        "Replaced Values" => "替换的值",
+        "Filled Down" => "向下填充",
+        "Unpivoted Columns" => "逆透视的列",
+        "Grouped Rows" => "分组的行",
         // Get & Transform command labels (the queries the data platform added).
         "Add Query" => "添加查询",
         "Refresh Query" => "刷新查询",

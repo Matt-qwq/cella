@@ -110,9 +110,17 @@ impl Table {
 pub fn apply(table: Table, steps: &[QueryStep]) -> Result<Table, QueryError> {
     let mut t = table;
     for (index, step) in steps.iter().enumerate() {
-        t = steps::apply_step(t, step, index)?;
+        t = apply_step(t, step, index)?;
     }
     Ok(t)
+}
+
+/// Runs one step, `index` being its place in the pipeline (which is what the error names).
+///
+/// The editor calls this one step at a time so it can show the data as of the last step that
+/// worked and point at the one that did not, instead of failing the whole preview.
+pub fn apply_step(table: Table, step: &QueryStep, index: usize) -> Result<Table, QueryError> {
+    steps::apply_step(table, step, index)
 }
 
 /// Why a pipeline stopped.

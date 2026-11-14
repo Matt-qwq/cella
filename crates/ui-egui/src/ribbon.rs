@@ -2063,6 +2063,18 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     if gd.clicked() {
         app.open_dialog("open", json!({}));
     }
+    // Excel keeps Queries & Connections beside Get Data, and Refresh All refreshes the connections
+    // as well as the reports.
+    let qc = big_button(ui, Icon::Table, "Queries &\nConnections", "Queries & Connections", false);
+    control_keytip(app, ui, &qc, "data.queriesConnections");
+    if qc.clicked() {
+        app.grid.pane = Some("queries".into());
+    }
+    let ra = big_button(ui, Icon::Redo, "Refresh\nAll", "Refresh All", false);
+    control_keytip(app, ui, &ra, "data.refreshAll");
+    if ra.clicked() {
+        act(app, "data.refreshAll", json!({}));
+    }
     sep(ui);
     ui.vertical(|ui| {
         let __k = small_button(ui, Icon::SortAsc, "", "Sort A to Z", false);

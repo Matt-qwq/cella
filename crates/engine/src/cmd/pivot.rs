@@ -1785,6 +1785,13 @@ fn refresh(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
     let replace = bool_param(p, "replace").unwrap_or(false);
+    // Excel's Refresh All reaches every connection, and a PivotTable can be built on the table a
+    // query loads, so the queries run first — a report that reads a query's sheet sees the data
+    // the same command just refreshed.
+    let queries = match s.execute("data.query.refresh", json!({})) {
+        Ok(v) => v,
+        Err(e) => json!([{"error": e.to_string()}]),
+    };
     edit(s, |cx| {
         let mut n = 0;
         let mut errors = vec![];
@@ -1808,7 +1815,7 @@ fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
             }
         }
         cx.structural = n > 0;
-        Ok(json!({"refreshed": n, "errors": errors, "skipped": skipped}))
+        Ok(json!({"refreshed": n, "errors": errors, "skipped": skipped, "queries": queries}))
     })
 }
 

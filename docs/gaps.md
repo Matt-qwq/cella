@@ -829,10 +829,19 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   proprietary `customXml` DataMashup blob, which clean-room rules put out of reach). Tests: 28 in
   the pipeline crate, 13 end-to-end through the engine (including save → reopen → refresh), 10 for
   the part, 20 for the Parquet reader.
-- **What N3.1 did not do:** a folder source and a data-model load refuse with the round that
-  brings them (`N3.4`, `N3.3`), there is no editor pane yet (N3.2 — the pipeline is reachable from
-  the command palette, the control channel, the CLI and MCP with the same params), and Web and
-  SQLite sources need a dependency decision (a TLS stack, a C library) before they can be honest.
+- **Landed 11-14 (N3.2, Queries & Connections).** The pane lists every query with its source,
+  the sheet it loads onto, its steps and a ten-row preview; Refresh, Refresh All (which now
+  refreshes the queries before the reports), Delete and per-step Remove are buttons on it, and
+  the pane's own title, buttons and all thirteen step labels read Chinese. The new
+  `data.query.preview` runs the pipeline **one step at a time** and returns the rows as of the
+  last step that worked plus the index, label and message of the one that failed, so a broken
+  step is marked where it stops instead of failing the preview; a trial `step`/`at` previews a
+  step before it is added.
+- **What N3.1 and N3.2 did not do:** a folder source and a data-model load refuse with the round
+  that brings them (`N3.4`, `N3.3`); `data.getData`/`data.fromTextCsv` still import a table without
+  making a query, so a file opened through Get Data does not appear in the pane yet (N3.4); adding
+  a step from the pane is command-side only, there is no step parameter editor; and Web and SQLite
+  sources need a dependency decision (a TLS stack, a C library) before they can be honest.
 - **Landed 11-14 (the file half):** a workbook's `xl/model/*` (the Power Pivot data model) is kept
   and written back byte for byte, related from the workbook with the file's own `powerPivotData`
   type, and it survives deleting every report that used it; PivotTables built on it are carried

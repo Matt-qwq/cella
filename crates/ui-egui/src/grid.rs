@@ -158,8 +158,10 @@ pub struct GridState {
     pub renaming_tab: Option<usize>,
     pub rename_text: String,
     pub list_picker: Option<CellRef>,
-    /// Open task pane: comments, watch, selection, formatChart.
+    /// Open task pane: comments, watch, selection, formatChart, queries.
     pub pane: Option<String>,
+    /// The query the Queries & Connections pane has expanded (by name).
+    pub query_selected: Option<String>,
     /// Ink stroke being drawn (sheet points).
     pub ink: Vec<[f32; 2]>,
     /// Page ranges for Page Break Preview, cached per (doc uid, revision, sheet).

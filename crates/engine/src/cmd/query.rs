@@ -76,6 +76,15 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             has_doc,
             load
         ),
+        cmd!(
+            query "data.query.preview",
+            "Preview Query",
+            ["Data", "Queries & Connections"],
+            None,
+            "{name, limit?: 100, step?, at?} -> {columns, rows, total, truncated, failed: {index, label, error}?}",
+            has_doc,
+            preview
+        ),
         cmd!(query "data.query.list", "Queries", ["Data", "Queries & Connections"], None, "{} -> [{id, name, kind, path, sheet, columns, steps}]", has_doc, list),
         cmd!(query "data.query.steps", "Query Steps", ["Data", "Queries & Connections"], None, "{name} -> [QueryStep]", has_doc, steps_of),
     ]
@@ -684,6 +693,53 @@ fn load(s: &mut Session, p: &Json) -> Result<Json> {
     })?;
     let ran = run_query(s, &name)?;
     Ok(json!({"name": name, "sheet": ran.sheet, "rows": ran.table.height(), "cols": ran.table.width()}))
+}
+
+// ---------------------------------------------------------------- preview
+
+/// What the editor shows: the rows as of the last step that ran, and where the pipeline stopped.
+fn preview(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("data.query.preview", "missing name"))?;
+    let limit = u32_param(p, "limit").unwrap_or(100).clamp(1, 1_000) as usize;
+    let (source, steps) = {
+        let d = s.doc()?;
+        let q = d.wb.queries.get(query_index(&d.wb, name)?).ok_or_else(|| bad("data.query.preview", "gone"))?;
+        (q.source.clone(), q.steps.clone())
+    };
+    let mut table = source_table(s, &source)?;
+    let mut failed: Option<Json> = None;
+    for (index, step) in steps.iter().enumerate() {
+        match gridcraft_query::apply_step(table.clone(), step, index) {
+            Ok(next) => table = next,
+            Err(e) => {
+                failed = Some(json!({"index": index, "label": step.label(), "error": e.to_string()}));
+                break;
+            }
+        }
+    }
+    // A step the editor is still composing is run against the data as it stands, and it decides
+    // the failure: the caller is asking "what would this do?".
+    if let Some(trial) = p.get("step").filter(|v| !v.is_null()) {
+        let step: QueryStep =
+            serde_json::from_value(trial.clone()).map_err(|e| bad("data.query.preview", format!("step is not a QueryStep: {e}")))?;
+        let at = u32_param(p, "at").map_or(steps.len(), |i| i as usize);
+        match gridcraft_query::apply_step(table.clone(), &step, at) {
+            Ok(next) => {
+                table = next;
+                failed = None;
+            }
+            Err(e) => failed = Some(json!({"index": at, "label": step.label(), "error": e.to_string()})),
+        }
+    }
+    let total = table.height();
+    let rows: Vec<Json> = table.rows.iter().take(limit).map(|r| Json::Array(r.iter().map(value_json).collect())).collect();
+    Ok(json!({
+        "columns": table.columns,
+        "rows": rows,
+        "total": total,
+        "truncated": total > limit,
+        "failed": failed,
+    }))
 }
 
 fn list(s: &mut Session, _: &Json) -> Result<Json> {

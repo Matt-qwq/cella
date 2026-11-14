@@ -27,6 +27,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                 "watch" => "Watch Window",
                 "selection" => "Selection",
                 "formatChart" => format_pane_title(app),
+                "queries" => "Queries & Connections",
                 _ => "",
             };
             ui.label(egui::RichText::new(crate::widgets::tr(ui, title)).font(theme::ui_bold(15.0)));
@@ -45,6 +46,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
             "watch" => watch(app, ui),
             "selection" => selection(app, ui),
             "formatChart" => format_chart(app, ui),
+            "queries" => queries(app, ui),
             _ => {}
         });
     });
@@ -210,6 +212,150 @@ fn selection(app: &mut SheetApp, ui: &mut Ui) {
 
 fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
     crate::chart_format::show(app, ui);
+}
+
+/// Queries & Connections: the saved Get & Transform queries, their steps and a preview of what
+/// they produce. Every button runs a `data.query.*` command, so the pane is a view of engine state
+/// and nothing it does is unreachable from the control channel.
+fn queries(app: &mut SheetApp, ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    let list = app.session.run("data.query.list", json!({})).unwrap_or(Json::Null);
+    let queries = list.as_array().cloned().unwrap_or_default();
+    ui.horizontal(|ui| {
+        if ui.button(crate::widgets::tr(ui, "Refresh All")).clicked() {
+            match app.session.run("data.refreshAll", json!({})) {
+                Ok(v) => {
+                    let n = v["queries"].as_array().map_or(0, Vec::len);
+                    app.toast = Some((crate::widgets::tr(ui, "Refreshed {}").replace("{}", &n.to_string()), crate::now_ms()));
+                }
+                Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+            }
+        }
+        if ui.button(crate::widgets::tr(ui, "Get Data (Text/CSV)")).clicked() {
+            app.open_dialog("open", json!({}));
+        }
+    });
+    ui.add_space(4.0);
+    if queries.is_empty() {
+        ui.label(egui::RichText::new(crate::widgets::tr(ui, "No queries yet. Get Data (Text/CSV) makes one.")).color(t.text_dim));
+        return;
+    }
+    for q in &queries {
+        let name = q["name"].as_str().unwrap_or("").to_string();
+        let selected = app.grid.query_selected.as_deref() == Some(name.as_str());
+        let kind = q["kind"].as_str().unwrap_or("");
+        let path = q["path"].as_str().unwrap_or("");
+        let sheet = q["sheet"].as_str().unwrap_or("");
+        let steps = q["steps"].as_array().cloned().unwrap_or_default();
+        let columns = q["columns"].as_array().cloned().unwrap_or_default();
+        egui::Frame::NONE.fill(if selected { t.sel_fill } else { t.ribbon }).inner_margin(8).corner_radius(5.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let caret = if selected { "▾" } else { "▸" };
+                let r = ui.small_button(caret);
+                if r.clicked() {
+                    app.grid.query_selected = if selected { None } else { Some(name.clone()) };
+                }
+                let title = egui::RichText::new(&name).font(theme::ui_bold(13.0));
+                if ui.selectable_label(selected, title).clicked() {
+                    app.grid.query_selected = if selected { None } else { Some(name.clone()) };
+                }
+                if ui.small_button(crate::widgets::tr(ui, "Refresh")).clicked() {
+                    match app.session.run("data.query.refresh", json!({"name": name})) {
+                        Ok(_) => app.toast = Some((crate::widgets::tr(ui, "Refreshed {}").replace("{}", "1"), crate::now_ms())),
+                        Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                    }
+                }
+                if ui.small_button(crate::widgets::tr(ui, "Delete")).clicked() {
+                    match app.session.run("data.query.delete", json!({"name": name})) {
+                        Ok(_) => {
+                            if selected {
+                                app.grid.query_selected = None;
+                            }
+                            app.toast = Some((crate::widgets::tr(ui, "Query deleted").to_string(), crate::now_ms()));
+                        }
+                        Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                    }
+                }
+            });
+            // Where the data comes from, in one line: kind, file, and the sheet it loads onto.
+            let mut detail = kind.to_string();
+            if !path.is_empty() {
+                detail.push_str(" · ");
+                detail.push_str(path);
+            }
+            if !sheet.is_empty() {
+                detail.push_str(&format!(" → {sheet}"));
+            }
+            ui.label(egui::RichText::new(detail).color(t.text_dim).size(11.0));
+            if selected {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(crate::widgets::tr(ui, "Steps")).strong());
+                for (i, step) in steps.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("{}. {}", i + 1, crate::widgets::tr(ui, step.as_str().unwrap_or("")))).size(12.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::widgets::icon_button(ui, crate::icons::Icon::Close, t.text_dim, "Remove step", vec2(16.0, 16.0)).clicked() {
+                                match app.session.run("data.query.removeStep", json!({"name": name, "index": i})) {
+                                    Ok(_) => app.toast = Some((crate::widgets::tr(ui, "Step removed").to_string(), crate::now_ms())),
+                                    Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                                }
+                            }
+                        });
+                    });
+                }
+                if !columns.is_empty() {
+                    ui.add_space(4.0);
+                    preview(app, ui, &name);
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+}
+
+/// The first rows of a query, as the pipeline leaves them: the editor's whole point is that a step
+/// can be judged by what it does to the data, and a failing step is reported where it stops.
+fn preview(app: &mut SheetApp, ui: &mut Ui, name: &str) {
+    let t = Tokens::get(ui.ctx());
+    let pv = match app.session.run("data.query.preview", json!({"name": name, "limit": 10})) {
+        Ok(v) => v,
+        Err(e) => {
+            ui.label(egui::RichText::new(e).color(t.danger).size(11.0));
+            return;
+        }
+    };
+    if let Some(failed) = pv["failed"].as_object() {
+        let msg = failed.get("error").and_then(Json::as_str).unwrap_or("");
+        ui.label(egui::RichText::new(crate::widgets::tr(ui, msg)).color(t.danger).size(11.0));
+    }
+    let columns = pv["columns"].as_array().cloned().unwrap_or_default();
+    let rows = pv["rows"].as_array().cloned().unwrap_or_default();
+    egui::ScrollArea::horizontal().id_salt(("query_preview", name)).show(ui, |ui| {
+        egui::Grid::new(("query_preview_grid", name)).striped(true).show(ui, |ui| {
+            for c in &columns {
+                ui.strong(c.as_str().unwrap_or(""));
+            }
+            ui.end_row();
+            for row in &rows {
+                for cell in row.as_array().cloned().unwrap_or_default() {
+                    let text = match cell {
+                        Json::Null => String::new(),
+                        Json::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    ui.label(text);
+                }
+                ui.end_row();
+            }
+        });
+    });
+    let total = pv["total"].as_u64().unwrap_or(0);
+    let mut footer = crate::widgets::tr(ui, "{} rows").replace("{}", &total.to_string());
+    if pv["truncated"].as_bool().unwrap_or(false) {
+        footer.push_str(&format!(" ({})", crate::widgets::tr(ui, "first 10 shown")));
+    }
+    ui.label(egui::RichText::new(footer).color(t.text_dim).size(11.0));
 }
 
 #[cfg(test)]

@@ -183,6 +183,38 @@ fn a_query_and_its_loaded_table_survive_save_and_reopen() {
 }
 
 #[test]
+fn a_preview_shows_the_rows_and_names_the_step_that_fails() {
+    let mut s = session();
+    run(&mut s, "data.query.add", json!({"name": "Sales", "source": {"kind": "csv", "text": CSV}, "steps": ["PromoteHeaders"]}));
+    let pv = run(&mut s, "data.query.preview", json!({"name": "Sales", "limit": 2}));
+    assert_eq!(pv["columns"], json!(["Region", "Amount", "Day"]));
+    assert_eq!(pv["rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(pv["total"], 3);
+    assert_eq!(pv["truncated"], true);
+    assert_eq!(pv["failed"], json!(null));
+
+    // A step that names a missing column is reported against the pipeline, not raised: the editor
+    // wants the message next to the step, not a toast.
+    let trial = json!({"column": "Nope", "op": "Equals", "value": "1"});
+    let pv = run(&mut s, "data.query.preview", json!({"name": "Sales", "step": {"Filter": trial}}));
+    assert_eq!(pv["failed"]["index"], 1);
+    assert!(pv["failed"]["error"].as_str().unwrap_or("").contains("Nope"));
+    // The rows shown are the ones before the broken step: still 3, not 0.
+    assert_eq!(pv["total"], 3);
+}
+
+#[test]
+fn refresh_all_refreshes_the_queries_as_well_as_the_reports() {
+    let mut s = session();
+    run(&mut s, "data.query.add", json!({"name": "Sales", "source": {"kind": "csv", "text": CSV}, "steps": ["PromoteHeaders"]}));
+    let r = run(&mut s, "data.refreshAll", json!({}));
+    assert_eq!(r["queries"][0]["name"], "Sales");
+    assert_eq!(r["queries"][0]["rows"], 3);
+    // The pivot half still reports itself under its own keys.
+    assert_eq!(r["refreshed"], 0);
+}
+
+#[test]
 fn a_model_load_is_refused_with_the_round_that_brings_it() {
     let mut s = session();
     let err = s
