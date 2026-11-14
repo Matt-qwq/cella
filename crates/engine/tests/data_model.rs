@@ -169,6 +169,38 @@ fn the_model_survives_save_and_reopen() {
 }
 
 #[test]
+fn a_model_pivot_survives_save_and_reopen_and_recalcs_after_a_refresh() {
+    // The N3 exit criterion, measured: a pipeline (two CSVs) with a relationship and a measure,
+    // read by a PivotTable, saved, reopened, refreshed after the source changed.
+    let mut s = model_session();
+    run(&mut s, "insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!E3", "rows": ["Region[Name]"], "values": ["Total"]}));
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    // Labels sort: East is the first item row, West the second.
+    assert_eq!(at(&s, "F4"), gridcraft_core::Value::number(5.0), "East");
+    assert_eq!(at(&s, "F5"), gridcraft_core::Value::number(17.0), "West");
+    assert_eq!(at(&s, "F6"), gridcraft_core::Value::number(22.0), "grand total");
+
+    let path = std::env::temp_dir().join("gridcraft_model_pivot_roundtrip.xlsx");
+    let p = path.to_string_lossy().to_string();
+    run(&mut s, "file.saveAs", json!({"path": p}));
+
+    let mut back = Session::new();
+    run(&mut back, "file.open", json!({"path": p}));
+    let d = back.doc().expect("doc");
+    assert_eq!(d.wb.model.tables.len(), 2);
+    assert_eq!(d.wb.model.measures.len(), 1);
+    assert_eq!(at(&back, "F6"), gridcraft_core::Value::number(22.0), "the report came back with its numbers");
+
+    // The source file changed: the query refills the model, and a refresh recomputes the report.
+    run(&mut back, "data.query.setSource", json!({"name": "Sales", "source": {"kind": "csv", "text": "RegionId,Amount\n1,10\n2,5\n1,7\n2,8\n"}}));
+    let name = back.doc().expect("doc").wb.sheet(0).and_then(|sh| sh.pivots.first().map(|p| p.name.clone())).expect("the report came back");
+    run(&mut back, "pivot.refresh", json!({"pivot": name}));
+    assert_eq!(at(&back, "F6"), gridcraft_core::Value::number(30.0), "the grand total follows the model");
+    assert_eq!(at(&back, "F5"), gridcraft_core::Value::number(17.0), "West is unchanged");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn deleting_the_query_takes_its_model_table_and_relationships() {
     let mut s = model_session();
     run(&mut s, "data.query.delete", json!({"name": "Sales"}));

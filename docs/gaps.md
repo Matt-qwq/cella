@@ -872,6 +872,20 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   folder and the next report from the clean table. A source that does not read back — a file that
   moved, a query that would read itself — is **rolled back**, the same rule a step and a measure
   follow: a recipe that cannot run is not kept.
+- **Landed 11-14 (N3.4, the PivotTable over the model).** A report whose `source` is a **model
+  table** is computed, not carried: rows come from the model, the field list is `Table[Column]`
+  (the table's own columns plus one hop out along a relationship where it is the many side), and a
+  value field may be a **measure**, evaluated by `gridcraft-dax` per cell with the row and column
+  members as the filter context — so a measure answers per item, per subtotal and for the grand
+  total in every layout, and a measure that cannot compute is one `#VALUE!` cell rather than a
+  failed refresh. A measure is refused as a row, column or filter field (it carries its own
+  aggregate) and refused altogether by a report over a worksheet range, with a message saying to
+  build it on the model table. The definition is kept in a part of our own,
+  `xl/gridcraft/pivots.json` (a model report's cache would have to point at the binary
+  `xl/model/*`, which this implementation keeps but does not author), so it survives save → reopen
+  → refresh; Excel sees the cells it wrote and no PivotTable, the same limitation the queries part
+  has. The exit criterion is now measured: two CSV queries → model tables → relationship → measure
+  → a PivotTable → save → reopen → 22, then a source change, a refresh and **30**.
 - **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
   no query) by design — the pane's button is the query path; adding a step from the pane is
   command-side only, there is no step parameter editor; the model's relationships have no UI (a

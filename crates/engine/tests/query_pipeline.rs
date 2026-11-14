@@ -274,17 +274,25 @@ fn files_of_different_widths_are_refused_by_name() {
 fn a_query_can_read_another_query_as_a_stage() {
     let mut s = session();
     // The first query cleans the file; the second one reports from the clean table.
-    run(&mut s, "data.query.add", json!({
-        "name": "Raw",
-        "source": {"kind": "csv", "text": "Region,Amount\nWest,10\nEast,5\nWest,7\n"},
-        "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Amount"], "to": "Number"}}],
-        "load": "model",
-    }));
-    let r = run(&mut s, "data.query.add", json!({
-        "name": "Report",
-        "source": {"kind": "query", "name": "Raw"},
-        "steps": [{"Filter": {"column": "Region", "op": "Equals", "value": "West"}}, {"Sort": {"keys": [["Amount", true]]}}],
-    }));
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Raw",
+            "source": {"kind": "csv", "text": "Region,Amount\nWest,10\nEast,5\nWest,7\n"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Amount"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    let r = run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Report",
+            "source": {"kind": "query", "name": "Raw"},
+            "steps": [{"Filter": {"column": "Region", "op": "Equals", "value": "West"}}, {"Sort": {"keys": [["Amount", true]]}}],
+        }),
+    );
     assert_eq!(r["rows"], 2);
     assert_eq!(table_grid(&s, "Report"), vec![vec!["Region", "Amount"], vec!["West", "10"], vec!["West", "7"]]);
     // Refreshing the second reads the first: an edit to Raw's source flows through.

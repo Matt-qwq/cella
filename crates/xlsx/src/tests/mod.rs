@@ -16,6 +16,7 @@ mod fmla_rewrite;
 mod ink_roundtrip;
 mod literal_category_roundtrip;
 mod malformed;
+mod model_pivots;
 mod multilevel_category_roundtrip;
 mod note_box;
 mod ods_tests;

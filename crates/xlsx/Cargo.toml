@@ -14,11 +14,17 @@ workspace = true
 test-support = []
 
 [dependencies]
+# One part of ours (the model's PivotTables) is JSON: a PivotTable is sixty fields across nested
+# structures, and a second hand-written definition of it would be a copy that drifts from the model.
+# The queries part stays hand-written. serde_json is also the oracle of tests/queries.rs, which
+# proves that part's bytes are the model's own serde shape.
 gridcraft-core = { workspace = true }
 gridcraft-formula = { workspace = true }
 gridcraft-model = { workspace = true }
 thiserror = { workspace = true }
 quick-xml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 memchr = { workspace = true }
 zip = { workspace = true }
 flate2 = { workspace = true }
@@ -37,7 +43,4 @@ getrandom = { workspace = true }
 # An independent Compound File Binary reader, used only to prove the encrypted container is valid
 # to software that isn't ours (a test oracle; it ships nowhere).
 cfb = "0.15"
-# The queries part is written and read by the crate's own small JSON codec (a file-format crate
-# takes no dependency it does not need); this is the oracle of tests/queries.rs, which proves the
-# bytes are the model's own serde shape. A dev-dependency only: it ships nowhere.
-serde_json = { workspace = true }
+

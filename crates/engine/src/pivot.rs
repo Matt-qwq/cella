@@ -37,10 +37,24 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 
 // ---------------------------------------------------------------- source
 
+/// The sheet of a source that isn't a sheet block (a model table's records): a value no report
+/// writes, so a stale sheet index can never be taken for a real one.
+pub const NO_SHEET: usize = usize::MAX;
+/// The range of a source that isn't a sheet block: the sheet's last cell, which no source block
+/// can be mistaken for. Nothing reads a cell through a source's sheet or range — the records are
+/// here, in `rows` — so this is only "not a sheet" in a field that has no option.
+pub const NO_RANGE: RangeRef = RangeRef { start: CellRef::new(MAX_ROWS - 1, MAX_COLS - 1), end: CellRef::new(MAX_ROWS - 1, MAX_COLS - 1) };
+
 /// The source list: header names, per-column number formats and the records.
+///
+/// A pivot's records come from a sheet block or from one of the data model's tables. Both are made
+/// of the same thing — headers, number formats and rows of values — which is why the grouping, the
+/// filtering and the layout below never need to know which of the two they are looking at.
 #[derive(Clone, Debug)]
 pub struct Source {
+    /// The source sheet, or [`NO_SHEET`] when the records are a model table's.
     pub sheet: usize,
+    /// The source block (header row included), or [`NO_RANGE`] for a model table's records.
     pub range: RangeRef,
     pub headers: Vec<String>,
     pub formats: Vec<String>,
@@ -49,11 +63,28 @@ pub struct Source {
     /// Numeric with a date number format.
     pub dates: Vec<bool>,
     pub rows: Vec<Vec<Value>>,
+    /// The model table the records came from, when they are the model's rather than a sheet's.
+    /// Header names are then `Table[Column]`, exactly the way Excel's field list names them.
+    pub model_table: Option<String>,
+    /// The model's measures, in model order: a value field may name one instead of a column (see
+    /// [`ValSrc::Measure`]). Empty for a sheet source, which has no model behind it.
+    pub measures: Vec<String>,
 }
 
 impl Source {
     pub fn col(&self, name: &str) -> Option<usize> {
         self.headers.iter().position(|h| h.eq_ignore_ascii_case(name))
+    }
+
+    /// The model measure `name` names, if these records are a model table's.
+    pub fn measure(&self, name: &str) -> Option<&str> {
+        let n = name.trim();
+        self.measures.iter().find(|m| m.eq_ignore_ascii_case(n)).map(String::as_str)
+    }
+
+    /// Whether `name` is one of the model's measures rather than a column of the records.
+    pub fn is_measure(&self, name: &str) -> bool {
+        self.col(name).is_none() && self.measure(name).is_some()
     }
 }
 
@@ -174,7 +205,149 @@ pub fn read_source(wb: &Workbook, text: &str, default_sheet: usize) -> Result<So
         *n = *n && *a;
     }
     let dates = numeric.iter().zip(formats.iter()).map(|(n, f)| *n && crate::display::number_format(f).is_date()).collect();
-    Ok(Source { sheet: si, range: r, headers, formats, numeric, dates, rows })
+    Ok(Source { sheet: si, range: r, headers, formats, numeric, dates, rows, model_table: None, measures: Vec::new() })
+}
+
+/// What a pivot's source text names: one of the model's tables, or a sheet block (a range, a table
+/// or a defined name) that GridCraft reads cell by cell.
+///
+/// A sheet name wins where both would answer: `insert.pivotTable` has always accepted a table
+/// name, and a report that names a sheet table must keep reading that table.
+pub fn source_kind_of(wb: &Workbook, text: &str, default_sheet: usize) -> PivotSourceKind {
+    if resolve_source(wb, text, default_sheet).is_ok() {
+        return PivotSourceKind::Range;
+    }
+    let t = text.trim().trim_start_matches('=').trim();
+    match wb.model.table(t) {
+        Some(_) => PivotSourceKind::DataModel,
+        None => PivotSourceKind::Range,
+    }
+}
+
+/// Reads a pivot's source the way its kind says: a sheet block for a range report, the model's own
+/// records for one built on a model table.
+pub fn read_source_kind(wb: &Workbook, kind: PivotSourceKind, text: &str, default_sheet: usize) -> Result<Source, String> {
+    match kind {
+        PivotSourceKind::Range => read_source(wb, text, default_sheet),
+        PivotSourceKind::DataModel => model_source(wb, text),
+    }
+}
+
+/// One hop out of the model table a pivot is built on: a relationship whose many side it is, and
+/// the related table's key → row index it needs to walk it.
+struct Hop<'a> {
+    dim: &'a ModelTable,
+    /// The relationship's key column in the base table.
+    base_key: usize,
+    /// Key → the first row of the related table that holds it.
+    index: HashMap<String, usize>,
+}
+
+/// The identity of a join key: numbers by their bits (0 and -0 folded together), text without
+/// regard to case, as the model's relationships compare them. A blank is no key at all, so a row
+/// whose key is blank matches nothing and takes blanks from the related table.
+fn join_key(v: &Value) -> Option<String> {
+    match v {
+        Value::Empty | Value::Array(_) => None,
+        Value::Number(n) => Some(format!("n{}", if *n == 0.0 { 0 } else { n.to_bits() })),
+        Value::Text(t) => Some(format!("t{}", t.to_ascii_lowercase())),
+        Value::Bool(b) => Some(format!("l{b}")),
+        Value::Error(e) => Some(format!("e{}", e.as_str())),
+    }
+}
+
+/// (table, column) of a model field's header, `Table[Column]`. That spelling is Excel's own for a
+/// model field, which makes the map back to the model free: no name table has to be kept.
+pub fn split_model_header(header: &str) -> Option<(&str, &str)> {
+    let open = header.find('[')?;
+    let inner = header.get(open + 1..)?;
+    let close = inner.rfind(']')?;
+    if close + 1 != inner.len() {
+        return None;
+    }
+    let table = header.get(..open)?.trim();
+    let column = inner.get(..close)?.trim();
+    if table.is_empty() || column.is_empty() {
+        return None;
+    }
+    Some((table, column))
+}
+
+/// One of the model's tables as a pivot source: its own columns as `Table[Column]`, then one hop
+/// out along every relationship where it is the many side, with each related table's columns as
+/// `Dim[Column]`. A row whose key has no match in a related table gets blanks there, which is the
+/// left join Excel's relationship is.
+///
+/// One hop only, and nothing else is added: a second hop is a path the model refuses to make
+/// ambiguous (see `DataModel::relationship_problem`), and a fact table's columns are already here.
+fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
+    let model = &wb.model;
+    let requested = name.trim().trim_start_matches('=').trim();
+    let table = model.table(requested).ok_or_else(|| format!("The data model has no table named \"{requested}\"."))?;
+    let mut headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
+    let mut formats: Vec<String> = vec!["General".into(); headers.len()];
+    let mut hops: Vec<Hop<'_>> = Vec::new();
+    for r in model.relationships.iter().filter(|r| r.from_table.eq_ignore_ascii_case(&table.name)) {
+        let Some(dim) = model.table(&r.to_table) else { continue };
+        // A hand-written model can relate a table to itself; its columns are already here.
+        if dim.name.eq_ignore_ascii_case(&table.name) || hops.iter().any(|h| h.dim.name.eq_ignore_ascii_case(&dim.name)) {
+            continue;
+        }
+        let (Some(base_key), Some(dim_key)) = (table.index(&r.from_column), dim.index(&r.to_column)) else { continue };
+        // `base_key` walks the fact rows; `dim_key` only builds the index, so it is not kept.
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for (i, rec) in dim.rows.iter().enumerate() {
+            if let Some(k) = rec.get(dim_key).and_then(join_key) {
+                index.entry(k).or_insert(i);
+            }
+        }
+        headers.extend(dim.columns.iter().map(|c| format!("{}[{c}]", dim.name)));
+        formats.extend((0..dim.columns.len()).map(|_| "General".to_string()));
+        hops.push(Hop { dim, base_key, index });
+    }
+    let width = headers.len();
+    if width as u64 * table.height() as u64 > MAX_SOURCE_CELLS {
+        return Err("The source range is too large for a PivotTable.".into());
+    }
+    let mut numeric = vec![true; width];
+    let mut any = vec![false; width];
+    let mut rows: Vec<Vec<Value>> = Vec::with_capacity(table.height());
+    for rec in &table.rows {
+        let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
+        for hop in &hops {
+            let hit = rec.get(hop.base_key).and_then(join_key).and_then(|k| hop.index.get(&k)).and_then(|i| hop.dim.rows.get(*i));
+            row.extend((0..hop.dim.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)));
+        }
+        for (i, v) in row.iter().enumerate() {
+            if v.is_empty() {
+                continue;
+            }
+            if let Some(a) = any.get_mut(i) {
+                *a = true;
+            }
+            if !v.is_number()
+                && let Some(n) = numeric.get_mut(i)
+            {
+                *n = false;
+            }
+        }
+        rows.push(row);
+    }
+    for (n, a) in numeric.iter_mut().zip(any.iter()) {
+        *n = *n && *a;
+    }
+    let dates = vec![false; width];
+    Ok(Source {
+        sheet: NO_SHEET,
+        range: NO_RANGE,
+        headers,
+        formats,
+        numeric,
+        dates,
+        rows,
+        model_table: Some(table.name.clone()),
+        measures: model.measures.iter().map(|m| m.name.clone()).collect(),
+    })
 }
 
 // ---------------------------------------------------------------- items
@@ -189,6 +362,22 @@ struct Item {
     first: usize,
     /// The value is a number shown with the source format.
     formatted: bool,
+    /// The source value was blank: `value` holds the "(blank)" caption for the report, so a
+    /// filter context needs to know the value it really stands for.
+    blank: bool,
+}
+
+impl Item {
+    /// The value this item stands for in the model, for a measure's filter context: the typed
+    /// source value, with a blank item going back to a blank rather than to its caption.
+    fn filter_value(&self) -> Value {
+        if self.blank { Value::Empty } else { self.value.clone() }
+    }
+
+    /// A calculated item is a caption computed from other items, not a member of the model.
+    fn is_calc(&self) -> bool {
+        self.first == usize::MAX
+    }
 }
 
 #[derive(Default)]
@@ -228,9 +417,10 @@ fn make_item(wb: &Workbook, v: &Value, group: Grouping, fmt: &str, first: usize)
         num,
         first,
         formatted,
+        blank: false,
     };
     match v {
-        Value::Empty => ("b".into(), it(Value::text("(blank)"), "(blank)".into(), 4, 0.0, false)),
+        Value::Empty => ("b".into(), Item { blank: true, ..it(Value::text("(blank)"), "(blank)".into(), 4, 0.0, false) }),
         Value::Number(n) => {
             if let Some(ng) = group.number
                 && let Some((label, key)) = ng.bucket(*n)
@@ -281,7 +471,16 @@ impl FieldItems {
     fn push_calc(&mut self, label: &str) -> u32 {
         let i = self.items.len() as u32;
         let text = label.to_lowercase();
-        self.items.push(Item { value: Value::text(label), label: label.to_string(), class: 4, num: 0.0, text, first: usize::MAX, formatted: false });
+        self.items.push(Item {
+            value: Value::text(label),
+            label: label.to_string(),
+            class: 4,
+            num: 0.0,
+            text,
+            first: usize::MAX,
+            formatted: false,
+            blank: false,
+        });
         i
     }
     fn get(&self, i: u32) -> Option<&Item> {
@@ -329,7 +528,14 @@ pub fn value_measure(src: &Source, pt: &PivotTable, name: &str) -> Result<(usize
             first.ok_or_else(|| format!("There's no value field `{name}` to filter by."))?
         }
     };
-    let c = src.col(&v.source_col).ok_or_else(|| "Value filters on a calculated field aren't supported yet.".to_string())?;
+    let c = src.col(&v.source_col).ok_or_else(|| {
+        // A measure and a calculated field have no column of records to keep item by item.
+        if src.is_measure(&v.source_col) {
+            "Value filters on a measure aren't supported yet.".to_string()
+        } else {
+            "Value filters on a calculated field aren't supported yet.".to_string()
+        }
+    })?;
     Ok((c, v.func))
 }
 
@@ -775,7 +981,9 @@ struct ColSpec {
 struct Ctx<'a> {
     pt: &'a PivotTable,
     rows: Vec<&'a PivotField>,
-    row_items: Vec<FieldItems>,
+    /// The row fields' items, borrowed: a measure's filter context (see [`Lookup`]) needs the
+    /// same items the layout draws its labels from.
+    row_items: &'a [FieldItems],
     row_fmts: Vec<String>,
     /// Depth of Σ Values among the row fields when it sits in Rows (two or more value fields).
     vpos: Option<usize>,
@@ -1007,6 +1215,10 @@ enum ValSrc {
     Col(usize),
     /// A calculated field (index into the PivotTable's calculated fields).
     Calc(usize),
+    /// A measure of the data model (index into its measures): the value field's numbers are the
+    /// measure's formula, evaluated in the filter context the cell's members build. Its own
+    /// aggregate comes with the formula, so the field's `func` is ignored for one.
+    Measure(usize),
 }
 
 /// True when `col_groups` distinct column leaves (plus the grand-total column) times `values` value fields
@@ -1029,12 +1241,49 @@ struct Lookup<'a> {
     k: usize,
     rows: &'a [CalcItem],
     cols: &'a [CalcItem],
+    /// The row fields the report kept from the source and their items, and the same for the
+    /// column fields: a measure's filter context is exactly the members the cell stands for.
+    row_fields: &'a [&'a PivotField],
+    row_items: &'a [FieldItems],
+    col_fields: &'a [&'a PivotField],
+    col_items: &'a [FieldItems],
+}
+
+/// The filter context a cell's members put on the model: one `Table[Column] = value` for every
+/// member of the path. A path that stops short (a subtotal) or is empty (a grand total) filters
+/// only what it names, which is exactly what a subtotal and a grand total mean.
+fn measure_context(mut ctx: gridcraft_dax::Context, fields: &[&PivotField], items: &[FieldItems], path: &[u32]) -> gridcraft_dax::Context {
+    for (d, fi) in items.iter().enumerate() {
+        let (Some(&id), Some(f)) = (path.get(d), fields.get(d)) else { continue };
+        let (Some(it), Some((table, column))) = (fi.get(id), split_model_header(&f.source_col)) else { continue };
+        // A calculated item is a caption over other items, not a member the model has, and a
+        // grouped field's items are date or number ranges an equality cannot express: neither can
+        // narrow a measure's context, so neither is used as one.
+        if it.is_calc() || !Grouping::of(f).is_none() {
+            continue;
+        }
+        ctx = ctx.filter(table, column, it.filter_value());
+    }
+    ctx
 }
 
 impl Lookup<'_> {
     /// The aggregate of the records of one cell (no calculated item in the path).
     fn raw(&self, rp: &[u32], cp: &[u32], vi: usize) -> Option<Value> {
         let (vs, v) = self.vals.get(vi)?;
+        if let ValSrc::Measure(i) = vs {
+            // A measure is its own formula, not an accumulation: it answers for the cell's filter
+            // context, so the field's func (and the accumulator that would have held it) is
+            // ignored. A formula that cannot compute puts its error in this one cell, never a
+            // failed refresh.
+            let m = self.wb.model.measures.get(*i)?;
+            let ctx = measure_context(gridcraft_dax::Context::new(), self.row_fields, self.row_items, rp);
+            let ctx = measure_context(ctx, self.col_fields, self.col_items, cp);
+            return Some(match gridcraft_dax::evaluate(&self.wb.model, &m.formula, &ctx) {
+                Ok(v) => v,
+                Err(_) => Value::Error(CellError::Value),
+            });
+        }
         let accs = self.aggs.get(&(rp.to_vec(), cp.to_vec()))?;
         match vs {
             ValSrc::Col(_) => accs.get(vi).map(|a| a.result(v.func)),
@@ -1049,6 +1298,7 @@ impl Lookup<'_> {
                 };
                 Some(self.calcset.value(self.wb, *i, &sum))
             }
+            ValSrc::Measure(_) => None,
         }
     }
 
@@ -1091,18 +1341,24 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
 /// `compute`, also handing back the source list it read: Show Details writes the records the
 /// source holds, so it needs them and not a second read of the sheet.
 pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<(Output, Source), String> {
-    let src = read_source(wb, &pt.source, pivot_sheet)?;
+    let src = read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?;
     let fmt_of = |c: usize| src.formats.get(c).cloned().unwrap_or_else(|| "General".into());
     let rows: Vec<(usize, &PivotField)> = pt.rows.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
     let cols: Vec<(usize, &PivotField)> = pt.columns.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
-    // Value fields: a source column, or a calculated field evaluated on sums (see `pivot_calc`).
+    // Value fields: a source column, a calculated field evaluated on sums (see `pivot_calc`), or
+    // one of the model's measures when the records are a model table's.
     let calc = CalcSet::new(pt, &src.headers);
     let vals: Vec<(ValSrc, &PivotValue)> = pt
         .values
         .iter()
         .filter_map(|v| match src.col(&v.source_col) {
             Some(c) => Some((ValSrc::Col(c), v)),
-            None => calc.index(&v.source_col).map(|i| (ValSrc::Calc(i), v)),
+            None => match calc.index(&v.source_col) {
+                Some(i) => Some((ValSrc::Calc(i), v)),
+                // The index is the measure's place in the model, which is the order `Source`
+                // collected the measures in: no name lookup at every cell.
+                None => src.measures.iter().position(|m| m.eq_ignore_ascii_case(v.source_col.trim())).map(|i| (ValSrc::Measure(i), v)),
+            },
         })
         .collect();
     // Source columns summed for the calculated fields, accumulated after the value fields.
@@ -1229,8 +1485,22 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     let level0: Vec<u32> = row_tree.iter().map(|n| n.item).collect();
 
     let val_names: Vec<String> = vals.iter().map(|(_, v)| v.name.clone()).collect();
-    let ctx = Ctx { pt, rows: row_fields.clone(), row_items, row_fmts: row_fmts.clone(), vpos, val_names: val_names.clone() };
-    let lk = Lookup { wb, src: &src, vals: &vals, extra: &extra, calcset: &calc, aggs: &aggs, k, rows: &row_calc, cols: &col_calc };
+    let ctx = Ctx { pt, rows: row_fields.clone(), row_items: &row_items, row_fmts: row_fmts.clone(), vpos, val_names: val_names.clone() };
+    let lk = Lookup {
+        wb,
+        src: &src,
+        vals: &vals,
+        extra: &extra,
+        calcset: &calc,
+        aggs: &aggs,
+        k,
+        rows: &row_calc,
+        cols: &col_calc,
+        row_fields: &row_fields,
+        row_items: &row_items,
+        col_fields: &col_fields,
+        col_items: &col_items,
+    };
     let mut lines: Vec<Line> = Vec::new();
     if row_levels == 0 {
         lines.push(Line { kind: LineKind::Item(false), leaf: true, path: vec![], values: true, labels: vec![], vi: None });
@@ -1444,6 +1714,8 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
                 _ => {
                     let f = match vs {
                         ValSrc::Col(c) => fmt_of(*c),
+                        // A measure's own number format, when the workbook gave it one.
+                        ValSrc::Measure(i) => wb.model.measures.get(*i).and_then(|m| m.format.clone()).unwrap_or_else(|| "General".into()),
                         ValSrc::Calc(_) => "General".to_string(),
                     };
                     (f != "General").then_some(f)
@@ -1567,10 +1839,9 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     let col_values: Vec<Option<usize>> = data_cols.iter().map(|(_, vi)| *vi).collect();
     let col_grand: Vec<bool> = data_cols.iter().map(|(si, _)| specs.get(*si).is_some_and(|s| s.kind == ColKind::Grand)).collect();
     // The item captions, moved out of the renderer (calculated items are already appended).
-    let Ctx { row_items: row_item_list, .. } = ctx;
     let captions =
         |items: Vec<FieldItems>| -> Vec<Vec<String>> { items.into_iter().map(|fi| fi.items.into_iter().map(|it| it.label).collect()).collect() };
-    let row_items = captions(row_item_list);
+    let row_items = captions(row_items);
     let col_items = captions(col_items);
     Ok((
         Output {

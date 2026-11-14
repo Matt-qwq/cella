@@ -22,6 +22,7 @@ mod csv;
 mod drawing;
 mod feature_bags;
 mod fmla;
+mod model_pivots;
 mod ods;
 mod package;
 mod passthrough;

@@ -134,9 +134,7 @@ fn parse_source(v: &Json) -> Result<QuerySource> {
                 .ok_or_else(|| bad("data.query", "a table source needs a table name"))?
                 .to_string(),
         }),
-        "query" => Ok(QuerySource::Query {
-            name: v.get("name").and_then(Json::as_str).unwrap_or("").trim().to_string(),
-        }),
+        "query" => Ok(QuerySource::Query { name: v.get("name").and_then(Json::as_str).unwrap_or("").trim().to_string() }),
         "range" => {
             let sheet = v.get("sheet").and_then(Json::as_str).unwrap_or("").to_string();
             let range = v
@@ -275,12 +273,11 @@ fn query_table(s: &mut Session, name: &str, depth: u32, seen: &mut Vec<String>) 
     }
     let (source, steps) = {
         let d = s.doc()?;
-        let q = d
-            .wb
-            .queries
-            .iter()
-            .find(|q| q.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| EngineError::Other(format!("There is no query named \"{name}\".")))?;
+        let q =
+            d.wb.queries
+                .iter()
+                .find(|q| q.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| EngineError::Other(format!("There is no query named \"{name}\".")))?;
         (q.source.clone(), q.steps.clone())
     };
     seen.push(name.to_string());

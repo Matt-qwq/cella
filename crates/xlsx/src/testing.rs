@@ -343,7 +343,7 @@ pub fn check_package(bytes: &[u8]) -> Result<(), String> {
 /// queries live in [`crate::queries::PART`], which the package declares a content type for.
 /// A relationship to a part Excel does not understand is what invites a repair prompt, so the
 /// orphan rule below has this one exception.
-const UNREFERENCED_OK: &[&str] = &[crate::queries::PART];
+const UNREFERENCED_OK: &[&str] = &[crate::queries::PART, crate::model_pivots::PART];
 
 /// [`check_package`] for a package that is already unpacked (part name → bytes).
 pub fn check_unpacked(parts: &std::collections::HashMap<String, Vec<u8>>) -> Result<(), String> {

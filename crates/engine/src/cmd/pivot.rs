@@ -353,6 +353,16 @@ fn source_kind_name(k: PivotSourceKind) -> &'static str {
     }
 }
 
+/// Whether the report is one carried from a file that GridCraft does not compute: it says why it
+/// is read-only, and it keeps the values the file cached.
+///
+/// A report built on a model table has `source_kind` `DataModel` too — its records are the
+/// model's, not a sheet's — but it carries no reason, because GridCraft does compute it (through
+/// [`pv::read_source_kind`]). That is the whole difference between the two.
+fn is_carried(pt: &PivotTable) -> bool {
+    pt.is_read_only() && pt.read_only_reason.is_some()
+}
+
 /// The error a command that would recompute or reshape a report GridCraft does not compute
 /// returns, naming the reason the report is read-only.
 fn read_only_error(pt: &PivotTable) -> EngineError {
@@ -484,11 +494,25 @@ fn calc_field<'a>(pt: &'a PivotTable, field: &str) -> Option<&'a PivotCalcField>
     pt.calculated_fields.iter().find(|c| c.name.eq_ignore_ascii_case(field.trim()))
 }
 
-/// The canonical name of a source or calculated field.
-fn canonical_any(cmd: &str, pt: &PivotTable, src: &pv::Source, field: &str) -> Result<String> {
+/// The canonical name of a source, calculated or measure field. `model` is the workbook's data
+/// model: the measures a report over a model table may use, and the names a report over a range
+/// has to refuse.
+fn canonical_any(cmd: &str, pt: &PivotTable, src: &pv::Source, model: &DataModel, field: &str) -> Result<String> {
     match calc_field(pt, field) {
         Some(c) if src.col(field).is_none() => Ok(c.name.clone()),
-        _ => canonical(cmd, src, field),
+        _ => match canonical(cmd, src, field) {
+            Ok(name) => Ok(name),
+            // A measure of the model, by its own name: a report over a model table can use one in
+            // Values, and that is the only place it can go (see `add_to_area`).
+            Err(e) => match model.measure(field) {
+                Some(m) if src.model_table.is_some() => Ok(m.name.clone()),
+                Some(m) => Err(other(format!(
+                    "`{}` is a measure of the data model, and a PivotTable over a worksheet range has no model to evaluate it in. Build the report on the model table instead: pass a model table's name as `source`, and its columns and measures become the field list.",
+                    m.name
+                ))),
+                None => Err(e),
+            },
+        },
     }
 }
 
@@ -504,11 +528,19 @@ fn auto_name(f: PivotFunc, field: &str) -> String {
     format!("{} of {field}", pv::func_caption(f))
 }
 
+/// The word an automatic caption uses for a field: the column part of a model field, so a report
+/// says "Sum of Amount" rather than "Sum of Sales[Amount]" (the table it came from is what the
+/// field list, not the report's header, is for).
+fn caption_field(field: &str) -> &str {
+    pv::split_model_header(field).map(|(_, column)| column).unwrap_or(field)
+}
+
 /// Adds `field` to an area (moving it out of the other axis areas).
 fn add_to_area(
     cmd: &str,
     pt: &mut PivotTable,
     src: &pv::Source,
+    model: &DataModel,
     field: &str,
     area: &str,
     func: Option<PivotFunc>,
@@ -519,7 +551,13 @@ fn add_to_area(
     if is_calc && area != "values" {
         return Err(other("A calculated field can only be placed in the Values area."));
     }
-    let field = canonical_any(cmd, pt, src, field)?;
+    let field = canonical_any(cmd, pt, src, model, field)?;
+    // A measure carries its own aggregate (its formula), so it is a value field and nothing else:
+    // an axis or a filter needs one column of the records.
+    let is_measure = src.is_measure(&field);
+    if is_measure && area != "values" {
+        return Err(other("A measure can only be placed in the Values area."));
+    }
     match area {
         "rows" | "columns" => {
             if pt.rows.len() + pt.columns.len() >= pv::MAX_AXIS_FIELDS && !in_axes(pt, &field) {
@@ -539,7 +577,9 @@ fn add_to_area(
             if pt.values.len() >= pv::MAX_VALUE_FIELDS {
                 return Err(other(format!("A PivotTable can have at most {} value fields.", pv::MAX_VALUE_FIELDS)));
             }
-            let numeric = is_calc || src.col(&field).and_then(|c| src.numeric.get(c).copied()).unwrap_or(false);
+            let numeric = is_calc || is_measure || src.col(&field).and_then(|c| src.numeric.get(c).copied()).unwrap_or(false);
+            // The func of a measure field is never used: the measure's formula aggregates by
+            // itself, so the field is stored with Sum only to keep the document's shape uniform.
             let f = func.unwrap_or(if numeric { PivotFunc::Sum } else { PivotFunc::Count });
             let base = match name {
                 Some(n) if !n.trim().is_empty() => {
@@ -548,7 +588,10 @@ fn add_to_area(
                     }
                     n.to_string()
                 }
-                _ => auto_name(f, &field),
+                // A measure is its own caption: "Sum of Total" would claim an aggregate the formula
+                // already carries, and Excel shows a measure's name as it is.
+                _ if is_measure => field.clone(),
+                _ => auto_name(f, caption_field(&field)),
             };
             let nm = unique_value_name(pt, &base, None);
             drop_axis_rules(pt, &field);
@@ -622,7 +665,7 @@ fn update(s: &mut Session, p: &Json, f: impl FnOnce(&mut PivotTable, &pv::Source
     {
         let d = s.doc()?;
         if let Some(pt) = d.wb.sheet(si).and_then(|sh| sh.pivots.get(pi))
-            && pt.is_read_only()
+            && is_carried(pt)
         {
             return Err(read_only_error(pt));
         }
@@ -630,7 +673,7 @@ fn update(s: &mut Session, p: &Json, f: impl FnOnce(&mut PivotTable, &pv::Source
     let replace = bool_param(p, "replace").unwrap_or(false);
     edit(s, |cx| {
         let pt = cx.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).cloned().ok_or_else(|| other("There's no such PivotTable."))?;
-        let src = pv::read_source(&cx.wb, &pt.source, si).map_err(other)?;
+        let src = pv::read_source_kind(&cx.wb, pt.source_kind, &pt.source, si).map_err(other)?;
         let mut new = pt.clone();
         let mut out = f(&mut new, &src, &cx.wb)?;
         if let Some(slot) = cx.sheet_mut(si)?.pivots.get_mut(pi) {
@@ -718,8 +761,11 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let source = source_param(s, p)?;
     let active = s.doc()?.wb.active_sheet;
+    // What the source names: a sheet block GridCraft reads cell by cell, or one of the model's
+    // tables (see `pv::source_kind_of`; a sheet name wins where both would answer).
+    let kind = pv::source_kind_of(&s.doc()?.wb, &source, active);
     // Validate the source now (header names, size).
-    let src = pv::read_source(&s.doc()?.wb, &source, active).map_err(other)?;
+    let src = pv::read_source_kind(&s.doc()?.wb, kind, &source, active).map_err(other)?;
     let name = match str_param(p, "name") {
         Some(n) if !n.trim().is_empty() => {
             let n = n.trim().to_string();
@@ -769,11 +815,14 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
                 (at, CellRef::new(2, 0))
             }
         };
-        let mut pt = PivotTable { id, name: name.clone(), source: source.clone(), anchor, ..Default::default() };
+        // A report over a model table is ours to compute, so it carries no read-only reason —
+        // that is what tells it apart from the report a file carried (see `is_carried`).
+        let mut pt =
+            PivotTable { id, name: name.clone(), source: source.clone(), source_kind: kind, read_only_reason: None, anchor, ..Default::default() };
         let add = |pt: &mut PivotTable, list: &[Json], area: &str| -> Result<()> {
             for f in list {
                 match f {
-                    Json::String(n) => add_to_area("insert.pivotTable", pt, &src, n, area, None, None, None)?,
+                    Json::String(n) => add_to_area("insert.pivotTable", pt, &src, &cx.wb.model, n, area, None, None, None)?,
                     Json::Object(_) => {
                         let n = str_param(f, "field").ok_or_else(|| bad("insert.pivotTable", "a field object needs `field`"))?;
                         let func = match str_param(f, "func") {
@@ -782,7 +831,7 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
                             }
                             None => None,
                         };
-                        add_to_area("insert.pivotTable", pt, &src, n, area, func, str_param(f, "name"), None)?;
+                        add_to_area("insert.pivotTable", pt, &src, &cx.wb.model, n, area, func, str_param(f, "name"), None)?;
                         let by = group_param(str_param(f, "group"));
                         if let Some(by) = by.filter(|b| *b != PivotDateGroup::None)
                             && matches!(area, "rows" | "columns")
@@ -816,6 +865,7 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
             "anchor": anchor.a1(),
             "range": area.a1(),
             "source": source,
+            "kind": source_kind_name(kind),
             "fields": src.headers,
         }))
     })?;
@@ -893,7 +943,7 @@ fn pivot_json(wb: &Workbook, si: usize, pt: &PivotTable) -> Json {
         "range": pt.last_range.map(|r| r.a1()),
         "source": pt.source,
         "kind": source_kind_name(pt.source_kind),
-        "readOnly": pt.is_read_only(),
+        "readOnly": is_carried(pt),
         "readOnlyReason": pt.read_only_reason,
         "rows": pt.rows.iter().map(axis_json).collect::<Vec<_>>(),
         "columns": pt.columns.iter().map(axis_json).collect::<Vec<_>>(),
@@ -921,7 +971,7 @@ fn fields(s: &mut Session, p: &Json) -> Result<Json> {
     let mut out = pivot_json(&d.wb, si, pt);
     // A report GridCraft does not compute has no source to read: its fields are the ones the file
     // says it is built on, without record counts or samples. `kind`/`readOnlyReason` say why.
-    if pt.is_read_only() {
+    if is_carried(pt) {
         let list = read_only_fields(pt);
         let mut list = list;
         for c in &pt.calculated_fields {
@@ -935,7 +985,7 @@ fn fields(s: &mut Session, p: &Json) -> Result<Json> {
         }
         return Ok(out);
     }
-    let src = pv::read_source(&d.wb, &pt.source, si);
+    let src = pv::read_source_kind(&d.wb, pt.source_kind, &pt.source, si);
     let list: Vec<Json> = match &src {
         Ok(src) => src
             .headers
@@ -970,6 +1020,24 @@ fn fields(s: &mut Session, p: &Json) -> Result<Json> {
     for c in &pt.calculated_fields {
         let areas: Vec<&str> = if pt.values.iter().any(|v| v.source_col.eq_ignore_ascii_case(&c.name)) { vec!["values"] } else { vec![] };
         list.push(json!({"name": c.name, "numeric": true, "date": false, "samples": [], "areas": areas, "calculated": true, "formula": c.formula}));
+    }
+    // A model source's measures, beside the columns they aggregate: Excel files each under its home
+    // table and a report over the model puts one in Values, so the field list has to offer them —
+    // a measure is not a column of the records, so nothing else would.
+    if src.as_ref().is_ok_and(|src| src.model_table.is_some()) {
+        for ms in &d.wb.model.measures {
+            let areas: Vec<&str> = if pt.values.iter().any(|v| v.source_col.eq_ignore_ascii_case(&ms.name)) { vec!["values"] } else { vec![] };
+            list.push(json!({
+                "name": ms.name,
+                "table": ms.table,
+                "numeric": true,
+                "date": false,
+                "samples": [],
+                "areas": areas,
+                "measure": true,
+                "formula": ms.formula,
+            }));
+        }
     }
     if let Some(m) = out.as_object_mut() {
         m.insert("fields".into(), Json::Array(list));
@@ -1049,9 +1117,9 @@ fn add_field(s: &mut Session, p: &Json) -> Result<Json> {
     };
     let name = str_param(p, "name").map(str::to_string);
     let pos = position_param(p);
-    update(s, p, |pt, src, _| {
-        add_to_area(C, pt, src, &field, area, func, name.as_deref(), pos)?;
-        Ok(json!({"field": canonical_any(C, pt, src, &field)?, "area": area}))
+    update(s, p, |pt, src, wb| {
+        add_to_area(C, pt, src, &wb.model, &field, area, func, name.as_deref(), pos)?;
+        Ok(json!({"field": canonical_any(C, pt, src, &wb.model, &field)?, "area": area}))
     })
 }
 
@@ -1079,7 +1147,7 @@ fn calculated_field(s: &mut Session, p: &Json) -> Result<Json> {
     if !delete && formula.is_none() {
         return Err(bad(C, "missing `formula`"));
     }
-    update(s, p, |pt, src, _| {
+    update(s, p, |pt, src, wb| {
         let existing = pt.calculated_fields.iter().position(|c| c.name.eq_ignore_ascii_case(&name));
         if delete {
             let i = existing.ok_or_else(|| bad(C, format!("no calculated field `{name}`")))?;
@@ -1114,7 +1182,7 @@ fn calculated_field(s: &mut Session, p: &Json) -> Result<Json> {
             return Err(bad(C, format!("`{canon}` refers to itself through its formula")));
         }
         if existing.is_none() && to_values && !pt.values.iter().any(|v| v.source_col.eq_ignore_ascii_case(&canon)) {
-            add_to_area(C, pt, src, &canon, "values", Some(PivotFunc::Sum), None, None)?;
+            add_to_area(C, pt, src, &wb.model, &canon, "values", Some(PivotFunc::Sum), None, None)?;
         }
         Ok(json!({
             "name": canon,
@@ -1241,7 +1309,7 @@ fn move_field(s: &mut Session, p: &Json) -> Result<Json> {
     let from = area_param(C, str_param(p, "from"))?;
     let to = area_param(C, str_param(p, "to"))?;
     let pos = position_param(p);
-    update(s, p, |pt, src, _| {
+    update(s, p, |pt, src, wb| {
         if is_values_field(src, &field) {
             return move_values_field(C, pt, from, to, pos);
         }
@@ -1289,7 +1357,7 @@ fn move_field(s: &mut Session, p: &Json) -> Result<Json> {
         let hidden = pt.filters.iter().find(|f| f.source_col.eq_ignore_ascii_case(&field)).cloned();
         let calcs: Vec<PivotCalcItem> = pt.calculated_items.iter().filter(|c| c.field.eq_ignore_ascii_case(&field)).cloned().collect();
         let src_field = remove_from_area(C, pt, &field, from)?;
-        add_to_area(C, pt, src, &src_field, to, None, None, pos)?;
+        add_to_area(C, pt, src, &wb.model, &src_field, to, None, None, pos)?;
         if matches!(to, "rows" | "columns") {
             let list = if to == "rows" { &mut pt.rows } else { &mut pt.columns };
             if let (Some(k), Some(slot)) = (kept, list.iter_mut().find(|f| f.source_col.eq_ignore_ascii_case(&src_field))) {
@@ -1343,12 +1411,15 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
         };
         let cur = pt.values.get(i).cloned().ok_or_else(|| bad(C, "no value field at that index"))?;
         let mut v = cur.clone();
-        if let Some(f) = func {
+        // A measure's numbers are its formula's: there is no summarization to change, so the
+        // function a caller asks for is ignored rather than pretended to have taken effect (Excel
+        // greys the list out for a measure).
+        if let Some(f) = func.filter(|_| !src.is_measure(&cur.source_col)) {
             v.func = f;
             // An automatic caption follows the function.
-            let auto = auto_name(cur.func, &cur.source_col);
+            let auto = auto_name(cur.func, caption_field(&cur.source_col));
             if cur.name.eq_ignore_ascii_case(&auto) || cur.name.strip_prefix(auto.as_str()).is_some_and(|r| r.chars().all(|c| c.is_ascii_digit())) {
-                v.name = unique_value_name(pt, &auto_name(f, &cur.source_col), Some(i));
+                v.name = unique_value_name(pt, &auto_name(f, caption_field(&cur.source_col)), Some(i));
             }
         }
         if let Some(n) = &name {
@@ -1804,7 +1875,7 @@ fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
                 let name = pt.name.clone();
                 // A report GridCraft does not compute has no source to read: it is left as it is,
                 // and said so rather than counted as refreshed.
-                if pt.is_read_only() {
+                if is_carried(&pt) {
                     skipped.push(json!({"pivot": name, "reason": pt.read_only_text()}));
                     continue;
                 }
@@ -1849,12 +1920,19 @@ fn change_source(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let source = source_param(s, p)?;
     let (si, _) = find_pivot(s, p)?;
-    let src = pv::read_source(&s.doc()?.wb, &source, si).map_err(other)?;
+    let kind = pv::source_kind_of(&s.doc()?.wb, &source, si);
+    let src = pv::read_source_kind(&s.doc()?.wb, kind, &source, si).map_err(other)?;
     update(s, p, move |pt, _, wb| {
         pt.source = source.clone();
+        pt.source_kind = kind;
+        // A report GridCraft computes from now on holds no reason to be read-only; one that came
+        // from a model table is computed like any other.
+        pt.read_only_reason = None;
         let mut dropped: Vec<String> = vec![];
+        // A measure value field survives a move to another model table (measures are workbook
+        // wide); it is dropped when the new source has no model behind it.
         let keep = |name: &str, dropped: &mut Vec<String>| {
-            let ok = src.col(name).is_some();
+            let ok = src.col(name).is_some() || src.is_measure(name);
             if !ok {
                 dropped.push(name.to_string());
             }
@@ -1879,7 +1957,7 @@ fn change_source(s: &mut Session, p: &Json) -> Result<Json> {
         pt.label_filters.retain(|f| src.col(&f.source_col).is_some());
         prune_value_filters(pt);
         prune_calc_items(wb, &src, pt);
-        Ok(json!({"source": source, "dropped": dropped}))
+        Ok(json!({"source": source, "kind": source_kind_name(kind), "dropped": dropped}))
     })
 }
 
@@ -2056,7 +2134,8 @@ fn suggestions(wb: &Workbook, src: &pv::Source) -> Vec<Json> {
 fn recommended(s: &mut Session, p: &Json) -> Result<Json> {
     let source = source_param(s, p)?;
     let active = s.doc()?.wb.active_sheet;
-    let src = pv::read_source(&s.doc()?.wb, &source, active).map_err(other)?;
+    let kind = pv::source_kind_of(&s.doc()?.wb, &source, active);
+    let src = pv::read_source_kind(&s.doc()?.wb, kind, &source, active).map_err(other)?;
     let list = suggestions(&s.doc()?.wb, &src);
     let Some(apply) = p.get("apply").and_then(Json::as_u64) else {
         return Ok(json!({"source": source, "suggestions": list}));
@@ -2124,8 +2203,8 @@ fn show_details(s: &mut Session, p: &Json) -> Result<Json> {
         let sh = wb.sheet(si).ok_or(EngineError::NoDocument)?;
         let pt = sh.pivots.get(pi).ok_or_else(|| other("There's no such PivotTable."))?;
         // Show Details needs the records behind a cell, and a report GridCraft does not compute has
-        // no source to read them from.
-        if pt.is_read_only() {
+        // no source to read them from. A report over a model table does have one: its table's.
+        if is_carried(pt) {
             return Err(read_only_error(pt));
         }
         // The cell: `cell`, else the active cell when it is in the report, else its corner.
@@ -3562,5 +3641,214 @@ mod tests {
         assert_eq!(r["skipped"][0]["pivot"], "PivotTable1");
         assert!(r["skipped"][0]["reason"].as_str().unwrap_or_default().contains("data model"), "{r}");
         assert_eq!(report_cells(&s), before);
+    }
+
+    // ------------------------------------------------ pivots over the data model
+
+    /// The model: a fact table `Sales` (RegionId, Amount) and a dimension `Region` (Id, Name),
+    /// related many-to-one, with two measures over the fact table. West is RegionId 1 (10 + 7),
+    /// East is RegionId 2 (5), so every total in these tests is 22.
+    fn model() -> Session {
+        let mut s = Session::new();
+        s.new_workbook();
+        let load = |s: &mut Session, name: &str, text: &str, steps: Json| {
+            s.execute("data.query.add", json!({"name": name, "source": {"kind": "csv", "text": text}, "load": "model", "steps": steps})).unwrap();
+        };
+        load(
+            &mut s,
+            "Sales",
+            "RegionId,Amount\n1,10\n2,5\n1,7\n",
+            json!(["PromoteHeaders", {"ChangeType": {"columns": ["RegionId", "Amount"], "to": "Number"}}]),
+        );
+        load(&mut s, "Region", "Id,Name\n1,West\n2,East\n", json!(["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}]));
+        s.execute("data.relationship.add", json!({"from": {"table": "Sales", "column": "RegionId"}, "to": {"table": "Region", "column": "Id"}}))
+            .unwrap();
+        s.execute("data.measure.add", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"})).unwrap();
+        s.execute("data.measure.add", json!({"name": "Rows", "table": "Sales", "formula": "COUNT(Sales[Amount])"})).unwrap();
+        s
+    }
+
+    #[test]
+    fn a_pivot_over_a_model_table_groups_and_sums_its_columns() {
+        let mut s = model();
+        let r = s
+            .execute(
+                "insert.pivotTable",
+                json!({"source": "Sales", "destination": "Sheet1!F3", "rows": ["Sales[RegionId]"], "values": ["Sales[Amount]"]}),
+            )
+            .unwrap();
+        // The report is ours to compute, even though its source is the model.
+        assert_eq!(r["kind"], "dataModel");
+        assert_eq!(r["source"], "Sales");
+        // The field list is `Table[Column]`: the model's own columns, then one hop out along the
+        // relationship where `Sales` is the many side.
+        assert_eq!(r["fields"], json!(["Sales[RegionId]", "Sales[Amount]", "Region[Id]", "Region[Name]"]));
+        let p = pt(&s);
+        assert_eq!(p.source_kind, gridcraft_model::PivotSourceKind::DataModel);
+        assert_eq!(p.read_only_reason, None, "a report GridCraft computes has no reason to be read-only");
+        // Nothing reads a cell from a model source: it has no sheet and no range to read.
+        assert_eq!(p.source, "Sales");
+        let list = s.execute("pivot.list", json!({})).unwrap();
+        assert_eq!(list[0]["kind"], "dataModel");
+        assert_eq!(list[0]["readOnly"], false);
+        // Grouped and summed by the fact table's own column.
+        assert_eq!(text(&s, "F3"), "Row Labels");
+        assert_eq!(text(&s, "G3"), "Sum of Amount");
+        assert_eq!(val(&s, "F4"), Value::Number(1.0));
+        assert_eq!(val(&s, "G4"), Value::Number(17.0));
+        assert_eq!(val(&s, "F5"), Value::Number(2.0));
+        assert_eq!(val(&s, "G5"), Value::Number(5.0));
+        assert_eq!(text(&s, "F6"), "Grand Total");
+        assert_eq!(val(&s, "G6"), Value::Number(22.0));
+        // The field list offers the model's fields and measures.
+        let f = s.execute("pivot.fields", json!({})).unwrap();
+        let names: Vec<&str> = f["fields"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
+        assert_eq!(names, ["Sales[RegionId]", "Sales[Amount]", "Region[Id]", "Region[Name]", "Total", "Rows"]);
+        assert_eq!(f["fields"][4]["measure"], true);
+        assert_eq!(f["fields"][0]["samples"], json!(["1", "2"]), "the samples are the model's own records");
+        assert_eq!(f["records"], 3);
+    }
+
+    #[test]
+    fn a_measure_value_field_evaluates_per_cell_and_for_the_grand_total() {
+        let mut s = model();
+        s.execute("insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!F3", "rows": ["Region[Name]"], "values": ["Total"]}))
+            .unwrap();
+        // A measure keeps its own name as the caption: there is no "Sum of" to add.
+        assert_eq!(text(&s, "G3"), "Total");
+        assert_eq!(text(&s, "F4"), "East");
+        assert_eq!(val(&s, "G4"), Value::Number(5.0));
+        assert_eq!(text(&s, "F5"), "West");
+        assert_eq!(val(&s, "G5"), Value::Number(17.0));
+        assert_eq!(text(&s, "F6"), "Grand Total");
+        assert_eq!(val(&s, "G6"), Value::Number(22.0));
+        // A row total and a column cross-tab keep the same meaning: the context is whatever the
+        // cell's members say, so a column field on a dimension works too.
+        s.execute("pivot.addField", json!({"field": "Sales[RegionId]", "area": "columns"})).unwrap();
+        assert_eq!(text(&s, "G3"), "Column Labels");
+        assert_eq!(text(&s, "G4"), "1");
+        assert_eq!(text(&s, "H4"), "2");
+        let p = pt(&s);
+        assert!(p.last_range.is_some());
+    }
+
+    #[test]
+    fn a_second_measure_is_a_second_value_column() {
+        let mut s = model();
+        s.execute("insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!F3", "rows": ["Region[Name]"], "values": ["Total", "Rows"]}))
+            .unwrap();
+        assert_eq!(text(&s, "F3"), "Row Labels");
+        assert_eq!(text(&s, "G3"), "Total");
+        assert_eq!(text(&s, "H3"), "Rows");
+        assert_eq!(text(&s, "F4"), "East");
+        assert_eq!(val(&s, "G4"), Value::Number(5.0));
+        assert_eq!(val(&s, "H4"), Value::Number(1.0), "COUNT of one number");
+        assert_eq!(text(&s, "F5"), "West");
+        assert_eq!(val(&s, "G5"), Value::Number(17.0));
+        assert_eq!(val(&s, "H5"), Value::Number(2.0));
+        assert_eq!(text(&s, "F6"), "Grand Total");
+        assert_eq!(val(&s, "G6"), Value::Number(22.0));
+        assert_eq!(val(&s, "H6"), Value::Number(3.0));
+        let p = pt(&s);
+        assert_eq!(p.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Total", "Rows"]);
+        // A measure also arrives through the field command, with its own name as the caption, and
+        // the function asked for is ignored: COUNT is what the measure says, not AVERAGE.
+        s.execute("pivot.removeField", json!({"field": "Rows", "area": "values"})).unwrap();
+        let r = s.execute("pivot.addField", json!({"field": "Rows", "area": "values", "func": "average"})).unwrap();
+        assert_eq!(r["field"], "Rows");
+        assert_eq!(text(&s, "H3"), "Rows", "the measure's own name, not \"Average of Rows\"");
+        assert_eq!(val(&s, "H5"), Value::Number(2.0), "COUNT stays COUNT");
+    }
+
+    #[test]
+    fn a_model_pivot_refreshes_after_the_model_changes() {
+        let mut s = model();
+        s.execute("insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!F3", "rows": ["Region[Name]"], "values": ["Total"]}))
+            .unwrap();
+        assert_eq!(val(&s, "G4"), Value::Number(5.0));
+        assert_eq!(val(&s, "G6"), Value::Number(22.0));
+        // The query's source grows a row: the model table follows it.
+        s.execute("data.query.setSource", json!({"name": "Sales", "source": {"kind": "csv", "text": "RegionId,Amount\n1,10\n2,5\n1,7\n2,8\n"}}))
+            .unwrap();
+        let r = s.execute("pivot.refresh", json!({"pivot": "PivotTable1"})).unwrap();
+        assert_eq!(r["records"], 4, "the report read the model again, not a cached sheet");
+        assert_eq!(val(&s, "G4"), Value::Number(13.0), "East: 5 + 8");
+        assert_eq!(val(&s, "G5"), Value::Number(17.0));
+        assert_eq!(val(&s, "G6"), Value::Number(30.0));
+    }
+
+    #[test]
+    fn a_measure_answers_subtotals_and_the_grand_total_in_every_layout() {
+        let mut s = model();
+        s.execute(
+            "insert.pivotTable",
+            json!({"source": "Sales", "destination": "Sheet1!F3", "rows": ["Region[Name]", "Sales[RegionId]"], "values": ["Total"]}),
+        )
+        .unwrap();
+        // Compact: the parent line carries the group's subtotal, its child the item's.
+        assert_eq!(text(&s, "F4"), "East");
+        assert_eq!(val(&s, "G4"), Value::Number(5.0), "East's subtotal, through the relationship");
+        assert_eq!(text(&s, "F5"), "2");
+        assert_eq!(val(&s, "G5"), Value::Number(5.0));
+        assert_eq!(text(&s, "F6"), "West");
+        assert_eq!(val(&s, "G6"), Value::Number(17.0));
+        assert_eq!(text(&s, "F8"), "Grand Total");
+        assert_eq!(val(&s, "G8"), Value::Number(22.0));
+        // Subtotals at the bottom: the same numbers, on a line of their own.
+        s.execute("pivot.layout", json!({"subtotals": "bottom"})).unwrap();
+        assert_eq!(text(&s, "F4"), "East");
+        assert_eq!(val(&s, "G4"), Value::Empty, "the parent line no longer holds the subtotal");
+        assert_eq!(text(&s, "F6"), "East Total");
+        assert_eq!(val(&s, "G6"), Value::Number(5.0));
+        assert_eq!(text(&s, "F9"), "West Total");
+        assert_eq!(val(&s, "G9"), Value::Number(17.0));
+        assert_eq!(text(&s, "F10"), "Grand Total");
+        assert_eq!(val(&s, "G10"), Value::Number(22.0));
+    }
+
+    #[test]
+    fn a_measure_that_cannot_compute_is_one_error_cell_not_a_failed_refresh() {
+        let mut s = model();
+        {
+            let d = s.doc_mut().unwrap();
+            let wb = std::sync::Arc::make_mut(&mut d.wb);
+            // A hand-written document can hold a formula the editor would have refused.
+            wb.model.measures.push(gridcraft_model::Measure {
+                name: "Broken".into(),
+                table: "Sales".into(),
+                formula: "SUM(Nowhere[Amount])".into(),
+                format: None,
+            });
+        }
+        s.execute(
+            "insert.pivotTable",
+            json!({"source": "Sales", "destination": "Sheet1!F3", "rows": ["Region[Name]"], "values": ["Broken", "Total"]}),
+        )
+        .unwrap();
+        assert_eq!(val(&s, "G4"), Value::Error(CellError::Value), "#VALUE! in the one cell");
+        assert_eq!(val(&s, "H4"), Value::Number(5.0), "the next value field still computes");
+        // A refresh of a report holding one keeps the rest of it rather than failing.
+        s.execute("pivot.refresh", json!({})).unwrap();
+        assert_eq!(val(&s, "G4"), Value::Error(CellError::Value));
+        assert_eq!(val(&s, "H6"), Value::Number(22.0));
+    }
+
+    #[test]
+    fn a_pivot_over_a_sheet_range_cannot_use_a_measure() {
+        let mut s = model();
+        s.execute("range.setValues", json!({"range": "Sheet1!A1", "values": [["RegionId", "Amount"], [1, 10], [2, 5]]})).unwrap();
+        let err = s
+            .execute("insert.pivotTable", json!({"source": "Sheet1!A1:B3", "destination": "Sheet1!F3", "values": ["Total"]}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("measure"), "the refusal names what it was asked for: {err}");
+        assert!(err.contains("data model"), "and where the measure lives: {err}");
+        assert!(err.contains("model table"), "and what to build the report on instead: {err}");
+        // The same report over the range without a measure is fine, and has no measure to offer.
+        s.execute("insert.pivotTable", json!({"source": "Sheet1!A1:B3", "destination": "Sheet1!F3", "rows": ["RegionId"], "values": ["Amount"]}))
+            .unwrap();
+        let f = s.execute("pivot.fields", json!({})).unwrap();
+        let measures = f["fields"].as_array().map(|a| a.iter().filter(|x| x["measure"].is_boolean()).count()).unwrap_or(0);
+        assert_eq!(measures, 0, "a sheet source has no model behind it");
     }
 }

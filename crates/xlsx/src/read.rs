@@ -506,6 +506,8 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
     // The workbook's Get & Transform queries, from our own part. A part that is missing, oversized
     // or broken is a warning, never a failure of the open.
     crate::queries::read(&mut cx, &mut wb);
+    // Model PivotTables, from our own part: their definition is not an Excel PivotTable.
+    crate::model_pivots::read(&mut cx, &mut wb);
     // Calls of LAMBDA names are spelled like the names (the parser upper-cases them).
     wb.apply_name_call_case();
     wb.styles = cx.styles;
