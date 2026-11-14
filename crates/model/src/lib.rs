@@ -7,6 +7,7 @@
 mod b64;
 pub mod cell;
 mod cellmap;
+pub mod data_model;
 pub mod equation;
 pub mod features;
 pub mod line;
@@ -21,6 +22,7 @@ pub mod style;
 pub mod workbook;
 
 pub use cell::{Cell, CellPicture, Formula};
+pub use data_model::{DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelTable, Relationship};
 pub use equation::Equation;
 pub use features::*;
 pub use line::{FilterHidden, LineAxis, LineMap};

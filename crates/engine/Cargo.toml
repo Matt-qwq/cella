@@ -25,6 +25,7 @@ log = { workspace = true }
 gridcraft-xlsx = { workspace = true }
 gridcraft-parquet = { workspace = true }
 gridcraft-query = { workspace = true }
+gridcraft-dax = { workspace = true }
 gridcraft-chart = { workspace = true }
 gridcraft-pdf = { workspace = true }
 image = { workspace = true }

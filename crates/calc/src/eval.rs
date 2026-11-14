@@ -803,6 +803,7 @@ impl<'h> Evaluator<'h> {
             "INDEX" => self.index(args),
             "XLOOKUP" => self.xlookup(args),
             "CELL" => self.cell_info(args),
+            "MEASURE" => self.measure(args),
             "TRIMRANGE" => self.trimrange(args),
             "SUBTOTAL" | "AGGREGATE" => self.subtotal(name, args),
             "TEXT" => {
@@ -1494,6 +1495,51 @@ impl<'h> Evaluator<'h> {
         self.builtin("XLOOKUP", args)
     }
 
+    /// `MEASURE(name, [field, value]…)`: a data-model measure evaluated in a filter context.
+    ///
+    /// GridCraft's own function, not Excel's: Excel reaches a model's measures through a PivotTable
+    /// or the CUBE family, whose first argument is a connection string this workbook does not have.
+    /// A field is written `Table[Column]`, or as a bare column name when exactly one model table
+    /// has it.
+    fn measure(&mut self, args: &[Expr]) -> Ev {
+        let name = match self.arg_val(args, 0).map(|v| v.scalar().to_text()) {
+            Some(Ok(t)) => t,
+            Some(Err(e)) => return err(e),
+            None => return err(CellError::Value),
+        };
+        let mut filters: Vec<(String, Value)> = Vec::new();
+        if !(args.len() - 1).is_multiple_of(2) {
+            return err(CellError::Value);
+        }
+        let mut i = 1;
+        while i + 1 < args.len() {
+            let field = match self.arg_val(args, i).map(|v| v.scalar().to_text()) {
+                Some(Ok(t)) => t,
+                Some(Err(e)) => return err(e),
+                None => return err(CellError::Value),
+            };
+            let value = self.arg_val(args, i + 1).map(|v| v.scalar()).unwrap_or_default();
+            filters.push((field, value));
+            i += 2;
+        }
+        // Reading the workbook ends the mutable borrows above: nothing else may touch the host
+        // while a model is being read.
+        self.host.note_volatile();
+        let wb = self.host.workbook();
+        if wb.model.tables.is_empty() {
+            return err(CellError::Name);
+        }
+        let Some(m) = wb.model.measure(&name) else { return err(CellError::Name) };
+        let mut ctx = gridcraft_dax::Context::new();
+        for (field, value) in filters {
+            let Some((table, column)) = split_model_field(&wb.model, &field) else { return err(CellError::Name) };
+            ctx = ctx.filter(&table, &column, value);
+        }
+        match gridcraft_dax::evaluate(&wb.model, &m.formula, &ctx) {
+            Ok(v) => Ev::V(v),
+            Err(e) => Ev::V(Value::Error(model_error(&e))),
+        }
+    }
     fn cell_info(&mut self, args: &[Expr]) -> Ev {
         let kind = match self.arg_val(args, 0).map(|v| v.scalar().to_text()) {
             Some(Ok(t)) => t.to_ascii_lowercase(),
@@ -2240,6 +2286,7 @@ fn is_special(n: &str) -> bool {
             | "GETPIVOTDATA"
             | "INDEX"
             | "CELL"
+            | "MEASURE"
             | "TRIMRANGE"
             | "SUBTOTAL"
             | "AGGREGATE"
@@ -2279,6 +2326,7 @@ pub const SPECIAL_FUNCTIONS: &[&str] = &[
     "GETPIVOTDATA",
     "INDEX",
     "CELL",
+    "MEASURE",
     "TRIMRANGE",
     "SUBTOTAL",
     "AGGREGATE",
@@ -2300,3 +2348,37 @@ pub fn is_known_function(n: &str) -> bool {
 
 #[allow(dead_code)]
 fn unused(_: RefKind) {}
+/// Splits `Table[Column]` (or a bare column name that exactly one table has) into its two names.
+fn split_model_field(model: &gridcraft_model::DataModel, field: &str) -> Option<(String, String)> {
+    let text = field.trim();
+    if let Some((table, rest)) = text.split_once('[')
+        && let Some(column) = rest.strip_suffix(']')
+    {
+        let t = model.table(table.trim())?;
+        if t.index(column.trim()).is_some() {
+            return Some((t.name.clone(), column.trim().to_string()));
+        }
+        return None;
+    }
+    let mut found: Option<(String, String)> = None;
+    for t in &model.tables {
+        if t.index(text).is_some() {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((t.name.clone(), text.to_string()));
+        }
+    }
+    found
+}
+
+/// The worksheet error a measure's failure becomes: an unknown name is `#NAME?`, a formula that
+/// cannot be computed is `#VALUE!`, and a measure that recurses too deep is `#NUM!`.
+fn model_error(e: &gridcraft_dax::DaxError) -> CellError {
+    use gridcraft_dax::DaxError;
+    match e {
+        DaxError::UnknownMeasure { .. } | DaxError::UnknownTable { .. } | DaxError::UnknownColumn { .. } => CellError::Name,
+        DaxError::Cycle { .. } | DaxError::TooDeep { .. } => CellError::Num,
+        _ => CellError::Value,
+    }
+}

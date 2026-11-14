@@ -40,6 +40,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // The query pipeline (Get & Transform): pure step-to-table functions over the model's own
     // step types, no I/O. It may read `model` and nothing that writes a file.
     ("query", Class::Layer(2)),
+    // The measure language: formulas over the data model, evaluated for a pivot cell or a
+    // MEASURE() formula. It reads the model and nothing else, so calc and engine may both use it.
+    ("dax", Class::Layer(2)),
     ("chart", Class::Layer(3)),
     ("engine", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
@@ -53,8 +56,17 @@ pub const TABLE: &[(&str, Class)] = &[
 
 /// Explicit orderings *within* a layer (earlier may be used by later). Each chain is separate:
 /// `calc` and `xlsx` both build on `model` but not on each other.
-pub const INTRA_LAYER_ORDER: &[&[&str]] =
-    &[&["core", "numfmt"], &["formula", "functions"], &["model", "calc"], &["model", "xlsx"], &["model", "parquet"], &["model", "query"]];
+pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
+    &["core", "numfmt"],
+    &["formula", "functions"],
+    &["model", "calc"],
+    &["model", "xlsx"],
+    &["model", "parquet"],
+    &["model", "query"],
+    // The measure language reads the model and nothing else, and calculation is its only user in
+    // this direction: `calc` evaluates a MEASURE() formula through it.
+    &["model", "dax", "calc"],
+];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
     let (from, to) = (short_name(from), short_name(to));

@@ -26,6 +26,7 @@ gridcraft-mcp = { path = "crates/mcp" }
 gridcraft-pdf = { path = "crates/pdf" }
 gridcraft-parquet = { path = "crates/parquet" }
 gridcraft-query = { path = "crates/query" }
+gridcraft-dax = { path = "crates/dax" }
 
 # foundation
 thiserror = "2"

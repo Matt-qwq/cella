@@ -215,13 +215,15 @@ fn refresh_all_refreshes_the_queries_as_well_as_the_reports() {
 }
 
 #[test]
-fn a_model_load_is_refused_with_the_round_that_brings_it() {
+fn a_model_load_keeps_the_rows_without_touching_a_sheet() {
     let mut s = session();
-    let err = s
-        .execute("data.query.add", json!({"name": "Sales", "source": {"kind": "csv", "text": CSV}, "load": "model"}))
-        .expect_err("the data model is N3.3");
-    let msg = err.to_string();
-    assert!(msg.contains("N3.3"), "{msg}");
+    let r =
+        run(&mut s, "data.query.add", json!({"name": "Sales", "source": {"kind": "csv", "text": CSV}, "steps": ["PromoteHeaders"], "load": "model"}));
+    assert_eq!(r["rows"], 3);
+    assert_eq!(r["sheet"], json!(null), "a model load writes no sheet");
+    let tables = run(&mut s, "data.model.tables", json!({}));
+    assert_eq!(tables[0]["name"], "Sales");
+    assert_eq!(tables[0]["rows"], 3);
 }
 
 #[test]

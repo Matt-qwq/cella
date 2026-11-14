@@ -1597,6 +1597,7 @@ name = "gridcraft-calc"
 version = "0.11.1"
 dependencies = [
  "gridcraft-core",
+ "gridcraft-dax",
  "gridcraft-formula",
  "gridcraft-functions",
  "gridcraft-model",
@@ -1641,12 +1642,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridcraft-dax"
+version = "0.11.1"
+dependencies = [
+ "gridcraft-core",
+ "gridcraft-model",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "gridcraft-engine"
 version = "0.11.1"
 dependencies = [
  "gridcraft-calc",
  "gridcraft-chart",
  "gridcraft-core",
+ "gridcraft-dax",
  "gridcraft-formula",
  "gridcraft-functions",
  "gridcraft-model",

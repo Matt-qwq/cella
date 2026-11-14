@@ -837,11 +837,29 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   last step that worked plus the index, label and message of the one that failed, so a broken
   step is marked where it stops instead of failing the preview; a trial `step`/`at` previews a
   step before it is added.
-- **What N3.1 and N3.2 did not do:** a folder source and a data-model load refuse with the round
-  that brings them (`N3.4`, `N3.3`); `data.getData`/`data.fromTextCsv` still import a table without
-  making a query, so a file opened through Get Data does not appear in the pane yet (N3.4); adding
-  a step from the pane is command-side only, there is no step parameter editor; and Web and SQLite
-  sources need a dependency decision (a TLS stack, a C library) before they can be honest.
+- **Landed 11-14 (N3.3, the data model).** A query can load into the **data model** instead of a
+  sheet: its rows are kept in the workbook (capped at 4M cells across tables, cached so a reopened
+  file shows numbers before a refresh, dropped when the query it came from is deleted) and never
+  touch the grid. `data.relationship.add/remove/list` link two tables many→one, refusing a repeat,
+  a column related to itself and any loop the filter context could not resolve;
+  `data.measure.add/set/remove/list/evaluate` define measures. The language is a new L2 crate,
+  `crates/dax`: `SUM`/`AVERAGE`/`COUNT`/`COUNTA`/`MIN`/`MAX`/`DISTINCTCOUNT` over `Table[Column]`,
+  `CALCULATE` with equality filters, `DIVIDE`, `BLANK`, arithmetic, and measures that reference other
+  measures (cycle- and depth-bounded). A filter context **propagates through relationships**, which
+  is what makes two files mean something together: a filter on `Region[Name]` restricts `Sales`
+  through `Sales[RegionId] → Region[Id]`. On the grid, `=MEASURE("Total", "Region[Name]", "West")`
+  (a GridCraft function, not Excel's) evaluates a measure in a cell and recalculates when the model
+  changes, because the function is treated as volatile — the rows it reads live outside the cell
+  graph. Proven end to end: two CSV queries → model tables → relationship → measure → a cell, then a
+  source edit, a refresh and a recalc (22 → 30), then save → reopen with the same answer.
+- **What N3.1–N3.3 did not do:** a folder source and a **PivotTable over the model** refuse or wait
+  (`N3.4`; a model pivot needs the grouping path to carry a per-cell filter context, and the plan is
+  to reuse the existing pivot layout by synthesising the joined view); `data.getData`/
+  `data.fromTextCsv` still import a table without making a query, so a file opened through Get Data
+  does not appear in the pane yet (N3.4); adding a step from the pane is command-side only, there is
+  no step parameter editor, and the model has no field-list UI (relationships and measures are
+  command-only for now); and Web and SQLite sources need a dependency decision (a TLS stack, a C
+  library) before they can be honest.
 - **Landed 11-14 (the file half):** a workbook's `xl/model/*` (the Power Pivot data model) is kept
   and written back byte for byte, related from the workbook with the file's own `powerPivotData`
   type, and it survives deleting every report that used it; PivotTables built on it are carried

@@ -1450,7 +1450,11 @@ fn is_volatile(e: &Expr) -> bool {
     let mut found = false;
     e.walk(&mut |node| {
         if let Expr::Call(name, _) = node
-            && gridcraft_functions::lookup(name).is_some_and(|f| f.volatile)
+            && (gridcraft_functions::lookup(name).is_some_and(|f| f.volatile)
+                // A measure reads the data model, which is refreshed outside the cell graph (a
+                // query reload, a relationship or measure edit), so its cached value can be out of
+                // date the moment the file opens.
+                || name.eq_ignore_ascii_case("MEASURE"))
         {
             found = true;
         }

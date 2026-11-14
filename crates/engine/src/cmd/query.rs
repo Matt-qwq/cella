@@ -6,7 +6,7 @@
 //! charts, feeds a pivot table, and the next refresh rewrites it in place.
 
 use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{Query, QueryLoad, QuerySource, QueryStep, query_name_is_free};
+use gridcraft_model::{MAX_MODEL_CELLS, Query, QueryLoad, QuerySource, QueryStep, query_name_is_free};
 use gridcraft_query::{MAX_CELLS, MAX_COLUMNS, MAX_ROWS, Table};
 use serde_json::json;
 
@@ -349,6 +349,48 @@ fn pipeline_error(e: gridcraft_query::QueryError) -> EngineError {
 
 // ---------------------------------------------------------------- loading a table onto a sheet
 
+/// Keeps a query's result in the workbook's data model instead of on a sheet.
+///
+/// The rows are the cache a reopened workbook shows before anything is refreshed, which is why
+/// they are written here and not recomputed on open: a model pivot has to draw before the source
+/// files are back.
+fn load_into_model(s: &mut Session, name: &str, table: &Table) -> Result<()> {
+    let rows = table.height();
+    let cols = table.width();
+    edit(s, |cx| {
+        let existing: usize = cx
+            .wb
+            .model
+            .tables
+            .iter()
+            .filter(|t| !t.name.eq_ignore_ascii_case(name))
+            .fold(0, |n: usize, t| n.saturating_add(t.width().saturating_mul(t.height())));
+        let cells = rows.saturating_mul(cols);
+        if cells > MAX_MODEL_CELLS || existing.saturating_add(cells) > MAX_MODEL_CELLS {
+            return Err(EngineError::Other(format!(
+                "The data model would hold more than {MAX_MODEL_CELLS} cells (this query adds {cells}). Load it to a sheet instead."
+            )));
+        }
+        if cx.wb.model.tables.len() >= gridcraft_model::MAX_MODEL_TABLES && !cx.wb.model.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name)) {
+            return Err(EngineError::Other(format!("The data model holds at most {} tables.", gridcraft_model::MAX_MODEL_TABLES)));
+        }
+        let t = gridcraft_model::ModelTable {
+            name: name.to_string(),
+            columns: table.columns.clone(),
+            rows: table.rows.clone(),
+            source_query: Some(name.to_string()),
+        };
+        match cx.wb.model.table_index(name) {
+            Some(i) => cx.wb.model.tables[i] = t,
+            None => cx.wb.model.tables.push(t),
+        }
+        // A measure in a cell reads the model, not a range, so the cell graph cannot see that the
+        // rows behind it changed: this edit recalculates the workbook.
+        cx.structural = true;
+        Ok(())
+    })
+}
+
 /// Writes `table` onto a sheet as a table object named after the query, replacing whatever the
 /// last run wrote. Returns the sheet's name.
 ///
@@ -467,9 +509,8 @@ fn run_query(s: &mut Session, name: &str) -> Result<Ran> {
     let sheet = match &load {
         QueryLoad::Sheet { sheet } => Some(load_table(s, name, sheet.as_deref(), &table)?),
         QueryLoad::Model => {
-            return Err(EngineError::Other(format!(
-                "\"{name}\" loads into the data model, which needs relationships and measures (N3.3). Load it to a sheet instead."
-            )));
+            load_into_model(s, name, &table)?;
+            None
         }
     };
     let columns = table.columns.clone();
@@ -674,6 +715,11 @@ fn delete(s: &mut Session, p: &Json) -> Result<Json> {
     };
     edit(s, |cx| {
         cx.wb.queries.retain(|q| q.id != id);
+        // A model table exists only because its query does: the query is the recipe that fills it.
+        // A sheet table stays, because those cells are data a person can see and keep.
+        let model_name = name.clone();
+        cx.wb.model.tables.retain(|t| !(t.source_query.as_deref() == Some(model_name.as_str()) || t.name.eq_ignore_ascii_case(&model_name)));
+        cx.wb.model.relationships.retain(|r| !r.from_table.eq_ignore_ascii_case(&name) && !r.to_table.eq_ignore_ascii_case(&name));
         Ok(())
     })?;
     Ok(json!({"deleted": name}))

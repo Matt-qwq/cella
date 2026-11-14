@@ -14,4 +14,5 @@ gridcraft-formula = { workspace = true }
 gridcraft-functions = { workspace = true }
 gridcraft-numfmt = { workspace = true }
 gridcraft-model = { workspace = true }
+gridcraft-dax = { workspace = true }
 log = { workspace = true }

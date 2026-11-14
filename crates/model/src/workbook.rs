@@ -185,6 +185,10 @@ pub struct Workbook {
     /// separator back (a `;` file stays a `;` file). `None` = not read from CSV: CSV saves use `,`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csv_delimiter: Option<u8>,
+    /// The data model: query results kept as tables, the relationships between them and the
+    /// measures defined over them. Empty for a workbook that never used one.
+    #[serde(default, skip_serializing_if = "crate::DataModel::is_empty")]
+    pub model: crate::DataModel,
     /// Saved Get & Transform queries. The tables they load onto are ordinary sheet tables, so a
     /// query is only ever a recipe; see [`crate::query`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -235,6 +239,7 @@ impl Workbook {
             phonetics: vec![],
             vba_project: None,
             csv_delimiter: None,
+            model: crate::DataModel::default(),
             queries: Vec::new(),
             preserved: None,
             source_dir: None,

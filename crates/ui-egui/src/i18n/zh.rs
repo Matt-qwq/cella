@@ -1861,6 +1861,17 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Filled Down" => "向下填充",
         "Unpivoted Columns" => "逆透视的列",
         "Grouped Rows" => "分组的行",
+        // The data model: the field list's commands for tables, relationships and measures.
+        "Model Tables" => "模型表",
+        "Remove From Model" => "从模型中删除",
+        "Add Relationship" => "添加关系",
+        "Remove Relationship" => "删除关系",
+        "Relationships" => "关系",
+        "Add Measure" => "添加度量值",
+        "Edit Measure" => "编辑度量值",
+        "Delete Measure" => "删除度量值",
+        "Measures" => "度量值",
+        "Evaluate Measure" => "计算度量值",
         // Get & Transform command labels (the queries the data platform added).
         "Add Query" => "添加查询",
         "Refresh Query" => "刷新查询",

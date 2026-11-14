@@ -31,8 +31,11 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::{Query, QueryAggregate, QueryColumnType, QueryFilterOp, QueryLoad, QuerySource, QueryStep, Workbook};
+use gridcraft_core::{CellError, CellRef, RangeRef, Value};
+use gridcraft_model::{
+    DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelTable, Query, QueryAggregate, QueryColumnType,
+    QueryFilterOp, QueryLoad, QuerySource, QueryStep, Relationship, Workbook,
+};
 
 use crate::IoError;
 use crate::read::Ctx;
@@ -85,7 +88,10 @@ pub(crate) fn read(cx: &mut Ctx<'_>, wb: &mut Workbook) {
         }
     };
     match decode(&bytes) {
-        Ok(queries) => wb.queries = queries,
+        Ok((queries, model)) => {
+            wb.queries = queries;
+            wb.model = model;
+        }
         Err(why) => cx.warn(format!("{PART}: {}; the workbook has no queries", short(&why))),
     }
 }
@@ -94,10 +100,10 @@ pub(crate) fn read(cx: &mut Ctx<'_>, wb: &mut Workbook) {
 /// nothing at all when the workbook has no queries (the model is the truth: no queries, no part, no
 /// default).
 pub(crate) fn write(wb: &Workbook, out: &mut Out) {
-    if wb.queries.is_empty() {
+    if wb.queries.is_empty() && wb.model.is_empty() {
         return;
     }
-    out.part(PART, None, encode(&wb.queries).into_bytes());
+    out.part(PART, None, encode(&wb.queries, &wb.model).into_bytes());
     // A kept part brings its content type as an Override, so a Default already registered is never
     // duplicated: the map keeps whichever was declared first.
     out.default_type(EXTENSION, CONTENT_TYPE);
@@ -118,16 +124,24 @@ fn short(m: &str) -> String {
 // ---------------------------------------------------------------- writing
 
 /// The queries as JSON: the model's own serde shape, written by hand (see the module doc).
-fn encode(queries: &[Query]) -> String {
-    let mut s = String::new();
-    s.push('[');
+fn encode(queries: &[Query], model: &DataModel) -> String {
+    let mut list = String::new();
+    list.push('[');
     for (i, q) in queries.iter().enumerate() {
         if i > 0 {
-            s.push(',');
+            list.push(',');
         }
-        push_query(&mut s, q);
+        push_query(&mut list, q);
     }
-    s.push(']');
+    list.push(']');
+    if model.is_empty() {
+        return list;
+    }
+    let mut s = String::from("{\"queries\":");
+    s.push_str(&list);
+    s.push_str(",\"model\":");
+    encode_model(&mut s, model);
+    s.push('}');
     s
 }
 
@@ -407,9 +421,31 @@ fn push_text(s: &mut String, text: &str) {
 // ---------------------------------------------------------------- reading
 
 /// The queries a part holds, or the reason it holds none.
-fn decode(bytes: &[u8]) -> Result<Vec<Query>, String> {
+fn decode(bytes: &[u8]) -> Result<(Vec<Query>, DataModel), String> {
     let root = Parser::new(bytes).parse()?;
-    let list = as_list(&root, "the query list")?;
+    // An object is the current shape ({"queries": [...], "model": {...}}); a bare list is the
+    // shape the first version wrote, and still reads.
+    let (list, model) = match &root {
+        Json::Object(o) => {
+            // An object that names neither key is junk, not an empty workbook: say so, so a
+            // corrupted part still leaves the warning it always did.
+            if opt_field(o, "queries").is_none() && opt_field(o, "model").is_none() {
+                return Err("the part must hold a list of queries or a query object".into());
+            }
+            let list = match opt_field(o, "queries") {
+                Some(v) => as_list(v, "the query list")?.to_vec(),
+                None => Vec::new(),
+            };
+            let model = match opt_field(o, "model") {
+                Some(v) => as_model(v)?,
+                None => DataModel::default(),
+            };
+            (list, model)
+        }
+        Json::Array(_) => (as_list(&root, "the query list")?.to_vec(), DataModel::default()),
+        _ => return Err("the part must hold a list of queries or a query object".into()),
+    };
+    let list = &list[..];
     if list.len() > MAX_QUERIES {
         return Err(format!("the part holds more than {MAX_QUERIES} queries"));
     }
@@ -417,7 +453,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<Query>, String> {
     for (i, value) in list.iter().enumerate() {
         queries.push(as_query(value).map_err(|e| format!("query {}: {e}", i + 1))?);
     }
-    Ok(queries)
+    Ok((queries, model))
 }
 
 fn as_query(v: &Json) -> Result<Query, String> {
@@ -1000,4 +1036,203 @@ impl<'a> Parser<'a> {
         self.at += 4;
         Ok(value)
     }
+}
+
+// ---------------------------------------------------------------- the data model
+
+/// The model's tables, relationships and measures, written beside the queries: the part holds the
+/// workbook's GridCraft-only state, and a workbook that has one usually has the other.
+fn encode_model(s: &mut String, m: &DataModel) {
+    s.push_str("{\"tables\":[");
+    for (i, t) in m.tables.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str("{\"name\":");
+        push_text(s, &t.name);
+        s.push_str(",\"columns\":");
+        push_texts(s, &t.columns);
+        s.push_str(",\"rows\":[");
+        for (j, row) in t.rows.iter().enumerate() {
+            if j > 0 {
+                s.push(',');
+            }
+            s.push('[');
+            for (k, v) in row.iter().enumerate() {
+                if k > 0 {
+                    s.push(',');
+                }
+                push_value(s, v);
+            }
+            s.push(']');
+        }
+        s.push_str("],\"source_query\":");
+        push_optional(s, t.source_query.as_deref());
+        s.push('}');
+    }
+    s.push_str("],\"relationships\":[");
+    for (i, r) in m.relationships.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str("{\"from_table\":");
+        push_text(s, &r.from_table);
+        s.push_str(",\"from_column\":");
+        push_text(s, &r.from_column);
+        s.push_str(",\"to_table\":");
+        push_text(s, &r.to_table);
+        s.push_str(",\"to_column\":");
+        push_text(s, &r.to_column);
+        s.push('}');
+    }
+    s.push_str("],\"measures\":[");
+    for (i, m2) in m.measures.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str("{\"name\":");
+        push_text(s, &m2.name);
+        s.push_str(",\"table\":");
+        push_text(s, &m2.table);
+        s.push_str(",\"formula\":");
+        push_text(s, &m2.formula);
+        s.push_str(",\"format\":");
+        push_optional(s, m2.format.as_deref());
+        s.push('}');
+    }
+    s.push_str("]}");
+}
+
+/// A cell value as JSON: a number is Rust's shortest round-tripping form (Excel's General format
+/// would lose digits), a blank is null, and an error is its own tagged object so it comes back an
+/// error rather than the text of one.
+fn push_value(s: &mut String, v: &Value) {
+    match v {
+        Value::Empty => s.push_str("null"),
+        Value::Number(n) => {
+            if n.is_finite() {
+                let _ = write!(s, "{n}");
+            } else {
+                // A JSON number cannot hold an infinity or a NaN; an error is what the cell was.
+                s.push_str("{\"e\":\"NUM\"}");
+            }
+        }
+        Value::Bool(b) => s.push_str(if *b { "true" } else { "false" }),
+        Value::Text(t) => push_text(s, t),
+        Value::Error(e) => {
+            s.push_str("{\"e\":");
+            push_text(s, e.as_str());
+            s.push('}');
+        }
+        Value::Array(_) => s.push_str("null"),
+    }
+}
+
+fn as_value(v: &Json) -> Result<Value, String> {
+    Ok(match v {
+        Json::Null => Value::Empty,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Number(n) => match n.parse::<f64>() {
+            Ok(f) if f.is_finite() => Value::number(f),
+            _ => Value::Error(CellError::Num),
+        },
+        Json::Str(s) => Value::text(s.clone()),
+        Json::Object(o) => {
+            let code = o.iter().find(|(k, _)| k == "e").map(|(_, v)| v).ok_or("a cell object must hold an error")?;
+            let text = as_text(code, "an error code")?;
+            Value::Error(CellError::parse(&text).unwrap_or(CellError::Value))
+        }
+        Json::Array(_) => return Err("a cell cannot be a list".into()),
+    })
+}
+
+fn as_model(v: &Json) -> Result<DataModel, String> {
+    let o = as_object(v, "the data model")?;
+    let mut model = DataModel::default();
+    if let Some(tables) = opt_field(o, "tables") {
+        for (i, t) in as_list(tables, "the model's tables")?.iter().enumerate() {
+            model.tables.push(as_model_table(t).map_err(|e| format!("table {}: {e}", i + 1))?);
+        }
+    }
+    if let Some(rels) = opt_field(o, "relationships") {
+        for (i, r) in as_list(rels, "the model's relationships")?.iter().enumerate() {
+            model.relationships.push(as_relationship(r).map_err(|e| format!("relationship {}: {e}", i + 1))?);
+        }
+    }
+    if let Some(measures) = opt_field(o, "measures") {
+        for (i, m) in as_list(measures, "the model's measures")?.iter().enumerate() {
+            model.measures.push(as_measure(m).map_err(|e| format!("measure {}: {e}", i + 1))?);
+        }
+    }
+    if model.tables.len() > MAX_MODEL_TABLES {
+        return Err(format!("the model holds more than {MAX_MODEL_TABLES} tables"));
+    }
+    if model.relationships.len() > MAX_RELATIONSHIPS {
+        return Err(format!("the model holds more than {MAX_RELATIONSHIPS} relationships"));
+    }
+    if model.measures.len() > MAX_MEASURES {
+        return Err(format!("the model holds more than {MAX_MEASURES} measures"));
+    }
+    if model.cells() > MAX_MODEL_CELLS {
+        return Err(format!("the model holds more than {MAX_MODEL_CELLS} cells"));
+    }
+    Ok(model)
+}
+
+fn as_model_table(v: &Json) -> Result<ModelTable, String> {
+    let o = as_object(v, "a model table")?;
+    let name = as_text(field(o, "name", "a model table")?, "a model table's name")?;
+    let columns = as_texts(field(o, "columns", "a model table")?, "a model table's columns")?;
+    let mut rows: Vec<Vec<Value>> = Vec::new();
+    if let Some(list) = opt_field(o, "rows") {
+        for (i, row) in as_list(list, "a model table's rows")?.iter().enumerate() {
+            let cells = as_list(row, "a model table's row")?;
+            if cells.len() > columns.len() {
+                return Err(format!("row {} holds more cells than the table has columns", i + 1));
+            }
+            let mut out = Vec::with_capacity(columns.len());
+            for c in cells {
+                out.push(as_value(c)?);
+            }
+            out.resize(columns.len(), Value::Empty);
+            rows.push(out);
+            if rows.len() > gridcraft_core::MAX_ROWS as usize {
+                return Err("the table holds more rows than a sheet".into());
+            }
+        }
+    }
+    let source_query = match opt_field(o, "source_query") {
+        Some(v) => as_optional(v, "a model table's query")?,
+        None => None,
+    };
+    Ok(ModelTable { name, columns, rows, source_query })
+}
+
+fn as_relationship(v: &Json) -> Result<Relationship, String> {
+    let o = as_object(v, "a relationship")?;
+    Ok(Relationship {
+        from_table: as_text(field(o, "from_table", "a relationship")?, "a relationship's from_table")?,
+        from_column: as_text(field(o, "from_column", "a relationship")?, "a relationship's from_column")?,
+        to_table: as_text(field(o, "to_table", "a relationship")?, "a relationship's to_table")?,
+        to_column: as_text(field(o, "to_column", "a relationship")?, "a relationship's to_column")?,
+    })
+}
+
+fn as_measure(v: &Json) -> Result<Measure, String> {
+    let o = as_object(v, "a measure")?;
+    let format = match opt_field(o, "format") {
+        Some(v) => as_optional(v, "a measure's format")?,
+        None => None,
+    };
+    Ok(Measure {
+        name: as_text(field(o, "name", "a measure")?, "a measure's name")?,
+        table: as_text(field(o, "table", "a measure")?, "a measure's table")?,
+        formula: as_text(field(o, "formula", "a measure")?, "a measure's formula")?,
+        format,
+    })
+}
+
+/// A field that may be absent (the model's own serde defaults match: absent = empty).
+fn opt_field<'a>(o: &'a [(String, Json)], name: &str) -> Option<&'a Json> {
+    o.iter().find(|(k, _)| k == name).map(|(_, v)| v)
 }

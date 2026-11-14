@@ -2015,3 +2015,66 @@ fn an_array_that_owned_its_cells_gets_them_back_when_it_grows_after_f9() {
     assert_eq!(t.get("I9"), Value::Error(CellError::Spill));
     assert_eq!(t.get("K9"), Value::Number(6.0));
 }
+
+// ---------------------------------------------------------------- the data model and MEASURE()
+
+/// A workbook whose model holds a fact table, a lookup and a measure over the join.
+fn model_book() -> Workbook {
+    use gridcraft_model::{DataModel, Measure, ModelTable, Relationship};
+    let mut wb = Workbook::new();
+    let sales = ModelTable {
+        name: "Sales".into(),
+        columns: vec!["RegionId".into(), "Amount".into()],
+        rows: vec![
+            vec![Value::number(1.0), Value::number(10.0)],
+            vec![Value::number(2.0), Value::number(5.0)],
+            vec![Value::number(1.0), Value::number(7.0)],
+        ],
+        source_query: None,
+    };
+    let region = ModelTable {
+        name: "Region".into(),
+        columns: vec!["Id".into(), "Name".into()],
+        rows: vec![vec![Value::number(1.0), Value::text("West")], vec![Value::number(2.0), Value::text("East")]],
+        source_query: None,
+    };
+    wb.model = DataModel {
+        tables: vec![sales, region],
+        relationships: vec![Relationship {
+            from_table: "Sales".into(),
+            from_column: "RegionId".into(),
+            to_table: "Region".into(),
+            to_column: "Id".into(),
+        }],
+        measures: vec![Measure { name: "Total".into(), table: "Sales".into(), formula: "SUM(Sales[Amount])".into(), format: None }],
+    };
+    wb
+}
+
+#[test]
+fn measure_reads_a_model_measure_in_a_cell() {
+    let wb = model_book();
+    // The whole model.
+    let all = crate::recalc::evaluate(&wb, 0, c("A1"), "=MEASURE(\"Total\")");
+    assert_eq!(all, Value::number(22.0));
+    // One dimension member: the filter reaches the fact rows through the relationship, which is
+    // the whole point of the model.
+    let west = crate::recalc::evaluate(&wb, 0, c("A2"), "=MEASURE(\"Total\", \"Region[Name]\", \"West\")");
+    assert_eq!(west, Value::number(17.0));
+    let east = crate::recalc::evaluate(&wb, 0, c("A3"), "=MEASURE(\"Total\", \"Region[Name]\", \"East\")");
+    assert_eq!(east, Value::number(5.0));
+}
+
+#[test]
+fn a_missing_measure_or_a_workbook_without_a_model_is_a_name_error() {
+    let wb = model_book();
+    assert_eq!(crate::recalc::evaluate(&wb, 0, c("A1"), "=MEASURE(\"Nope\")"), Value::Error(CellError::Name));
+    let plain = Workbook::new();
+    assert_eq!(crate::recalc::evaluate(&plain, 0, c("A1"), "=MEASURE(\"Total\")"), Value::Error(CellError::Name));
+}
+
+#[test]
+fn an_odd_number_of_measure_arguments_is_a_value_error() {
+    let wb = model_book();
+    assert_eq!(crate::recalc::evaluate(&wb, 0, c("A1"), "=MEASURE(\"Total\", \"Region[Name]\")"), Value::Error(CellError::Value));
+}
