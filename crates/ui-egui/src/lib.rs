@@ -12,6 +12,7 @@ mod border_preview;
 mod cell_pictures;
 pub mod chart_format;
 pub mod chartview;
+pub mod chrome;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -325,6 +326,8 @@ pub struct SheetApp {
     /// Extra windows whose close button has already been answered: the operating system keeps
     /// reporting the request until the window goes, and answering it twice would ask twice.
     window_close_handled: std::collections::HashSet<WindowId>,
+    /// Whether the frame the title bar assumes has been asked for (see [`chrome`]): asked once.
+    frame_asked: bool,
 }
 
 impl SheetApp {
@@ -378,6 +381,7 @@ impl SheetApp {
             painted_window: None,
             window_focused: None,
             window_close_handled: std::collections::HashSet::new(),
+            frame_asked: false,
         }
     }
 
@@ -1456,6 +1460,9 @@ impl SheetApp {
         // scroll area, a popup, the ribbon's menus).
         ui.push_id(("gridcraft.window", window.map_or(0, |w| w.0)), |ui| {
             if self.chrome.title_bar {
+                // The strip is the window's caption where the platform has none of its own; ask
+                // for that frame once, before drawing it.
+                self.own_window_frame(&ctx);
                 ribbon::title_bar(self, ui);
             }
             if self.backstage.is_some() {
@@ -1482,6 +1489,12 @@ impl SheetApp {
                 });
             }
         });
+        // The window's edges are dragged here when the app owns the frame; after the panels, so the
+        // band sits over whatever is at the edge.
+        if self.chrome.title_bar {
+            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            chrome::resize_grips(ui, maximized);
+        }
         if !own {
             return;
         }
@@ -1524,11 +1537,16 @@ impl SheetApp {
             let dirty = self.session.documents().get(doc).is_some_and(|d| d.is_dirty());
             let edited = if dirty { i18n::current(ctx).tr(" — Edited") } else { "" };
             let title = format!("{}{}", self.window_label(id), edited);
-            let builder = egui::ViewportBuilder::default()
-                .with_title(title)
-                .with_inner_size([1200.0, 800.0])
-                .with_min_inner_size([640.0, 420.0])
-                .with_app_id("ai.storyteller.gridcraft");
+            // An extra window gets the same frame policy as the app's own: a second window with a
+            // system caption above an app-drawn strip would be the double title this module exists
+            // to avoid.
+            let builder = chrome::viewport(
+                egui::ViewportBuilder::default()
+                    .with_title(title)
+                    .with_inner_size([1200.0, 800.0])
+                    .with_min_inner_size([640.0, 420.0])
+                    .with_app_id("ai.storyteller.gridcraft"),
+            );
             ctx.show_viewport_immediate(window_viewport(id), builder, |ui, class| {
                 // A shell without separate windows (egui's `embed_viewports`: the browser build,
                 // and a test harness) would paint this window inside the main one, in the same

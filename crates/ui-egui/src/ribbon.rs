@@ -5,6 +5,7 @@ use gridcraft_engine::model::{HAlign, Style, VAlign};
 use serde_json::json;
 
 use crate::SheetApp;
+use crate::chrome;
 use crate::icons::{self, Icon};
 use crate::keytips::keytip_table;
 use crate::theme::{self, Tokens};
@@ -38,7 +39,10 @@ const _: () = assert!(TITLE_CONTROL_H < TITLE_BAR_H, "title-bar controls keep a 
 pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let ch = TITLE_CONTROL_H;
-    egui::Panel::top("title_bar").exact_size(TITLE_BAR_H).frame(egui::Frame::NONE.fill(t.window)).show(ui, |ui| {
+    // No separator line under the strip: it and the ribbon's tab row are one surface, the way
+    // a caption and the Quick Access Toolbar are one row in Excel. The ribbon below keeps its own
+    // line against the sheet.
+    egui::Panel::top("title_bar").exact_size(TITLE_BAR_H).show_separator_line(false).frame(egui::Frame::NONE.fill(t.window)).show(ui, |ui| {
         let rect = ui.max_rect();
         // Dragging the empty title area moves the window.
         let bg = ui.interact(rect, ui.id().with("drag_title"), Sense::click_and_drag());
@@ -114,7 +118,10 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
             });
             let left_end = ui.min_rect().right();
             let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(8.0);
+                // Where the app owns the frame, the caption's own buttons take the window's
+                // corner; they come first in this right-to-left row.
+                let buttons = chrome::window_buttons(ui, rect);
+                ui.add_space(if buttons > 0.0 { 6.0 } else { 8.0 });
                 let __k = icon_button(ui, Icon::Search, t.text_dim, "Search commands", vec2(28.0, ch));
                 control_keytip(app, ui, &__k, "commandSearch");
                 if __k.clicked() {
@@ -150,11 +157,15 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                 theme.context_menu(|ui| theme_choices(app, ui));
                 ui.min_rect().left()
             });
-            // Centred title, cut with "…" so it never runs under the controls on either side.
-            let title = app.session.active().map(|d| d.display_title()).unwrap_or_default();
-            let dirty = app.session.active().is_some_and(|d| d.is_dirty());
-            let max_w = title_max_width(rect.center().x, left_end, right.inner);
-            paint_title(ui, rect.center(), &title, dirty, max_w, t.text);
+            // The workbook's name, centred and cut with "…" so it never runs under the controls
+            // on either side. Where the system caption carries the name already (Windows) the
+            // strip leaves it out: the same title twice in two rows is what #170 was about.
+            if !chrome::host().caption_title {
+                let title = app.session.active().map(|d| d.display_title()).unwrap_or_default();
+                let dirty = app.session.active().is_some_and(|d| d.is_dirty());
+                let max_w = title_max_width(rect.center().x, left_end, right.inner);
+                paint_title(ui, rect.center(), &title, dirty, max_w, t.text);
+            }
         });
     });
 }

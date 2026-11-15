@@ -392,6 +392,10 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Save As" => "另存为",
         "Export" => "导出",
         "Close" => "关闭",
+        // The window's caption buttons (see chrome.rs).
+        "Minimize" => "最小化",
+        "Maximize" => "最大化",
+        "Restore Down" => "向下还原",
         "Options" => "选项",
         "Account" => "账户",
         "Product Information" => "产品信息",

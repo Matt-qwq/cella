@@ -9,6 +9,23 @@ use std::sync::Arc;
 
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Visuals};
 
+/// WCAG relative luminance of a colour: the shared measure of the theme and icon tests.
+#[cfg(test)]
+pub(crate) fn luminance_of(c: Color32) -> f32 {
+    let channel = |v: u8| {
+        let s = f32::from(v) / 255.0;
+        if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+}
+
+/// The contrast ratio between two colours, 1.0 (identical) to 21.0 (black on white).
+#[cfg(test)]
+pub(crate) fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+    let (x, y) = (luminance_of(a), luminance_of(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     pub dark: bool,
@@ -1128,6 +1145,46 @@ mod tests {
         set_high_contrast(&ctx, false);
     }
 
+    /// Every palette's ink reads on every surface the chrome paints it on.
+    ///
+    /// Icons and chrome labels are drawn in [`Tokens::text`], [`Tokens::text_dim`] and
+    /// [`Tokens::accent`] on window, ribbon, hover, pressed and menu fills. WCAG asks 3:1 for
+    /// graphical objects; a palette edit is the change most likely to drop a pair below it without
+    /// anyone noticing, so the light, dark and high-contrast palettes are all measured here.
+    #[test]
+    fn every_chrome_ink_reads_on_every_chrome_surface() {
+        const GRAPHIC: f32 = 3.0;
+        for (name, t) in [("light", Tokens::light()), ("dark", Tokens::dark()), ("high contrast", Tokens::high_contrast())] {
+            let inks = [("text", t.text), ("text_dim", t.text_dim), ("accent", t.accent)];
+            let surfaces = [
+                ("window", t.window),
+                ("ribbon", t.ribbon),
+                ("hover", t.hover),
+                ("pressed", t.pressed),
+                ("tab_bar", t.tab_bar),
+                ("menu_bg", t.menu_bg),
+                ("status_bar", t.status_bar),
+                ("header_bg", t.header_bg),
+            ];
+            for (ink, c) in inks {
+                for (surface, bg) in surfaces {
+                    let ratio = contrast_ratio(c, bg);
+                    assert!(ratio >= GRAPHIC, "{name}: {ink} on {surface} is {ratio:.2}:1");
+                }
+            }
+            // The column and row headers pair their own ink with their own fill.
+            // A selected header draws its own ink (`header_sel_text`) on its own fill.
+            for (name, (ink, bg)) in [
+                ("header_text/header_bg", (t.header_text, t.header_bg)),
+                ("header_sel_text/header_sel_bg", (t.header_sel_text, t.header_sel_bg)),
+                ("header_sel_text/header_all_bg", (t.header_sel_text, t.header_all_bg)),
+            ] {
+                let ratio = contrast_ratio(ink, bg);
+                assert!(ratio >= GRAPHIC, "{name} is {ratio:.2}:1");
+            }
+        }
+    }
+
     #[test]
     fn fallback_faces_are_appended_to_every_family() {
         // Structural: whatever loaded, the non-Latin fallback keys must sit at the end of each chain
@@ -1429,6 +1486,9 @@ mod tests {
     /// the only way to tell a hit from a recompute without timing.)
     #[test]
     fn cell_family_memo_answers_from_the_slot_and_follows_the_font_set() {
+        // The memo is keyed by the font set's generation, and the binding tests change that
+        // generation: without the lock this test reads a set it did not start with.
+        let _g = crate::fonts::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         const NAME: &str = "GridCraft Memo Test Face";
         let slot = family_slot(NAME, true, false);
         let generation = crate::fonts::bound_generation();
