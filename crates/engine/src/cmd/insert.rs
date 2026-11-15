@@ -296,6 +296,31 @@ fn insert_table(s: &mut Session, p: &Json) -> Result<Json> {
     if d.wb.sheet(sheet).is_some_and(|sh| sh.tables.iter().any(|t| t.range.intersects(&r))) {
         return Err(EngineError::Other("A table can't overlap another table.".into()));
     }
+    // A table over the sheet's own AutoFilter would take its range: the file can hold one filter
+    // there, so the criteria were silently dropped and, worse, the rows that filter had hidden came
+    // back from the file as hand-hidden ones (found by the command-sequence fuzz). Refusing is what
+    // Excel does when the two would overlap, and it keeps both the filter and the table.
+    // A table on the *same* cells as the filter is the ordinary case (the filter stays, the table
+    // is the formatted range) and one inside the other reads back fine. A partial overlap does not:
+    // the file can hold one filter there, so the criteria were dropped and the rows the filter had
+    // hidden came back as hand-hidden ones (found by the command-sequence fuzz).
+    if let Some(af) = d.wb.sheet(sheet).and_then(|sh| sh.autofilter.as_ref())
+        && af.range.intersects(&r)
+    {
+        let a = af.range;
+        let inside = |outer: RangeRef, inner: RangeRef| {
+            outer.start.row <= inner.start.row
+                && outer.end.row >= inner.end.row
+                && outer.start.col <= inner.start.col
+                && outer.end.col >= inner.end.col
+        };
+        if !inside(a, r) && !inside(r, a) {
+            return Err(EngineError::Other(format!(
+                "A table can't partly overlap the sheet's AutoFilter ({}). Clear the filter, or make the table cover it (or sit inside it).",
+                a.a1()
+            )));
+        }
+    }
     let arrays = |sh: &gridcraft_model::Sheet| {
         sh.cells.iter().any(|(_, x)| x.formula.as_ref().and_then(|f| f.array).is_some_and(|a| !a.is_single() && a.intersects(&r)))
     };
