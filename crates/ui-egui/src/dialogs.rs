@@ -1241,216 +1241,213 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
         _ => window,
     };
     window.show(ctx, |ui| {
-            ui.set_min_width(width - 20.0);
-            match d.name.as_str() {
-                "formatCells" => format_cells(app, ui, &mut d, &mut confirm),
-                "dataValidation" => data_validation_form(ui, &mut d, &mut confirm, &mut open),
-                "advancedFilter" => advanced_filter_form(ui, &mut d, &mut confirm, &mut open),
-                "insertFunction" => insert_function(app, ui, &mut d, &mut confirm),
-                "find" => find(app, ui, &mut d),
-                "goTo" => go_to(app, ui, &mut d, &mut confirm),
-                "zoom" => zoom(ui, &mut d, &mut confirm, &mut open),
-                "sort" => sort(app, ui, &mut d, &mut confirm),
-                "nameManager" => name_manager(app, ui, &mut d, &mut open),
-                "manageRules" => manage_rules(app, ui),
-                "recommendedCharts" => recommended_charts(app, ui, &mut d, &mut confirm, &mut open),
-                "selectData" => select_data(app, ui, &mut d, &mut confirm, &mut open),
-                "moveChart" => move_chart(app, ui, &mut d, &mut confirm, &mut open),
-                "commandSearch" => command_search(app, ui, &mut d, &mut confirm),
-                "goalSeek" => goal_seek(app, ui, &mut d, &mut confirm),
-                "pasteSpecial" => paste_special(app, ui, &mut d, &mut confirm, &mut open),
-                "analysisToolPak" => analysis_toolpak(app, ui, &mut d, &mut confirm, &mut open),
-                "solver" => solver(ui, &mut d, &mut confirm, &mut open),
-                "solverResults" => solver_results(app, ui, &mut d, &mut open),
-                "spelling" => spelling(app, ui, &mut d, &mut open),
-                "agents" => {
-                    ui.label(crate::widgets::tr(ui, "GridCraft is fully drivable by agents. Every menu item, button and gesture is a command:"));
-                    ui.add_space(4.0);
-                    ui.monospace("gridcraft --control 7979        # JSON-lines control channel\ngridcraft-cli mcp --connect 7979   # MCP bridged to this window\ngridcraft-cli mcp                   # headless MCP server");
-                    ui.add_space(4.0);
-                    ui.label(crate::widgets::tr(ui, "{n} engine commands are available. See docs/mcp.md and docs/control-protocol.md.").replace("{n}", &gridcraft_engine::command_specs().len().to_string()));
-                }
-                "about" => about(ui, &mut d),
-                "journal" => {
-                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                        for (id, p) in app.session.journal.iter().rev().take(500) {
-                            ui.monospace(format!("{id} {p}"));
-                        }
-                    });
-                }
-                "macros" => macros(app, ui, &mut d),
-                "accessibility" => accessibility(app, ui, &mut d),
-                "statistics" => statistics_view(ui, &d),
-                "errorChecking" => error_checking_view(ui, d.result.as_ref()),
-                "evaluateFormula" => evaluate_view(ui, d.result.as_ref()),
-                "comments" => comments_view(app, ui),
-                "insertPicture" => {
-                    // A private inbox dies with this dialog; late browser results
-                    // cannot affect a later picture choice or another workbook.
-                    let arrived = d.picture_inbox.as_ref().and_then(|inbox| {
-                        inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop()
-                    });
-                    if let Some((name, bytes)) = arrived {
-                        d.picture_inbox = None;
-                        if bytes.len() > 16 * 1024 * 1024 {
-                            app.message = Some((d.title.clone(), "Choose a PNG or JPEG no larger than 16 MB.".into()));
-                        } else {
-                            d.values.remove("path");
-                            d.values.insert("alt".into(), json!(name));
-                            d.values.insert("base64".into(), json!(gridcraft_engine::io::base64_encode(&bytes)));
-                        }
+        ui.set_min_width(width - 20.0);
+        match d.name.as_str() {
+            "formatCells" => format_cells(app, ui, &mut d, &mut confirm),
+            "dataValidation" => data_validation_form(ui, &mut d, &mut confirm, &mut open),
+            "advancedFilter" => advanced_filter_form(ui, &mut d, &mut confirm, &mut open),
+            "insertFunction" => insert_function(app, ui, &mut d, &mut confirm),
+            "find" => find(app, ui, &mut d),
+            "goTo" => go_to(app, ui, &mut d, &mut confirm),
+            "zoom" => zoom(ui, &mut d, &mut confirm, &mut open),
+            "sort" => sort(app, ui, &mut d, &mut confirm),
+            "nameManager" => name_manager(app, ui, &mut d, &mut open),
+            "manageRules" => manage_rules(app, ui),
+            "recommendedCharts" => recommended_charts(app, ui, &mut d, &mut confirm, &mut open),
+            "selectData" => select_data(app, ui, &mut d, &mut confirm, &mut open),
+            "moveChart" => move_chart(app, ui, &mut d, &mut confirm, &mut open),
+            "commandSearch" => command_search(app, ui, &mut d, &mut confirm),
+            "goalSeek" => goal_seek(app, ui, &mut d, &mut confirm),
+            "pasteSpecial" => paste_special(app, ui, &mut d, &mut confirm, &mut open),
+            "analysisToolPak" => analysis_toolpak(app, ui, &mut d, &mut confirm, &mut open),
+            "solver" => solver(ui, &mut d, &mut confirm, &mut open),
+            "solverResults" => solver_results(app, ui, &mut d, &mut open),
+            "spelling" => spelling(app, ui, &mut d, &mut open),
+            "agents" => {
+                agent_control(app, ui);
+            }
+            "about" => about(ui, &mut d),
+            "journal" => {
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for (id, p) in app.session.journal.iter().rev().take(500) {
+                        ui.monospace(format!("{id} {p}"));
                     }
-                    if app.services.pick_picture_async.is_some() {
-                        let name = d.values.get("alt").and_then(Json::as_str).unwrap_or("No picture selected");
-                        ui.label(crate::widgets::tr(ui, name));
+                });
+            }
+            "macros" => macros(app, ui, &mut d),
+            "accessibility" => accessibility(app, ui, &mut d),
+            "statistics" => statistics_view(ui, &d),
+            "errorChecking" => error_checking_view(ui, d.result.as_ref()),
+            "evaluateFormula" => evaluate_view(ui, d.result.as_ref()),
+            "comments" => comments_view(app, ui),
+            "insertPicture" => {
+                // A private inbox dies with this dialog; late browser results
+                // cannot affect a later picture choice or another workbook.
+                let arrived = d.picture_inbox.as_ref().and_then(|inbox| inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop());
+                if let Some((name, bytes)) = arrived {
+                    d.picture_inbox = None;
+                    if bytes.len() > 16 * 1024 * 1024 {
+                        app.message = Some((d.title.clone(), "Choose a PNG or JPEG no larger than 16 MB.".into()));
                     } else {
-                        ui.label(crate::widgets::tr(ui, "Picture file path (PNG or JPEG):"));
-                        let mut path = d.values.get("path").and_then(Json::as_str).unwrap_or("").to_string();
-                        if ui.text_edit_singleline(&mut path).changed() {
-                            d.values.remove("base64");
-                            d.values.insert("path".into(), json!(path));
-                        }
-                    }
-                    if (app.services.pick_picture.is_some() || app.services.pick_picture_async.is_some()) && ui.button(crate::widgets::tr(ui, "Browse…")).clicked() {
-                        if let Some(start) = &app.services.pick_picture_async {
-                            let inbox = crate::Inbox::default();
-                            start(inbox.clone());
-                            d.picture_inbox = Some(inbox);
-                        } else if let Some(pick) = &app.services.pick_picture
-                            && let Some(path) = pick()
-                        {
-                            d.values.remove("base64");
-                            let alt = std::path::Path::new(&path).file_name().and_then(|name| name.to_str()).unwrap_or("");
-                            d.values.insert("alt".into(), json!(alt));
-                            d.values.insert("path".into(), json!(path));
-                        }
-                    }
-                    ui.label(crate::widgets::tr(ui, "Description (optional):"));
-                    let mut alt = d.values.get("alt").and_then(Json::as_str).unwrap_or("").to_string();
-                    if ui.text_edit_singleline(&mut alt).changed() {
-                        d.values.insert("alt".into(), json!(alt));
-                    }
-                    if d.values.get("placement").and_then(Json::as_str) == Some("cell") {
-                        ui.label(egui::RichText::new(crate::widgets::tr(ui, "Fits inside the selected cell and moves with its content.")).small());
-                    }
-                    ok_cancel(ui, &mut confirm, &mut open);
-                }
-                "pickList" => {
-                    let items: Vec<String> = app
-                        .session
-                        .active()
-                        .and_then(|doc| {
-                            let sh = doc.wb.active()?;
-                            let a = doc.selection.active;
-                            let mut seen = std::collections::BTreeSet::new();
-                            let mut r = a.row;
-                            while r > 0 && !sh.value(gridcraft_engine::core::CellRef::new(r - 1, a.col)).is_empty() {
-                                r -= 1;
-                                seen.insert(sh.value(gridcraft_engine::core::CellRef::new(r, a.col)).display());
-                            }
-                            Some(seen.into_iter().collect())
-                        })
-                        .unwrap_or_default();
-                    for it in items {
-                        if ui.button(&it).clicked() {
-                            app.run_or_alert("cell.set", json!({"input": it}));
-                            open = false;
-                        }
+                        d.values.remove("path");
+                        d.values.insert("alt".into(), json!(name));
+                        d.values.insert("base64".into(), json!(gridcraft_engine::io::base64_encode(&bytes)));
                     }
                 }
-                "saveCopy" => {
-                    let fmt = d.values.get("format").and_then(Json::as_str).unwrap_or("xlsx").to_string();
-                    ui.label(crate::widgets::tr(ui, "Save a copy as .{format}").replace("{format}", &fmt));
+                if app.services.pick_picture_async.is_some() {
+                    let name = d.values.get("alt").and_then(Json::as_str).unwrap_or("No picture selected");
+                    ui.label(crate::widgets::tr(ui, name));
+                } else {
+                    ui.label(crate::widgets::tr(ui, "Picture file path (PNG or JPEG):"));
                     let mut path = d.values.get("path").and_then(Json::as_str).unwrap_or("").to_string();
-                    ui.text_edit_singleline(&mut path);
-                    d.values.insert("path".into(), json!(path.clone()));
-                    ok_cancel(ui, &mut confirm, &mut open);
-                    if confirm {
-                        // A bare name has no folder: written as typed it would land in the
-                        // process's working directory (`/` from the Finder, the install folder on
-                        // Windows), never where the user looks. The picker chooses the folder.
-                        let pick = app.services.pick_save.as_ref();
-                        let target = if path.is_empty() {
-                            pick.and_then(|f| f(&format!("Copy.{fmt}")))
-                        } else if let Some(f) = pick.filter(|_| std::path::Path::new(&path).is_relative()) {
-                            f(&if path.ends_with(&format!(".{fmt}")) { path } else { format!("{path}.{fmt}") })
-                        } else {
-                            Some(path)
-                        };
-                        if let Some(t) = target {
-                            let id = match fmt.as_str() {
-                                "csv" => "file.exportCsv",
-                                "html" => "file.exportHtml",
-                                _ => "file.saveAs",
-                            };
-                            app.run_or_alert(id, json!({"path": t}));
-                        }
+                    if ui.text_edit_singleline(&mut path).changed() {
+                        d.values.remove("base64");
+                        d.values.insert("path".into(), json!(path));
                     }
                 }
-                "saveChanges" => {
-                    let title = d.values.get("title").and_then(Json::as_str).unwrap_or("");
-                    let ask = if title.is_empty() {
-                        crate::widgets::tr(ui, "Do you want to save the changes you made to {title}?").replace("{title}", crate::widgets::tr(ui, "this workbook"))
+                if (app.services.pick_picture.is_some() || app.services.pick_picture_async.is_some())
+                    && ui.button(crate::widgets::tr(ui, "Browse…")).clicked()
+                {
+                    if let Some(start) = &app.services.pick_picture_async {
+                        let inbox = crate::Inbox::default();
+                        start(inbox.clone());
+                        d.picture_inbox = Some(inbox);
+                    } else if let Some(pick) = &app.services.pick_picture
+                        && let Some(path) = pick()
+                    {
+                        d.values.remove("base64");
+                        let alt = std::path::Path::new(&path).file_name().and_then(|name| name.to_str()).unwrap_or("");
+                        d.values.insert("alt".into(), json!(alt));
+                        d.values.insert("path".into(), json!(path));
+                    }
+                }
+                ui.label(crate::widgets::tr(ui, "Description (optional):"));
+                let mut alt = d.values.get("alt").and_then(Json::as_str).unwrap_or("").to_string();
+                if ui.text_edit_singleline(&mut alt).changed() {
+                    d.values.insert("alt".into(), json!(alt));
+                }
+                if d.values.get("placement").and_then(Json::as_str) == Some("cell") {
+                    ui.label(egui::RichText::new(crate::widgets::tr(ui, "Fits inside the selected cell and moves with its content.")).small());
+                }
+                ok_cancel(ui, &mut confirm, &mut open);
+            }
+            "pickList" => {
+                let items: Vec<String> = app
+                    .session
+                    .active()
+                    .and_then(|doc| {
+                        let sh = doc.wb.active()?;
+                        let a = doc.selection.active;
+                        let mut seen = std::collections::BTreeSet::new();
+                        let mut r = a.row;
+                        while r > 0 && !sh.value(gridcraft_engine::core::CellRef::new(r - 1, a.col)).is_empty() {
+                            r -= 1;
+                            seen.insert(sh.value(gridcraft_engine::core::CellRef::new(r, a.col)).display());
+                        }
+                        Some(seen.into_iter().collect())
+                    })
+                    .unwrap_or_default();
+                for it in items {
+                    if ui.button(&it).clicked() {
+                        app.run_or_alert("cell.set", json!({"input": it}));
+                        open = false;
+                    }
+                }
+            }
+            "saveCopy" => {
+                let fmt = d.values.get("format").and_then(Json::as_str).unwrap_or("xlsx").to_string();
+                ui.label(crate::widgets::tr(ui, "Save a copy as .{format}").replace("{format}", &fmt));
+                let mut path = d.values.get("path").and_then(Json::as_str).unwrap_or("").to_string();
+                ui.text_edit_singleline(&mut path);
+                d.values.insert("path".into(), json!(path.clone()));
+                ok_cancel(ui, &mut confirm, &mut open);
+                if confirm {
+                    // A bare name has no folder: written as typed it would land in the
+                    // process's working directory (`/` from the Finder, the install folder on
+                    // Windows), never where the user looks. The picker chooses the folder.
+                    let pick = app.services.pick_save.as_ref();
+                    let target = if path.is_empty() {
+                        pick.and_then(|f| f(&format!("Copy.{fmt}")))
+                    } else if let Some(f) = pick.filter(|_| std::path::Path::new(&path).is_relative()) {
+                        f(&if path.ends_with(&format!(".{fmt}")) { path } else { format!("{path}.{fmt}") })
                     } else {
-                        crate::widgets::tr(ui, "Do you want to save the changes you made to {title}?").replace("{title}", title)
+                        Some(path)
                     };
-                    ui.label(ask);
-                    // Asked while quitting: once answered, the next unsaved workbook is asked about.
-                    let quitting = d.values.get("quit").and_then(Json::as_bool) == Some(true);
-                    ui.horizontal(|ui| {
-                        if ui.button(crate::widgets::tr(ui, "Don't Save")).clicked() {
+                    if let Some(t) = target {
+                        let id = match fmt.as_str() {
+                            "csv" => "file.exportCsv",
+                            "html" => "file.exportHtml",
+                            _ => "file.saveAs",
+                        };
+                        app.run_or_alert(id, json!({"path": t}));
+                    }
+                }
+            }
+            "saveChanges" => {
+                let title = d.values.get("title").and_then(Json::as_str).unwrap_or("");
+                let ask = if title.is_empty() {
+                    crate::widgets::tr(ui, "Do you want to save the changes you made to {title}?")
+                        .replace("{title}", crate::widgets::tr(ui, "this workbook"))
+                } else {
+                    crate::widgets::tr(ui, "Do you want to save the changes you made to {title}?").replace("{title}", title)
+                };
+                ui.label(ask);
+                // Asked while quitting: once answered, the next unsaved workbook is asked about.
+                let quitting = d.values.get("quit").and_then(Json::as_bool) == Some(true);
+                ui.horizontal(|ui| {
+                    if ui.button(crate::widgets::tr(ui, "Don't Save")).clicked() {
+                        app.run_or_alert("file.close", json!({"force": true}));
+                        if quitting {
+                            app.continue_quit(ui.ctx());
+                        }
+                        open = false;
+                    }
+                    if ui.button(crate::widgets::tr(ui, "Cancel")).clicked() {
+                        open = false;
+                    }
+                    // File operations must include the cell the user is still editing (as the File > Save menu item already does).
+                    if ui.button(crate::widgets::tr(ui, "Save")).clicked() && app.commit_edit(0, 0, false, false) {
+                        app.run_or_alert("file.save", json!({}));
+                        if app.session.active().is_some_and(|x| !x.is_dirty()) {
                             app.run_or_alert("file.close", json!({"force": true}));
                             if quitting {
                                 app.continue_quit(ui.ctx());
                             }
-                            open = false;
                         }
-                        if ui.button(crate::widgets::tr(ui, "Cancel")).clicked() {
-                            open = false;
-                        }
-                        // File operations must include the cell the user is still editing (as the File > Save menu item already does).
-                        if ui.button(crate::widgets::tr(ui, "Save")).clicked() && app.commit_edit(0, 0, false, false) {
-                            app.run_or_alert("file.save", json!({}));
-                            if app.session.active().is_some_and(|x| !x.is_dirty()) {
-                                app.run_or_alert("file.close", json!({"force": true}));
-                                if quitting {
-                                    app.continue_quit(ui.ctx());
-                                }
-                            }
-                            open = false;
-                        }
-                    });
-                }
-                "start" => {
-                    ui.heading(crate::widgets::tr(ui, "Start a new workbook"));
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button(crate::widgets::tr(ui, "Blank workbook")).clicked() {
-                            app.run_or_alert("file.new", json!({}));
-                            open = false;
-                        }
-                        for (n, t) in gridcraft_engine::sample::SAMPLES {
-                            if ui.button(crate::widgets::tr(ui, t)).clicked() {
-                                app.run_or_alert("file.new", json!({"sample": n}));
-                                open = false;
-                            }
-                        }
-                    });
-                    ui.separator();
-                    ui.label(egui::RichText::new(crate::widgets::tr(ui, "Recent")).strong());
-                    for path in app.ui.recent.clone() {
-                        if ui.link(&path).clicked() {
-                            app.open_path(&path);
+                        open = false;
+                    }
+                });
+            }
+            "start" => {
+                ui.heading(crate::widgets::tr(ui, "Start a new workbook"));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(crate::widgets::tr(ui, "Blank workbook")).clicked() {
+                        app.run_or_alert("file.new", json!({}));
+                        open = false;
+                    }
+                    for (n, t) in gridcraft_engine::sample::SAMPLES {
+                        if ui.button(crate::widgets::tr(ui, t)).clicked() {
+                            app.run_or_alert("file.new", json!({"sample": n}));
                             open = false;
                         }
                     }
-                    if ui.button(crate::widgets::tr(ui, "Open…")).clicked() {
-                        app.open_dialog("open", json!({}));
+                });
+                ui.separator();
+                ui.label(egui::RichText::new(crate::widgets::tr(ui, "Recent")).strong());
+                for path in app.ui.recent.clone() {
+                    if ui.link(&path).clicked() {
+                        app.open_path(&path);
                         open = false;
                     }
                 }
-                _ => form(ui, &mut d, &mut confirm, &mut open),
+                if ui.button(crate::widgets::tr(ui, "Open…")).clicked() {
+                    app.open_dialog("open", json!({}));
+                    open = false;
+                }
             }
-        });
+            _ => form(ui, &mut d, &mut confirm, &mut open),
+        }
+    });
     // Hyperlinks inside dialogs (About ▸ Contributors) open through the host's `open_url`, since
     // the native shell has no browser integration of its own.
     if let Some(open_url) = &app.services.open_url {
@@ -3712,4 +3709,86 @@ mod tests {
         assert_eq!(d.values["type"], "list");
         assert!(d.values.get("formula1").is_none());
     }
+}
+
+/// Automate ▸ Agent Control: how an agent drives this application.
+///
+/// GridCraft has no in-app assistant on purpose (decision 11-14): a model inside the window would
+/// have to ship a network client, a key store and a second way to run a command, and it would be
+/// absent from the web build — while an agent outside the window already reaches **every** command
+/// through the same registry the menus use. This dialog is that story's front door: where to
+/// connect, what to send, and what it can reach.
+fn agent_control(app: &mut SheetApp, ui: &mut egui::Ui) {
+    let port = app.control_port.unwrap_or(7979);
+    let listening = app.control_rx.is_some();
+    let commands = gridcraft_engine::command_specs().len();
+    // The dialog has a 520-point frame; a pasted command line is longer than that, so every line
+    // is truncated to the width available and shows itself in full on hover. Widening the dialog to
+    // fit the longest command would put it over half the sheet.
+    ui.set_max_width(500.0);
+    if listening {
+        ui.label(egui::RichText::new(crate::widgets::tr(ui, "Listening on 127.0.0.1:{port}.").replace("{port}", &port.to_string())).strong());
+    } else {
+        ui.label(
+            egui::RichText::new(
+                crate::widgets::tr(ui, "Not listening. Start GridCraft with --control {port} to let agents in.").replace("{port}", &port.to_string()),
+            )
+            .color(crate::theme::Tokens::get(ui.ctx()).warning_ink),
+        );
+    }
+    ui.add_space(6.0);
+    ui.label(crate::widgets::tr(
+        ui,
+        "Every menu item, button and gesture is a command, so an agent drives the same engine this window does. Three ways in:",
+    ));
+    for (what, line) in [
+        ("MCP (this window)", format!("gridcraft-cli mcp --connect {port}")),
+        ("MCP (headless)", "gridcraft-cli mcp".to_string()),
+        ("CLI, one command", "gridcraft-cli run --in book.xlsx --cmd 'home.bold={\"range\":\"A1:C1\"}' --out book.xlsx".to_string()),
+        ("CLI, the catalogue", "gridcraft-cli commands".to_string()),
+    ] {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(crate::widgets::tr(ui, what)).size(12.0).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button(crate::widgets::tr(ui, "Copy")).clicked() {
+                    ui.ctx().copy_text(line.clone());
+                }
+            });
+        });
+        ui.add(egui::Label::new(egui::RichText::new(&line).monospace().size(11.0)).truncate()).on_hover_text(&line);
+    }
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(crate::widgets::tr(ui, "A control-channel request and its answer:")).strong());
+    let request =
+        "{\"id\":1,\"method\":\"engine.execute\",\"params\":{\"command\":\"cell.set\",\"params\":{\"cell\":\"B2\",\"input\":\"=SUM(A1:A9)\"}}}}"
+            .to_string();
+    ui.horizontal(|ui| {
+        // The button is placed first in a right-to-left layout, so the truncated line gets what is
+        // left: adding the line first let it run under the button.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button(crate::widgets::tr(ui, "Copy")).clicked() {
+                ui.ctx().copy_text(request.clone());
+            }
+            ui.add(egui::Label::new(egui::RichText::new(&request).monospace().size(11.0)).truncate()).on_hover_text(&request);
+        });
+    });
+    ui.add(egui::Label::new(egui::RichText::new("{\"id\":1,\"ok\":true,\"result\":{...}}").monospace().size(11.0)).truncate());
+    ui.add_space(8.0);
+    ui.label(
+        crate::widgets::tr(ui, "{n} commands are reachable this way, with the same parameters the menus pass. A command with empty params uses its defaults; it never opens a dialog.")
+            .replace("{n}", &commands.to_string()),
+    );
+    ui.add_space(4.0);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(crate::widgets::tr(
+                ui,
+                "Methods: docs/control-protocol.md; tools: docs/mcp.md. To see what an agent did, the Action Journal lists every command; inspect.whatChanged answers cell by cell.",
+            ))
+            .size(11.0)
+            .color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+        )
+        .wrap(),
+    );
 }

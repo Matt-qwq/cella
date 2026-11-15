@@ -260,6 +260,9 @@ pub struct SheetApp {
     /// Synthetic input from agents, one batch per frame (drags need several frames).
     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
     pub control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
+    /// The port the control channel is listening on, for the Agent Control dialog to show. None
+    /// when the window was started without one.
+    pub control_port: Option<u16>,
     pub grid: grid::GridState,
     /// The app's text engine: the one place shaped cell text (bidi, Arabic joining, Indic
     /// reordering) is produced, measured and mapped to caret positions. Shared with the engine's
@@ -328,6 +331,7 @@ impl SheetApp {
             print_feedback_seen: None,
             synthetic: Default::default(),
             control_rx: None,
+            control_port: None,
             grid: grid::GridState {
                 last_border: "bottom".into(),
                 last_fill: "#FFFF00".into(),

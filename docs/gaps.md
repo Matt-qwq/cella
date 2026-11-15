@@ -1018,8 +1018,22 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   needs (a named thing in the workbook, a trust flag, a runner) is what landed.
 
 ### 22. AI features (F)
-- No natural-language formulas or Analyze Data; agent control via MCP is already strong.
-  **Estimate:** 30–50 h; model choice needs the owner.
+- **Decision 11-14: no in-app assistant, ever — the agent surface is CLI and MCP.** A model inside
+  the window would need a network client (a TLS stack, and only on native targets, so the web build
+  would silently lose a feature), a key store, and a second way to run a command next to the
+  registry; and the thing it buys — "ask in English, get edits" — an external agent already does
+  better, because it can read the files, the docs and the user's own subscription. Building it would
+  also invite the one thing the roadmap refuses: **AI features that cannot be verified against
+  engine state**. So the work is not "ship a chat box" but "make the outside-in surface excellent",
+  and that is what landed (11-14): the Agent Control dialog now shows the port the window is
+  listening on (or how to start with `--control`), the four ways in with a copy button each, a real
+  request and its answer, and the command count; `inspect.whatChanged` answers "what changed" cell
+  by cell from the saved/opened snapshot, so an agent's claim can be checked; MCP went to 31 tools
+  with paging, batching and the data platform; and every one of the 393 commands is proved reachable
+  from the CLI and from MCP by id.
+- **Still open (not this decision):** natural-language formulas and Analyze Data would be built-in
+  features that need a model *inside* the app; if that ever becomes a goal it is a new decision, not
+  a leftover of this one. **Estimate:** 30–50 h and the same fork.
 - **Landed 11-14 (N4):** the engine answers the question an assistant has to answer first —
   `inspect.whatChanged {sheet?, limit?}` compares the workbook with the state it was **saved or
   opened** as (the same snapshot the modified marker reads) and returns the cells that differ, old

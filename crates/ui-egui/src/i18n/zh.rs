@@ -1843,6 +1843,24 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "This chart's legend entries are its points, not its series, so none of them can be deleted from here." => {
             "此图表的图例项是它的数据点而不是系列，因此无法在此删除其中任何一项。"
         }
+        // Automate > Agent Control: how an agent drives the app (there is no in-app assistant).
+        "Listening on 127.0.0.1:{port}." => "正在 127.0.0.1:{port} 上监听。",
+        "Not listening. Start GridCraft with --control {port} to let agents in." => "未在监听。用 --control {port} 启动 GridCraft，代理才能接入。",
+        "Every menu item, button and gesture is a command, so an agent drives the same engine this window does. Three ways in:" => {
+            "每个菜单项、按钮和手势都是一条命令，所以代理驱动的就是本窗口驱动的同一台引擎。三种接法："
+        }
+        "MCP (this window)" => "MCP（本窗口）",
+        "MCP (headless)" => "MCP（无窗口）",
+        "CLI, one command" => "CLI，单条命令",
+        "CLI, the catalogue" => "CLI，命令目录",
+        "Methods: docs/control-protocol.md; tools: docs/mcp.md. To see what an agent did, the Action Journal lists every command; inspect.whatChanged answers cell by cell." => {
+            "方法见 docs/control-protocol.md，工具见 docs/mcp.md。想知道代理做了什么：操作日志会列出每条命令，inspect.whatChanged 给出逐格答案。"
+        }
+        "A control-channel request and its answer:" => "一条控制通道请求及其应答：",
+        "{n} commands are reachable this way, with the same parameters the menus pass. A command with empty params uses its defaults; it never opens a dialog." => {
+            "这样可达 {n} 条命令，参数与菜单传入的完全相同。空参数的命令使用默认值，绝不开对话框。"
+        }
+
         // Extensions and the "what changed" question an agent asks.
         "Add Extension" => "添加扩展",
         "Remove Extension" => "删除扩展",

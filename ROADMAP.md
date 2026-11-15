@@ -74,7 +74,7 @@ collaboration, mobile, AI).
 | Hardware (multi-core calc, GPU, pen, multi-window) | ~40% | 25–40 | [hardware-parity.md](docs/hardware-parity.md) |
 | Platforms | ~80% (no iOS/Android; ahead on Linux, BSD, RISC-V) | 30–60 | [target-app-parity.md](docs/target-app-parity.md#platforms) |
 | Ecosystem / add-ins | ~10% (VBA out of scope; own scripts, MCP, CLI) | 25–40 | [target-app-parity.md](docs/target-app-parity.md#ecosystem-and-ai) |
-| AI features | ~15% (agent control strong; no in-app assistant) | 30–50 | [target-app-parity.md](docs/target-app-parity.md#ecosystem-and-ai) |
+| AI features | **decided 11-14: out of the app** — agents drive it through CLI/MCP; no in-app assistant | — | [gaps.md §22](docs/gaps.md) |
 | **Total** | **~55%** | **~627–1,020** | |
 
 ## Features
