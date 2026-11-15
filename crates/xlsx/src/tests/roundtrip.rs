@@ -296,6 +296,9 @@ fn sample() -> Workbook {
         headings: true,
         center_h: true,
         center_v: false,
+        page_order: PageOrder::OverThenDown,
+        black_and_white: true,
+        draft: true,
         header: "&L&D&RPage &P".into(),
         footer: "&C&F".into(),
         row_breaks: vec![15, 30],
@@ -676,8 +679,8 @@ fn saved_package_bytes_are_stable() {
     use sha2::Digest as _;
     let bytes = write_xlsx(&sample()).unwrap();
     let digest: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(bytes.len(), 37153, "the package changed size");
-    assert_eq!(digest, "ae15eeb11cee78f1259127f7bbfc3d7f8ffa46e228d2eb089388f593b3a712d7", "the package changed bytes");
+    assert_eq!(bytes.len(), 37185, "the package changed size");
+    assert_eq!(digest, "a4bcc476976c4e9f7c0519cfa61cfcd2755da129ba4394b0025d8886af3fc16e", "the package changed bytes");
 }
 
 /// Every sheet is deflated as it is produced, which must not change a byte, drop a part or make
