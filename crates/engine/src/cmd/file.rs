@@ -306,11 +306,13 @@ fn options(s: &mut Session, _: &Json) -> Result<Json> {
     Ok(json!({"calculation": calculation}))
 }
 
+/// Switch to a window by its place in the window list (`view.switchWindows`), which for a session
+/// with one window per document is the document order it has always been.
 fn activate_window(s: &mut Session, p: &Json) -> Result<Json> {
     let i = u32_param(p, "index").ok_or_else(|| bad("window.activate", "missing `index`"))? as usize;
-    if i >= s.documents().len() {
+    let window = s.windows().get(i).map(|(_, w)| w.id).ok_or_else(|| bad("window.activate", "no such window"))?;
+    if !s.focus_window(window) {
         return Err(bad("window.activate", "no such window"));
     }
-    s.set_active(i);
-    ok()
+    Ok(json!({"index": i, "window": window.0, "title": s.doc()?.display_title()}))
 }
