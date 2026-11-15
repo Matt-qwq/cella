@@ -2440,6 +2440,46 @@ fn view(app: &mut SheetApp, ui: &mut Ui) {
             },
         );
     });
+    sep(ui);
+    // Window: one workbook in several windows. The engine owns the window list, so New Window is
+    // one command and every other window is an OS window of its own showing the same document.
+    let new = big_button(ui, Icon::Book, "New Window", "Another window on this workbook: the same document, its undo history and its save", false);
+    control_keytip(app, ui, &new, "view.newWindow");
+    if new.clicked() || invoke(app, "view.newWindow") {
+        act(app, "view.newWindow", json!({}));
+    }
+    let switching = big_button(ui, Icon::SheetList, "Switch\nWindows", "Switch Windows", true);
+    control_keytip(app, ui, &switching, "view.switchWindows");
+    egui::Popup::menu(&switching).show(|ui| {
+        let windows = app.session.windows();
+        let active = app.session.active_window();
+        for (i, (_, w)) in windows.iter().enumerate() {
+            // Hidden windows are not in Excel's Switch Windows list either; Unhide brings them back.
+            if w.hidden {
+                continue;
+            }
+            if ui.selectable_label(active == Some(w.id), app.window_label(w.id)).clicked() {
+                act(app, "window.activate", json!({"index": i}));
+            }
+        }
+    });
+    ui.vertical(|ui| {
+        let hide = small_button(ui, Icon::Minus, "Hide", "Hide this window; the document stays open", false);
+        control_keytip(app, ui, &hide, "view.hideWindow");
+        if hide.clicked() || invoke(app, "view.hideWindow") {
+            act(app, "view.hideWindow", json!({}));
+        }
+        let unhide = small_button(ui, Icon::Plus, "Unhide", "Show a hidden window again", false);
+        control_keytip(app, ui, &unhide, "view.unhideWindow");
+        if unhide.clicked() || invoke(app, "view.unhideWindow") {
+            act(app, "view.unhideWindow", json!({}));
+        }
+        let close = small_button(ui, Icon::Close, "Close Window", "Close this window (its document closes with the last one)", false);
+        control_keytip(app, ui, &close, "view.closeWindow");
+        if close.clicked() || invoke(app, "view.closeWindow") {
+            act(app, "view.closeWindow", json!({}));
+        }
+    });
 }
 
 fn automate(app: &mut SheetApp, ui: &mut Ui) {

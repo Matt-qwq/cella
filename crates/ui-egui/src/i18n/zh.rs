@@ -2010,6 +2010,12 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Undo History" => "撤销历史记录",
         "Value Field Settings" => "值字段设置",
         "Value Filters" => "值筛选",
+        // zh-windows - entries the multiple-window support needs (View > Window, and the browser
+        // build's answer to View > New Window, which needs one window per viewport).
+        "Close Window" => "关闭窗口",
+        "A second window needs the desktop app: the browser build keeps every workbook in this page." => {
+            "第二个窗口需要使用桌面版：浏览器版的所有工作簿都在这个页面中。"
+        }
         _ => return None,
     })
 }

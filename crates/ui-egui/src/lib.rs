@@ -41,7 +41,7 @@ pub mod widgets;
 use std::collections::HashMap;
 
 use gridcraft_engine::core::{CellRef, RangeRef};
-use gridcraft_engine::{Session, UiRequest};
+use gridcraft_engine::{Session, UiRequest, WindowId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -244,7 +244,9 @@ pub struct SheetApp {
     pub ui: UiState,
     /// The window chrome to draw (see [`Chrome`]).
     pub chrome: Chrome,
-    pub views: HashMap<(u64, usize), SheetView>,
+    /// Scroll position per window and sheet: two windows on one document scroll on their own,
+    /// which is the point of opening a second one.
+    pub views: HashMap<(WindowId, usize), SheetView>,
     pub editor: Option<editor::EditState>,
     pub text_box_editor: Option<text_box::EditState>,
     pub dialog: Option<dialogs::Dialog>,
@@ -310,6 +312,19 @@ pub struct SheetApp {
     /// Every unsaved workbook has been answered for quitting (or `app.quit` asked): the next
     /// window close goes through.
     pub allow_close: bool,
+    /// The window the app's own viewport shows. Bound to a visible window on the first frame and
+    /// when that one is hidden or closed; the control channel's `ui.screenshot` and pointer
+    /// methods are that viewport, so this is what they see.
+    pub window_root: Option<WindowId>,
+    /// The window whose content the current pass paints, so scroll positions and geometry belong
+    /// to the window being drawn (the app's own one after a frame ends).
+    painted_window: Option<WindowId>,
+    /// The window the app last moved the OS focus to, so a window switch made by a command moves
+    /// it once instead of every frame.
+    window_focused: Option<WindowId>,
+    /// Extra windows whose close button has already been answered: the operating system keeps
+    /// reporting the request until the window goes, and answering it twice would ask twice.
+    window_close_handled: std::collections::HashSet<WindowId>,
 }
 
 impl SheetApp {
@@ -359,6 +374,10 @@ impl SheetApp {
             tab_run: None,
             started: now_ms(),
             allow_close: false,
+            window_root: None,
+            painted_window: None,
+            window_focused: None,
+            window_close_handled: std::collections::HashSet::new(),
         }
     }
 
@@ -429,6 +448,7 @@ impl SheetApp {
                     | "view.newWindow"
                     | "view.hideWindow"
                     | "view.unhideWindow"
+                    | "view.closeWindow"
                     | "home.insertSheet"
                     | "home.deleteSheet"
                     | "edit.undo"
@@ -733,6 +753,18 @@ impl SheetApp {
                 self.open_dialog(name, p.clone());
                 Ok(json!({"dialog": self.dialog.as_ref().map(|d| d.name())}))
             }
+            "view.newWindow" => {
+                // The browser build has one window — the page — so it says so rather than
+                // quietly doing nothing. The engine refuses it there too (see its `enabled`).
+                if cfg!(target_arch = "wasm32") {
+                    return Some(Err(self
+                        .ui
+                        .language
+                        .tr("A second window needs the desktop app: the browser build keeps every workbook in this page.")
+                        .to_string()));
+                }
+                self.session.run(id, p.clone()).map_err(|e| e.to_string())
+            }
             "ui.message.dismiss" => {
                 self.message = None;
                 Ok(Json::Null)
@@ -917,16 +949,37 @@ impl SheetApp {
         }
     }
 
+    /// A window's name in the window menu and its title bar: the document's title, numbered
+    /// from the second window on (`Book1`, `Book1:2`), as Excel names them.
+    pub fn window_label(&self, window: WindowId) -> String {
+        let Some(d) = self.session.window_doc(window).and_then(|i| self.session.documents().get(i)) else {
+            return String::new();
+        };
+        let nth = d.windows.iter().position(|w| w.id == window).unwrap_or(0);
+        if nth == 0 { d.display_title() } else { format!("{}:{}", d.display_title(), nth + 1) }
+    }
+
+    /// The document and sheet a dialog or a text box is about, which is the active one.
     pub fn view_key(&self) -> Option<(u64, usize)> {
         self.session.active().map(|d| (d.uid, d.wb.active_sheet))
     }
 
+    /// The window whose scroll position this frame uses: the one being painted, or the app's own
+    /// window (and, before the first frame, the focused window).
+    pub fn painted_window(&self) -> Option<WindowId> {
+        self.painted_window.or(self.window_root).or_else(|| self.session.active_window())
+    }
+
+    fn scroll_key(&self) -> Option<(WindowId, usize)> {
+        Some((self.painted_window()?, self.session.active()?.wb.active_sheet))
+    }
+
     pub fn view(&self) -> SheetView {
-        self.view_key().and_then(|k| self.views.get(&k).copied()).unwrap_or_else(|| self.saved_view())
+        self.scroll_key().and_then(|k| self.views.get(&k).copied()).unwrap_or_else(|| self.saved_view())
     }
 
     pub fn view_mut(&mut self) -> Option<&mut SheetView> {
-        let k = self.view_key()?;
+        let k = self.scroll_key()?;
         let saved = self.saved_view();
         Some(self.views.entry(k).or_insert(saved))
     }
@@ -948,19 +1001,29 @@ impl SheetApp {
     /// cell to the engine so a save writes them (`sheetView topLeftCell`). Normal view only:
     /// Page Layout view scrolls over pages, not cells.
     pub fn store_view_state(&mut self) {
-        let Some(d) = self.session.active_mut() else { return };
+        // A document is saved with one first visible cell per sheet: the app's own window when it
+        // shows this document, otherwise the window that does.
+        let window =
+            self.window_root.filter(|w| self.session.window_doc(*w) == Some(self.session.active_index())).or_else(|| self.session.active_window());
         let mut tops = Vec::new();
-        for (&(uid, si), v) in &self.views {
-            let Some(sh) = d.wb.sheets.get(si).filter(|sh| uid == d.uid && sh.view == gridcraft_engine::model::SheetViewMode::Normal) else {
-                continue;
-            };
-            let (fr, fc) = sh.freeze.unwrap_or((0, 0));
-            // A hair past the edge so a row that starts exactly at the scroll offset is the one found.
-            let row = sh.row_at(sh.row_top(fr) + v.scroll.y.max(0.0) as f64 + 0.01);
-            let col = sh.col_at(sh.col_left(fc) + v.scroll.x.max(0.0) as f64 + 0.01);
-            tops.push((si, CellRef::new(row, col)));
+        if let Some(d) = self.session.active() {
+            for (&(window_of, si), v) in &self.views {
+                if window != Some(window_of) {
+                    continue;
+                }
+                let Some(sh) = d.wb.sheets.get(si).filter(|sh| sh.view == gridcraft_engine::model::SheetViewMode::Normal) else {
+                    continue;
+                };
+                let (fr, fc) = sh.freeze.unwrap_or((0, 0));
+                // A hair past the edge so a row that starts exactly at the scroll offset is the one found.
+                let row = sh.row_at(sh.row_top(fr) + v.scroll.y.max(0.0) as f64 + 0.01);
+                let col = sh.col_at(sh.col_left(fc) + v.scroll.x.max(0.0) as f64 + 0.01);
+                tops.push((si, CellRef::new(row, col)));
+            }
         }
-        d.store_view(&tops);
+        if let Some(d) = self.session.active_mut() {
+            d.store_view(&tops);
+        }
     }
 
     /// Starts editing the active cell. `text` replaces the content (typing) or pre-fills it.
@@ -1310,7 +1373,11 @@ impl SheetApp {
         self.ui.autosave = !self.ui.autosave;
     }
 
-    /// Lays out the whole window.
+    /// Lays out the app's own window, and every other window of every open document as a window
+    /// of its own (an egui viewport).
+    ///
+    /// The engine owns the window list (`Session::windows`), so View ▸ New Window is one engine
+    /// command: the extra windows appear here because the list grew.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll_printing(&ctx);
@@ -1319,50 +1386,13 @@ impl SheetApp {
             return;
         }
         let t0 = now_ms();
-        text_box::before_ui(self, &ctx);
-        // The language the widgets translate with this frame (see `i18n::current`).
-        i18n::set_current(&ctx, self.ui.language);
-        let t = theme::Tokens::get(&ctx);
-        // A host can turn the File tab off while Backstage is already open: close it.
-        if !self.chrome.file_tab {
-            self.backstage = None;
-        }
-        // Keytips opened the File view (Alt, F): its letters keep working there.
-        if self.backstage.is_none() || self.keytips.prefix().is_some() {
-            self.ribbon_keys(&ctx);
-        }
-        if self.chrome.title_bar {
-            ribbon::title_bar(self, ui);
-        }
-        if self.backstage.is_some() {
-            // File tab: the Backstage view replaces everything below the title bar.
-            backstage::show(self, ui);
-        } else {
-            ribbon::show(self, ui);
-            widgets::notice_bar(self, ui);
-            if self.session.prefs.formula_bar {
-                formula_bar::show(self, ui);
-            }
-            if self.ui.status_bar {
-                tabs::status_bar(self, ui);
-            }
-            tabs::sheet_tabs(self, ui);
-            pivot_pane::show(self, ui);
-            panes::show(self, ui);
-            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.grid_bg)).show(ui, |ui| {
-                let g0 = now_ms();
-                grid::show(self, ui);
-                self.perf.grid_ms = now_ms() - g0;
-            });
-        }
-        dialogs::show(self, &ctx);
-        widgets::message_box(self, &ctx);
-        widgets::toast(self, &ctx);
-        control::issue_screenshots(self, &ctx);
-        control::collect_screenshots(self, &ctx);
-        if !ctx.input(|i| i.focused) {
-            // Nothing else to do.
-        }
+        // The extra windows first, the app's own last: a window is painted in a pass of its own,
+        // and the state the frame leaves behind (the grid geometry the control channel reads, the
+        // focused window's document) belongs to the app's own window.
+        self.show_extra_windows(&ctx);
+        let root = self.window_root;
+        self.window_ui(ui, root, true);
+        self.follow_active_window(&ctx);
         let now = now_ms();
         self.perf.frame_ms = now - t0;
         if self.perf.last > 0.0 {
@@ -1383,14 +1413,169 @@ impl SheetApp {
             self.store_view_state();
             let _ = self.session.run("file.save", json!({}));
         }
-        // Window title.
-        if let Some(d) = self.session.active() {
+    }
+
+    /// One window's content: the app chrome and grid, for the document that window shows. `own`
+    /// is the app's own viewport — the only one that runs the app-wide parts (cell-text layout,
+    /// the File view's keytips, dialogs, messages, toasts, the control channel's screenshots) and
+    /// whose title bar text is pushed to the operating system.
+    ///
+    /// Painting a window makes the document it shows the active one, so the commands the user's
+    /// clicks run apply to that document; [`SheetApp::follow_active_window`] puts the session back
+    /// on the focused window afterwards.
+    fn window_ui(&mut self, ui: &mut egui::Ui, window: Option<WindowId>, own: bool) {
+        let ctx = ui.ctx().clone();
+        self.painted_window = window;
+        if let Some(doc) = window.and_then(|w| self.session.window_doc(w)) {
+            self.session.set_active(doc);
+        }
+        // Focus follows the window the user works in: the window list, Switch Windows and the
+        // commands that follow (Hide, Close) then name the window they mean.
+        if let Some(w) = window
+            && ctx.input(|i| i.focused)
+            && self.window_focused != Some(w)
+        {
+            self.session.focus_window(w);
+            self.window_focused = Some(w);
+        }
+        if own {
+            text_box::before_ui(self, &ctx);
+        }
+        // The language the widgets translate with this frame (see `i18n::current`).
+        i18n::set_current(&ctx, self.ui.language);
+        let t = theme::Tokens::get(&ctx);
+        // A host can turn the File tab off while Backstage is already open: close it.
+        if !self.chrome.file_tab {
+            self.backstage = None;
+        }
+        if own && (self.backstage.is_none() || self.keytips.prefix().is_some()) {
+            // Keytips opened the File view (Alt, F): its letters keep working there.
+            self.ribbon_keys(&ctx);
+        }
+        // Each window has widgets of its own: an id salt per window keeps their state apart (a
+        // scroll area, a popup, the ribbon's menus).
+        ui.push_id(("gridcraft.window", window.map_or(0, |w| w.0)), |ui| {
+            if self.chrome.title_bar {
+                ribbon::title_bar(self, ui);
+            }
+            if self.backstage.is_some() {
+                // File tab: the Backstage view replaces everything below the title bar.
+                backstage::show(self, ui);
+            } else {
+                ribbon::show(self, ui);
+                widgets::notice_bar(self, ui);
+                if self.session.prefs.formula_bar {
+                    formula_bar::show(self, ui);
+                }
+                if self.ui.status_bar {
+                    tabs::status_bar(self, ui);
+                }
+                tabs::sheet_tabs(self, ui);
+                pivot_pane::show(self, ui);
+                panes::show(self, ui);
+                egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.grid_bg)).show(ui, |ui| {
+                    let g0 = now_ms();
+                    grid::show(self, ui);
+                    if own {
+                        self.perf.grid_ms = now_ms() - g0;
+                    }
+                });
+            }
+        });
+        if !own {
+            return;
+        }
+        dialogs::show(self, &ctx);
+        widgets::message_box(self, &ctx);
+        widgets::toast(self, &ctx);
+        control::issue_screenshots(self, &ctx);
+        control::collect_screenshots(self, &ctx);
+        // The app's own window carries the document (and window) it shows in its title bar.
+        if let Some(w) = window {
             let edited = i18n::current(&ctx).tr(" — Edited");
-            let title = format!("{}{}", d.display_title(), if d.is_dirty() { edited } else { "" });
+            let dirty = self.session.documents().get(self.session.active_index()).is_some_and(|d| d.is_dirty());
+            let title = format!("{}{}", self.window_label(w), if dirty { edited } else { "" });
             if self.grid.last_title.as_deref() != Some(title.as_str()) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
                 self.grid.last_title = Some(title);
             }
+        }
+    }
+
+    /// Binds the app's own viewport to a visible window and draws every other window of the
+    /// session as an OS window of its own (an egui viewport). A hidden window is not drawn, which
+    /// closes its OS window; View ▸ Unhide draws it again. The same goes for a window that closed:
+    /// it leaves the engine's list and its viewport stops being drawn.
+    fn show_extra_windows(&mut self, ctx: &egui::Context) {
+        let windows = self.session.windows();
+        let visible: Vec<WindowId> = windows.iter().filter(|(_, w)| !w.hidden).map(|(_, w)| w.id).collect();
+        // The app's own window stays put while it lives, so the control channel keeps driving — and
+        // screenshotting — one window; it moves only when that window is hidden or closed.
+        if self.window_root.is_none_or(|w| !visible.contains(&w)) {
+            self.window_root = self.session.active_window().filter(|w| visible.contains(w)).or_else(|| visible.first().copied());
+        }
+        // The scroll positions of windows that closed go with them.
+        let live: Vec<WindowId> = windows.iter().map(|(_, w)| w.id).collect();
+        self.views.retain(|k, _| live.contains(&k.0));
+        self.window_close_handled.retain(|w| live.contains(w));
+        let Some(root) = self.window_root else { return };
+        for id in visible.into_iter().filter(|w| *w != root) {
+            let Some(doc) = self.session.window_doc(id) else { continue };
+            let dirty = self.session.documents().get(doc).is_some_and(|d| d.is_dirty());
+            let edited = if dirty { i18n::current(ctx).tr(" — Edited") } else { "" };
+            let title = format!("{}{}", self.window_label(id), edited);
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size([1200.0, 800.0])
+                .with_min_inner_size([640.0, 420.0])
+                .with_app_id("ai.storyteller.gridcraft");
+            ctx.show_viewport_immediate(window_viewport(id), builder, |ui, class| {
+                // A shell without separate windows (egui's `embed_viewports`: the browser build,
+                // and a test harness) would paint this window inside the main one, in the same
+                // pass — a second copy of the app with duplicate widget ids. Such a shell refuses
+                // View ▸ New Window up front (`can_open_window`), so a window with no OS window of
+                // its own is simply not drawn.
+                if class != egui::ViewportClass::Immediate {
+                    return;
+                }
+                self.window_ui(ui, Some(id), false);
+                // Its close button: the last window of a document closes the document too,
+                // asking about unsaved changes first (see `view.closeWindow`). Answered once:
+                // the request is reported again every pass until the window goes, and a second
+                // answer would ask to save twice.
+                if ui.ctx().input(|i| i.viewport().close_requested()) && self.window_close_handled.insert(id) {
+                    self.close_extra_window(id);
+                }
+            });
+        }
+    }
+
+    /// A window switch made by a command (View ▸ Switch Windows, Unhide, New Window) moves the OS
+    /// focus to the window it activated, as Excel does: the window the list calls active is the
+    /// one the next keystroke reaches. The session ends the frame on the focused window's
+    /// document, so the commands an agent runs next apply where the user is working.
+    fn follow_active_window(&mut self, ctx: &egui::Context) {
+        let active = self.session.active_window();
+        if let Some(w) = active
+            && self.window_focused != Some(w)
+        {
+            if Some(w) == self.window_root {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            } else if self.window_root.is_some() {
+                ctx.send_viewport_cmd_to(window_viewport(w), egui::ViewportCommand::Focus);
+            }
+            self.window_focused = Some(w);
+        }
+        if let Some(doc) = active.and_then(|w| self.session.window_doc(w)) {
+            self.session.set_active(doc);
+        }
+    }
+
+    /// A close button of one of the app's extra windows, or a `view.closeWindow`: closes that
+    /// window (and, for a document's last window, the document, asking about unsaved changes).
+    pub fn close_extra_window(&mut self, window: WindowId) {
+        if let Err(e) = self.run("view.closeWindow", json!({"window": window.0})) {
+            self.alert(clean_error(&e));
         }
     }
 
@@ -1486,6 +1671,12 @@ pub fn clean_error(e: &str) -> String {
 
 pub fn now_ms() -> f64 {
     gridcraft_engine::core::date::unix_now_ms().unwrap_or(0.0)
+}
+
+/// The OS window (egui viewport) that shows an engine window: one per window of a document, and
+/// stable for as long as that window lives.
+pub fn window_viewport(window: WindowId) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("gridcraft.window", window.0))
 }
 
 pub fn cell(r: u32, c: u32) -> CellRef {
