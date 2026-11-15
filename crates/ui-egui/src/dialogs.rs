@@ -1268,6 +1268,29 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
             }
             "about" => about(ui, &mut d),
             "journal" => {
+                // What already ran is the raw material for a script: the journal is the record, and a
+                // script is its replayable form (Automate > Macros edits it afterwards).
+                ui.horizontal(|ui| {
+                    ui.label(crate::widgets::tr(ui, "Save these steps as a script:"));
+                    let mut name = d.values.get("scriptName").and_then(Json::as_str).unwrap_or("").to_string();
+                    if name.is_empty() {
+                        name = format!("Script {}", app.session.journal.len());
+                    }
+                    if ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0)).changed() {
+                        d.values.insert("scriptName".into(), json!(name));
+                    }
+                    if ui.button(crate::widgets::tr(ui, "Save as script")).clicked() {
+                        match app.session.run("automate.scriptFromJournal", json!({"name": name})) {
+                            Ok(r) => {
+                                let n = r["steps"].as_u64().unwrap_or(0);
+                                app.toast =
+                                    Some((crate::widgets::tr(ui, "Saved {n} steps as a script").replace("{n}", &n.to_string()), crate::now_ms()));
+                            }
+                            Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                        }
+                    }
+                });
+                ui.separator();
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (id, p) in app.session.journal.iter().rev().take(500) {
                         ui.monospace(format!("{id} {p}"));

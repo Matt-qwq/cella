@@ -1013,9 +1013,22 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   sheet's AutoFilter. It used to drop the filter and turn the rows it hid into hand-hidden ones, so a
   reload silently changed what the filter meant; a table on or inside the filtered range is still
   the ordinary case. Found by the command-sequence fuzz after N4 changed its seed sequences.
-- **Still missing:** the executable tier — a WASM plugin host — which needs a runtime dependency
-  (a compiler and a sandbox). That is the owner decision this estimate names; the surface a plugin
-  needs (a named thing in the workbook, a trust flag, a runner) is what landed.
+- **Decided 11-14: there will be no in-app plugin host.** An installable extension that adds
+  *code* to the app existed to give people who cannot program a button; that job is now done by an
+  agent, which costs nothing to ship, reads the user's files and is not limited to what we thought
+  to expose. A host would add 10–30 MB per platform, a C toolchain on every one we ship, a browser
+  build that cannot have the feature, a key-and-permission model, and an interface we could never
+  break — for a distribution convenience nobody in this product's life has asked for. So: the
+  **outside-in surface is the extension model** — a program that speaks the control channel (with the
+  same commands the menus run), covered by the Agent Control dialog and docs/mcp.md. What replaced
+  "install my button" is a **script**: a procedure captured once, edited in the Macros dialog,
+  replayable by a person or an agent.
+- **Repositioned 11-14: recording is the capture format, not a macro language.** With an agent
+  usually on the other end, a recorded script's job is to be the *faithful, diffable, replayable
+  record of a procedure* the agent can replay, vary and verify — not a way for a non-coder to build
+  an app. automate.scriptFromJournal (and a button in the Action Journal) turns what already ran
+  into a script, which is the shortest path from "I did it once" to "it is a procedure": do the
+  steps (or let an agent do them), save them, edit the ones that need editing, replay.
 
 ### 22. AI features (F)
 - **Decision 11-14: no in-app assistant, ever — the agent surface is CLI and MCP.** A model inside

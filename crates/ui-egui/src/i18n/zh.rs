@@ -1861,6 +1861,11 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
             "这样可达 {n} 条命令，参数与菜单传入的完全相同。空参数的命令使用默认值，绝不开对话框。"
         }
 
+        // Action Journal > save the steps as a script.
+        "Save Steps as Script" => "将步骤另存为脚本",
+        "Save these steps as a script:" => "将这些步骤另存为脚本：",
+        "Save as script" => "另存为脚本",
+        "Saved {n} steps as a script" => "已把 {n} 个步骤另存为脚本",
         // Extensions and the "what changed" question an agent asks.
         "Add Extension" => "添加扩展",
         "Remove Extension" => "删除扩展",

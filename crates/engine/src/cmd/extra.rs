@@ -216,6 +216,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             new_script
         ),
+        cmd!(
+            "automate.scriptFromJournal",
+            "Save Steps as Script",
+            ["Automate", "Scripting Tools"],
+            None,
+            "{name, steps?: 50 (max 2000), drop?: [command ids]} -> {name, steps} - turns what already ran into a script (the journal, without the automation commands)",
+            has_doc,
+            script_from_journal
+        ),
         cmd!(query "automate.allScripts", "All Scripts", ["Automate", "Scripting Tools"], None, "{} → saved scripts", has_doc, all_scripts),
         cmd!(
             "automate.runScript",
@@ -1533,6 +1542,53 @@ fn watch_window(s: &mut Session, p: &Json) -> Result<Json> {
         .collect();
     Ok(Json::Array(rows))
 }
+/// Turns what already happened into a script: the last steps commands the journal holds, minus the
+/// automation ones, saved under name.
+///
+/// This is what a recorded script is *for* now that an agent is usually the one replaying it: the
+/// journal is the record of what actually ran, so the steps it holds are a faithful, diffable,
+/// replayable description of a procedure — the capture format, not a macro language for people who
+/// cannot code. A step that needs editing is edited in the Macros dialog afterwards.
+fn script_from_journal(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("automate.scriptFromJournal", "missing name"))?.trim().to_string();
+    if name.is_empty() || name.chars().count() > 255 {
+        return Err(bad("automate.scriptFromJournal", "a script needs a name of 255 characters or fewer"));
+    }
+    let take = u32_param(p, "steps").unwrap_or(50).clamp(1, 2_000) as usize;
+    let drop: Vec<String> =
+        p.get("drop").and_then(Json::as_array).map(|a| a.iter().filter_map(Json::as_str).map(str::to_ascii_lowercase).collect()).unwrap_or_default();
+    // The journal is session-wide and oldest-first; a script wants the newest steps last, and
+    // without the automation commands themselves (recording one into another is how a loop gets
+    // built).
+    let cmds: Vec<Json> = s
+        .journal
+        .iter()
+        .rev()
+        .take(take)
+        .rev()
+        .filter(|(id, _)| !id.starts_with("automate.") && !id.starts_with("ext."))
+        .filter(|(id, _)| !drop.iter().any(|d| id.eq_ignore_ascii_case(d)))
+        .filter(|(id, _)| crate::find_command(id).is_some())
+        .map(|(id, params)| json!({"command": id, "params": params}))
+        .collect();
+    if cmds.is_empty() {
+        return Err(EngineError::Other(
+            "There is nothing to save: the journal holds no commands yet (do the steps you want, then save them as a script).".into(),
+        ));
+    }
+    let n = cmds.len();
+    edit(s, |cx| {
+        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        if all.get(name.as_str()).is_some() {
+            return Err(EngineError::Other(format!("There is already a script named \"{name}\".")));
+        }
+        all[name.as_str()] = Json::Array(cmds.clone());
+        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        Ok(Json::Null)
+    })?;
+    Ok(json!({"name": name, "steps": n}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
