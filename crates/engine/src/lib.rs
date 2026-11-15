@@ -97,6 +97,29 @@ pub enum Mode {
     Point,
 }
 
+/// Identifies a window: a view onto a document. View ▸ New Window adds one, and the desktop
+/// shell draws each as its own OS window. The engine keeps the list so the window menu, the CLI,
+/// MCP and the control channel can all name one window of one workbook.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowId(pub u64);
+
+/// One window onto a document. Every window of a document shows the same workbook and shares its
+/// undo history and its save; hiding or closing one leaves the others alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocWindow {
+    pub id: WindowId,
+    /// Hidden with View ▸ Hide; shown again with View ▸ Unhide.
+    pub hidden: bool,
+}
+
+static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl DocWindow {
+    fn new() -> DocWindow {
+        DocWindow { id: WindowId(NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed)), hidden: false }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DocState {
     pub wb: Arc<Workbook>,
@@ -109,6 +132,9 @@ pub struct DocState {
     pub revision: u64,
     pub uid: u64,
     pub title: String,
+    /// The windows showing this document, in the order they were opened; never empty while the
+    /// document is open (closing its last window closes the document).
+    pub windows: Vec<DocWindow>,
     /// Per-sheet selection memory.
     pub sheet_selections: Vec<Selection>,
     /// Allow Edit Ranges unlocked with their password in this session: (sheet name, title).
@@ -212,6 +238,7 @@ impl DocState {
             revision: 1,
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             title,
+            windows: vec![DocWindow::new()],
             sheet_selections: vec![],
             unlocked_ranges: vec![],
             content_kind: None,
@@ -337,8 +364,10 @@ pub struct Session {
     pub hide_ruler: bool,
     /// Journal position where action recording started.
     pub recording: Option<usize>,
-    /// Windows hidden with View › Hide.
-    pub hidden_windows: Vec<usize>,
+    /// The window the user last worked in (see DocWindow); `None` before the first document and
+    /// after the document it belonged to closed. Read it through Session::active_window, which
+    /// falls back to the active document's first window instead of trusting a stale id.
+    active_window: Option<WindowId>,
     /// Draw tab tool: "" (select), "pen" or "eraser"; pen colour and width.
     pub draw_tool: String,
     pub draw_color: String,
@@ -395,7 +424,117 @@ impl Session {
             if self.active >= self.docs.len() {
                 self.active = self.docs.len().saturating_sub(1);
             }
+            // The window the closed document showed went with it.
+            if self.active_window.and_then(|w| self.window_doc(w)).is_none() {
+                self.active_window = self.active().and_then(|d| d.windows.first().map(|w| w.id));
+            }
         }
+    }
+
+    /// Every window of every open document, in window-list order: the documents in the order they
+    /// were opened, each document's windows in the order they were made. View ▸ Switch Windows
+    /// lists them in this order, and `window`/`index` parameters on the window commands index it.
+    pub fn windows(&self) -> Vec<(usize, DocWindow)> {
+        self.docs.iter().enumerate().flat_map(|(i, d)| d.windows.iter().map(move |w| (i, *w))).collect()
+    }
+
+    /// How many windows are open; every open document has at least one.
+    pub fn window_count(&self) -> usize {
+        self.docs.iter().map(|d| d.windows.len()).sum()
+    }
+
+    /// The document a window shows, as an index into [`Session::documents`].
+    pub fn window_doc(&self, window: WindowId) -> Option<usize> {
+        self.docs.iter().position(|d| d.windows.iter().any(|w| w.id == window))
+    }
+
+    /// The window the user last worked in: the active document's focused window, or its first one
+    /// when the stored window now belongs to another document (or closed with it).
+    pub fn active_window(&self) -> Option<WindowId> {
+        let d = self.active()?;
+        let focused = self.active_window.filter(|id| d.windows.iter().any(|w| w.id == *id));
+        focused.or_else(|| d.windows.first().map(|w| w.id))
+    }
+
+    /// Focuses a window, and with it the document it shows; false when no such window is open.
+    pub fn focus_window(&mut self, window: WindowId) -> bool {
+        match self.window_doc(window) {
+            Some(i) => {
+                self.active = i;
+                self.active_window = Some(window);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Adds a window to the active document (View ▸ New Window) and focuses it: the same workbook,
+    /// its undo history and its save, shown in a window of its own.
+    pub fn add_window(&mut self) -> Result<WindowId> {
+        let window = DocWindow::new();
+        self.doc_mut()?.windows.push(window);
+        self.active_window = Some(window.id);
+        Ok(window.id)
+    }
+
+    /// Closes one window; the last window of a document closes the document with it (unsaved
+    /// changes are the caller's business: `view.closeWindow` asks first). Returns whether the
+    /// document went too.
+    pub fn close_window(&mut self, window: WindowId) -> bool {
+        let Some(i) = self.window_doc(window) else { return false };
+        let mut last = false;
+        if let Some(d) = self.docs.get_mut(i) {
+            d.windows.retain(|w| w.id != window);
+            last = d.windows.is_empty();
+        }
+        if self.active_window == Some(window) {
+            self.active_window = None;
+        }
+        if last {
+            self.close_document(i);
+        }
+        last
+    }
+
+    /// Hides a window and focuses the next visible one. The last visible window stays visible and
+    /// nothing happens, as View ▸ Hide has always behaved with one window: the app always shows
+    /// something.
+    pub fn hide_window(&mut self, window: WindowId) -> Result<()> {
+        if self.window_doc(window).is_none() {
+            return Err(EngineError::Other("no such window".into()));
+        }
+        if self.windows().iter().filter(|(_, w)| !w.hidden).count() <= 1 {
+            return Ok(());
+        }
+        if let Some(d) = self.window_doc(window).and_then(|i| self.docs.get_mut(i))
+            && let Some(w) = d.windows.iter_mut().find(|w| w.id == window)
+        {
+            w.hidden = true;
+        }
+        if self.active_window() == Some(window) {
+            let next = self.next_visible_window(window);
+            if let Some(next) = next {
+                self.focus_window(next);
+            }
+        }
+        Ok(())
+    }
+
+    /// Shows a hidden window again and focuses it; false when no such window is open.
+    pub fn unhide_window(&mut self, window: WindowId) -> bool {
+        if let Some(d) = self.window_doc(window).and_then(|i| self.docs.get_mut(i))
+            && let Some(w) = d.windows.iter_mut().find(|w| w.id == window)
+        {
+            w.hidden = false;
+        }
+        self.focus_window(window)
+    }
+
+    /// The next visible window after `window` in window-list order, wrapping around.
+    fn next_visible_window(&self, window: WindowId) -> Option<WindowId> {
+        let all: Vec<DocWindow> = self.docs.iter().flat_map(|d| d.windows.iter().copied()).collect();
+        let at = all.iter().position(|w| w.id == window)?;
+        (1..=all.len()).filter_map(|step| all.get((at + step) % all.len())).find(|w| !w.hidden).map(|w| w.id)
     }
     /// A new blank workbook titled `BookN`, its Normal style in the default font from the
     /// preferences (File ▸ Options ▸ when creating new workbooks).

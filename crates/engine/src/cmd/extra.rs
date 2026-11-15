@@ -154,11 +154,28 @@ pub fn specs() -> Vec<CommandSpec> {
             custom_views
         ),
         cmd!(noundo "view.split", "Split", ["View", "Window"], None, "{} (toggles a split at the active cell; shown as frozen panes in this version)", has_doc, split),
-        cmd!(noundo "view.newWindow", "New Window", ["View", "Window"], None, "{} opens a second window on the same workbook (a linked copy)", has_doc, new_window),
+        cmd!(
+            noundo "view.newWindow",
+            "New Window",
+            ["View", "Window"],
+            None,
+            "{} → {window, index, windows}: another window on the active document — the same workbook, its undo history and its save, in a window of its own (each window scrolls on its own; the active cell and the active sheet are the document's, so both windows show them). Disabled, with that reason in `enabled`, in the browser build: it has one window, the page",
+            can_open_window,
+            new_window
+        ),
         cmd!(noundo "view.arrangeAll", "Arrange All", ["View", "Window"], None, "{}", has_doc, |_, _| ok()),
-        cmd!(noundo "view.hideWindow", "Hide", ["View", "Window"], None, "{}", has_doc, hide_window),
-        cmd!(noundo "view.unhideWindow", "Unhide…", ["View", "Window"], None, "{index?}", has_doc, unhide_window),
-        cmd!(query "view.switchWindows", "Switch Windows", ["View", "Window"], None, "{} → open windows", always, switch_windows),
+        cmd!(noundo "view.hideWindow", "Hide", ["View", "Window"], None, "{window?, index?} hides a window (the active one without them) and focuses the next visible one; the last visible window stays", has_doc, hide_window),
+        cmd!(noundo "view.unhideWindow", "Unhide…", ["View", "Window"], None, "{window? | index?} shows a hidden window again and focuses it (the first hidden one without them)", has_doc, unhide_window),
+        cmd!(query "view.switchWindows", "Switch Windows", ["View", "Window"], None, "{} → [{index, window, title, document, active, hidden}] every open window, in window-list order", always, switch_windows),
+        cmd!(
+            noundo "view.closeWindow",
+            "Close Window",
+            ["View", "Window"],
+            None,
+            "{window?, index?, force?: bool} closes one window (the active one without them); the last window of a document closes the document too, asking about unsaved changes unless `force`",
+            has_doc,
+            close_window
+        ),
         cmd!(noundo "view.ruler", "Ruler", ["View", "Show"], None, "{on?} → {on}: rulers in Page Layout view (an application option)", has_doc, ruler),
         cmd!(query "view.macros", "Macros", ["View", "Macros"], None, "{} → scripts", has_doc, all_scripts),
         // Table tools
@@ -877,44 +894,100 @@ fn split(s: &mut Session, _: &Json) -> Result<Json> {
     if has { s.execute("view.unfreezePanes", json!({})) } else { s.execute("view.freezePanes", json!({})) }
 }
 
-fn new_window(s: &mut Session, _: &Json) -> Result<Json> {
-    let d = s.doc()?.clone();
-    let mut copy = crate::DocState::new((*d.wb).clone(), d.path.clone(), format!("{}:2", d.display_title()));
-    copy.selection = d.selection.clone();
-    copy.scripts_trusted = d.scripts_trusted;
-    // The second window saves the same file, so it keeps the password that file is saved with.
-    copy.password = d.password.clone();
-    let i = s.add_document(copy);
-    Ok(json!({"index": i}))
+/// View ▸ New Window needs a shell with more than one window: the desktop app draws the extra
+/// windows, while the browser build has one window (the page) and says so instead of opening a
+/// window it cannot show.
+fn can_open_window(s: &Session) -> std::result::Result<(), String> {
+    has_doc(s)?;
+    if cfg!(target_arch = "wasm32") {
+        return Err("the browser build has one window: every workbook opens in this page".into());
+    }
+    Ok(())
 }
 
-fn hide_window(s: &mut Session, _: &Json) -> Result<Json> {
-    s.hidden_windows.push(s.active_index());
-    let n = s.documents().len();
-    if n > 1 {
-        let next = (0..n).find(|i| !s.hidden_windows.contains(i)).unwrap_or(0);
-        s.set_active(next);
+/// The window a `{window, index}` parameter names, the active one without them.
+fn window_param(s: &Session, p: &Json, id: &str) -> Result<crate::WindowId> {
+    if let Some(n) = p.get("window").and_then(Json::as_u64) {
+        let window = crate::WindowId(n);
+        return if s.window_doc(window).is_some() { Ok(window) } else { Err(bad(id, "no such window")) };
     }
-    ok()
+    if let Some(i) = p.get("index").and_then(Json::as_u64).and_then(|v| usize::try_from(v).ok()) {
+        return s.windows().get(i).map(|(_, w)| w.id).ok_or_else(|| bad(id, "no such window"));
+    }
+    s.active_window().ok_or(EngineError::NoDocument)
+}
+
+/// Its position in the window list (View ▸ Switch Windows order).
+fn window_index(s: &Session, window: crate::WindowId) -> Option<usize> {
+    s.windows().iter().position(|(_, w)| w.id == window)
+}
+
+/// View ▸ New Window: another window on the *same* document. The document is not copied — the
+/// windows share its workbook, its undo history and its save, and closing one leaves it open.
+fn new_window(s: &mut Session, _: &Json) -> Result<Json> {
+    can_open_window(s).map_err(|e| bad("view.newWindow", e))?;
+    let window = s.add_window()?;
+    Ok(json!({"window": window.0, "index": window_index(s, window), "windows": s.window_count()}))
+}
+
+fn hide_window(s: &mut Session, p: &Json) -> Result<Json> {
+    let window = window_param(s, p, "view.hideWindow")?;
+    s.hide_window(window)?;
+    // The last visible window stays visible, so `hidden` says what actually happened.
+    let hidden = s.windows().iter().find(|(_, w)| w.id == window).map(|(_, w)| w.hidden).unwrap_or(false);
+    Ok(json!({"window": window.0, "hidden": hidden, "active": s.active_window().map(|w| w.0), "windows": s.window_count()}))
 }
 
 fn unhide_window(s: &mut Session, p: &Json) -> Result<Json> {
-    let i = u32_param(p, "index").map(|v| v as usize).or_else(|| s.hidden_windows.last().copied());
-    if let Some(i) = i {
-        s.hidden_windows.retain(|x| *x != i);
-        s.set_active(i);
+    // A parameter names the window; without one, the first hidden window (View ▸ Unhide…).
+    let window = if p.get("window").is_some() || p.get("index").is_some() {
+        window_param(s, p, "view.unhideWindow")?
+        // Nothing hidden is not an error: the command does nothing, as it always has.
+    } else if let Some(w) = s.windows().iter().find(|(_, w)| w.hidden).map(|(_, w)| w.id) {
+        w
+    } else {
+        return Ok(json!({"window": Json::Null, "windows": s.window_count()}));
+    };
+    if !s.unhide_window(window) {
+        return Err(bad("view.unhideWindow", "no such window"));
     }
-    ok()
+    Ok(json!({"window": window.0, "active": s.active_window().map(|w| w.0), "windows": s.window_count()}))
 }
 
 fn switch_windows(s: &mut Session, _: &Json) -> Result<Json> {
+    let active = s.active_window();
     Ok(Json::Array(
-        s.documents()
+        s.windows()
             .iter()
             .enumerate()
-            .map(|(i, d)| json!({"index": i, "title": d.display_title(), "active": i == s.active_index(), "hidden": s.hidden_windows.contains(&i)}))
+            .map(|(i, (doc, w))| {
+                json!({
+                    "index": i,
+                    "window": w.id.0,
+                    "title": s.documents().get(*doc).map(|d| d.display_title()).unwrap_or_default(),
+                    "document": doc,
+                    "active": active == Some(w.id),
+                    "hidden": w.hidden,
+                })
+            })
             .collect(),
     ))
+}
+
+/// The close button of a window: closing the last window of a document closes the document with
+/// it, which asks about unsaved changes first unless `force`. Every other window just goes.
+fn close_window(s: &mut Session, p: &Json) -> Result<Json> {
+    let force = bool_param(p, "force").unwrap_or(false);
+    let window = window_param(s, p, "view.closeWindow")?;
+    s.focus_window(window);
+    let last = s.doc().map(|d| d.windows.len() <= 1).unwrap_or(false);
+    if last && !force && s.doc()?.is_dirty() {
+        let title = s.doc()?.display_title();
+        s.ui_requests.push(crate::UiRequest::Dialog("saveChanges".into(), json!({"title": title})));
+        return Ok(json!({"closed": false, "dirty": true, "document": true, "window": window.0}));
+    }
+    let document = s.close_window(window);
+    Ok(json!({"closed": true, "document": document, "window": window.0, "windows": s.window_count()}))
 }
 
 fn table_resize(s: &mut Session, p: &Json) -> Result<Json> {

@@ -3026,7 +3026,10 @@ fn every_command_survives_empty_params() {
     let mut s = Session::new();
     s.execute("file.new", json!({"sample": "sales"})).unwrap();
     for spec in crate::command_specs() {
-        if matches!(spec.id, "file.close" | "file.open" | "file.save" | "file.saveAs" | "file.exportCsv" | "file.exportHtml" | "insert.picture") {
+        if matches!(
+            spec.id,
+            "file.close" | "file.open" | "file.save" | "file.saveAs" | "file.exportCsv" | "file.exportHtml" | "insert.picture" | "view.closeWindow"
+        ) {
             continue;
         }
         let _ = s.execute(spec.id, json!({}));
@@ -6848,4 +6851,85 @@ fn a_timeline_axis_is_its_reports_own_date_bounds() {
     assert_eq!(crate::cmd::slicer::timeline_axis(&wb, &orphan), None);
     wb.sheet_mut(si).unwrap().pivot_timelines[0].field = "Region".into();
     assert_eq!(crate::cmd::slicer::timeline_axis(&wb, &wb.sheet(si).unwrap().pivot_timelines[0]), None);
+}
+
+/// View ▸ New Window is a second *window* on one workbook, never a copy of it: both windows share
+/// the workbook, its undo history and its save, and closing one leaves the document open.
+#[test]
+fn a_new_window_shows_the_same_document_and_closing_it_leaves_the_document_open() {
+    let mut s = s();
+    let uid = s.doc().unwrap().uid;
+    assert_eq!((s.documents().len(), s.window_count()), (1, 1), "a document opens with one window");
+    let first = s.active_window().expect("the document has a window");
+
+    let r = s.execute("view.newWindow", json!({})).unwrap();
+    let second = crate::WindowId(r["window"].as_u64().expect("the new window's id"));
+    assert_ne!(first, second);
+    assert_eq!(r["index"].as_u64(), Some(1), "it lands after the window it was opened from: {r}");
+    assert_eq!(s.documents().len(), 1, "no document was copied");
+    assert_eq!(s.window_count(), 2, "two windows on it");
+    assert_eq!(s.active_window(), Some(second), "the new window has the focus");
+    assert_eq!(s.doc().unwrap().uid, uid, "still the same document");
+    assert!(s.doc().unwrap().path.is_none(), "and not a copy of it titled Book1:2");
+    assert_eq!(s.doc().unwrap().display_title(), "Book1");
+
+    // An edit in one window is the same edit in the other, undo included: the first window shows
+    // what the second one typed.
+    s.execute("cell.set", json!({"cell": "B2", "input": "42"})).unwrap();
+    s.execute("window.activate", json!({"index": 0})).unwrap();
+    assert_eq!(s.active_window(), Some(first));
+    assert_eq!(v(&s, "B2"), Value::from(42.0), "the value written in the second window");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "B2"), Value::Empty, "one undo history, shared by both windows");
+
+    // View ▸ Switch Windows lists both, in window-list order, with the active one marked.
+    let list = s.execute("view.switchWindows", json!({})).unwrap();
+    assert_eq!(list.as_array().map(Vec::len), Some(2), "{list}");
+    assert_eq!((list[0]["window"].as_u64(), list[0]["active"].as_bool(), list[0]["index"].as_u64()), (Some(first.0), Some(true), Some(0)));
+    assert_eq!((list[1]["window"].as_u64(), list[1]["active"].as_bool(), list[1]["hidden"].as_bool()), (Some(second.0), Some(false), Some(false)));
+    assert_eq!(list[1]["title"], json!("Book1"), "the second window carries the document's title");
+
+    // View ▸ Hide takes a window away without closing the document; Unhide brings it back.
+    assert!(s.execute("view.hideWindow", json!({"window": second.0})).is_ok());
+    assert_eq!(s.window_count(), 2, "a hidden window stays open");
+    assert_eq!(s.active_window(), Some(first), "the next visible window takes the focus");
+    assert_eq!(s.execute("view.switchWindows", json!({})).unwrap()[1]["hidden"], json!(true));
+    assert!(s.execute("view.unhideWindow", json!({"window": second.0})).is_ok());
+    assert_eq!(s.active_window(), Some(second));
+    assert_eq!(s.execute("view.switchWindows", json!({})).unwrap()[1]["hidden"], json!(false));
+    // The last visible window is never hidden — the app always shows something — and the command
+    // says so in its answer instead of failing.
+    assert_eq!(s.execute("view.hideWindow", json!({"index": 0})).unwrap()["hidden"], json!(true), "one of two may be hidden");
+    assert_eq!(s.execute("view.hideWindow", json!({})).unwrap()["hidden"], json!(false), "the last visible one stays");
+    assert_eq!(s.windows().iter().filter(|(_, w)| !w.hidden).count(), 1);
+    s.execute("view.unhideWindow", json!({"index": 0})).unwrap();
+
+    // Closing a window is not closing the document.
+    let r = s.execute("view.closeWindow", json!({"window": second.0, "force": true})).unwrap();
+    assert_eq!((r["closed"].as_bool(), r["document"].as_bool()), (Some(true), Some(false)), "{r}");
+    assert_eq!(s.documents().len(), 1, "the document is still open");
+    assert_eq!(s.window_count(), 1);
+    // ...until its last window goes, which closes it.
+    let r = s.execute("view.closeWindow", json!({})).unwrap();
+    assert_eq!(r["document"], json!(true), "{r}");
+    assert!(s.documents().is_empty(), "the last window closed the document");
+}
+
+/// A window with unsaved work is not closed out from under the user: closing the last window of a
+/// dirty document asks about saving first, as File ▸ Close and the window's close button do.
+#[test]
+fn closing_the_last_window_of_a_dirty_document_asks_about_saving_first() {
+    let mut s = s();
+    s.ui_requests.clear();
+    s.execute("cell.set", json!({"cell": "A1", "input": "unsaved"})).unwrap();
+    let r = s.execute("view.closeWindow", json!({})).unwrap();
+    assert_eq!((r["closed"].as_bool(), r["dirty"].as_bool()), (Some(false), Some(true)), "{r}");
+    assert_eq!(s.documents().len(), 1, "nothing closed before the question is answered");
+    assert!(matches!(s.ui_requests.first(), Some(crate::UiRequest::Dialog(name, _)) if name == "saveChanges"), "{:?}", s.ui_requests);
+    s.ui_requests.clear();
+    // An extra window goes without a question: nothing is lost while another window shows it.
+    s.execute("view.newWindow", json!({})).unwrap();
+    assert_eq!(s.execute("view.closeWindow", json!({})).unwrap()["closed"], json!(true));
+    assert!(s.ui_requests.is_empty(), "{:?}", s.ui_requests);
+    assert_eq!(s.documents().len(), 1);
 }

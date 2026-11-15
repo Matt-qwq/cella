@@ -12,7 +12,9 @@
 //! - `ui.ribbon {tab}`, `ui.dialog {name}`, `ui.dialog.set {field, value}`,
 //!   `ui.dialog.confirm`, `ui.dialog.cancel`, `ui.message.dismiss`
 //! - `ui.edit.begin {text?}`, `ui.edit.commit {move?}`, `ui.edit.cancel`
-//! - `ui.screenshot {path?}` — PNG of the window (base64 when no path)
+//! - `ui.screenshot {path?}` — PNG of the app's own window, the one `ui.inspect` marks
+//!   `mainWindow` (base64 when no path): a document may have several windows, and the control
+//!   channel drives and captures this one
 //! - `ui.resize {width, height}`, `ui.set {dark?, formulaBar?, ribbonCollapsed?}`
 //! - `app.open {path, password?}`, `app.save {path?}`, `app.quit`
 
@@ -112,6 +114,23 @@ pub fn inspect(app: &SheetApp, ctx: &egui::Context) -> Json {
         "mode": format!("{:?}", app.session.mode),
         "documents": app.session.documents().iter().map(|d| json!({"title": d.display_title(), "dirty": d.is_dirty()})).collect::<Vec<_>>(),
         "activeDocument": app.session.active_index(),
+        // Windows are views onto a document: one workbook can be shown in several (`view.newWindow`).
+        "windows": app
+            .session
+            .windows()
+            .iter()
+            .map(|(doc, w)| {
+                json!({
+                    "window": w.id.0,
+                    "title": app.window_label(w.id),
+                    "document": doc,
+                    "active": app.session.active_window() == Some(w.id),
+                    "hidden": w.hidden,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "activeWindow": app.session.active_window().map(|w| w.0),
+        "mainWindow": app.window_root.map(|w| w.0),
         "perf": {"frameMs": app.perf.frame_ms, "gridMs": app.perf.grid_ms, "fps": app.perf.fps},
     })
 }
