@@ -299,7 +299,15 @@ fn family_slot(name: &str, bold: bool, italic: bool) -> usize {
 /// The answer is memoised per thread (see [`FAMILY_MEMO`]): the grid asks once per visible cell,
 /// every frame, and this is on that path.
 pub fn cell_family(name: &str, bold: bool, italic: bool) -> FontFamily {
-    let generation = crate::fonts::bound_generation();
+    cell_family_at(name, bold, italic, crate::fonts::bound_generation())
+}
+
+/// [`cell_family`] against a font set named by its generation.
+///
+/// The generation is a parameter so the memo can be tested without racing every other test in the
+/// binary that binds fonts (which moves the live generation under this one's feet): a memo keyed by
+/// a number is exactly as testable as the number is.
+fn cell_family_at(name: &str, bold: bool, italic: bool, generation: u64) -> FontFamily {
     let slot = family_slot(name, bold, italic);
     let remembered = FAMILY_MEMO.with(|memo| {
         let memo = memo.borrow();
@@ -1491,22 +1499,25 @@ mod tests {
         let _g = crate::fonts::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         const NAME: &str = "GridCraft Memo Test Face";
         let slot = family_slot(NAME, true, false);
-        let generation = crate::fonts::bound_generation();
+        // A generation of this test's own: the memo is keyed by one, so a test that names one does
+        // not care what the rest of the binary has bound.
+        let generation = 1_000_003;
+        let family = |name: &str, bold: bool, italic: bool| cell_family_at(name, bold, italic, generation);
         // Nothing binds that name, so the answer is the built-in bold role family.
-        assert_eq!(cell_family(NAME, true, false), FontFamily::Name(CELL_BOLD.into()));
-        assert_eq!(cell_family(NAME, true, false), resolve_cell_family(NAME, true, false), "the memo agrees with the real answer");
+        assert_eq!(family(NAME, true, false), FontFamily::Name(CELL_BOLD.into()));
+        assert_eq!(family(NAME, true, false), resolve_cell_family(NAME, true, false), "the memo agrees with the real answer");
         let planted =
             |generation: u64| FamilySlot { generation, name: NAME.to_owned(), bold: true, italic: false, family: FontFamily::Name(SERIF.into()) };
         // A live slot is used as it stands: that is what makes this a memo and not a recompute.
         FAMILY_MEMO.with(|memo| memo.borrow_mut()[slot] = Some(planted(generation)));
-        assert_eq!(cell_family(NAME, true, false), FontFamily::Name(SERIF.into()));
+        assert_eq!(family(NAME, true, false), FontFamily::Name(SERIF.into()));
         // A slot from a font set ago is not: it is recomputed (and the slot rewritten).
         FAMILY_MEMO.with(|memo| memo.borrow_mut()[slot] = Some(planted(generation.wrapping_sub(1))));
-        assert_eq!(cell_family(NAME, true, false), FontFamily::Name(CELL_BOLD.into()));
+        assert_eq!(family(NAME, true, false), FontFamily::Name(CELL_BOLD.into()));
         // The weight and slant are part of the key, so these never read the bold slot above.
-        assert_eq!(cell_family(NAME, false, false), FontFamily::Name(CELL.into()));
-        assert_eq!(cell_family(NAME, false, true), FontFamily::Name(CELL_ITALIC.into()));
-        assert_eq!(cell_family(NAME, true, true), FontFamily::Name(CELL_BOLD_ITALIC.into()));
+        assert_eq!(family(NAME, false, false), FontFamily::Name(CELL.into()));
+        assert_eq!(family(NAME, false, true), FontFamily::Name(CELL_ITALIC.into()));
+        assert_eq!(family(NAME, true, true), FontFamily::Name(CELL_BOLD_ITALIC.into()));
     }
 
     #[test]

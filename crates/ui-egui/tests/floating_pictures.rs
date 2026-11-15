@@ -42,6 +42,10 @@ fn picture_textures(h: &egui_kittest::Harness<'static, SheetApp>) -> Vec<Texture
 /// Picture ids are per workbook, so two open workbooks both have a picture 1. Each must show its
 /// own picture, even when the two are the same number of bytes: the texture cache used to tell
 /// pictures apart by id and size alone, for the whole app.
+///
+/// With windows, a document lives in its own window, so the second workbook is painted after the
+/// first window goes: closing Book1 hands the app's own viewport to Book2, and its picture 1 is a
+/// different texture from the one Book1's picture 1 had.
 #[test]
 fn each_workbook_shows_its_own_picture() {
     let (green, red) = (png([24, 150, 110, 255]), png([200, 40, 40, 255]));
@@ -51,18 +55,21 @@ fn each_workbook_shows_its_own_picture() {
     h.run_steps(4);
     let first = picture_textures(&h);
     assert_eq!(first.len(), 1, "the picture is painted");
+    let first_id = h.state().session.documents()[0].wb.active().unwrap().images[0].id;
 
     h.state_mut().run("file.new", json!({})).unwrap();
     h.state_mut().run("insert.picture", json!({"base64": gridcraft_engine::io::base64_encode(&red), "at": "B2"})).unwrap();
     h.run_steps(4);
-    let doc = h.state().session.active().unwrap();
-    assert_eq!(doc.wb.active().unwrap().images[0].id, h.state().session.documents()[0].wb.active().unwrap().images[0].id);
+    assert_eq!(h.state().session.documents()[1].wb.active().unwrap().images[0].id, first_id, "both workbooks have a picture 1");
+    // Book1's window goes; the app's own viewport is Book2's now.
+    h.state_mut().run("view.closeWindow", json!({"index": 0, "force": true})).unwrap();
+    h.run_steps(4);
     let second = picture_textures(&h);
-    assert_eq!(second.len(), 1);
+    assert_eq!(second.len(), 1, "the second workbook's picture is painted");
     assert_ne!(second, first, "another workbook's picture 1 has a texture of its own");
 
-    // Closing the workbook and painting again leaves the first one's picture as it was.
+    // Closing the workbook and painting again leaves nothing of it behind.
     h.state_mut().run("file.close", json!({"force": true})).unwrap();
     h.run_steps(4);
-    assert_eq!(picture_textures(&h), first);
+    assert!(picture_textures(&h).is_empty(), "a closed workbook's textures are dropped");
 }
