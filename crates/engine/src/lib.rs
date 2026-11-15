@@ -196,7 +196,8 @@ impl DocState {
     pub fn new(mut wb: Workbook, path: Option<String>, title: String) -> DocState {
         let mut calc = Calc::new();
         calc.recalc_on_open(&mut wb);
-        let scripts_trusted = !cmd::extra::has_scripts(&wb);
+        // Automation that came with the file — a script or an extension — starts disabled.
+        let scripts_trusted = !cmd::extra::has_scripts(&wb) && !cmd::ext::has_extensions(&wb);
         let wb = Arc::new(wb);
         let sel = Selection::at(wb.active().map(|s| s.view_active).unwrap_or_default());
         DocState {

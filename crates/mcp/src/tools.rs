@@ -1,6 +1,7 @@
 //! MCP tool definitions (names, descriptions, JSON Schemas) and their implementations on top of a
 //! [`Backend`].
 
+use gridcraft_engine::core::{CellRef, RangeRef, split_sheet};
 use serde_json::{Map, Value, json};
 
 use crate::backend::Backend;
@@ -126,6 +127,32 @@ pub fn tool_definitions() -> Vec<Value> {
             false,
         ),
         tool(
+            "batch",
+            "Batch",
+            "Run up to 50 tool calls in one request, in order, and get one answer per call: {tool, arguments} → {tool, ok, result} \
+             or {tool, ok, error}, all in the order they were sent. One failing call is its own error and never stops the rest. \
+             A list of more than 50 calls, an arguments blob over 256 KB of JSON, and a batch inside a batch are all refused \
+             outright (nothing runs) — send several batches instead.",
+            obj(
+                json!({
+                    "calls": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "Calls to run, in order (at most 50)",
+                        "items": obj(
+                            json!({
+                                "tool": string("Tool name, e.g. \"set_cell\" (any tool except batch)"),
+                                "arguments": params_schema(),
+                            }),
+                            &["tool"],
+                        ),
+                    },
+                }),
+                &["calls"],
+            ),
+            false,
+        ),
+        tool(
             "list_commands",
             "List commands",
             "List GridCraft commands: id, label, ribbon path, shortcut, a parameter description (`params`) and whether it can run \
@@ -147,13 +174,19 @@ pub fn tool_definitions() -> Vec<Value> {
             "Read range",
             "Read cell values from a range as rows (2-D array). Numbers/booleans/strings are returned as JSON values, empty cells as \
              null, errors as {\"error\":\"#DIV/0!\"}. Without `range`, reads the sheet's used range. formulas:true returns formula \
-             text (\"=SUM(B2:B4)\") for formula cells; formatted:true returns the displayed text (\"$1,234.00\", \"12%\").",
+             text (\"=SUM(B2:B4)\") for formula cells; formatted:true returns the displayed text (\"$1,234.00\", \"12%\"). \
+             A long range is paged, never refused: `offset` skips rows and `limit` (default 200, max 5,000) caps the rows returned — \
+             a bigger limit is clamped, not an error — and the answer carries the whole range's `rows` and `columns`, the \
+             `returnedRows`, the `offset`/`limit` it used, and `truncated` (true when rows follow the window). Page with offset += \
+             limit, or narrow the range; `limit: 0` answers the range's shape (`rows`/`columns`) and reads no cells at all.",
             obj(
                 json!({
                     "range": string(RANGE),
                     "sheet": string("Sheet name (default: the active sheet)"),
                     "formulas": boolean("Return formulas instead of computed values for formula cells"),
                     "formatted": boolean("Return display text with number formats applied"),
+                    "offset": int("Rows to skip from the top of the range (default 0)"),
+                    "limit": int("Rows to return (default 200, max 5,000; a bigger limit is clamped)"),
                 }),
                 &[],
             ),
@@ -325,6 +358,149 @@ pub fn tool_definitions() -> Vec<Value> {
                 &["column"],
             ),
             false,
+        ),
+        // ----- data platform: queries -----
+        tool(
+            "list_queries",
+            "List queries",
+            "Every Get & Transform query in the workbook (data.query.list): name, source kind and path, the sheet it loads to, its \
+             columns and its steps. Read one query's pipeline with execute_command {\"command\":\"data.query.steps\",\"params\":{\"name\":…}}.",
+            empty(),
+            true,
+        ),
+        tool(
+            "run_query",
+            "Run query",
+            "Define and run a query pipeline: {name, source, steps?, load?} → data.query.add, e.g. a csv path or inline text, a \
+             range or a table, then steps such as PromoteHeaders or ChangeType; the answer is {name, sheet, rows, cols}. Build the \
+             pipeline step by step with data.query.addStep, data.query.setStep, data.query.removeStep and data.query.steps, put the \
+             result on a sheet with data.query.load, and re-run it with data.query.refresh — which is what this tool does when \
+             `source` is left out and only `name` is given. load:\"model\" keeps the rows off the grid, in the data model.",
+            obj(
+                json!({
+                    "name": string("Query name"),
+                    "source": {
+                        "type": "object",
+                        "description": "Where the rows come from: {kind: \"csv\"|\"json\"|\"xlsx\"|\"parquet\"|\"folder\"|\"table\"|\"range\", path?|text?, sheet?, table?, range?, delimiter?, filter?}",
+                        "additionalProperties": true,
+                    },
+                    "steps": {"type": "array", "description": "Pipeline steps, a QueryStep each (as data.query.steps shows them)", "items": {"type": ["object", "string"]}},
+                    "load": enumeration("Where the result goes (default sheet)", &["sheet", "model"]),
+                }),
+                &["name"],
+            ),
+            false,
+        ),
+        tool(
+            "preview_query",
+            "Preview query",
+            "Run a query's pipeline without writing anything and show the top of the result (data.query.preview): {columns, rows, \
+             total, truncated, failed?}, where failed is {index, label, error} of the step that broke. `limit` (default 100) caps \
+             the rows shown; `step` is a pipeline step still being composed and `at` the index it would be inserted at, which \
+             answers \"what would this do?\".",
+            obj(
+                json!({
+                    "name": string("Query name"),
+                    "limit": int("Rows to show (default 100, max 1,000)"),
+                    "step": {"type": "object", "description": "A trial QueryStep applied to the data as it stands", "additionalProperties": true},
+                    "at": int("Index the trial step would be inserted at (default: the end)"),
+                }),
+                &["name"],
+            ),
+            true,
+        ),
+        // ----- data platform: the model -----
+        tool(
+            "list_model",
+            "List data model",
+            "The workbook's data model in one answer: {tables, relationships, measures} — what data.model.tables, \
+             data.relationship.list and data.measure.list report separately. Each table carries its columns, row count and the \
+             query that fills it; each relationship is a from/to table and column; each measure its home table, formula and format.",
+            empty(),
+            true,
+        ),
+        tool(
+            "add_relationship",
+            "Add relationship",
+            "Relate two model tables many-to-one (data.relationship.add): each row of `from` (the many side, e.g. the facts) \
+             matches one row of `to` (the one side, e.g. a lookup table) on equal column values, and filters flow from `to` to \
+             `from`. Both tables must already be in the model.",
+            obj(
+                json!({
+                    "from": obj(json!({"table": string("Table name"), "column": string("Column name")}), &["table", "column"]),
+                    "to": obj(json!({"table": string("Table name"), "column": string("Column name")}), &["table", "column"]),
+                }),
+                &["from", "to"],
+            ),
+            false,
+        ),
+        tool(
+            "add_measure",
+            "Add measure",
+            "Define a measure over the data model (data.measure.add): {name, table, formula, format?}. The formula is DAX over \
+             the model — SUM/AVERAGE/COUNT/COUNTA/MIN/MAX/DISTINCTCOUNT, CALCULATE, DIVIDE and arithmetic, columns as \
+             Table[Column] — and it is validated before it is kept: a measure that names a missing table or column is refused. \
+             `table` is only the home table it is listed under (default: the model's first table).",
+            obj(
+                json!({
+                    "name": string("Measure name"),
+                    "table": string("Home table (default: the model's first table)"),
+                    "formula": string("DAX formula, e.g. \"SUM(Sales[Amount])\""),
+                    "format": string("Number format code for the measure's output"),
+                }),
+                &["name", "formula"],
+            ),
+            false,
+        ),
+        tool(
+            "evaluate_measure",
+            "Evaluate measure",
+            "Answer a measure without putting it on a sheet (data.measure.evaluate) → {value, display}. `filters` narrow the model \
+             first, e.g. [{\"table\":\"Region\",\"column\":\"Name\",\"value\":\"West\"}], and reach the fact table through the \
+             relationships; without filters the measure answers over everything.",
+            obj(
+                json!({
+                    "name": string("Measure name"),
+                    "filters": {
+                        "type": "array",
+                        "description": "Model filters applied before evaluating",
+                        "items": obj(
+                            json!({
+                                "table": string("Table name"),
+                                "column": string("Column name"),
+                                "value": {"type": ["string", "number", "boolean"], "description": "Value to keep"},
+                            }),
+                            &["table", "column"],
+                        ),
+                    },
+                }),
+                &["name"],
+            ),
+            true,
+        ),
+        // ----- automate -----
+        tool(
+            "run_script",
+            "Run script",
+            "Replay a script stored in the workbook (automate.runScript): {name} runs its saved steps in order and answers \
+             {ran: n}. Scripts that came from a file stay disabled until the workbook is trusted — `trusted: true` runs one this \
+             once — and a step that reaches outside the workbook (file.*, link.*, any path) is refused before any step runs.",
+            obj(
+                json!({
+                    "name": string("Script name"),
+                    "trusted": boolean("Run a script from an untrusted workbook this once (default false)"),
+                }),
+                &["name"],
+            ),
+            false,
+        ),
+        tool(
+            "list_scripts",
+            "List scripts",
+            "Scripts stored in the workbook (automate.allScripts): name, step count and whether they may run now. A VBA project \
+             carried through a save is listed as \"(VBA)\" and never executed here.",
+            empty(),
+            true,
         ),
         // ----- files -----
         tool(
@@ -589,6 +765,221 @@ fn save_workbook(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     exec(b, "file.save", pick(a, &["path"]))
 }
 
+// ---------- read_range paging ----------
+
+/// Rows an unqualified `read_range` returns.
+const READ_ROWS_DEFAULT: u64 = 200;
+/// Most rows one `read_range` answer carries; a bigger `limit` is clamped, never refused.
+const READ_ROWS_MAX: u64 = 5_000;
+
+/// The whole range a read covers.
+struct Whole {
+    /// The sheet prefix the caller wrote, so the engine reads the sheet they named.
+    prefix: Option<String>,
+    /// The sheet's name, when it is known.
+    sheet: Option<String>,
+    range: RangeRef,
+}
+
+/// The sheet a read targets and its used range: named by `sheet`, else by the `range` prefix, else
+/// the active sheet. `None` when no such sheet exists.
+fn sheet_and_used(b: &mut dyn Backend, a: &Args, prefix: Option<&str>) -> Result<Option<(String, Option<RangeRef>)>, String> {
+    let info = b.call("document.inspect", json!({}))?;
+    let sheets = info.get("sheets").and_then(Value::as_array);
+    let named = |n: &str| sheets.and_then(|s| s.iter().find(|sh| sh["name"].as_str() == Some(n)));
+    let at = |i: u64| usize::try_from(i).ok().and_then(|i| sheets.and_then(|s| s.get(i)));
+    let sh = match (a.get("sheet").and_then(Value::as_str), prefix) {
+        (Some(n), _) => named(n),
+        (None, Some(prefix)) => named(prefix),
+        (None, None) => info.get("activeSheet").and_then(Value::as_u64).and_then(at),
+    };
+    let Some(sh) = sh else { return Ok(None) };
+    let name = sh["name"].as_str().unwrap_or_default().to_string();
+    Ok(Some((name, sh["usedRange"].as_str().and_then(RangeRef::parse))))
+}
+
+/// The range a read covers, resolved as `sheet.read` resolves it: the `range` argument (whole rows
+/// or columns clipped to what the sheet uses), or the sheet's used range. `None` when there is
+/// nothing to page — an empty sheet, or text the engine must judge (a multi-area reference, a bad
+/// address) — and the plain read answers as it always has.
+fn whole_range(b: &mut dyn Backend, a: &Args) -> Result<Option<Whole>, String> {
+    let parsed = match a.get("range").and_then(Value::as_str) {
+        Some(text) => {
+            let (prefix, body) = split_sheet(text);
+            match RangeRef::parse(body) {
+                Some(range) => Some((prefix, range)),
+                None => return Ok(None),
+            }
+        }
+        None => None,
+    };
+    match parsed {
+        Some((prefix, range)) if !range.is_full_cols() && !range.is_full_rows() => {
+            let sheet = prefix.clone().or_else(|| a.get("sheet").and_then(Value::as_str).map(str::to_string));
+            Ok(Some(Whole { prefix, sheet, range }))
+        }
+        Some((prefix, range)) => {
+            let Some((name, used)) = sheet_and_used(b, a, prefix.as_deref())? else { return Ok(None) };
+            Ok(used.and_then(|u| range.intersection(&u)).map(|range| Whole { prefix, sheet: Some(name), range }))
+        }
+        None => {
+            let Some((name, used)) = sheet_and_used(b, a, None)? else { return Ok(None) };
+            Ok(used.map(|range| Whole { prefix: None, sheet: Some(name), range }))
+        }
+    }
+}
+
+/// `read_range`: the values of a range, paged so that a million rows still gets a bounded answer
+/// that says what it left out.
+fn read_range(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
+    let offset = a.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    // A limit above the max is clamped, not refused; 0 answers the range's shape and reads nothing.
+    let limit = a.get("limit").and_then(Value::as_u64).unwrap_or(READ_ROWS_DEFAULT).min(READ_ROWS_MAX);
+    let Some(whole) = whole_range(b, a)? else {
+        // Nothing to page: read it whole, as before (an empty sheet, or text the engine judges).
+        let read = b.call("sheet.read", pick(a, &["range", "sheet", "formulas", "formatted"]))?;
+        let returned = read.get("values").and_then(Value::as_array).map_or(0, |v| v.len() as u64);
+        let reported = read.get("range").and_then(Value::as_str).and_then(RangeRef::parse);
+        let (rows, columns) = reported.map_or((0, 0), |r| (u64::from(r.height()), u64::from(r.width())));
+        let mut out = match read {
+            Value::Object(o) => o,
+            other => return Ok(other),
+        };
+        for (k, v) in [
+            ("rows", json!(rows)),
+            ("columns", json!(columns)),
+            ("returnedRows", json!(returned)),
+            ("offset", json!(offset)),
+            ("limit", json!(limit)),
+            ("truncated", json!(false)),
+        ] {
+            out.insert(k.to_string(), v);
+        }
+        return Ok(Value::Object(out));
+    };
+    let total_rows = u64::from(whole.range.height());
+    let total_columns = u64::from(whole.range.width());
+    let last = u64::from(whole.range.end.row);
+    // Saturating throughout: `offset` is a caller's number and may be any u64.
+    let start = u64::from(whole.range.start.row).saturating_add(offset);
+    let end = start.saturating_add(limit).min(last.saturating_add(1));
+    let first = start.min(end);
+    let returned = end.saturating_sub(first);
+    let truncated = end <= last;
+    let mut answer = Map::new();
+    answer.insert("range".to_string(), json!(whole.range.a1()));
+    answer.insert("sheet".to_string(), whole.sheet.clone().map_or(Value::Null, Value::String));
+    answer.insert("values".to_string(), Value::Array(Vec::new()));
+    if returned > 0 {
+        // (first..end) lies inside the range, so both ends fit a sheet coordinate.
+        let window = RangeRef::new(CellRef::new(first as u32, whole.range.start.col), CellRef::new((end - 1) as u32, whole.range.end.col));
+        let mut p = pick(a, &["sheet", "formulas", "formatted"]);
+        p["range"] = json!(match &whole.prefix {
+            Some(prefix) => format!("{prefix}!{}", window.a1()),
+            None => window.a1(),
+        });
+        let read = b.call("sheet.read", p)?;
+        answer.insert("values".to_string(), read.get("values").cloned().unwrap_or_else(|| Value::Array(Vec::new())));
+        // The engine resolved the sheet itself; its name is the authority.
+        if let Some(name) = read.get("sheet").and_then(Value::as_str) {
+            answer.insert("sheet".to_string(), json!(name));
+        }
+    }
+    for (k, v) in [
+        ("rows", json!(total_rows)),
+        ("columns", json!(total_columns)),
+        ("returnedRows", json!(returned)),
+        ("offset", json!(offset)),
+        ("limit", json!(limit)),
+        ("truncated", json!(truncated)),
+    ] {
+        answer.insert(k.to_string(), v);
+    }
+    Ok(Value::Object(answer))
+}
+
+// ---------- batch ----------
+
+/// Most calls one `batch` runs.
+const BATCH_MAX_CALLS: usize = 50;
+/// Most JSON a `batch` accepts; a bigger list belongs in several requests.
+const BATCH_MAX_BYTES: usize = 256 * 1024;
+
+/// What a value costs as JSON, near enough to refuse an oversized batch: the strings it holds
+/// plus a small overhead per node. Summing lengths allocates nothing, where serialising the calls
+/// to measure them would allocate the very payload being refused.
+fn json_bytes(v: &Value) -> usize {
+    match v {
+        Value::String(s) => s.len().saturating_add(2),
+        Value::Array(xs) => xs.iter().fold(2, |n, x| n.saturating_add(json_bytes(x)).saturating_add(1)),
+        Value::Object(o) => o.iter().fold(2, |n, (k, x)| n.saturating_add(k.len()).saturating_add(json_bytes(x)).saturating_add(4)),
+        Value::Null | Value::Bool(_) => 6,
+        Value::Number(_) => 20,
+    }
+}
+
+/// `batch`: run up to [`BATCH_MAX_CALLS`] calls in order and answer each one. A failure is that
+/// call's answer, never the rest's; `depth` refuses nesting.
+fn batch(b: &mut dyn Backend, a: &Args, depth: usize) -> Result<Value, String> {
+    let calls = a.get("calls").and_then(Value::as_array).ok_or_else(|| "`calls` must be an array of {tool, arguments}".to_string())?;
+    if calls.is_empty() {
+        return Err("`calls` needs at least one call".into());
+    }
+    if calls.len() > BATCH_MAX_CALLS {
+        return Err(format!("{} calls in one batch is too many: at most {BATCH_MAX_CALLS}", calls.len()));
+    }
+    if calls.iter().fold(0usize, |n, c| n.saturating_add(json_bytes(c))) > BATCH_MAX_BYTES {
+        return Err(format!("`calls` is over the {} KB a batch accepts: send several batches instead", BATCH_MAX_BYTES / 1024));
+    }
+    let mut results = Vec::with_capacity(calls.len());
+    let mut failed = 0usize;
+    for c in calls {
+        let tool = c.get("tool").and_then(Value::as_str).unwrap_or_default();
+        let outcome = if tool.is_empty() {
+            Err("each call needs a `tool` name".to_string())
+        } else {
+            match c.get("arguments") {
+                None | Some(Value::Null) => Ok(Args::new()),
+                Some(v @ Value::Object(_)) => Ok(v.as_object().cloned().unwrap_or_default()),
+                Some(_) => Err(format!("`{tool}`: arguments must be an object")),
+            }
+            .and_then(|args: Args| {
+                check_arguments(tool, &Value::Object(args.clone()))?;
+                dispatch(b, tool, &args, depth.saturating_add(1))
+            })
+        };
+        match outcome {
+            Ok(result) => results.push(json!({"tool": tool, "ok": true, "result": result})),
+            Err(e) => {
+                failed = failed.saturating_add(1);
+                let error = if tool.is_empty() { e } else { format!("{tool}: {e}") };
+                results.push(json!({"tool": tool, "ok": false, "error": error}));
+            }
+        }
+    }
+    Ok(json!({"count": calls.len(), "failed": failed, "results": results}))
+}
+
+// ---------- data platform ----------
+
+/// `run_query`: a query with a source is created and run (`data.query.add`); a name alone re-runs
+/// the one the workbook holds (`data.query.refresh`).
+fn run_query(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
+    if a.get("source").is_some_and(|v| !v.is_null()) {
+        return exec(b, "data.query.add", pick(a, &["name", "source", "steps", "load"]));
+    }
+    exec(b, "data.query.refresh", pick(a, &["name"]))
+}
+
+/// `list_model`: what `data.model.tables`, `data.relationship.list` and `data.measure.list` each
+/// report, in one answer.
+fn list_model(b: &mut dyn Backend) -> Result<Value, String> {
+    let tables = exec(b, "data.model.tables", json!({}))?;
+    let relationships = exec(b, "data.relationship.list", json!({}))?;
+    let measures = exec(b, "data.measure.list", json!({}))?;
+    Ok(json!({"tables": tables, "relationships": relationships, "measures": measures}))
+}
+
 fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     if !b.has_ui() {
         return Err(NO_UI.into());
@@ -596,8 +987,14 @@ fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     b.call("ui.screenshot", json!({"path": req_str(a, "path")?}))
 }
 
-fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> {
+fn dispatch(b: &mut dyn Backend, name: &str, a: &Args, depth: usize) -> Result<Value, String> {
     match name {
+        "batch" => {
+            if depth > 0 {
+                return Err("a batch cannot contain another batch".into());
+            }
+            batch(b, a, depth)
+        }
         "execute_command" => {
             let cmd = req_str(a, "command")?;
             let p = match a.get("params") {
@@ -609,7 +1006,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> 
         }
         "list_commands" => b.call("engine.commands", pick(a, &["search"])),
         "inspect_workbook" => b.call("document.inspect", json!({})),
-        "read_range" => b.call("sheet.read", pick(a, &["range", "sheet", "formulas", "formatted"])),
+        "read_range" => read_range(b, a),
         "write_range" => exec(b, "range.setValues", pick(a, &["range", "values"])),
         "set_cell" => exec(b, "cell.set", pick(a, &["cell", "input"])),
         "get_cell" => exec(b, "cell.get", pick(a, &["cell"])),
@@ -627,6 +1024,15 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> 
         "create_table" => exec(b, "insert.table", pick(a, &["range", "style", "header", "name"])),
         "sort_range" => sort_range(b, a),
         "filter" => filter(b, a),
+        "list_queries" => exec(b, "data.query.list", json!({})),
+        "run_query" => run_query(b, a),
+        "preview_query" => exec(b, "data.query.preview", pick(a, &["name", "limit", "step", "at"])),
+        "list_model" => list_model(b),
+        "add_relationship" => exec(b, "data.relationship.add", pick(a, &["from", "to"])),
+        "add_measure" => exec(b, "data.measure.add", pick(a, &["name", "table", "formula", "format"])),
+        "evaluate_measure" => exec(b, "data.measure.evaluate", pick(a, &["name", "filters"])),
+        "run_script" => exec(b, "automate.runScript", pick(a, &["name", "trusted"])),
+        "list_scripts" => exec(b, "automate.allScripts", json!({})),
         "open_workbook" => exec(b, "file.open", pick(a, &["path"])),
         "save_workbook" => save_workbook(b, a),
         "new_workbook" => exec(b, "file.new", pick(a, &["sample"])),
@@ -646,7 +1052,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
         Value::Null => &empty,
         _ => return ToolResult::error("tool arguments must be a JSON object"),
     };
-    match dispatch(b, name, a) {
+    match dispatch(b, name, a, 0) {
         Ok(v) => ToolResult::json(&v),
         Err(e) => ToolResult::error(format!("{name}: {e}")),
     }

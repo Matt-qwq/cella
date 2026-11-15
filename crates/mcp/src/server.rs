@@ -28,7 +28,10 @@ execute_command. Convenience tools cover the common flow: write_range / set_cell
 starting with = are formulas), read_range / get_cell to read computed values back, format_range, create_table, \
 insert_chart, sort_range, filter, evaluate_formula (try a formula without changing the sheet), undo / redo, \
 open_workbook / save_workbook. inspect_workbook summarizes sheets, used ranges, tables, charts and names. \
-list_functions lists the worksheet functions.";
+list_functions lists the worksheet functions. read_range is paged (offset / limit, default 200 rows), so a huge range \
+answers in parts; batch runs up to 50 tool calls in one request. The data platform has its own tools: list_queries / \
+run_query / preview_query for Get & Transform queries and list_model / add_relationship / add_measure / \
+evaluate_measure for the data model; run_script / list_scripts replay a script recorded in the workbook.";
 
 /// Resource URIs.
 pub const WORKBOOK_URI: &str = "gridcraft://workbook";

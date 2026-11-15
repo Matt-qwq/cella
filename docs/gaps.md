@@ -998,10 +998,35 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 ### 21. Automation and add-ins (F)
 - VBA out of scope (dropped on open, #6); no Office Scripts compatibility; no plugin or custom
   function API. **Estimate:** 25–40 h plus an owner decision.
+- **Landed 11-14 (N4):** scripts are **editable** (a step's command and parameters are a field in
+  the Macros dialog, with add and remove), and the engine exposes the steps
+  (`automate.scriptSteps`, `automate.editStep`, `automate.appendStep`, `automate.removeStep`,
+  `automate.renameScript`), so a recorded script replays as the same workbook — proved by a test
+  that compares the two runs cell by cell.
+- **Landed 11-14 (N4, the declarative extension tier):** an **extension** is a named command
+  sequence a workbook carries (`ext.add/remove/list/run`), so Insert ▸ Add-ins is a real command
+  instead of a catalog entry with nothing behind it. It runs through the same permission checks a
+  script step passes (no file access, no links, one level only — an extension may not call another
+  extension or a script), and automation that arrives with a file starts **disabled** until the
+  workbook is trusted, exactly as scripts do.
+- **Also landed 11-14 (N4):** `insert.table` refuses a table that only **partly** overlaps the
+  sheet's AutoFilter. It used to drop the filter and turn the rows it hid into hand-hidden ones, so a
+  reload silently changed what the filter meant; a table on or inside the filtered range is still
+  the ordinary case. Found by the command-sequence fuzz after N4 changed its seed sequences.
+- **Still missing:** the executable tier — a WASM plugin host — which needs a runtime dependency
+  (a compiler and a sandbox). That is the owner decision this estimate names; the surface a plugin
+  needs (a named thing in the workbook, a trust flag, a runner) is what landed.
 
 ### 22. AI features (F)
-- No in-app assistant, natural-language formulas or Analyze Data; agent control via MCP is
-  already strong. **Estimate:** 30–50 h; model choice needs the owner.
+- No natural-language formulas or Analyze Data; agent control via MCP is already strong.
+  **Estimate:** 30–50 h; model choice needs the owner.
+- **Landed 11-14 (N4):** the engine answers the question an assistant has to answer first —
+  `inspect.whatChanged {sheet?, limit?}` compares the workbook with the state it was **saved or
+  opened** as (the same snapshot the modified marker reads) and returns the cells that differ, old
+  and new values, the formulas either side, the sheets added or removed, and whether the answer was
+  truncated. It is a diff of the document, not of the undo log, so it survives an agent that cannot
+  see the session's history. **Still missing:** a model in the app — an in-app assistant needs a
+  provider and a network client, which is the owner decision above.
 
 ### 23. Mobile (platform)
 - No iOS, iPadOS or Android layout. **Estimate:** 30–60 h.

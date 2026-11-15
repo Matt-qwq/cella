@@ -463,7 +463,7 @@ fn keytip_han_() {
 fn keytip_has_() {
     let mut h = harness(blank());
     sequence(&mut h, "HAS", false);
-    assert!(h.state().message.is_none() && h.state().toast.is_none(), "HAS must run home.addIns cleanly");
+    assert!(h.state().session.journal.iter().any(|(id, _)| id == "home.addIns"), "HAS must journal home.addIns");
 }
 
 #[test]

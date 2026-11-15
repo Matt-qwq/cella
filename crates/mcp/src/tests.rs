@@ -78,6 +78,21 @@ fn initialize_and_version_negotiation() {
     assert_eq!(rpc(&mut s, 5, "prompts/list", json!({}))["result"]["prompts"], json!([]));
 }
 
+/// A schema is valid JSON Schema for us when every `required` entry is one of `properties`,
+/// at every level (properties, array items and `oneOf` alternatives).
+fn check_schema(name: &str, schema: &Value) {
+    for r in schema["required"].as_array().into_iter().flatten() {
+        let key = r.as_str().unwrap_or_default();
+        assert!(schema["properties"].get(key).is_some(), "{name}: required `{key}` is not in properties");
+    }
+    for s in schema["properties"].as_object().into_iter().flat_map(|o| o.values()) {
+        check_schema(name, s);
+    }
+    for s in schema.get("items").into_iter().chain(schema["oneOf"].as_array().into_iter().flatten()) {
+        check_schema(name, s);
+    }
+}
+
 #[test]
 fn tools_list_has_schemas() {
     let mut s = server();
@@ -86,6 +101,7 @@ fn tools_list_has_schemas() {
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for want in [
         "execute_command",
+        "batch",
         "list_commands",
         "inspect_workbook",
         "read_range",
@@ -99,6 +115,15 @@ fn tools_list_has_schemas() {
         "create_table",
         "sort_range",
         "filter",
+        "list_queries",
+        "run_query",
+        "preview_query",
+        "list_model",
+        "add_relationship",
+        "add_measure",
+        "evaluate_measure",
+        "run_script",
+        "list_scripts",
         "open_workbook",
         "save_workbook",
         "new_workbook",
@@ -114,9 +139,7 @@ fn tools_list_has_schemas() {
         assert!(t["description"].as_str().unwrap().len() > 20, "{t}");
         let name = t["name"].as_str().unwrap();
         assert!(name.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{name} is not snake_case");
-        for r in t["inputSchema"]["required"].as_array().into_iter().flatten() {
-            assert!(t["inputSchema"]["properties"].get(r.as_str().unwrap()).is_some(), "{name}: required {r} not in properties");
-        }
+        check_schema(name, &t["inputSchema"]);
     }
     assert_eq!(tools.len(), tool_definitions().len());
 }
@@ -318,6 +341,247 @@ fn agent_builds_a_budget() {
     // And the whole thing evaluates without touching the sheet.
     let v = ok(&mut s, "evaluate_formula", json!({"formula": "=AVERAGE(B6:D6)"}));
     assert!((v["result"].as_f64().unwrap() - (1950.5 + 1836.25 + 1902.0) / 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn new_tools_name_the_command_they_wrap() {
+    let wrapped: [(&str, &[&str]); 9] = [
+        ("list_queries", &["data.query.list"]),
+        (
+            "run_query",
+            &[
+                "data.query.add",
+                "data.query.refresh",
+                "data.query.addStep",
+                "data.query.setStep",
+                "data.query.removeStep",
+                "data.query.steps",
+                "data.query.load",
+            ],
+        ),
+        ("preview_query", &["data.query.preview"]),
+        ("list_model", &["data.model.tables", "data.relationship.list", "data.measure.list"]),
+        ("add_relationship", &["data.relationship.add"]),
+        ("add_measure", &["data.measure.add"]),
+        ("evaluate_measure", &["data.measure.evaluate"]),
+        ("run_script", &["automate.runScript"]),
+        ("list_scripts", &["automate.allScripts"]),
+    ];
+    let defs = tool_definitions();
+    for (name, commands) in wrapped {
+        let def = defs.iter().find(|d| d["name"] == name).unwrap_or_else(|| panic!("missing tool {name}"));
+        let desc = def["description"].as_str().unwrap_or_default();
+        assert!(desc.len() > 40, "{name}: {desc}");
+        for id in commands {
+            assert!(desc.contains(id), "{name} should name {id}: {desc}");
+            assert!(gridcraft_engine::find_command(id).is_some(), "{name} names {id}, which is not a command");
+        }
+    }
+}
+
+// ---------- read_range paging ----------
+
+#[test]
+fn read_range_pages_with_offset_and_limit() {
+    let mut s = server();
+    let rows: Vec<Value> = (1..=20).map(|i| json!([i])).collect();
+    ok(&mut s, "write_range", json!({"range": "A1", "values": rows}));
+    // A small limit: the window, plus the size of the range it came from.
+    let v = ok(&mut s, "read_range", json!({"range": "A1:A20", "limit": 3}));
+    assert_eq!(v["values"], json!([[1.0], [2.0], [3.0]]), "{v}");
+    assert_eq!(v["rows"].as_u64(), Some(20));
+    assert_eq!(v["columns"].as_u64(), Some(1));
+    assert_eq!(v["returnedRows"].as_u64(), Some(3));
+    assert_eq!((v["offset"].as_u64(), v["limit"].as_u64()), (Some(0), Some(3)));
+    assert_eq!(v["truncated"], true, "{v}");
+    // The window is the rows after offset, and the last page withholds nothing.
+    let v = ok(&mut s, "read_range", json!({"range": "A1:A20", "offset": 18}));
+    assert_eq!(v["values"], json!([[19.0], [20.0]]), "{v}");
+    assert_eq!((v["returnedRows"].as_u64(), v["truncated"].clone()), (Some(2), json!(false)));
+    // A range that fits under the default limit is a full read.
+    let v = ok(&mut s, "read_range", json!({"range": "A1:A20"}));
+    assert_eq!(v["values"].as_array().map(Vec::len), Some(20));
+    assert_eq!((v["limit"].as_u64(), v["truncated"].clone()), (Some(200), json!(false)));
+    // Without a range the used range is the one that gets paged.
+    let v = ok(&mut s, "read_range", json!({"limit": 2}));
+    assert_eq!(v["values"], json!([[1.0], [2.0]]), "{v}");
+    assert_eq!((v["rows"].as_u64(), v["truncated"].clone()), (Some(20), json!(true)));
+    // A limit above the max is clamped, not refused, and the answer says which limit it used.
+    let v = ok(&mut s, "read_range", json!({"range": "A1:A20", "limit": 100000}));
+    assert_eq!(v["limit"].as_u64(), Some(5000), "{v}");
+    assert_eq!(v["values"].as_array().map(Vec::len), Some(20));
+    assert_eq!(v["truncated"], false);
+    // An offset past the end is an empty window, not an error.
+    let v = ok(&mut s, "read_range", json!({"range": "A1:A20", "offset": 500}));
+    assert_eq!(v["values"], json!([]), "{v}");
+    assert_eq!(v["range"], "A1:A20");
+    assert_eq!((v["rows"].as_u64(), v["returnedRows"].as_u64()), (Some(20), Some(0)));
+    assert_eq!(v["truncated"], false);
+    // limit 0 answers the shape of a range without reading a cell of it.
+    let v = ok(&mut s, "read_range", json!({"range": "A1:A20", "limit": 0}));
+    assert_eq!((v["rows"].as_u64(), v["columns"].as_u64()), (Some(20), Some(1)), "{v}");
+    assert_eq!((v["values"].clone(), v["returnedRows"].as_u64(), v["truncated"].clone()), (json!([]), Some(0), json!(true)));
+    // A window on another sheet keeps that sheet.
+    ok(&mut s, "execute_command", json!({"command": "home.insertSheet", "params": {"name": "Two"}}));
+    ok(&mut s, "write_range", json!({"range": "Two!B1:B4", "values": [[1], [2], [3], [4]]}));
+    let v = ok(&mut s, "read_range", json!({"range": "Two!B1:B4", "offset": 1, "limit": 2}));
+    assert_eq!(v["values"], json!([[2.0], [3.0]]), "{v}");
+    assert_eq!(v["sheet"], "Two");
+    assert_eq!(v["range"], "B1:B4");
+    // Whole columns mean the used part of them, as they do for sheet.read.
+    let v = ok(&mut s, "read_range", json!({"sheet": "Sheet1", "range": "A:A"}));
+    assert_eq!((v["rows"].as_u64(), v["returnedRows"].as_u64()), (Some(20), Some(20)), "{v}");
+}
+
+// ---------- batch ----------
+
+#[test]
+fn batch_runs_calls_in_order_and_reports_each() {
+    let mut s = server();
+    let v = ok(
+        &mut s,
+        "batch",
+        json!({"calls": [
+            {"tool": "set_cell", "arguments": {"cell": "A1", "input": "7"}},
+            {"tool": "set_cell", "arguments": {"cell": "A2", "input": "=A1*3"}},
+            {"tool": "get_cell", "arguments": {"cell": "A2"}},
+            {"tool": "no_such_tool", "arguments": {}},
+            {"tool": "set_cell", "arguments": {"cell": "not a cell!!", "input": "1"}},
+            {"tool": "get_cell", "arguments": {"cell": "A2"}},
+        ]}),
+    );
+    assert_eq!((v["count"].as_u64(), v["failed"].as_u64()), (Some(6), Some(2)), "{v}");
+    let r = v["results"].as_array().map(Vec::as_slice).unwrap_or_default();
+    assert_eq!(r.len(), 6, "{v}");
+    // In order: the read sees what the writes before it did.
+    assert_eq!((r[2]["ok"].clone(), r[2]["tool"].clone()), (json!(true), json!("get_cell")), "{v}");
+    assert_eq!(r[2]["result"]["value"], json!(21.0), "{v}");
+    // A failing call is that call's error; the rest still run.
+    assert_eq!(r[3]["ok"], false);
+    assert!(r[3]["error"].as_str().unwrap_or_default().contains("unknown tool"), "{v}");
+    assert_eq!(r[4]["ok"], false);
+    assert_eq!(r[5]["ok"], true, "{v}");
+    assert_eq!(r[5]["result"]["value"], json!(21.0), "{v}");
+    // A call's arguments are validated like any other tool's.
+    let v = ok(&mut s, "batch", json!({"calls": [{"tool": "set_cell", "arguments": "nope"}]}));
+    assert_eq!(v["failed"].as_u64(), Some(1), "{v}");
+}
+
+#[test]
+fn batch_refuses_nesting_oversize_and_too_many_calls() {
+    let mut s = server();
+    // A batch inside a batch: refused as that call's error, and nothing runs.
+    let inner = json!({"calls": [{"tool": "evaluate_formula", "arguments": {"formula": "=1+1"}}]});
+    let v = ok(&mut s, "batch", json!({"calls": [{"tool": "batch", "arguments": inner}]}));
+    assert_eq!(v["failed"].as_u64(), Some(1), "{v}");
+    let err = v["results"][0]["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("another batch"), "{err}");
+    // Over the call cap, the whole batch is refused (not truncated).
+    let many: Vec<Value> = (0..51).map(|_| json!({"tool": "get_cell", "arguments": {"cell": "A1"}})).collect();
+    let msg = fails(&mut s, "batch", json!({"calls": many}));
+    assert!(msg.contains("at most 50"), "{msg}");
+    // An empty batch says so.
+    assert!(fails(&mut s, "batch", json!({"calls": []})).contains("at least one call"));
+    // A megabyte of arguments is refused before anything is run.
+    let blob = json!({"calls": [{"tool": "set_cell", "arguments": {"cell": "A1", "input": "x".repeat(300 * 1024)}}]});
+    let msg = fails(&mut s, "batch", blob);
+    assert!(msg.contains("KB"), "{msg}");
+    assert_eq!(ok(&mut s, "get_cell", json!({"cell": "A1"}))["value"], Value::Null, "a refused batch runs nothing");
+}
+
+// ---------- data platform ----------
+
+#[test]
+fn data_platform_tools_build_a_query_and_a_model() {
+    let mut s = server();
+    // A query from inline CSV, loaded into the model (no cells anywhere).
+    let q = ok(
+        &mut s,
+        "run_query",
+        json!({
+            "name": "Sales",
+            "source": {"kind": "csv", "text": "RegionId,Amount
+1,10
+2,5
+1,7
+"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["RegionId", "Amount"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    assert_eq!((q["name"].clone(), q["rows"].as_u64()), (json!("Sales"), Some(3)), "{q}");
+    ok(
+        &mut s,
+        "run_query",
+        json!({
+            "name": "Region",
+            "source": {"kind": "csv", "text": "Id,Name
+1,West
+2,East
+"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    // Listing, previewing, and re-running a query the workbook already holds.
+    let queries = ok(&mut s, "list_queries", json!({}));
+    let names: Vec<&str> = queries.as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|q| q["name"].as_str()).collect();
+    assert_eq!(names, ["Sales", "Region"], "{queries}");
+    let p = ok(&mut s, "preview_query", json!({"name": "Sales", "limit": 2}));
+    assert_eq!((p["total"].as_u64(), p["truncated"].clone()), (Some(3), json!(true)), "{p}");
+    assert_eq!(p["columns"].as_array().map(Vec::len), Some(2), "{p}");
+    let again = ok(&mut s, "run_query", json!({"name": "Sales"}));
+    assert_eq!(again[0]["rows"].as_u64(), Some(3), "{again}");
+    // The model: two tables, a relationship between them, a measure over the facts.
+    ok(&mut s, "add_relationship", json!({"from": {"table": "Sales", "column": "RegionId"}, "to": {"table": "Region", "column": "Id"}}));
+    ok(&mut s, "add_measure", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"}));
+    let m = ok(&mut s, "list_model", json!({}));
+    let tables: Vec<&str> = m["tables"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(tables, ["Sales", "Region"], "{m}");
+    assert_eq!(m["tables"][0]["rows"].as_u64(), Some(3), "{m}");
+    assert_eq!((m["relationships"][0]["from_table"].clone(), m["relationships"][0]["to_column"].clone()), (json!("Sales"), json!("Id")), "{m}");
+    assert_eq!(m["measures"][0]["formula"], "SUM(Sales[Amount])", "{m}");
+    // evaluate_measure answers a number, and a filter on the dimension reaches the fact table.
+    let e = ok(&mut s, "evaluate_measure", json!({"name": "Total"}));
+    assert_eq!(e["value"], json!(22.0), "{e}");
+    let e = ok(&mut s, "evaluate_measure", json!({"name": "Total", "filters": [{"table": "Region", "column": "Name", "value": "West"}]}));
+    assert_eq!(e["value"], json!(17.0), "{e}");
+    // A measure that names a table the model does not have is refused, not stored.
+    assert!(fails(&mut s, "add_measure", json!({"name": "Nope", "formula": "SUM(Nope[Amount])"})).contains("Nope"));
+    assert_eq!(ok(&mut s, "list_model", json!({}))["measures"].as_array().map(Vec::len), Some(1), "a refused measure is not kept");
+}
+
+// ---------- automate ----------
+
+#[test]
+fn run_script_replays_a_script_and_lists_it() {
+    let mut s = server();
+    let script = json!({"name": "Fill", "commands": [
+        {"command": "cell.set", "params": {"cell": "B1", "input": "ran"}},
+        {"command": "cell.set", "params": {"cell": "B2", "input": "=LEN(B1)"}},
+    ]});
+    ok(&mut s, "execute_command", json!({"command": "automate.newScript", "params": script}));
+    let list = ok(&mut s, "list_scripts", json!({}));
+    let found = list.as_array().map(Vec::as_slice).unwrap_or_default().iter().find(|x| x["name"] == "Fill").unwrap_or_else(|| panic!("{list}"));
+    assert_eq!((found["steps"].as_u64(), found["trusted"].clone()), (Some(2), json!(true)), "{list}");
+    // Storing a script runs nothing; running it replays the steps in order.
+    assert_eq!(ok(&mut s, "get_cell", json!({"cell": "B1"}))["value"], Value::Null);
+    assert_eq!(ok(&mut s, "run_script", json!({"name": "Fill"}))["ran"].as_u64(), Some(2));
+    assert_eq!(ok(&mut s, "get_cell", json!({"cell": "B2"}))["value"], json!(3.0));
+    assert!(fails(&mut s, "run_script", json!({"name": "nope"})).contains("no such script"));
+    // A workbook downloaded with scripts in it is untrusted: `trusted: true` runs one once, and the
+    // trust is not remembered for the next call.
+    let path = tmp("scripts.xlsx");
+    ok(&mut s, "save_workbook", json!({"path": path.to_string_lossy()}));
+    let bytes = std::fs::read(&path).unwrap();
+    ok(&mut s, "new_workbook", json!({}));
+    let downloaded = json!({"command": "file.open", "params": {"name": "downloaded.xlsx", "base64": gridcraft_engine::io::base64_encode(&bytes)}});
+    ok(&mut s, "execute_command", downloaded);
+    assert!(fails(&mut s, "run_script", json!({"name": "Fill"})).contains("trust"));
+    assert_eq!(ok(&mut s, "run_script", json!({"name": "Fill", "trusted": true}))["ran"].as_u64(), Some(2));
+    assert_eq!(ok(&mut s, "get_cell", json!({"cell": "B2"}))["value"], json!(3.0));
+    assert!(fails(&mut s, "run_script", json!({"name": "Fill"})).contains("trust"), "trusted is per call");
+    let _ = std::fs::remove_file(path);
 }
 
 // ---------- serve loop + remote ----------

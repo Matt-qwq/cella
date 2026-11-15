@@ -236,6 +236,45 @@ pub fn specs() -> Vec<CommandSpec> {
             trust_scripts
         ),
         cmd!("automate.deleteScript", "Delete Script", [], None, "{name}", has_doc, delete_script),
+        // The script editor's commands: the Macros dialog shows a script's steps and changes them
+        // one at a time, and every change is an ordinary undoable edit of the workbook.
+        cmd!(query "automate.scriptSteps", "Script Steps", [], None, "{name} → the script's steps ([{command, params}], in order, at most 1000)", has_doc, script_steps),
+        cmd!(
+            "automate.editStep",
+            "Edit Step",
+            [],
+            None,
+            "{name, index, command?: registered command id, params?: object} — changes one step; a field left out keeps the step's own, and a command id the registry doesn't have or a step the script doesn't have is refused",
+            has_doc,
+            edit_step
+        ),
+        cmd!(
+            "automate.removeStep",
+            "Remove Step",
+            [],
+            None,
+            "{name, index} — drops one step (a step the script doesn't have is refused)",
+            has_doc,
+            remove_step
+        ),
+        cmd!(
+            "automate.appendStep",
+            "Add Step",
+            [],
+            None,
+            "{name, command, params?: object} — adds one step at the end; refuses a command id the registry doesn't have, params that aren't a JSON object, and a script that already holds the 1000 steps one may",
+            has_doc,
+            append_step
+        ),
+        cmd!(
+            "automate.renameScript",
+            "Rename Script",
+            [],
+            None,
+            "{name, to} — refuses a blank name and one another script already uses",
+            has_doc,
+            rename_script
+        ),
         // Cell controls, themes, borders, styles
         cmd!(
             "insert.checkbox",
@@ -285,7 +324,6 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             new_cell_style
         ),
-        cmd!(query "home.addIns", "Add-ins", ["Home", "Add-ins"], None, "{} → GridCraft extends through MCP and scripts instead of add-ins", always, |_, _| Ok(json!({"addIns": [], "hint": "Use gridcraft-cli mcp or Automate › scripts"}))),
         cmd!(query "formulas.recentlyUsed", "Recently Used", ["Formulas", "Function Library"], None, "{} → recently used functions in this workbook", has_doc, recently_used),
         cmd!(query "formulas.financial", "Financial", ["Formulas", "Function Library"], None, "{}", always, |s, _| s.execute("formulas.functions", json!({"category": "Financial"}))),
         cmd!(query "formulas.logical", "Logical", ["Formulas", "Function Library"], None, "{}", always, |s, _| s.execute("formulas.functions", json!({"category": "Logical"}))),
@@ -736,6 +774,10 @@ const SCRIPTS_NAME: &str = "_sc_scripts";
 const WATCH_NAME: &str = "_sc_watch";
 
 /// Workbook-level JSON stored in a hidden defined name (round-trips through XLSX).
+pub(crate) fn stash_get_shared(wb: &Workbook, key: &str) -> Json {
+    stash_get(wb, key)
+}
+
 fn stash_get(wb: &Workbook, key: &str) -> Json {
     wb.names
         .iter()
@@ -749,6 +791,10 @@ fn stash_get(wb: &Workbook, key: &str) -> Json {
 fn stash_map(wb: &Workbook, key: &str) -> Json {
     let v = stash_get(wb, key);
     if v.is_object() { v } else { json!({}) }
+}
+
+pub(crate) fn stash_set_shared(wb: &mut Workbook, key: &str, v: &Json) {
+    stash_set(wb, key, v)
 }
 
 fn stash_set(wb: &mut Workbook, key: &str, v: &Json) {
@@ -1056,6 +1102,10 @@ pub(crate) fn has_scripts(wb: &Workbook) -> bool {
 /// command id and parameter name, so it is only the up-front refusal: the steps also run inside
 /// an [`crate::io::ScriptSandbox`] (file access refused whatever the parameter is called) and
 /// [`run_script`] drops any `OpenUrl` request a step raises.
+pub(crate) fn denied_script_step_shared(id: &str, params: &Json) -> Option<String> {
+    denied_script_step(id, params)
+}
+
 fn denied_script_step(id: &str, params: &Json) -> Option<String> {
     if id.starts_with("file.") || id.starts_with("link.") {
         return Some(format!("scripts can't run `{id}`: it reaches outside the workbook"));
@@ -1131,6 +1181,166 @@ fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
         }
         stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
         Ok(Json::Null)
+    })
+}
+
+/// The most steps one script may hold, and the most `automate.scriptSteps` lists: a script from
+/// a file (or a long recording) is input like any other, and an editor showing 10 000 rows is not
+/// one anyone can use.
+const MAX_SCRIPT_STEPS: usize = 1_000;
+/// The largest JSON one step's `params` may serialize to, and the largest a single script's steps
+/// may be. The stash is one defined name inside the workbook, not a place for a megabyte blob.
+const MAX_STEP_PARAMS_BYTES: usize = 64 * 1024;
+const MAX_SCRIPT_STEPS_BYTES: usize = 1024 * 1024;
+
+/// The steps script `name` holds, in order. `None` when the workbook has no script of that name;
+/// a stored value that isn't an array holds no steps (as `automate.allScripts` counts it).
+fn script_steps_of(wb: &Workbook, name: &str) -> Option<Vec<Json>> {
+    stash_map(wb, SCRIPTS_NAME).get(name).map(|v| v.as_array().cloned().unwrap_or_default())
+}
+
+fn no_such_script(cmd: &'static str, name: &str) -> EngineError {
+    bad(cmd, format!("no script named \"{name}\""))
+}
+
+/// A step as the editing commands store it: a command id the registry has and a `params` object.
+/// Refuses an id nothing registers, params that aren't a JSON object, and a params blob bigger
+/// than one step may hold, so a hostile script is turned away with a message instead of being
+/// written into the workbook.
+fn checked_step(cmd: &'static str, id: &str, params: Option<&Json>) -> Result<Json> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(bad(cmd, "missing `command`"));
+    }
+    if find_command(id).is_none() {
+        return Err(bad(cmd, format!("`{id}` is not a command")));
+    }
+    let params = match params {
+        None | Some(Json::Null) => json!({}),
+        Some(v @ Json::Object(_)) => {
+            // Measured on the caller's value, so an oversized blob is never copied.
+            let size = v.to_string().len();
+            if size > MAX_STEP_PARAMS_BYTES {
+                return Err(bad(cmd, format!("`params` is {size} bytes of JSON; one step may hold {MAX_STEP_PARAMS_BYTES}")));
+            }
+            v.clone()
+        }
+        Some(_) => return Err(bad(cmd, "`params` must be a JSON object")),
+    };
+    Ok(json!({"command": id, "params": params}))
+}
+
+/// Saves `steps` as the whole step list of script `name` (an ordinary undoable edit), refusing a
+/// list longer or larger than one script may hold.
+fn save_script_steps(s: &mut Session, name: &str, steps: Vec<Json>, cmd: &'static str) -> Result<()> {
+    if steps.len() > MAX_SCRIPT_STEPS {
+        return Err(bad(cmd, format!("\"{name}\" would hold {} steps; a script may hold {MAX_SCRIPT_STEPS}", steps.len())));
+    }
+    let list = Json::Array(steps);
+    let size = list.to_string().len();
+    if size > MAX_SCRIPT_STEPS_BYTES {
+        return Err(bad(cmd, format!("the steps of \"{name}\" are {size} bytes of JSON; a script may hold {MAX_SCRIPT_STEPS_BYTES}")));
+    }
+    edit(s, |cx| {
+        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        all[name] = list.clone();
+        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        Ok(())
+    })
+}
+
+/// The script's own steps, in order (the script editor's view of it).
+fn script_steps(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("automate.scriptSteps", "missing `name`"))?;
+    let d = s.doc()?;
+    let steps = script_steps_of(&d.wb, name).ok_or_else(|| no_such_script("automate.scriptSteps", name))?;
+    Ok(Json::Array(steps.into_iter().take(MAX_SCRIPT_STEPS).collect()))
+}
+
+/// Changes one step of a script. A field left out of the call keeps the step's own value, so
+/// editing only the params leaves the command, and moving a step to another command means passing
+/// `params` when the old ones don't fit it.
+fn edit_step(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("automate.editStep", "missing `name`"))?.to_string();
+    let index = u32_param(p, "index").ok_or_else(|| bad("automate.editStep", "missing `index`"))? as usize;
+    let mut steps = {
+        let d = s.doc()?;
+        script_steps_of(&d.wb, &name).ok_or_else(|| no_such_script("automate.editStep", &name))?
+    };
+    let old = steps.get(index).cloned().ok_or_else(|| bad("automate.editStep", format!("\"{name}\" has no step {index}")))?;
+    let id = str_param(p, "command").map(str::to_string).unwrap_or_else(|| old["command"].as_str().unwrap_or("").to_string());
+    let params = p.get("params").or_else(|| old.get("params"));
+    let step = checked_step("automate.editStep", &id, params)?;
+    if let Some(slot) = steps.get_mut(index) {
+        *slot = step;
+    }
+    let n = steps.len();
+    save_script_steps(s, &name, steps, "automate.editStep")?;
+    Ok(json!({"name": name, "index": index, "steps": n}))
+}
+
+fn remove_step(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("automate.removeStep", "missing `name`"))?.to_string();
+    let index = u32_param(p, "index").ok_or_else(|| bad("automate.removeStep", "missing `index`"))? as usize;
+    let mut steps = {
+        let d = s.doc()?;
+        script_steps_of(&d.wb, &name).ok_or_else(|| no_such_script("automate.removeStep", &name))?
+    };
+    if index >= steps.len() {
+        return Err(bad("automate.removeStep", format!("\"{name}\" has no step {index}")));
+    }
+    steps.remove(index);
+    let n = steps.len();
+    save_script_steps(s, &name, steps, "automate.removeStep")?;
+    Ok(json!({"name": name, "steps": n}))
+}
+
+fn append_step(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("automate.appendStep", "missing `name`"))?.to_string();
+    let command = str_param(p, "command").ok_or_else(|| bad("automate.appendStep", "missing `command`"))?;
+    let step = checked_step("automate.appendStep", command, p.get("params"))?;
+    let mut steps = {
+        let d = s.doc()?;
+        script_steps_of(&d.wb, &name).ok_or_else(|| no_such_script("automate.appendStep", &name))?
+    };
+    if steps.len() >= MAX_SCRIPT_STEPS {
+        return Err(bad("automate.appendStep", format!("\"{name}\" already holds the {MAX_SCRIPT_STEPS} steps a script may")));
+    }
+    steps.push(step);
+    let n = steps.len();
+    save_script_steps(s, &name, steps, "automate.appendStep")?;
+    Ok(json!({"name": name, "index": n - 1, "steps": n}))
+}
+
+fn rename_script(s: &mut Session, p: &Json) -> Result<Json> {
+    let name = str_param(p, "name").ok_or_else(|| bad("automate.renameScript", "missing `name`"))?.to_string();
+    let to = str_param(p, "to").ok_or_else(|| bad("automate.renameScript", "missing `to`"))?.trim().to_string();
+    if to.is_empty() {
+        return Err(bad("automate.renameScript", "`to` is blank"));
+    }
+    // The name is a key in the stash's JSON: a megabyte of it is refused, not stored.
+    if to.chars().count() > 255 {
+        return Err(bad("automate.renameScript", "`to` is longer than the 255 characters a script name may hold"));
+    }
+    if to == name {
+        return Ok(json!({"name": name}));
+    }
+    let all = stash_map(&s.doc()?.wb, SCRIPTS_NAME);
+    if all.get(name.as_str()).is_none() {
+        return Err(no_such_script("automate.renameScript", &name));
+    }
+    if all.get(to.as_str()).is_some() {
+        return Err(bad("automate.renameScript", format!("\"{to}\" is already the name of a script")));
+    }
+    edit(s, |cx| {
+        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        if let Some(map) = all.as_object_mut()
+            && let Some(steps) = map.remove(name.as_str())
+        {
+            map.insert(to.clone(), steps);
+        }
+        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        Ok(json!({"name": to}))
     })
 }
 
@@ -1322,4 +1532,168 @@ fn watch_window(s: &mut Session, p: &Json) -> Result<Json> {
         })
         .collect();
     Ok(Json::Array(rows))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session whose workbook holds one script, `Build`, with `steps`.
+    fn with_script(steps: Json) -> Session {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("automate.newScript", json!({"name": "Build", "commands": steps})).unwrap();
+        s
+    }
+
+    fn step(id: &str, params: Json) -> Json {
+        json!({"command": id, "params": params})
+    }
+
+    fn listed(s: &mut Session, name: &str) -> Json {
+        s.execute("automate.scriptSteps", json!({"name": name})).unwrap()
+    }
+
+    #[test]
+    fn automate_script_steps_lists_the_scripts_own_steps_in_order() {
+        let mut s = with_script(json!([step("cell.set", json!({"cell": "A1", "input": "x"})), step("home.bold", json!({}))]));
+        assert_eq!(
+            listed(&mut s, "Build"),
+            json!([{"command": "cell.set", "params": {"cell": "A1", "input": "x"}}, {"command": "home.bold", "params": {}}])
+        );
+        // A script the workbook doesn't have, and a call with no name, are refused.
+        let err = s.execute("automate.scriptSteps", json!({"name": "Nope"})).unwrap_err().to_string();
+        assert!(err.contains("no script named"), "{err}");
+        assert!(s.execute("automate.scriptSteps", json!({})).is_err());
+        // A stored script whose value isn't an array lists no steps instead of failing.
+        s.execute("formulas.defineName", json!({"name": "_sc_scripts", "refersTo": "\"{\"\"Odd\"\":7}\""})).unwrap();
+        assert_eq!(listed(&mut s, "Odd"), json!([]));
+    }
+
+    #[test]
+    fn automate_script_steps_lists_at_most_the_thousand_steps_an_editor_shows() {
+        let many: Vec<Json> = (0..MAX_SCRIPT_STEPS + 500).map(|_| step("home.bold", json!({}))).collect();
+        let mut s = with_script(json!(many));
+        assert_eq!(listed(&mut s, "Build").as_array().map(Vec::len), Some(MAX_SCRIPT_STEPS));
+    }
+
+    #[test]
+    fn automate_edit_step_changes_one_step_and_is_undoable() {
+        let mut s =
+            with_script(json!([step("cell.set", json!({"cell": "A1", "input": "1"})), step("cell.set", json!({"cell": "B1", "input": "2"})),]));
+        // Only the params: the step keeps its command.
+        let r = s.execute("automate.editStep", json!({"name": "Build", "index": 1, "params": {"cell": "B1", "input": "3"}})).unwrap();
+        assert_eq!(r, json!({"name": "Build", "index": 1, "steps": 2}));
+        assert_eq!(listed(&mut s, "Build")[1], step("cell.set", json!({"cell": "B1", "input": "3"})));
+        // Undo puts the old step back: editing a script is an ordinary workbook edit.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(listed(&mut s, "Build")[1], step("cell.set", json!({"cell": "B1", "input": "2"})));
+        // A new command with no params keeps the step's params, as the params doc says.
+        s.execute("automate.editStep", json!({"name": "Build", "index": 0, "command": "cell.toggleCheckbox"})).unwrap();
+        assert_eq!(listed(&mut s, "Build")[0], step("cell.toggleCheckbox", json!({"cell": "A1", "input": "1"})));
+        // A new command with params replaces both.
+        s.execute("automate.editStep", json!({"name": "Build", "index": 0, "command": "home.bold", "params": {}})).unwrap();
+        assert_eq!(listed(&mut s, "Build")[0], step("home.bold", json!({})));
+    }
+
+    #[test]
+    fn automate_edit_step_refuses_an_unknown_command_a_bad_index_and_hostile_params() {
+        let mut s = with_script(json!([step("cell.set", json!({"cell": "A1", "input": "1"}))]));
+        let original = listed(&mut s, "Build");
+        let err = s.execute("automate.editStep", json!({"name": "Build", "index": 0, "command": "not.aCommand"})).unwrap_err().to_string();
+        assert!(err.contains("is not a command"), "{err}");
+        let err = s.execute("automate.editStep", json!({"name": "Build", "index": 9, "command": "home.bold"})).unwrap_err().to_string();
+        assert!(err.contains("has no step 9"), "{err}");
+        let err = s.execute("automate.editStep", json!({"name": "Nope", "index": 0})).unwrap_err().to_string();
+        assert!(err.contains("no script named"), "{err}");
+        // Params are an object: a bare array is refused rather than stored.
+        let err = s.execute("automate.editStep", json!({"name": "Build", "index": 0, "params": [1, 2]})).unwrap_err().to_string();
+        assert!(err.contains("must be a JSON object"), "{err}");
+        // A megabyte of params is refused by its measured size, and nothing is written.
+        let blob = json!({"text": "x".repeat(1_000_000)});
+        let err = s.execute("automate.editStep", json!({"name": "Build", "index": 0, "params": blob})).unwrap_err().to_string();
+        assert!(err.contains("bytes of JSON"), "{err}");
+        assert_eq!(listed(&mut s, "Build"), original, "a refused edit leaves the script alone");
+    }
+
+    #[test]
+    fn automate_remove_step_drops_one_step_and_refuses_a_bad_index() {
+        let mut s = with_script(json!([
+            step("cell.set", json!({"cell": "A1", "input": "1"})),
+            step("home.bold", json!({})),
+            step("cell.set", json!({"cell": "A2", "input": "2"})),
+        ]));
+        let r = s.execute("automate.removeStep", json!({"name": "Build", "index": 1})).unwrap();
+        assert_eq!(r, json!({"name": "Build", "steps": 2}));
+        assert_eq!(
+            listed(&mut s, "Build"),
+            json!([step("cell.set", json!({"cell": "A1", "input": "1"})), step("cell.set", json!({"cell": "A2", "input": "2"}))])
+        );
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(listed(&mut s, "Build").as_array().map(Vec::len), Some(3));
+        let err = s.execute("automate.removeStep", json!({"name": "Build", "index": 3})).unwrap_err().to_string();
+        assert!(err.contains("has no step 3"), "{err}");
+        let err = s.execute("automate.removeStep", json!({"name": "Nope", "index": 0})).unwrap_err().to_string();
+        assert!(err.contains("no script named"), "{err}");
+    }
+
+    #[test]
+    fn automate_append_step_adds_at_the_end_and_refuses_hostile_input() {
+        let mut s = with_script(json!([step("cell.set", json!({"cell": "A1", "input": "1"}))]));
+        let r = s.execute("automate.appendStep", json!({"name": "Build", "command": "home.bold", "params": {"range": "A1:A1"}})).unwrap();
+        assert_eq!(r, json!({"name": "Build", "index": 1, "steps": 2}));
+        assert_eq!(listed(&mut s, "Build")[1], step("home.bold", json!({"range": "A1:A1"})));
+        // No params is an empty object, not a null step.
+        s.execute("automate.appendStep", json!({"name": "Build", "command": "home.bold"})).unwrap();
+        assert_eq!(listed(&mut s, "Build")[2], step("home.bold", json!({})));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(listed(&mut s, "Build").as_array().map(Vec::len), Some(2));
+
+        let err = s.execute("automate.appendStep", json!({"name": "Build", "command": "not.aCommand"})).unwrap_err().to_string();
+        assert!(err.contains("is not a command"), "{err}");
+        let err = s.execute("automate.appendStep", json!({"name": "Build"})).unwrap_err().to_string();
+        assert!(err.contains("missing `command`"), "{err}");
+        let err = s.execute("automate.appendStep", json!({"name": "Build", "command": "home.bold", "params": "A1"})).unwrap_err().to_string();
+        assert!(err.contains("must be a JSON object"), "{err}");
+        // A megabyte blob is refused before it reaches the workbook.
+        let blob = json!({"text": "x".repeat(1_000_000)});
+        let err = s.execute("automate.appendStep", json!({"name": "Build", "command": "cell.set", "params": blob})).unwrap_err().to_string();
+        assert!(err.contains("bytes of JSON"), "{err}");
+        assert_eq!(listed(&mut s, "Build").as_array().map(Vec::len), Some(2), "a refused step is not added");
+    }
+
+    #[test]
+    fn automate_append_step_refuses_a_script_at_the_step_cap() {
+        let many: Vec<Json> = (0..MAX_SCRIPT_STEPS).map(|_| step("home.bold", json!({}))).collect();
+        let mut s = with_script(json!(many));
+        let err = s.execute("automate.appendStep", json!({"name": "Build", "command": "home.bold"})).unwrap_err().to_string();
+        assert!(err.contains("already holds"), "{err}");
+    }
+
+    #[test]
+    fn automate_rename_script_refuses_a_name_another_script_already_uses() {
+        let mut s = with_script(json!([step("home.bold", json!({}))]));
+        s.execute("automate.newScript", json!({"name": "Other", "commands": []})).unwrap();
+        assert_eq!(s.execute("automate.renameScript", json!({"name": "Build", "to": " Renamed "})).unwrap(), json!({"name": "Renamed"}));
+        assert_eq!(listed(&mut s, "Renamed"), json!([step("home.bold", json!({}))]));
+        fn names(s: &mut Session) -> Vec<String> {
+            let list = s.execute("automate.allScripts", json!({})).unwrap();
+            let mut out: Vec<String> =
+                list.as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+            out.sort();
+            out
+        }
+        assert_eq!(names(&mut s), vec!["Other".to_string(), "Renamed".to_string()]);
+        // An existing name, a blank one, a script that isn't there and a name past the cap are refused.
+        let err = s.execute("automate.renameScript", json!({"name": "Renamed", "to": "Other"})).unwrap_err().to_string();
+        assert!(err.contains("already the name of a script"), "{err}");
+        let err = s.execute("automate.renameScript", json!({"name": "Renamed", "to": "  "})).unwrap_err().to_string();
+        assert!(err.contains("blank"), "{err}");
+        let err = s.execute("automate.renameScript", json!({"name": "Nope", "to": "Fresh"})).unwrap_err().to_string();
+        assert!(err.contains("no script named"), "{err}");
+        let err = s.execute("automate.renameScript", json!({"name": "Renamed", "to": "n".repeat(256)})).unwrap_err().to_string();
+        assert!(err.contains("255"), "{err}");
+        // Renaming is an ordinary undoable edit.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(names(&mut s), vec!["Build".to_string(), "Other".to_string()]);
+    }
 }

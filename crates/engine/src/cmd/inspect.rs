@@ -14,6 +14,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "selection.stats", "Selection Statistics", [], None, "{} → count, sum, average, min, max", has_doc, sel_stats),
         cmd!(query "history.list", "Undo History", [], None, "{} → undo/redo labels", has_doc, history),
         cmd!(query "app.commands", "List Commands", [], None, "{search?} → ids, labels, params", always, list_commands),
+        cmd!(
+            query "inspect.whatChanged",
+            "What Changed",
+            ["Automate", "Scripting Tools"],
+            None,
+            "{sheet?, limit?: 200 (max 5000)} → {changed, cells: [{sheet, cell, before, after, beforeFormula, afterFormula}], truncated, sheetsAdded, sheetsRemoved} against the saved/opened state",
+            has_doc,
+            what_changed
+        ),
     ]
 }
 
@@ -206,4 +215,102 @@ fn list_commands(s: &mut Session, p: &Json) -> Result<Json> {
         .map(|c| serde_json::to_value(c).unwrap_or_default())
         .collect();
     Ok(Json::Array(v))
+}
+// ---------------------------------------------------------------- what changed
+
+/// What this workbook's unsaved edits changed: a cell-by-cell comparison with the state it was
+/// **saved or opened** as (see DocState::saved, the same snapshot the modified marker reads).
+///
+/// This is the engine half of "what changed in this sheet": an agent (or the Agents dialog) asks,
+/// and gets the cells that differ rather than a diff of the undo log. Sheets that were added or
+/// removed are named separately, because they are not cells.
+fn what_changed(s: &mut Session, p: &Json) -> Result<Json> {
+    let limit = u32_param(p, "limit").unwrap_or(200).clamp(1, 5_000) as usize;
+    let only_sheet = str_param(p, "sheet").map(str::to_string);
+    let d = s.doc()?;
+    let before_wb = d.saved.clone();
+    let after_wb = d.wb.clone();
+    let mut cells: Vec<Json> = Vec::new();
+    let mut count: usize = 0;
+    // A scan bound: the comparison walks every stored cell of both versions, and a million-cell
+    // sheet must not turn a question into a stall.
+    const MAX_VISITED: usize = 4_000_000;
+    let mut visited: usize = 0;
+    let mut truncated = false;
+    for (si, after) in after_wb.sheets.iter().enumerate() {
+        if let Some(name) = &only_sheet
+            && !after.name.eq_ignore_ascii_case(name)
+        {
+            continue;
+        }
+        let before = before_wb.sheet(si);
+        for (at, a) in after.cells.iter() {
+            visited = visited.saturating_add(1);
+            if visited > MAX_VISITED {
+                truncated = true;
+                break;
+            }
+            let b = before.and_then(|sh| sh.cells.get(at));
+            let b = b.as_ref();
+            if same_cell(b, Some(&a)) {
+                continue;
+            }
+            count = count.saturating_add(1);
+            if cells.len() < limit {
+                cells.push(changed_json(&after.name, at, b, Some(&a)));
+            }
+        }
+        if let Some(before) = before {
+            for (at, b) in before.cells.iter() {
+                visited = visited.saturating_add(1);
+                if visited > MAX_VISITED {
+                    truncated = true;
+                    break;
+                }
+                // A cell that only exists in the old version is a deletion; one in both versions
+                // was compared above.
+                if after.cells.get(at).is_some() {
+                    continue;
+                }
+                count = count.saturating_add(1);
+                if cells.len() < limit {
+                    cells.push(changed_json(&after.name, at, Some(&b), None));
+                }
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+    let added: Vec<&str> = after_wb.sheets.iter().skip(before_wb.sheets.len()).map(|sh| sh.name.as_str()).collect();
+    let removed: Vec<&str> = before_wb.sheets.iter().skip(after_wb.sheets.len()).map(|sh| sh.name.as_str()).collect();
+    Ok(json!({
+        "changed": count,
+        "cells": cells,
+        "truncated": truncated || count > cells.len(),
+        "sheetsAdded": added,
+        "sheetsRemoved": removed,
+        "saved": d.path.clone(),
+    }))
+}
+
+/// Whether a cell is the same in both versions: its value **and** its formula text, because
+/// retyping =A1+1 as =1+A1 changes what a person sees in the bar without changing the number.
+fn same_cell(a: Option<&gridcraft_model::Cell>, b: Option<&gridcraft_model::Cell>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => x.value == y.value && x.formula.as_ref().map(|f| &f.text) == y.formula.as_ref().map(|f| &f.text),
+        _ => false,
+    }
+}
+
+fn changed_json(sheet: &str, at: CellRef, before: Option<&gridcraft_model::Cell>, after: Option<&gridcraft_model::Cell>) -> Json {
+    json!({
+        "sheet": sheet,
+        "cell": at.a1(),
+        "before": before.map(|c| value_json(&c.value)).unwrap_or(Json::Null),
+        "after": after.map(|c| value_json(&c.value)).unwrap_or(Json::Null),
+        "beforeFormula": before.and_then(|c| c.formula.as_ref().map(|f| f.text.clone())),
+        "afterFormula": after.and_then(|c| c.formula.as_ref().map(|f| f.text.clone())),
+    })
 }

@@ -1092,6 +1092,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Automation in this workbook. GridCraft runs its own scripts; a file's VBA project is preserved but not executed." => {
             "此工作簿中的自动化。GridCraft 运行自己的脚本；文件中的 VBA 工程会保留但不执行。"
         }
+        // The script editor (View ▸ Macros: the step list and its commands).
+        "Add a step at the end of this script" => "在此脚本末尾添加一个步骤",
+        "Add Step" => "添加步骤",
+        "command id, e.g. cell.set" => "命令 ID，例如 cell.set",
+        "Params must be JSON: {error}" => "参数必须是 JSON：{error}",
+        "Rename Script" => "重命名脚本",
+        "Script Steps" => "脚本步骤",
+        "This script has no steps." => "此脚本没有步骤。",
         "Between…" => "介于…",
         "Can't Undo" => "无法撤销",
         "Clear point formatting" => "清除数据点格式",
@@ -1835,6 +1843,12 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "This chart's legend entries are its points, not its series, so none of them can be deleted from here." => {
             "此图表的图例项是它的数据点而不是系列，因此无法在此删除其中任何一项。"
         }
+        // Extensions and the "what changed" question an agent asks.
+        "Add Extension" => "添加扩展",
+        "Remove Extension" => "删除扩展",
+        "Extensions" => "扩展",
+        "Run Extension" => "运行扩展",
+        "What Changed" => "更改内容",
         // The pane's own Get Data: a picked file becomes a query, and the model it fills.
         "New query from file…" => "从文件新建查询…",
         "Query added" => "已添加查询",

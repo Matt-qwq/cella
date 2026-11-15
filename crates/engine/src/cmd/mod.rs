@@ -6,6 +6,7 @@ pub mod chart;
 pub mod data;
 pub mod draw;
 pub mod edit;
+pub mod ext;
 pub mod extra;
 pub mod file;
 pub mod forecast;
@@ -138,6 +139,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(view::specs());
         v.extend(inspect::specs());
         v.extend(extra::specs());
+        v.extend(ext::specs());
         v.extend(query::specs());
         v.extend(model::specs());
         v.extend(chart::specs());
