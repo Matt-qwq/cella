@@ -48,6 +48,10 @@ const MIN_POPULATION: usize = 10;
 const MAX_POPULATION: usize = 1000;
 /// Constraint precision (Excel's default 0.000001).
 const PRECISION: f64 = 1e-6;
+/// The smallest gap an AllDifferent ("dif") group's values must have. A thousandth of a unit is
+/// far above the 1e-6 feasibility tolerance, so two equal values are a violation and not a
+/// rounding artefact, and integer variables (which are apart by whole units) clear it easily.
+const DIF_TOL: f64 = 1e-3;
 const EPS: f64 = 1e-9;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -57,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Solver…",
             ["Data", "Analysis"],
             None,
-            "{objective: \"B10\" (formula cell), goal?: max|min|value (default max), value?: number (for goal value), variables: \"B2:B4,D1\" (≤200 constant cells, same sheet), constraints?: [\"B5 <= 10\", \"B2:B4 >= C2:C4\", \"B2 int\", \"B3 bin\", {lhs: \"B6\", op: \"=\", rhs: 3 | \"C6\"}], nonNegative?: bool (default true: variables without a lower bound get 0), method?: grg|simplex|evolutionary (default grg), populationSize?: 100, mutationRate?: 0.075, randomSeed?: 0 (a fixed seed, so runs repeat), convergence?: 0.0001, generationsWithoutImprovement?: 50, requireBounds?: bool (default true: every variable needs both bounds; false searches within ±100 of the start) (Evolutionary options), keep?: bool (default true; false restores the original values), saveModel?: bool (default true: hidden solver_* names), maxEvaluations?: 20000, integerOptimality?: percent (default 0), saved?: bool (solve the sheet's saved model; other params override), reports?: [answer|limits] (written on new sheets when a solution is found)} → {status: optimal|converged|cannotImprove|iterationLimit|infeasible|unbounded|notLinear, message, objective, values: {cell: value}, original: {cell: value}, model: the model as params, evaluations, changed, reports?: [sheet names]}. No `objective` → {model: the saved model} (the menu opens the dialog).",
+            "{objective: \"B10\" (formula cell), goal?: max|min|value (default max), value?: number (for goal value), variables: \"B2:B4,D1\" (≤200 constant cells, same sheet), constraints?: [\"B5 <= 10\", \"B2:B4 >= C2:C4\", \"B2 int\", \"B3 bin\", \"B2:B5 dif\" (all different: every cell a different value), {lhs: \"B6\", op: \"=\", rhs: 3 | \"C6\"}], nonNegative?: bool (default true: variables without a lower bound get 0), method?: grg|simplex|evolutionary (default grg), populationSize?: 100, mutationRate?: 0.075, randomSeed?: 0 (a fixed seed, so runs repeat), convergence?: 0.0001, generationsWithoutImprovement?: 50, requireBounds?: bool (default true: every variable needs both bounds; false searches within ±100 of the start) (Evolutionary options), keep?: bool (default true; false restores the original values), saveModel?: bool (default true: hidden solver_* names), maxEvaluations?: 20000, integerOptimality?: percent (default 0), saved?: bool (solve the sheet's saved model; other params override), reports?: [answer|limits] (written on new sheets when a solution is found)} → {status: optimal|converged|cannotImprove|iterationLimit|infeasible|unbounded|notLinear, message, objective, values: {cell: value}, original: {cell: value}, model: the model as params, evaluations, changed, reports?: [sheet names]}. No `objective` → {model: the saved model} (the menu opens the dialog).",
             has_doc,
             run
         ),
@@ -82,6 +86,8 @@ enum Rel {
     Ge,
     Int,
     Bin,
+    /// AllDifferent: every cell of the group takes a different value.
+    Dif,
 }
 
 impl Rel {
@@ -92,6 +98,7 @@ impl Rel {
             "=" | "==" | "eq" => Some(Rel::Eq),
             "int" | "integer" => Some(Rel::Int),
             "bin" | "binary" => Some(Rel::Bin),
+            "dif" | "alldifferent" | "all different" | "distinct" => Some(Rel::Dif),
             _ => None,
         }
     }
@@ -102,6 +109,7 @@ impl Rel {
             Rel::Ge => ">=",
             Rel::Int => "int",
             Rel::Bin => "bin",
+            Rel::Dif => "dif",
         }
     }
     /// The relation code of the saved model (`solver_relN`), as in Solver's VBA `SolverAdd`.
@@ -112,6 +120,7 @@ impl Rel {
             Rel::Ge => 3,
             Rel::Int => 4,
             Rel::Bin => 5,
+            Rel::Dif => 6,
         }
     }
     fn from_code(c: &str) -> Option<Rel> {
@@ -121,6 +130,7 @@ impl Rel {
             "3" => Some(Rel::Ge),
             "4" => Some(Rel::Int),
             "5" => Some(Rel::Bin),
+            "6" => Some(Rel::Dif),
             _ => None,
         }
     }
@@ -240,7 +250,16 @@ fn split_constraint(t: &str) -> Option<(String, Rel, String)> {
         return Some((a.trim().into(), Rel::Eq, b.trim().into()));
     }
     let lower = t.trim().to_ascii_lowercase();
-    for (suffix, rel) in [("integer", Rel::Int), ("binary", Rel::Bin), ("int", Rel::Int), ("bin", Rel::Bin)] {
+    for (suffix, rel) in [
+        ("alldifferent", Rel::Dif),
+        ("all different", Rel::Dif),
+        ("integer", Rel::Int),
+        ("binary", Rel::Bin),
+        ("distinct", Rel::Dif),
+        ("int", Rel::Int),
+        ("bin", Rel::Bin),
+        ("dif", Rel::Dif),
+    ] {
         if let Some(a) = lower.strip_suffix(suffix) {
             let a = a.trim();
             return Some((t.trim().get(..a.len())?.trim().to_string(), rel, String::new()));
@@ -268,7 +287,7 @@ fn parse_constraint(wb: &Workbook, sheet: usize, c: &Json) -> Result<Constraint>
         return Err(EngineError::Other("Constraint cells must be on the objective cell's sheet.".into()));
     }
     let (rhs, rhs_text) = match rel {
-        Rel::Int | Rel::Bin => (Rhs::None, String::new()),
+        Rel::Int | Rel::Bin | Rel::Dif => (Rhs::None, String::new()),
         _ => match &rhs_json {
             Json::Number(n) => {
                 let v = n.as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad(CMD, "the constraint's right side must be a number"))?;
@@ -345,8 +364,11 @@ fn parse_model(s: &Session, p: &Json) -> Result<Model> {
             if scalar > MAX_CONSTRAINTS {
                 return Err(EngineError::Other(format!("Too many constraints (at most {MAX_CONSTRAINTS} cells).")));
             }
-            if matches!(c.rel, Rel::Int | Rel::Bin) && c.lhs.iter().any(|x| !vars.contains(x)) {
-                return Err(EngineError::Other("Integer and binary constraints must be on variable cells.".into()));
+            if matches!(c.rel, Rel::Int | Rel::Bin | Rel::Dif) && c.lhs.iter().any(|x| !vars.contains(x)) {
+                return Err(EngineError::Other("Integer, binary and all-different constraints must be on variable cells.".into()));
+            }
+            if c.rel == Rel::Dif && c.lhs.len() < 2 {
+                return Err(EngineError::Other("An all-different constraint needs at least two variable cells (like B2:B5 dif).".into()));
             }
             cons.push(c);
         }
@@ -399,13 +421,11 @@ fn save_model(wb: &mut Workbook, m: &Model) {
         put(format!("solver_lhs{k}"), ref_text(&sheet_name, &c.lhs_text));
         put(format!("solver_rel{k}"), c.rel.code().to_string());
         let rhs = match &c.rhs {
-            Rhs::None => {
-                if c.rel == Rel::Bin {
-                    "\"binary\"".to_string()
-                } else {
-                    "\"integer\"".to_string()
-                }
-            }
+            Rhs::None => match c.rel {
+                Rel::Bin => "\"binary\"".to_string(),
+                Rel::Dif => "\"all different\"".to_string(),
+                _ => "\"integer\"".to_string(),
+            },
             Rhs::Const(v) => v.to_string(),
             Rhs::Cells(_) => ref_text(&sheet_name, &c.rhs_text),
         };
@@ -455,7 +475,7 @@ pub fn saved_model(wb: &Workbook, sheet: usize) -> Option<Json> {
         };
         let lhs = local(lhs);
         constraints.push(match rel {
-            Rel::Int | Rel::Bin => json!(format!("{lhs} {}", rel.text())),
+            Rel::Int | Rel::Bin | Rel::Dif => json!(format!("{lhs} {}", rel.text())),
             _ => {
                 let rhs = get(&format!("solver_rhs{k}")).unwrap_or_default();
                 let rhs = if num_text(&rhs).is_some() { rhs } else { local(rhs) };
@@ -501,7 +521,7 @@ fn model_params(wb: &Workbook, m: &Model) -> Json {
         .cons
         .iter()
         .map(|c| match c.rel {
-            Rel::Int | Rel::Bin => json!(format!("{} {}", c.lhs_text, c.rel.text())),
+            Rel::Int | Rel::Bin | Rel::Dif => json!(format!("{} {}", c.lhs_text, c.rel.text())),
             _ => json!(format!("{} {} {}", c.lhs_text, c.rel.text(), c.rhs_text)),
         })
         .collect();
@@ -549,11 +569,34 @@ struct Row {
     rhs_const: f64,
 }
 
-/// The values the solvers see at a point: the objective and `lhs − rhs` per row.
+/// The values the solvers see at a point: the objective and `lhs − rhs` per row, and the
+/// smallest gap inside each AllDifferent group.
 #[derive(Clone, Debug)]
 struct Point {
     f: f64,
     g: Vec<f64>,
+    dif: Vec<f64>,
+}
+
+/// Each AllDifferent group's smallest gap between two of its variables (`INFINITY` for a group
+/// of fewer than two, `NaN` when a value is not a number).
+fn dif_values(x: &[f64], dif: &[Vec<usize>]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(dif.len());
+    for group in dif {
+        let mut gap = f64::INFINITY;
+        for (i, a) in group.iter().enumerate() {
+            for b in &group[i + 1..] {
+                let (Some(va), Some(vb)) = (x.get(*a).copied(), x.get(*b).copied()) else {
+                    gap = f64::NAN;
+                    continue;
+                };
+                let d = (va - vb).abs();
+                gap = if d.is_nan() || gap.is_nan() { f64::NAN } else { gap.min(d) };
+            }
+        }
+        out.push(gap);
+    }
+    out
 }
 
 struct Evaluator {
@@ -562,6 +605,8 @@ struct Evaluator {
     vars: Vec<CellRef>,
     objective: CellRef,
     rows: Vec<Row>,
+    /// AllDifferent groups over the variable indexes.
+    dif: Vec<Vec<usize>>,
     evals: u64,
     budget: u64,
     /// The Limits report: the objective is this variable itself.
@@ -610,7 +655,8 @@ impl Evaluator {
             let rv = if r.rhs.is_some() { it.next().unwrap_or(f64::NAN) } else { r.rhs_const };
             g.push(l - rv);
         }
-        Some(Point { f, g })
+        let dif = dif_values(x, &self.dif);
+        Some(Point { f, g, dif })
     }
 }
 
@@ -621,6 +667,8 @@ struct Problem {
     hi: Vec<f64>,
     integer: Vec<bool>,
     rows: Vec<Row>,
+    /// AllDifferent groups, as indexes into the variable cells (at least two each).
+    dif: Vec<Vec<usize>>,
 }
 
 /// Splits the constraints into variable bounds and general rows.
@@ -631,8 +679,19 @@ fn build_problem(m: &Model) -> Problem {
     let mut has_lower = vec![false; n];
     let mut integer = vec![false; n];
     let mut rows = Vec::new();
+    let mut dif: Vec<Vec<usize>> = Vec::new();
     let var_index = |c: &CellRef| m.vars.iter().position(|v| v == c);
     for c in &m.cons {
+        if c.rel == Rel::Dif {
+            // One group per constraint, in the order the cells were given.
+            let mut group: Vec<usize> = c.lhs.iter().filter_map(&var_index).collect();
+            group.sort_unstable();
+            group.dedup();
+            if group.len() >= 2 {
+                dif.push(group);
+            }
+            continue;
+        }
         for (k, cell) in c.lhs.iter().enumerate() {
             let j = var_index(cell);
             match c.rel {
@@ -687,7 +746,7 @@ fn build_problem(m: &Model) -> Problem {
             }
         }
     }
-    Problem { lo, hi, integer, rows }
+    Problem { lo, hi, integer, rows, dif }
 }
 
 /// What a relaxation (or the whole solve) ended with.
@@ -1164,13 +1223,20 @@ fn project(x: &mut [f64], lo: &[f64], hi: &[f64]) {
 fn nlp(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], goal: Goal) -> Outcome {
     let n = x0.len();
     let rows = ev.rows.clone();
-    let senses: Vec<Sense> = rows.iter().map(|r| r.sense).collect();
+    let ndif = ev.dif.len();
+    // AllDifferent is not a cell row: each group's smallest gap is one more "≥ DIF_TOL" row.
+    let senses: Vec<Sense> = rows.iter().map(|r| r.sense).chain(std::iter::repeat_n(Sense::Ge, ndif)).collect();
+    let all = |p: &Point| -> (f64, Vec<f64>) {
+        let (phi, mut cons) = shape(p, &rows, goal);
+        cons.extend(p.dif.iter().map(|gap| DIF_TOL - gap));
+        (phi, cons)
+    };
     let mut x = x0.to_vec();
     project(&mut x, lo, hi);
-    let mut lam = vec![0.0; rows.len()];
+    let mut lam = vec![0.0; senses.len()];
     let mut mu = 10.0;
     let Some(p) = ev.eval(&x) else { return Outcome::Limit };
-    let (mut phi, mut cons) = shape(&p, &rows, goal);
+    let (mut phi, mut cons) = all(&p);
     if !phi.is_finite() {
         return Outcome::Infeasible;
     }
@@ -1200,8 +1266,8 @@ fn nlp(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], goal: Goal) -> Ou
                 if let Some(v) = xb.get_mut(j) {
                     *v = b;
                 }
-                let (pa, ca) = shape(&ev.eval(&xa)?, &rows, goal);
-                let (pb, cb) = shape(&ev.eval(&xb)?, &rows, goal);
+                let (pa, ca) = all(&ev.eval(&xa)?);
+                let (pb, cb) = all(&ev.eval(&xb)?);
                 let d = (lval(pb, &cb, lam, mu) - lval(pa, &ca, lam, mu)) / (b - a);
                 if let Some(v) = gr.get_mut(j) {
                     *v = if d.is_finite() { d } else { 0.0 };
@@ -1226,7 +1292,7 @@ fn nlp(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], goal: Goal) -> Ou
                 let mut xn: Vec<f64> = x.iter().zip(&g).map(|(v, d)| v - a * d).collect();
                 project(&mut xn, lo, hi);
                 let Some(pn) = ev.eval(&xn) else { break };
-                let (phn, cn) = shape(&pn, &rows, goal);
+                let (phn, cn) = all(&pn);
                 let ln = lval(phn, &cn, &lam, mu);
                 let decrease: f64 = g.iter().zip(x.iter().zip(&xn)).map(|(d, (u, v))| d * (u - v)).sum();
                 if ln.is_finite() && ln <= l_cur - 1e-4 * decrease {
@@ -1282,7 +1348,7 @@ fn nlp(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], goal: Goal) -> Ou
         let scale = rows.iter().map(|r| r.rhs_const.abs()).fold(1.0, f64::max);
         if viol <= PRECISION * scale && inner_done {
             converged = true;
-            if rows.is_empty() {
+            if senses.is_empty() {
                 break;
             }
         }
@@ -1378,6 +1444,7 @@ enum EvoEnd {
 struct EvoSearch<'a> {
     ev: &'a mut Evaluator,
     rows: Vec<Row>,
+    /// One `≥ DIF_TOL` row per AllDifferent group follows the cell rows in `senses`.
     senses: Vec<Sense>,
     goal: Goal,
     lo: Vec<f64>,
@@ -1401,7 +1468,8 @@ impl EvoSearch<'_> {
     /// Scores `x`; `None` once the budget is spent.
     fn score(&mut self, x: Vec<f64>) -> Option<Member> {
         let p = self.ev.eval(&x)?;
-        let (phi, cons) = shape(&p, &self.rows, self.goal);
+        let (phi, mut cons) = shape(&p, &self.rows, self.goal);
+        cons.extend(p.dif.iter().map(|gap| DIF_TOL - gap));
         let viol = violation(&cons, &self.senses);
         let phi = if phi.is_finite() { phi } else { f64::INFINITY };
         let viol = if viol.is_finite() && cons.iter().all(|c| c.is_finite()) { viol } else { f64::INFINITY };
@@ -1412,7 +1480,8 @@ impl EvoSearch<'_> {
 /// The Evolutionary method within `lo..hi` from `x0`.
 fn evolutionary(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], integer: &[bool], goal: Goal, o: &EvoOptions) -> (Outcome, EvoEnd) {
     let rows = ev.rows.clone();
-    let senses: Vec<Sense> = rows.iter().map(|r| r.sense).collect();
+    let ndif = ev.dif.len();
+    let senses: Vec<Sense> = rows.iter().map(|r| r.sense).chain(std::iter::repeat_n(Sense::Ge, ndif)).collect();
     let scale = rows.iter().map(|r| r.rhs_const.abs()).fold(1.0, f64::max);
     let mut start = x0.to_vec();
     project(&mut start, lo, hi);
@@ -1556,6 +1625,8 @@ fn evolutionary(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], integer:
 struct Solve {
     outcome: Outcome,
     not_linear: bool,
+    /// Simplex LP met an AllDifferent group whose variables are not binary (it isn't linear).
+    dif_nonbinary: bool,
     evo_end: Option<EvoEnd>,
 }
 
@@ -1564,6 +1635,7 @@ struct Solve {
 fn optimise(ev: &mut Evaluator, m: &Model, goal: Goal, x0: &[f64], lo: &[f64], hi: &[f64], integer: &[bool], gap: f64) -> Solve {
     let any_int = integer.iter().any(|b| *b);
     let mut not_linear = false;
+    let mut dif_nonbinary = false;
     let mut evo_end = None;
     let outcome = if lo.iter().zip(hi).any(|(l, h)| l > h) {
         Outcome::Infeasible
@@ -1577,6 +1649,30 @@ fn optimise(ev: &mut Evaluator, m: &Model, goal: Goal, x0: &[f64], lo: &[f64], h
                 Err(_) => Outcome::Limit,
                 Ok(((cf, f_const), lin)) => {
                     let mut rows: Vec<(Vec<f64>, Sense, f64)> = lin.iter().zip(&ev.rows).map(|((a, k), r)| (a.clone(), r.sense, -k)).collect();
+                    // AllDifferent over binary variables is exactly "at most one of them is 1".
+                    for group in &ev.dif {
+                        let binary = group.iter().all(|j| {
+                            integer.get(*j).copied().unwrap_or(false)
+                                && lo.get(*j).copied().unwrap_or(f64::NEG_INFINITY) >= 0.0
+                                && hi.get(*j).copied().unwrap_or(f64::INFINITY) <= 1.0
+                        });
+                        if !binary {
+                            dif_nonbinary = true;
+                            break;
+                        }
+                        let mut coeffs = vec![0.0; x0.len()];
+                        for j in group {
+                            if let Some(v) = coeffs.get_mut(*j) {
+                                *v = 1.0;
+                            }
+                        }
+                        // Binaries take 0 or 1, so "all different" is "at most one 1" (Σx ≤ 1) and
+                        // "at most one 0" (Σx ≥ n − 1). More than two such cells is infeasible,
+                        // which is what Excel reports too.
+                        let n = group.len() as f64;
+                        rows.push((coeffs.clone(), Sense::Le, 1.0));
+                        rows.push((coeffs, Sense::Ge, n - 1.0));
+                    }
                     let c: Vec<f64> = match goal {
                         Goal::Max => cf.iter().map(|v| -v).collect(),
                         Goal::Min => cf.clone(),
@@ -1610,7 +1706,18 @@ fn optimise(ev: &mut Evaluator, m: &Model, goal: Goal, x0: &[f64], lo: &[f64], h
             }
         }
     };
-    Solve { outcome, not_linear, evo_end }
+    // A branch-and-bound node snaps its integers itself: the AllDifferent groups are checked on
+    // the answer it hands back, so a solution that breaks one is never reported as a solution.
+    let outcome = if dif_nonbinary {
+        outcome
+    } else {
+        match outcome {
+            // A NaN gap fails the comparison too, which is what an unusable point deserves.
+            Outcome::Solved(x, _, _) if dif_values(&x, &ev.dif).iter().any(|gap| gap.is_nan() || *gap < DIF_TOL) => Outcome::Infeasible,
+            other => other,
+        }
+    };
+    Solve { outcome, not_linear, dif_nonbinary, evo_end }
 }
 
 // ---------------------------------------------------------------- reports
@@ -1771,6 +1878,7 @@ fn answer_report(d: &DocState, sh: &Sheet, inp: &ReportInput) -> Lines {
             let (formula, status, slack) = match (c.rel, &c.rhs) {
                 (Rel::Int, _) => (format!("{}=Integer", abs_ref(*cell)), "Binding", 0.0),
                 (Rel::Bin, _) => (format!("{}=Binary", abs_ref(*cell)), "Binding", 0.0),
+                (Rel::Dif, _) => (format!("{}=AllDifferent", abs_ref(*cell)), "Binding", 0.0),
                 (rel, rhs_cells) => {
                     let b = rhs.get(k).or_else(|| rhs.first()).copied().unwrap_or(f64::NAN);
                     let rhs_text = match rhs_cells {
@@ -1799,8 +1907,10 @@ fn answer_report(d: &DocState, sh: &Sheet, inp: &ReportInput) -> Lines {
 
 fn limits_report(d: &DocState, sh: &Sheet, inp: &ReportInput) -> Result<Lines> {
     let m = inp.model;
-    if inp.prob.integer.iter().any(|b| *b) {
-        return Err(EngineError::Other("The Limits report doesn't apply to models with integer or binary constraints.".into()));
+    if inp.prob.integer.iter().any(|b| *b) || !inp.prob.dif.is_empty() {
+        return Err(EngineError::Other(
+            "The Limits report doesn't apply to models with integer or binary constraints, or with an all-different one.".into(),
+        ));
     }
     if m.method == Method::Evolutionary {
         return Err(EngineError::Other("The Limits report is available for Simplex LP and GRG Nonlinear.".into()));
@@ -1815,6 +1925,7 @@ fn limits_report(d: &DocState, sh: &Sheet, inp: &ReportInput) -> Result<Lines> {
         vars: m.vars.clone(),
         objective: m.objective,
         rows: inp.prob.rows.clone(),
+        dif: inp.prob.dif.clone(),
         evals: 0,
         budget: 0,
         target: None,
@@ -2007,12 +2118,10 @@ fn run(s: &mut Session, p: &Json) -> Result<Json> {
         return Ok(json!({"model": model}));
     }
     let model = parse_model(s, &params)?;
-    let budget = params
-        .get("maxEvaluations")
-        .and_then(Json::as_f64)
-        .filter(|v| v.is_finite() && *v >= 1.0)
-        .map_or(DEFAULT_EVALS, |v| (v as u64).min(MAX_EVALS));
-    let gap = params.get("integerOptimality").and_then(Json::as_f64).filter(|v| v.is_finite()).map_or(0.0, |v| v.clamp(0.0, 100.0) / 100.0);
+    // The dialog edits the options as text, so a number or its text spells the same option.
+    let count = |key: &str| params.get(key).and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(num_text))).filter(|v| v.is_finite() && *v >= 1.0);
+    let budget = count("maxEvaluations").map_or(DEFAULT_EVALS, |v| (v as u64).min(MAX_EVALS));
+    let gap = count("integerOptimality").map_or(0.0, |v| v.clamp(0.0, 100.0) / 100.0);
     let keep = bool_param(&params, "keep").unwrap_or(true);
     let save = bool_param(&params, "saveModel").unwrap_or(true);
     let reports = report_kinds(CMD, &params)?;
@@ -2026,6 +2135,7 @@ fn run(s: &mut Session, p: &Json) -> Result<Json> {
         vars: model.vars.clone(),
         objective: model.objective,
         rows: prob.rows.clone(),
+        dif: prob.dif.clone(),
         evals: 0,
         budget,
         target: None,
@@ -2036,8 +2146,13 @@ fn run(s: &mut Session, p: &Json) -> Result<Json> {
                 .into(),
         ));
     }
-    let Solve { outcome, not_linear, evo_end } = optimise(&mut ev, &model, model.goal, &x0, &prob.lo, &prob.hi, &prob.integer, gap);
+    let Solve { outcome, not_linear, dif_nonbinary, evo_end } = optimise(&mut ev, &model, model.goal, &x0, &prob.lo, &prob.hi, &prob.integer, gap);
     let (status, message, solution) = match outcome {
+        _ if dif_nonbinary => (
+            "notLinear",
+            "All-different constraints on variables that are not binary are not linear, so Simplex LP can't solve them. Make those variables binary, or use GRG Nonlinear or Evolutionary.",
+            None,
+        ),
         _ if not_linear => ("notLinear", "The model isn't linear in the variable cells, so Simplex LP can't solve it. Try GRG Nonlinear.", None),
         Outcome::Solved(x, _, true) if model.method == Method::Evolutionary => match evo_end {
             Some(EvoEnd::Stalled) => {
@@ -2208,6 +2323,102 @@ mod tests {
             .unwrap();
         assert_eq!(r["status"], "optimal");
         assert_eq!((n(&s, "C1"), n(&s, "C2"), n(&s, "C3"), n(&s, "D1")), (0.0, 1.0, 1.0, 20.0));
+    }
+
+    /// AllDifferent (`dif`, Excel's relation 6): every cell of a group takes another value.
+    #[test]
+    fn all_different_over_binary_variables_is_linear() {
+        let mut s = s();
+        set(&mut s, &[("A1", "0"), ("A2", "0"), ("B1", "=A1+A2")]);
+        // Two binaries are all different when exactly one of them is 1.
+        let r = s
+            .execute(
+                "data.solver",
+                json!({"objective": "B1", "goal": "max", "variables": "A1:A2", "constraints": ["A1:A2 bin", "A1:A2 dif"], "method": "simplex"}),
+            )
+            .unwrap();
+        assert_eq!(r["status"], "optimal", "{r}");
+        assert!((n(&s, "B1") - 1.0).abs() < 1e-9, "{r}");
+        // Four binaries have only two values between them: impossible, cells untouched.
+        set(&mut s, &[("A3", "0"), ("A4", "0")]);
+        s.execute("cell.set", json!({"cell": "B1", "input": "=A1+A2+A3+A4"})).unwrap();
+        let r = s
+            .execute(
+                "data.solver",
+                json!({"objective": "B1", "goal": "max", "variables": "A1:A4", "constraints": ["A1:A4 bin", "A1:A4 dif"], "method": "simplex"}),
+            )
+            .unwrap();
+        assert_eq!(r["status"], "infeasible", "{r}");
+        assert_eq!(n(&s, "B1"), 1.0, "an infeasible model leaves the cells alone");
+        // Non-binary variables have no linear form of AllDifferent: Simplex says so.
+        let r = s.execute("data.solver", json!({"objective": "B1", "goal": "max", "variables": "A1:A2", "constraints": ["A1:A2 >= 0", "A1:A2 <= 3", "A1:A2 dif"], "method": "simplex"})).unwrap();
+        assert_eq!(r["status"], "notLinear", "{r}");
+        assert!(r["message"].as_str().unwrap_or_default().to_lowercase().contains("all-different"), "{r}");
+    }
+
+    /// AllDifferent under the Evolutionary method: four integers in 1..4 come back as a
+    /// permutation.
+    #[test]
+    fn all_different_permutes_integer_variables() {
+        let mut s = s();
+        set(&mut s, &[("A1", "1"), ("A2", "1"), ("A3", "1"), ("A4", "1"), ("B1", "=A1+10*A2+100*A3+1000*A4")]);
+        let r = s
+            .execute(
+                "data.solver",
+                json!({"objective": "B1", "goal": "max", "variables": "A1:A4",
+                    "constraints": ["A1:A4 >= 1", "A1:A4 <= 4", "A1:A4 int", "A1:A4 dif"],
+                    "method": "evolutionary", "randomSeed": 7}),
+            )
+            .unwrap();
+        assert!(matches!(r["status"].as_str(), Some("converged" | "cannotImprove")), "{r}");
+        let mut vals = [n(&s, "A1"), n(&s, "A2"), n(&s, "A3"), n(&s, "A4")];
+        vals.sort_by(f64::total_cmp);
+        assert_eq!(vals, [1.0, 2.0, 3.0, 4.0], "{r}");
+    }
+
+    /// AllDifferent under GRG Nonlinear: two continuous variables that both want the same value
+    /// are pushed apart, and the answer is a solution (not a refusal).
+    #[test]
+    fn all_different_pushes_continuous_variables_apart() {
+        let mut s = s();
+        set(&mut s, &[("A1", "0.5"), ("A2", "0.9"), ("B1", "=-(A1-1)^2-(A2-1)^2")]);
+        let r = s
+            .execute(
+                "data.solver",
+                json!({"objective": "B1", "goal": "max", "variables": "A1:A2", "constraints": ["A1:A2 >= 0", "A1:A2 <= 2", "A1:A2 dif"]}),
+            )
+            .unwrap();
+        assert_ne!(r["status"], "infeasible", "{r}");
+        assert!((n(&s, "A1") - n(&s, "A2")).abs() >= 1e-6, "the values must differ: {r}");
+    }
+
+    /// The constraint is a saved-model constraint like integer and binary: it comes back from the
+    /// sheet's hidden names, through XLSX, and drives a solve.
+    #[test]
+    fn all_different_survives_the_saved_model() {
+        let mut s = s();
+        set(&mut s, &[("A1", "0"), ("A2", "0"), ("A3", "0"), ("B1", "=A1+10*A2+100*A3")]);
+        let p = json!({"objective": "B1", "variables": "A1:A3",
+            "constraints": ["A1:A3 >= 1", "A1:A3 <= 3", "A1:A3 int", "A1:A3 dif"], "method": "evolutionary", "randomSeed": 3});
+        let r = s.execute("data.solver", p.clone()).unwrap();
+        assert!(matches!(r["status"].as_str(), Some("converged" | "cannotImprove")), "{r}");
+        assert!(s.doc().unwrap().wb.names.iter().any(|x| x.name == "solver_rel4"));
+        // The saved model names the constraint as `dif`.
+        let model = s.execute("data.solver", json!({})).unwrap();
+        let cons: Vec<String> =
+            model["model"]["constraints"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        assert_eq!(cons.last().map(String::as_str), Some("A1:A3 dif"), "{model}");
+        // Through XLSX and back, the saved model still solves with the constraint.
+        let b64 = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap()["base64"].as_str().unwrap().to_string();
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("file.open", json!({"name": "m.xlsx", "base64": b64})).unwrap();
+        set(&mut s, &[("A1", "1"), ("A2", "1"), ("A3", "1")]);
+        let r = s.execute("data.solver", json!({"saved": true})).unwrap();
+        assert!(matches!(r["status"].as_str(), Some("converged" | "cannotImprove")), "{r}");
+        let mut vals = [n(&s, "A1"), n(&s, "A2"), n(&s, "A3")];
+        vals.sort_by(f64::total_cmp);
+        assert_eq!(vals, [1.0, 2.0, 3.0], "{r}");
     }
 
     #[test]

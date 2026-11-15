@@ -750,6 +750,17 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Last week" => "上周",
         "Left margin (in):" => "左边距（英寸）：",
         "Over, then down" => "先行后列",
+        "Population Size:" => "种群规模：",
+        "Mutation Rate:" => "变异率：",
+        "Random Seed:" => "随机种子：",
+        "Convergence:" => "收敛度：",
+        "Generations Without Improvement:" => "无改进代数：",
+        "Max Evaluations:" => "最大计算次数：",
+        "Integer Optimality (%):" => "整数最优性（%）：",
+        "Require Bounds on Variables" => "要求变量有上下限",
+        "The population, mutation, seed, convergence and generations are the Evolutionary method's." => {
+            "种群规模、变异率、随机种子、收敛度和无改进代数属于演化方法。"
+        }
         "Page order:" => "打印顺序：",
         "Black and white" => "黑白",
         "Draft quality" => "草稿品质",

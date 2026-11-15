@@ -564,7 +564,11 @@ impl Dialog {
             "solver" => {
                 // Starts from the sheet's saved model, else the active cell as objective.
                 let saved = app.session.active().and_then(|doc| gridcraft_engine::cmd::solver::saved_model(&doc.wb, doc.wb.active_sheet));
-                let mut values = json!({"objective": active, "goal": "max", "value": "0", "variables": "", "constraints": [], "nonNegative": true, "method": "grg"});
+                // The Solver Options the command already takes are on the form, so a headless
+                // call and the dialog describe the same model.
+                let mut values = json!({"objective": active, "goal": "max", "value": "0", "variables": "", "constraints": [], "nonNegative": true, "method": "grg",
+                    "populationSize": 100, "mutationRate": 0.075, "randomSeed": 0, "convergence": 0.0001,
+                    "generationsWithoutImprovement": 50, "requireBounds": true, "maxEvaluations": 20000, "integerOptimality": 0});
                 if let (Some(m), Some(v)) = (saved.as_ref().and_then(Json::as_object), values.as_object_mut()) {
                     for (k, x) in m {
                         v.insert(k.clone(), if k == "value" { json!(x.to_string()) } else { x.clone() });
@@ -3433,19 +3437,19 @@ fn solver(ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool, open: &mut bool
         edit(ui, d, "newLhs", 110.0);
         let op = text(d, "newOp");
         egui::ComboBox::from_id_salt("solverOp").selected_text(op.clone()).width(60.0).show_ui(ui, |ui| {
-            for o in ["<=", "=", ">=", "int", "bin"] {
+            for o in ["<=", "=", ">=", "int", "bin", "dif"] {
                 if ui.selectable_label(op == o, o).clicked() {
                     d.values.insert("newOp".into(), json!(o));
                 }
             }
         });
-        if !matches!(op.as_str(), "int" | "bin") {
+        if !matches!(op.as_str(), "int" | "bin" | "dif") {
             edit(ui, d, "newRhs", 110.0);
         }
         if ui.button(crate::widgets::tr(ui, "Add")).clicked() {
             let lhs = text(d, "newLhs");
             if !lhs.trim().is_empty() {
-                let rhs = if matches!(op.as_str(), "int" | "bin") { String::new() } else { format!(" {}", text(d, "newRhs").trim()) };
+                let rhs = if matches!(op.as_str(), "int" | "bin" | "dif") { String::new() } else { format!(" {}", text(d, "newRhs").trim()) };
                 let mut list = list.clone();
                 list.push(format!("{} {op}{rhs}", lhs.trim()));
                 d.values.insert("constraints".into(), json!(list));
@@ -3492,6 +3496,44 @@ fn solver(ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool, open: &mut bool
         ))
         .small(),
     );
+    // Solver Options: the evolutionary search's parameters and the evaluation budget, exactly the
+    // params data.solver documents.
+    let method_text = text(d, "method");
+    egui::CollapsingHeader::new(crate::widgets::tr(ui, "Options")).id_salt("solverOptions").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(crate::widgets::tr(ui, "Population Size:"));
+            edit(ui, d, "populationSize", 70.0);
+            ui.label(crate::widgets::tr(ui, "Mutation Rate:"));
+            edit(ui, d, "mutationRate", 70.0);
+            ui.label(crate::widgets::tr(ui, "Random Seed:"));
+            edit(ui, d, "randomSeed", 70.0);
+        });
+        ui.horizontal(|ui| {
+            ui.label(crate::widgets::tr(ui, "Convergence:"));
+            edit(ui, d, "convergence", 70.0);
+            ui.label(crate::widgets::tr(ui, "Generations Without Improvement:"));
+            edit(ui, d, "generationsWithoutImprovement", 60.0);
+        });
+        ui.horizontal(|ui| {
+            ui.label(crate::widgets::tr(ui, "Max Evaluations:"));
+            edit(ui, d, "maxEvaluations", 90.0);
+            ui.label(crate::widgets::tr(ui, "Integer Optimality (%):"));
+            edit(ui, d, "integerOptimality", 60.0);
+        });
+        let mut bounds = d.values.get("requireBounds").and_then(Json::as_bool).unwrap_or(true);
+        if ui.checkbox(&mut bounds, crate::widgets::tr(ui, "Require Bounds on Variables")).changed() {
+            d.values.insert("requireBounds".into(), json!(bounds));
+        }
+        if method_text != "evolutionary" && method_text != "simplex" {
+            ui.label(
+                egui::RichText::new(crate::widgets::tr(
+                    ui,
+                    "The population, mutation, seed, convergence and generations are the Evolutionary method's.",
+                ))
+                .small(),
+            );
+        }
+    });
     ui.add_space(8.0);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let solve = ui.add(

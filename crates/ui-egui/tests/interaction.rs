@@ -686,6 +686,36 @@ fn solver_dialog_loads_the_saved_model_and_results_can_restore() {
     assert_eq!(value(&h, "B1"), Value::Number(0.0));
 }
 
+/// The Solver dialog carries the model Solver Options the command already takes, and an
+/// all-different constraint written in it reaches the engine.
+#[test]
+fn solver_dialog_offers_all_different_and_the_solver_options() {
+    let mut s = blank();
+    for (c, v) in [("A1", "1"), ("A2", "1"), ("B1", "=A1+10*A2")] {
+        s.execute("cell.set", json!({"cell": c, "input": v})).unwrap();
+    }
+    let mut h = harness(s);
+    h.state_mut().open_dialog("solver", json!({}));
+    h.run_steps(2);
+    let d = h.state().dialog.as_ref().unwrap();
+    assert_eq!(d.values.get("populationSize").and_then(serde_json::Value::as_u64), Some(100));
+    assert_eq!(d.values.get("maxEvaluations").and_then(serde_json::Value::as_u64), Some(20000));
+    assert_eq!(d.values.get("requireBounds").and_then(serde_json::Value::as_bool), Some(true));
+    let d = h.state_mut().dialog.as_mut().unwrap();
+    d.values.insert("objective".into(), json!("B1"));
+    d.values.insert("variables".into(), json!("A1:A2"));
+    d.values.insert("constraints".into(), json!(["A1:A2 >= 1", "A1:A2 <= 2", "A1:A2 int", "A1:A2 dif"]));
+    d.values.insert("method".into(), json!("evolutionary"));
+    d.values.insert("randomSeed".into(), json!(5));
+    h.run_steps(2);
+    h.get_by_label("  Solve  ").click();
+    h.run_steps(2);
+    // Solver Results takes over once the solve returns.
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name.clone()).as_deref(), Some("solverResults"));
+    let (a1, a2) = (value(&h, "A1").as_f64().unwrap_or(0.0), value(&h, "A2").as_f64().unwrap_or(0.0));
+    assert_eq!([a1, a2].iter().map(|v| v.round()).collect::<Vec<_>>(), [1.0, 2.0], "the two cells are all different");
+}
+
 #[test]
 fn solver_results_write_the_chosen_reports() {
     let mut s = blank();
