@@ -943,7 +943,18 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   recomputation. The seam is `PivotSourceKind::DataModel` + `read_only_reason` — swapping a model
   reader in there is what turns a carried report into a computed one.
 
-### 13. Analysis tools: Solver, Analysis ToolPak, Forecast Sheet (F)
+### 13. Analysis tools: Solver, Analysis ToolPak, Forecast Sheet (F) — **the Solver half landed 11-14**
+- Solver takes Excel's **AllDifferent** relation (dif in a constraint string, Excel's own code 6):
+  a group of variable cells that must all hold different values, which is how a scheduling or roster
+  model is written — and the reason it is a relation and not a pile of pairwise not-equal
+  constraints is that pairwise inequalities make a linear model non-linear. The gap between two
+  values is 1e-3, well above the 1e-6 feasibility tolerance, so equality is a real violation and not
+  a rounding artefact.
+- The **Solver Options** the dialog was missing (method, population size, mutation rate, random
+  seed, convergence, generations without improvement, require-bounds, keep-values, save-model,
+  integer optimality) are real Solver parameters now, with a fixed seed so a run repeats.
+- **Still missing:** the Forecast Sheet's own options (seasonality length, confidence interval,
+  timeline start and the chart output choices).
 - `data.solver`, `data.analysisToolPak` missing. Forecast Sheet (`data.forecastSheet`) and the
   FORECAST.ETS family are in, including Forecast Start (hindcast, #785). **Estimate:** 15–25 h.
 - Solver (`data.solver`, #327) has Simplex LP with integer/binary branch and bound, a local
@@ -961,7 +972,14 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   Sheet (`data.forecastSheet`) and the FORECAST.ETS family are in; the sheet has no Forecast Start
   (hindcast) option yet. **Estimate:** 4–10 h (Solver refinements and the Forecast Sheet options).
 
-### 14. Page Layout view and print polish (U, F)
+### 14. Page Layout view and print polish (U, F) — **the page options landed 11-14**
+- Page Setup ▸ Sheet gained what the file's pageSetup element carries and the dialog was missing:
+  **page order** (down then over — Excel's default — or over then down, with pages numbered in
+  printing order), **black and white** (colours printed as greys) and **draft quality** (no charts,
+  pictures or shapes). All three survive save/reopen with a round-trip test, and the print path in
+  crates/engine/src/paper.rs honours them rather than only storing them.
+- **Still missing:** the interactive Page Layout view's drag-to-set print area (margins are
+  draggable already) and driver-specific tray/paper options, which need hardware.
 - Page Layout view landed (#329): paper view with rulers and in-place header/footer editing.
   Margins are dragged on the rulers (#792). Remaining: pictures in headers/footers, Different First
   Page / Odd & Even pages, print ranges and driver tray/options UI. Desktop submits directly through
