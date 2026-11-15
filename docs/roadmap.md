@@ -835,6 +835,7 @@ different trade — speed and size against interoperability, and against every t
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | minor | **窗口外观收口（#169/#170/#54/#173）**：窗口边框在一处决定——Windows 保留系统标题栏、应用不再在下面重复工作簿名；macOS 保留标题带、由应用画名字；Linux 由应用自己画标题栏（最小化/还原/关闭 + 边缘拖拽），因为各桌面画的标题栏应用无法匹配。标题栏与功能区标签行合成一个面。图标（全部代码绘制）修了线宽/居中/对称/纸白色在深色背景上的可见性，并新增四个走遍全部图标的测试与一个主题对比度测试 |
 | 2026-11-14 | minor | **多窗口（View ▸ New Window 开真正的第二个 OS 窗口，同一份文档）**：引擎持有窗口列表（`WindowId`/`DocWindow`，文档最后一个窗口关闭时文档才关闭），UI 用 `show_viewport_immediate` 每个窗口各画一遍整套界面；滚动位置按窗口记，活动单元格和活动工作表属于文档。桌面实测：开窗前 1 个窗口，开窗后 `Book1` 与 `Book1:2` 两个窗口、同一份工作簿；`ui.screenshot` 仍固定拍主窗口。浏览器版只有一个窗口，命令带原因禁用 |
 | 2026-11-14 | minor | 中文函数帮助全覆盖：目录里**每一个**函数（不只是常用的 159 个）都有中文说明，公式提示里的参数名也都有，一个测试遍历目录、发现缺项就失败（单字母参数如 x、A、n 例外） |
 | 2026-11-14 | minor | **The model pivot's own seams closed: multi-hop dimensions, grouped axes and the Filters area now narrow measures.** Facts → product → category is a field (four hops, breadth first, loops skipped); a year/quarter/month/number bucket narrows by the members it covers instead of being dropped from the context; and a report filtered to West no longer shows the whole table's numbers — the worst kind of wrong, because the report looked filtered. Backed by `Context::filter_any_of` in `gridcraft-dax`, with a 4,096-member cap so a bucket cannot cost seconds per cell. |

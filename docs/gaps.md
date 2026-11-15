@@ -1114,7 +1114,22 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   on-screen keyboards and a WebAssembly shell). The web build still runs in a tablet's browser; what
   does not exist is a layout designed for touch. If that changes it is a new decision.
 
-### 24. Fonts and look (U)
+### 24. Fonts and look (U) — **done 11-14 (#169, #170, #54, #173)**
+- The window frame is decided in one place (`crates/ui-egui/src/chrome.rs`): Windows keeps its system
+  caption and the app's strip stops repeating the workbook name under it (two titles in two rows);
+  macOS keeps the caption band with the strip drawing the name; Linux gets the app's own frame, with
+  minimize/restore/close in the strip and the edges dragged there, because every Linux desktop paints
+  a caption the app cannot match. The title bar's separator line is gone, so the strip and the
+  ribbon's tab row read as one surface (a caption and the Quick Access Toolbar). Extra windows get
+  the same policy.
+- Icons (drawn in code, original): structural strokes and the mark an icon is about are two named
+  weights scaled with the box (rect and circle outlines used to be a fixed 1 px while their lines
+  scaled, so big ribbon icons had hairline boxes); a glyph's text is centred on its ink, which had
+  drawn every letter icon about a fifth of an em high; the alignment trio is symmetric; Zoom has its
+  own lens instead of reusing Search; Group/Ungroup's outline badge stays in its box; Comma style
+  reads as digits; paper-white shapes keep a neutral edge that stays visible on the dark ribbon; the
+  window-button glyphs join the set. Four tests walk every icon (inside its box, centred, legible,
+  paper edges visible on both themes) and a theme test measures every chrome ink on every surface.
 - Font weights beyond regular/bold (#168), system font list (#4), Calibri metrics (#29), macOS
   chrome (#169, #170), Linux title bar (#54), icon consistency across apps (#173). **Estimate:** 7–12 h.
 
