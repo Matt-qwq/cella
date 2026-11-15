@@ -233,15 +233,26 @@ pub fn read_source_kind(wb: &Workbook, kind: PivotSourceKind, text: &str, defaul
     }
 }
 
-/// One hop out of the model table a pivot is built on: a relationship whose many side it is, and
-/// the related table's key → row index it needs to walk it.
+/// One hop out of the model table a pivot is built on, or out of a table an earlier hop brought
+/// in: a relationship whose many side is that table, and the key to row index it needs to walk it.
+///
+/// Chains are the reason this is not just "the dimension's columns": a fact table relates to a
+/// product, and the product relates to its category, so a report groups by Category[Name] two
+/// hops away from the rows it is summing.
 struct Hop<'a> {
     dim: &'a ModelTable,
-    /// The relationship's key column in the base table.
-    base_key: usize,
-    /// Key → the first row of the related table that holds it.
+    /// The key column's index inside the table the hop walks from: the pivot's own table when
+    /// via is None, else that hop's dimension table.
+    key_col: usize,
+    /// The earlier hop whose dimension table holds the key, for a chained hop.
+    via: Option<usize>,
+    /// Key to the first row of the related table that holds it.
     index: HashMap<String, usize>,
 }
+
+/// Most hops a model pivot will walk. Four is more than any star or snowflake schema a report
+/// should need, and it bounds both the columns added to the source and the work per row.
+const MAX_MODEL_HOPS: usize = 4;
 
 /// The identity of a join key: numbers by their bits (0 and -0 folded together), text without
 /// regard to case, as the model's relationships compare them. A blank is no key at all, so a row
@@ -287,23 +298,38 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
     let mut headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
     let mut formats: Vec<String> = vec!["General".into(); headers.len()];
     let mut hops: Vec<Hop<'_>> = Vec::new();
-    for r in model.relationships.iter().filter(|r| r.from_table.eq_ignore_ascii_case(&table.name)) {
-        let Some(dim) = model.table(&r.to_table) else { continue };
-        // A hand-written model can relate a table to itself; its columns are already here.
-        if dim.name.eq_ignore_ascii_case(&table.name) || hops.iter().any(|h| h.dim.name.eq_ignore_ascii_case(&dim.name)) {
-            continue;
+    // Breadth first, so a dimension next to the fact table is always found before one that is
+    // reachable only through it: the report reads more naturally and the columns keep that order.
+    let mut queue: std::collections::VecDeque<(String, Option<usize>)> = std::collections::VecDeque::new();
+    queue.push_back((table.name.clone(), None));
+    while let Some((parent, via)) = queue.pop_front() {
+        if hops.len() >= MAX_MODEL_HOPS {
+            break;
         }
-        let (Some(base_key), Some(dim_key)) = (table.index(&r.from_column), dim.index(&r.to_column)) else { continue };
-        // `base_key` walks the fact rows; `dim_key` only builds the index, so it is not kept.
-        let mut index: HashMap<String, usize> = HashMap::new();
-        for (i, rec) in dim.rows.iter().enumerate() {
-            if let Some(k) = rec.get(dim_key).and_then(join_key) {
-                index.entry(k).or_insert(i);
+        let Some(parent_table) = model.table(&parent) else { continue };
+        for r in model.relationships.iter().filter(|r| r.from_table.eq_ignore_ascii_case(&parent)) {
+            if hops.len() >= MAX_MODEL_HOPS {
+                break;
             }
+            let Some(dim) = model.table(&r.to_table) else { continue };
+            // A hand-written model can relate a table to itself or make a loop; its columns are
+            // already in the source, so it is skipped rather than added twice.
+            if dim.name.eq_ignore_ascii_case(&table.name) || hops.iter().any(|h| h.dim.name.eq_ignore_ascii_case(&dim.name)) {
+                continue;
+            }
+            let (Some(key_col), Some(dim_key)) = (parent_table.index(&r.from_column), dim.index(&r.to_column)) else { continue };
+            // key_col walks the rows; dim_key only builds the index, so it is not kept.
+            let mut index: HashMap<String, usize> = HashMap::new();
+            for (i, rec) in dim.rows.iter().enumerate() {
+                if let Some(k) = rec.get(dim_key).and_then(join_key) {
+                    index.entry(k).or_insert(i);
+                }
+            }
+            headers.extend(dim.columns.iter().map(|c| format!("{}[{c}]", dim.name)));
+            formats.extend((0..dim.columns.len()).map(|_| "General".to_string()));
+            hops.push(Hop { dim, key_col, via, index });
+            queue.push_back((dim.name.clone(), Some(hops.len() - 1)));
         }
-        headers.extend(dim.columns.iter().map(|c| format!("{}[{c}]", dim.name)));
-        formats.extend((0..dim.columns.len()).map(|_| "General".to_string()));
-        hops.push(Hop { dim, base_key, index });
     }
     let width = headers.len();
     if width as u64 * table.height() as u64 > MAX_SOURCE_CELLS {
@@ -314,9 +340,16 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
     let mut rows: Vec<Vec<Value>> = Vec::with_capacity(table.height());
     for rec in &table.rows {
         let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
+        // The rows each hop resolved to, so a chained hop can read its key out of its parent.
+        let mut dims: Vec<Vec<Value>> = Vec::with_capacity(hops.len());
         for hop in &hops {
-            let hit = rec.get(hop.base_key).and_then(join_key).and_then(|k| hop.index.get(&k)).and_then(|i| hop.dim.rows.get(*i));
-            row.extend((0..hop.dim.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)));
+            // The key lives in the base row for a direct hop, and in the parent dimension's row for
+            // a chained one; both were appended to this row in discovery order.
+            let key_from = hop.via.map_or(rec.as_slice(), |p| dims.get(p).map(Vec::as_slice).unwrap_or(&[]));
+            let hit = key_from.get(hop.key_col).and_then(join_key).and_then(|k| hop.index.get(&k)).and_then(|i| hop.dim.rows.get(*i));
+            let vals: Vec<Value> = (0..hop.dim.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)).collect();
+            dims.push(vals.clone());
+            row.extend(vals);
         }
         for (i, v) in row.iter().enumerate() {
             if v.is_empty() {
@@ -1229,6 +1262,11 @@ fn data_cols_exceed_sheet(col_groups: usize, grand_total: bool, values: usize) -
 
 /// One report cell's value: the aggregates, with a calculated item in the row or column path
 /// replaced by its formula over the items it names.
+/// Most distinct members one grouped member (or Filters-area selection) may stand for before it is
+/// left out of a measure's filter context: a bucket that wide is not a filter, and reading it per
+/// cell would cost seconds.
+const MAX_BUCKET_MEMBERS: usize = 4096;
+
 struct Lookup<'a> {
     wb: &'a Workbook,
     src: &'a Source,
@@ -1247,22 +1285,126 @@ struct Lookup<'a> {
     row_items: &'a [FieldItems],
     col_fields: &'a [&'a PivotField],
     col_items: &'a [FieldItems],
+    /// The report's Filters area, for the measure's context: a selection there narrows every cell.
+    page: &'a [(usize, &'a PivotFilter, Grouping, bool)],
 }
 
-/// The filter context a cell's members put on the model: one `Table[Column] = value` for every
-/// member of the path. A path that stops short (a subtotal) or is empty (a grand total) filters
-/// only what it names, which is exactly what a subtotal and a grand total mean.
-fn measure_context(mut ctx: gridcraft_dax::Context, fields: &[&PivotField], items: &[FieldItems], path: &[u32]) -> gridcraft_dax::Context {
+/// The filter context a cell's members put on the model: one Table[Column] = value for every
+/// member of the path, and one "is one of these" list for a **grouped** member, because a bucket
+/// stands for many values ("2024" is every date in that year).
+///
+/// A path that stops short (a subtotal) or is empty (a grand total) filters only what it names,
+/// which is exactly what a subtotal and a grand total mean.
+fn measure_context(
+    mut ctx: gridcraft_dax::Context,
+    fields: &[&PivotField],
+    items: &[FieldItems],
+    path: &[u32],
+    src: &Source,
+    wb: &Workbook,
+) -> gridcraft_dax::Context {
     for (d, fi) in items.iter().enumerate() {
         let (Some(&id), Some(f)) = (path.get(d), fields.get(d)) else { continue };
-        let (Some(it), Some((table, column))) = (fi.get(id), split_model_header(&f.source_col)) else { continue };
-        // A calculated item is a caption over other items, not a member the model has, and a
-        // grouped field's items are date or number ranges an equality cannot express: neither can
-        // narrow a measure's context, so neither is used as one.
-        if it.is_calc() || !Grouping::of(f).is_none() {
+        let Some(it) = fi.get(id) else { continue };
+        // A calculated item is a caption over other items, not a member the model has.
+        if it.is_calc() {
             continue;
         }
-        ctx = ctx.filter(table, column, it.filter_value());
+        let Some((table, column)) = split_model_header(&f.source_col) else { continue };
+        let group = Grouping::of(f);
+        if group.is_none() {
+            ctx = ctx.filter(table, column, it.filter_value());
+            continue;
+        }
+        // A bucket narrows by the members it covers. They are read back from the source rows,
+        // which is the only place the mapping from value to bucket still exists: the item itself
+        // keeps the label, not the values.
+        if let Some(values) = bucket_members(wb, src, f, group, &it.label) {
+            ctx = ctx.filter_any_of(table, column, values);
+        }
+    }
+    ctx
+}
+
+/// Whether two source values are the same member, by the model's own rule (numbers by their bits,
+/// text without regard to case): the rule a relationship uses, so a member and a key agree.
+fn same_member(a: &Value, b: &Value) -> bool {
+    match (join_key(a), join_key(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => matches!((a, b), (Value::Empty, Value::Empty)),
+    }
+}
+
+/// The distinct source values a grouped item's bucket covers, in row order.
+///
+/// Bounded on purpose: a bucket holding more than [MAX_BUCKET_MEMBERS] distinct values is not a
+/// filter a measure can be told about in a reasonable time, so it narrows nothing (the cell shows
+/// the measure's whole-table answer, as it did before buckets were understood) rather than
+/// spending seconds per cell. None also means "the source column is not here".
+fn bucket_members(wb: &Workbook, src: &Source, f: &PivotField, group: Grouping, label: &str) -> Option<Vec<Value>> {
+    let c = src.col(&f.source_col)?;
+    let fmt = src.formats.get(c).map(String::as_str).unwrap_or("General");
+    let mut out: Vec<Value> = Vec::new();
+    for rec in &src.rows {
+        let v = rec.get(c).unwrap_or(&Value::Empty);
+        let l = item_label(wb, v, group, fmt);
+        if !l.eq_ignore_ascii_case(label) {
+            continue;
+        }
+        if out.iter().any(|seen| same_member(seen, v)) {
+            continue;
+        }
+        if out.len() >= MAX_BUCKET_MEMBERS {
+            return None;
+        }
+        out.push(v.clone());
+    }
+    Some(out)
+}
+
+/// The filter context the report's Filters area puts on every measure cell: a field there with a
+/// selection narrows the measure exactly as a row member does, and one with no selection (All)
+/// adds nothing. A field filtered on an axis only hides items, which the axis already does.
+fn page_context(
+    mut ctx: gridcraft_dax::Context,
+    page: &[(usize, &PivotFilter, Grouping, bool)],
+    src: &Source,
+    wb: &Workbook,
+) -> gridcraft_dax::Context {
+    for (c, pf, group, shown) in page {
+        if !*shown {
+            continue;
+        }
+        let Some(sel) = &pf.selected else { continue };
+        if sel.is_empty() {
+            continue;
+        }
+        let Some((table, column)) = split_model_header(&pf.source_col) else { continue };
+        let fmt = src.formats.get(*c).map(String::as_str).unwrap_or("General");
+        let mut values: Vec<Value> = Vec::new();
+        for rec in &src.rows {
+            let v = rec.get(*c).unwrap_or(&Value::Empty);
+            let l = item_label(wb, v, *group, fmt);
+            if !sel.iter().any(|s| s.eq_ignore_ascii_case(&l)) {
+                continue;
+            }
+            if values.iter().any(|seen| same_member(seen, v)) {
+                continue;
+            }
+            if values.len() >= MAX_BUCKET_MEMBERS {
+                return ctx;
+            }
+            values.push(v.clone());
+        }
+        if values.is_empty() {
+            continue;
+        }
+        ctx = if group.is_none() && values.len() == 1 {
+            let one = values.remove(0);
+            ctx.filter(table, column, one)
+        } else {
+            ctx.filter_any_of(table, column, values)
+        };
     }
     ctx
 }
@@ -1277,8 +1419,10 @@ impl Lookup<'_> {
             // ignored. A formula that cannot compute puts its error in this one cell, never a
             // failed refresh.
             let m = self.wb.model.measures.get(*i)?;
-            let ctx = measure_context(gridcraft_dax::Context::new(), self.row_fields, self.row_items, rp);
-            let ctx = measure_context(ctx, self.col_fields, self.col_items, cp);
+            let ctx = gridcraft_dax::Context::new();
+            let ctx = measure_context(ctx, self.row_fields, self.row_items, rp, self.src, self.wb);
+            let ctx = measure_context(ctx, self.col_fields, self.col_items, cp, self.src, self.wb);
+            let ctx = page_context(ctx, self.page, self.src, self.wb);
             return Some(match gridcraft_dax::evaluate(&self.wb.model, &m.formula, &ctx) {
                 Ok(v) => v,
                 Err(_) => Value::Error(CellError::Value),
@@ -1500,6 +1644,7 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
         row_items: &row_items,
         col_fields: &col_fields,
         col_items: &col_items,
+        page: &filters,
     };
     let mut lines: Vec<Line> = Vec::new();
     if row_levels == 0 {

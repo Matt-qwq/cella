@@ -231,3 +231,111 @@ fn every_model_command_survives_empty_params() {
         let _ = s.execute(id, json!({}));
     }
 }
+
+#[test]
+fn a_grouped_row_field_narrows_the_measure() {
+    // A date grouping on a model field: each item stands for a bucket of values, so the measure
+    // has to be told "these dates", not "this label". Before 11-14 the cell showed the whole
+    // table's answer, because a bucket is not an equality.
+    let mut s = session();
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Sales",
+            "source": {"kind": "csv", "text": "Day,Amount\n2024-01-05,10\n2024-01-20,5\n2025-02-01,7\n"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Day"], "to": "Date"}}, {"ChangeType": {"columns": ["Amount"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(&mut s, "data.measure.add", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"}));
+    run(
+        &mut s,
+        "insert.pivotTable",
+        json!({"source": "Sales", "destination": "Sheet1!E3", "rows": [{"field": "Sales[Day]", "group": "years"}], "values": ["Total"]}),
+    );
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    // 2024 holds 10 + 5, 2025 holds 7, and the grand total is 22.
+    assert_eq!(at(&s, "F4"), gridcraft_core::Value::number(15.0), "2024");
+    assert_eq!(at(&s, "F5"), gridcraft_core::Value::number(7.0), "2025");
+    assert_eq!(at(&s, "F6"), gridcraft_core::Value::number(22.0), "grand total");
+}
+
+#[test]
+fn a_report_filter_narrows_the_measure() {
+    // A field in the Filters area with a selection: the measure has to be told about it, or every
+    // cell shows the whole table's answer while the report looks filtered.
+    let mut s = model_session();
+    run(
+        &mut s,
+        "insert.pivotTable",
+        json!({"source": "Sales", "destination": "Sheet1!E3", "rows": ["Region[Name]"], "values": ["Total"], "filters": ["Region[Name]"]}),
+    );
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    let name = s.doc().expect("doc").wb.sheet(0).and_then(|sh| sh.pivots.first().map(|p| p.name.clone())).expect("pivot");
+    run(&mut s, "pivot.filter", json!({"pivot": name, "field": "Region[Name]", "selected": ["West"]}));
+    // East is filtered out, so West is the only row and the grand total is West's sum.
+    let mut seen: Vec<String> = Vec::new();
+    for r in 3..=8 {
+        for c in 4..=6 {
+            seen.push(format!("{:?}", at(&s, &gridcraft_core::CellRef::new(r, c).a1())));
+        }
+    }
+    let joined = seen.join(" | ");
+    assert!(joined.contains("17"), "West's 17 must appear once the report is filtered to it: {joined}");
+    assert!(!joined.contains("22"), "the unfiltered whole-table total must be gone: {joined}");
+}
+
+#[test]
+fn a_dimension_two_hops_away_can_be_a_row_field() {
+    // Sales -> Product -> Category: a snowflake. Before 11-14 only one hop was walked, so
+    // Category[Name] was not a field a report could group by at all.
+    let mut s = session();
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Sales",
+            "source": {"kind": "csv", "text": "ProductId,Amount\n1,10\n2,5\n3,7\n"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["ProductId", "Amount"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Product",
+            "source": {"kind": "csv", "text": "Id,Name,CategoryId\n1,Pen,10\n2,Cup,10\n3,Mug,20\n"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id", "CategoryId"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Category",
+            "source": {"kind": "csv", "text": "Id,Name\n10,Stationery\n20,Kitchen\n"},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(&mut s, "data.relationship.add", json!({"from": {"table": "Sales", "column": "ProductId"}, "to": {"table": "Product", "column": "Id"}}));
+    run(&mut s, "data.relationship.add", json!({"from": {"table": "Product", "column": "CategoryId"}, "to": {"table": "Category", "column": "Id"}}));
+    run(&mut s, "data.measure.add", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"}));
+
+    // The field list offers the two-hop field, which is what the pane and the dialog read.
+    run(&mut s, "insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!E3", "rows": ["Category[Name]"], "values": ["Total"]}));
+    let names: Vec<String> = run(&mut s, "pivot.fields", json!({}))["fields"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    assert!(names.iter().any(|n| n == "Category[Name]"), "the two-hop field is a field: {names:?}");
+
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    // Stationery holds Pen (10) and Cup (5) through Product, Kitchen holds Mug (7).
+    assert_eq!(at(&s, "F4"), gridcraft_core::Value::number(7.0), "Kitchen sorts first");
+    assert_eq!(at(&s, "F5"), gridcraft_core::Value::number(15.0), "Stationery");
+    assert_eq!(at(&s, "F6"), gridcraft_core::Value::number(22.0), "grand total");
+}

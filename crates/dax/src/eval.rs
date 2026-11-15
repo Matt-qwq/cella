@@ -385,6 +385,26 @@ impl<'m, 'c> Evaluator<'m, 'c> {
                 return Ok(false);
             }
         }
+        // The member lists written against this table: a row survives when its value is one of
+        // them. An empty list keeps nothing, which is what a bucket with no members means.
+        for (f_table, f_column, f_values) in ctx.sets() {
+            if !f_table.eq_ignore_ascii_case(table) {
+                continue;
+            }
+            let Some(t) = model.table(table) else {
+                return Err(DaxError::UnknownTable { name: table.to_string() });
+            };
+            let Some(ci) = t.index(f_column) else {
+                return Err(DaxError::UnknownColumn { table: t.name.clone(), column: f_column.clone() });
+            };
+            let hit = match row.get(ci) {
+                Some(v) => f_values.iter().any(|f| same_value(v, f)),
+                None => f_values.iter().any(Value::is_empty),
+            };
+            if !hit {
+                return Ok(false);
+            }
+        }
         // The filters that reach this table from a lookup table, several hops away included.
         let incoming: Vec<Relationship> = model.incoming(table).cloned().collect();
         for r in &incoming {
@@ -463,7 +483,8 @@ impl<'m, 'c> Evaluator<'m, 'c> {
         }
         let ctx = self.ctx;
         let model = self.model;
-        let mut yes = ctx.filters().iter().any(|(t, _, _)| t.eq_ignore_ascii_case(table));
+        let mut yes =
+            ctx.filters().iter().any(|(t, _, _)| t.eq_ignore_ascii_case(table)) || ctx.sets().iter().any(|(t, _, _)| t.eq_ignore_ascii_case(table));
         if !yes {
             let incoming: Vec<Relationship> = model.incoming(table).cloned().collect();
             for r in &incoming {

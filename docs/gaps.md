@@ -916,11 +916,21 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   round-trips it, and reports "this build cannot read SQLite or web sources" when it runs — the same
   bargain as a preserved part. `cargo xtask` gained the one step that runs those tests with the
   feature named, or they would never run at all.
+- **Landed 11-14 (the seams a model pivot had):** a dimension **two or more hops** away is now a
+  field (facts → product → category; breadth first, four hops at most, loops and self-relationships
+  skipped), so a snowflake schema reports like a star; a **grouped** row or column field (years,
+  quarters, months, day-of-month, number buckets) now narrows the measure by the members its bucket
+  covers instead of being left out of the context; and the **Filters area** narrows measure cells,
+  which it did not before — a report filtered to West used to show the whole table's numbers, which
+  is the worst kind of wrong because the report looked filtered. Both use a new "is one of these"
+  filter in `gridcraft-dax` (`Context::filter_any_of`); a bucket wider than 4,096 distinct members
+  narrows nothing rather than costing seconds per cell.
 - **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
   no query) by design — the pane's button is the query path; adding a step from the pane is
-  command-side only, there is no step parameter editor; the model's relationships have no UI (a
-  field list is the natural next round); and Web and SQLite sources need a dependency decision (a
-  TLS stack, a C library) before they can be honest.
+  command-side only, there is no step parameter editor; the model's relationships and measures have
+  no UI (commands only; a field list is the natural next round); a **calculated item** does not
+  narrow a measure (it is a caption over other items, not a member the model has); a value filter
+  set on a measure is refused; and slicers skip model pivots.
 - **Landed 11-14 (the file half):** a workbook's `xl/model/*` (the Power Pivot data model) is kept
   and written back byte for byte, related from the workbook with the file's own `powerPivotData`
   type, and it survives deleting every report that used it; PivotTables built on it are carried

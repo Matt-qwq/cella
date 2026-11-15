@@ -90,7 +90,7 @@ collaboration, mobile, AI).
 | Charts and sparklines | ~52% | ~55% | 28–42 | [chart-parity.md](docs/chart-parity.md) |
 | Page layout, print, PDF | ~86% | ~62% | 10–17 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | What-if and analysis (Goal Seek, Solver, ToolPak, Forecast) | ~50% | ~40% | 22–35 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
-| Get & Transform, external data, data model | queries (CSV/JSON/XLSX/Parquet/folder/**SQLite**/**web**), steps, data model, measures, model pivots | ~10% | what is left: one-hop relationships, grouped axes don't narrow measures, no SQL Server/OData — [gaps.md §12](docs/gaps.md) |
+| Get & Transform, external data, data model | queries (CSV/JSON/XLSX/Parquet/folder/**SQLite**/**web**), steps, data model, measures, model pivots | ~10% | what is left: calculated items don't narrow measures, no SQL Server/OData — [gaps.md §12](docs/gaps.md) |
 | Insert objects (pictures, shapes, ink, SmartArt, equations) | ~55% | ~45% | 25–40 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | Review, comments, protection, collaboration | single-user review done; **decided: no co-authoring, no cloud service** | — | [gaps.md §16](docs/gaps.md) |
 | Automation (recorded scripts; no VBA) | scripts editable + extensions; **decided: no in-app plugin host**, CLI/MCP is the extension model | ~20% | [gaps.md §21](docs/gaps.md) |

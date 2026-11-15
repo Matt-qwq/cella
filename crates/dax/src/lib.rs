@@ -95,6 +95,10 @@ pub const FUNCTIONS: [&str; 10] = ["SUM", "AVERAGE", "COUNT", "COUNTA", "MIN", "
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     filters: Vec<(String, String, Value)>,
+    /// Column filters that keep several members at once. A PivotTable needs them because a
+    /// grouped axis item stands for a bucket, not for a value: 2024 is every date in that year,
+    /// and an equality cannot say that.
+    sets: Vec<(String, String, Vec<Value>)>,
 }
 
 impl Context {
@@ -109,17 +113,32 @@ impl Context {
         self
     }
 
+    /// The same context with one more "this column is one of these" filter, ANDed onto the ones
+    /// it already holds. An empty list matches nothing, which is what a bucket with no members
+    /// means.
+    pub fn filter_any_of(mut self, table: &str, column: &str, values: Vec<Value>) -> Context {
+        self.sets.push((table.to_string(), column.to_string(), values));
+        self
+    }
+
     /// The equalities in the order they were added.
     pub fn filters(&self) -> &[(String, String, Value)] {
         &self.filters
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.filters.is_empty()
+    /// The member lists in the order they were added (see Context::filter_any_of).
+    pub fn sets(&self) -> &[(String, String, Vec<Value>)] {
+        &self.sets
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty() && self.sets.is_empty()
+    }
+
+    /// How many filters the context carries, of both kinds: an equality and a member list are one
+    /// filter each, not one per member.
     pub fn len(&self) -> usize {
-        self.filters.len()
+        self.filters.len() + self.sets.len()
     }
 }
 
