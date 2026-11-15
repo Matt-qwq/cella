@@ -800,8 +800,13 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   while expanded; the filter's `(Blanks)` entry, the status-bar count, the ruler hints and the page
   presets were built at run time. Catalog: **1,813 entries**, all 451 `tr()` keys and all 362
   command labels covered, and the rendered Chinese build was walked page by page.
-- **What is left:** function help beyond `zh_functions.rs`'s 159 entries, and text that is English on
-  purpose (brand, file formats, font names, format codes, function names, protocol/param errors). The
+- **Landed 11-14 (function help):** the Insert Function descriptions and the argument names the
+  formula tooltip prints are Chinese for **every** function in the catalog, not the most-used ones
+  (159 entries before). A test walks the catalog and fails on a description or argument with no
+  Chinese entry, so the next function cannot land without its help — and a one-letter argument
+  (x, A, n) is exempt because it is a symbol, not a word.
+- **What is left:** text that is English on purpose (brand, file formats, font names, format codes,
+  function names, protocol/param errors). The
   old 20–35 h estimate was the gap to a heuristic ~2,200-strings figure; the measured leaf work
   turned out to be ~70 entries.
   [localization-parity.md](localization-parity.md)

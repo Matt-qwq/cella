@@ -94,7 +94,7 @@ preference intact, and `app.language.set` refuses a removed code by name.
 | Language | Code | UI strings | Command labels | What is left |
 |---|---|---|---|---|
 | English | `en` | the source (~2,200) | 362 of 362 | — |
-| Simplified Chinese | `zh` | 1,813 | 362 of 362 | function help beyond `zh_functions.rs` (159 of ~500); developer-facing protocol text stays English on purpose |
+| Simplified Chinese | `zh` | 1,813 | 362 of 362 | function help: every catalog function's description and argument names (a test keeps it); developer-facing protocol text stays English on purpose |
 
 Guards, both in CI:
 - a test that enumerates `gridcraft_engine::cmd::command_specs()` and fails when a label arrives
