@@ -1313,6 +1313,16 @@ pub struct PrintSettings {
     pub headings: bool,
     pub center_h: bool,
     pub center_v: bool,
+    /// Page Setup ▸ Sheet ▸ Page order: down the page then across (Excel's default), or across
+    /// then down. Pages are numbered in the order they print.
+    #[serde(default)]
+    pub page_order: PageOrder,
+    /// Page Setup ▸ Sheet ▸ Black and white: print colours as greys.
+    #[serde(default)]
+    pub black_and_white: bool,
+    /// Page Setup ▸ Sheet ▸ Draft quality: print without graphics (charts, pictures, shapes).
+    #[serde(default)]
+    pub draft: bool,
     /// The header and footer of odd pages, and of every page unless the variants below apply.
     pub header: String,
     pub footer: String,
@@ -1341,6 +1351,33 @@ pub struct PrintSettings {
 
 fn yes() -> bool {
     true
+}
+
+/// The order a sheet's pages print in (the pageSetup element's @pageOrder attribute).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PageOrder {
+    /// Down the page, then over to the next column of pages (Excel's default).
+    #[default]
+    DownThenOver,
+    /// Across the page, then down.
+    OverThenDown,
+}
+
+impl PageOrder {
+    /// The XLSX attribute value.
+    pub fn id(self) -> &'static str {
+        match self {
+            PageOrder::DownThenOver => "downThenOver",
+            PageOrder::OverThenDown => "overThenDown",
+        }
+    }
+    pub fn parse(t: &str) -> Option<PageOrder> {
+        match t.trim() {
+            "downThenOver" => Some(PageOrder::DownThenOver),
+            "overThenDown" => Some(PageOrder::OverThenDown),
+            _ => None,
+        }
+    }
 }
 
 /// Which header/footer pair a printed page uses.
@@ -1422,6 +1459,9 @@ impl Default for PrintSettings {
             headings: false,
             center_h: false,
             center_v: false,
+            page_order: PageOrder::DownThenOver,
+            black_and_white: false,
+            draft: false,
             header: String::new(),
             footer: String::new(),
             row_breaks: vec![],

@@ -50,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Page Setup…",
             ["Page Layout", "Page Setup"],
             None,
-            "{sheet?, orientation?: portrait|landscape, paper?: Letter|Legal|A4|A3|A5|A6|Tabloid|Executive|Ledger|B4|B5|B6|B4 (ISO)|B5 (ISO)|B6 (ISO)|Japanese Postcard|Japanese Double Postcard|Japanese Envelope #3|Japanese Envelope #4|Japanese Envelope Kaku #2|Japanese Envelope Kaku #3 (B4/B5/B6 are the JIS sizes), margins?: {left,right,top,bottom,header,footer} (inches; also accepted as top-level keys), scale?: 10..400, fitWidth?, fitHeight? (pages; 0 = automatic), fitToPage?: bool, centerH?, centerV?, gridlines?, headings?, header?: \"&L&A&RPage &P of &N\", footer?, printArea?: \"A1:F50\" (\"\" clears), titleRows?: \"1:2\", titleCols?: \"A:A\", rowBreaks?: [46, 91], colBreaks?: [\"K\"]} → the sheet's print settings",
+            "{sheet?, orientation?: portrait|landscape, paper?: Letter|Legal|A4|A3|A5|A6|Tabloid|Executive|Ledger|B4|B5|B6|B4 (ISO)|B5 (ISO)|B6 (ISO)|Japanese Postcard|Japanese Double Postcard|Japanese Envelope #3|Japanese Envelope #4|Japanese Envelope Kaku #2|Japanese Envelope Kaku #3 (B4/B5/B6 are the JIS sizes), margins?: {left,right,top,bottom,header,footer} (inches; also accepted as top-level keys), scale?: 10..400, fitWidth?, fitHeight? (pages; 0 = automatic), fitToPage?: bool, centerH?, centerV?, gridlines?, headings?, pageOrder?: downThenOver|overThenDown (the order pages print and are numbered in), blackAndWhite?: bool (print in greys), draft?: bool (print without charts, pictures and shapes), header?: \"&L&A&RPage &P of &N\", footer?, printArea?: \"A1:F50\" (\"\" clears), titleRows?: \"1:2\", titleCols?: \"A:A\", rowBreaks?: [46, 91], colBreaks?: [\"K\"]} → the sheet's print settings",
             has_doc,
             page_setup
         ),
@@ -296,14 +296,15 @@ pub fn layout_sheet(wb: &Workbook, si: usize, opts: &PrintOptions, range_overrid
         lay.manual_breaks = manual;
         (lay.row_bands, lay.col_bands) = split_bands(sh, lay, MAX_PAGES);
         lay.pages.clear();
-        'outer: for ci in 0..lay.col_bands.len() {
-            for ri in 0..lay.row_bands.len() {
-                if lay.pages.len() >= MAX_PAGES {
-                    break 'outer;
-                }
-                lay.pages.push((ri, ci));
-            }
-        }
+        // Page order: down the page then over (Excel's default), or over then down. Pages are
+        // numbered in this order, so it also decides what &P prints.
+        let (rows_out, cols_out) = (lay.row_bands.len(), lay.col_bands.len());
+        let order: Vec<(usize, usize)> = if lay.settings.page_order == PageOrder::OverThenDown {
+            (0..rows_out).flat_map(|ri| (0..cols_out).map(move |ci| (ri, ci))).collect()
+        } else {
+            (0..cols_out).flat_map(|ci| (0..rows_out).map(move |ri| (ri, ci))).collect()
+        };
+        lay.pages = order.into_iter().take(MAX_PAGES).collect();
     };
     match fit {
         Some((fw, fh)) => {
@@ -627,6 +628,17 @@ fn blend(fg: [u8; 4]) -> Rgb {
     [mix(fg[0]), mix(fg[1]), mix(fg[2])]
 }
 
+/// A colour as it prints: a grey of the same lightness on a sheet set to Black and white
+/// (Page Setup ▸ Sheet), the colour itself otherwise.
+fn print_color(rgb: Rgb, mono: bool) -> Rgb {
+    if !mono {
+        return rgb;
+    }
+    let y = 0.299 * f32::from(rgb[0]) + 0.587 * f32::from(rgb[1]) + 0.114 * f32::from(rgb[2]);
+    let v = y.round().clamp(0.0, 255.0) as u8;
+    [v, v, v]
+}
+
 /// The effective look of a cell: own style, table style, conditional formats.
 struct Look {
     style: Style,
@@ -634,7 +646,7 @@ struct Look {
     cf: Option<crate::cf::CfLook>,
 }
 
-fn cell_look(wb: &Workbook, si: usize, sh: &Sheet, c: CellRef, cf: &mut Option<crate::cf::CfCache>) -> Look {
+fn cell_look(wb: &Workbook, si: usize, sh: &Sheet, c: CellRef, cf: &mut Option<crate::cf::CfCache>, mono: bool) -> Look {
     let mut style = match sh.table_at(c) {
         Some(t) => crate::tables::table_cell_style(wb, si, t, c),
         None => wb.styles.get(sh.style_id(c)).clone(),
@@ -680,7 +692,7 @@ fn cell_look(wb: &Workbook, si: usize, sh: &Sheet, c: CellRef, cf: &mut Option<c
     if let Some(rgb) = cfl.as_ref().and_then(|l| l.scale_fill) {
         fill = Some(rgb);
     }
-    Look { style, fill, cf: cfl }
+    Look { style, fill: fill.map(|f| print_color(f, mono)), cf: cfl }
 }
 
 /// Chart layout measures text with the same font the page will draw it in.
@@ -699,6 +711,10 @@ impl gridcraft_chart::Measure for PdfMeasure<'_> {
 #[derive(Clone, Copy)]
 struct Metrics<'a> {
     face: Option<&'a gridcraft_pdf::Face>,
+    /// The sheet set Black and white: every colour prints as a grey of its lightness.
+    mono: bool,
+    /// The sheet set Draft quality: charts, pictures and shapes stay off the page.
+    draft: bool,
 }
 
 impl Metrics<'_> {
@@ -728,23 +744,24 @@ impl Xf {
 fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf, m: &Metrics) {
     use gridcraft_chart::{HAlign as H, Prim, VAlign as V};
     let k = xf.k;
+    let bl = |c: [u8; 4]| print_color(blend(c), m.mono);
     for p in prims {
         match p {
             Prim::Rect { x, y, w, h, fill, stroke, .. } => {
                 let (px, py) = xf.p(*x, *y);
                 if let Some(f) = fill {
-                    pg.fill_rect(px, py, w * k, h * k, blend(*f));
+                    pg.fill_rect(px, py, w * k, h * k, bl(*f));
                 }
                 if let Some((c, lw)) = stroke {
-                    pg.rect_stroke(px, py, w * k, h * k, (lw * k).max(0.1), blend(*c));
+                    pg.rect_stroke(px, py, w * k, h * k, (lw * k).max(0.1), bl(*c));
                 }
             }
             Prim::Line { pts, color, width, dash } => {
                 let d = if *dash { vec![3.0 * k, 2.0 * k] } else { vec![] };
-                pg.polyline(&xf.pts(pts), (width * k).max(0.1), blend(*color), &d);
+                pg.polyline(&xf.pts(pts), (width * k).max(0.1), bl(*color), &d);
             }
             Prim::Polygon { pts, fill, stroke } => {
-                pg.polygon(&xf.pts(pts), Some(blend(*fill)), stroke.map(|(c, w)| (blend(c), (w * k).max(0.1))));
+                pg.polygon(&xf.pts(pts), Some(bl(*fill)), stroke.map(|(c, w)| (bl(c), (w * k).max(0.1))));
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let span = (a1 - a0).abs().min(std::f32::consts::TAU);
@@ -756,11 +773,11 @@ fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf, m: &Metric
                 } else {
                     pts.push([*cx, *cy]);
                 }
-                pg.polygon(&xf.pts(&pts), Some(blend(*fill)), stroke.map(|(c, w)| (blend(c), (w * k).max(0.1))));
+                pg.polygon(&xf.pts(&pts), Some(bl(*fill)), stroke.map(|(c, w)| (bl(c), (w * k).max(0.1))));
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
                 let (px, py) = xf.p(*cx, *cy);
-                pg.circle(px, py, r * k, fill.map(blend), stroke.map(|(c, w)| (blend(c), (w * k).max(0.1))));
+                pg.circle(px, py, r * k, fill.map(bl), stroke.map(|(c, w)| (bl(c), (w * k).max(0.1))));
             }
             Prim::Text { x, y, text, size, color, bold, align, valign, rotation } => {
                 let font = if *bold { Font::HelveticaBold } else { Font::Helvetica };
@@ -778,7 +795,7 @@ fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf, m: &Metric
                 };
                 let (sn, cs) = if rotation.is_finite() { rotation.sin_cos() } else { (0.0, 1.0) };
                 let (ax, ay) = xf.p(*x, *y);
-                pg.text_rotated(ax + dx * cs - dy * sn, ay + dx * sn + dy * cs, size, font, blend(*color), text, *rotation);
+                pg.text_rotated(ax + dx * cs - dy * sn, ay + dx * sn + dy * cs, size, font, bl(*color), text, *rotation);
             }
         }
     }
@@ -875,11 +892,11 @@ fn border_dash(style: BorderStyle, k: f32) -> Vec<f32> {
     }
 }
 
-fn draw_border(pg: &mut Page, b: &BorderLine, wb: &Workbook, x0: f32, y0: f32, x1: f32, y1: f32, k: f32) {
+fn draw_border(pg: &mut Page, b: &BorderLine, wb: &Workbook, x0: f32, y0: f32, x1: f32, y1: f32, k: f32, mono: bool) {
     if b.is_none() {
         return;
     }
-    let color = rgb_of(b.color, wb).unwrap_or([0, 0, 0]);
+    let color = print_color(rgb_of(b.color, wb).unwrap_or([0, 0, 0]), mono);
     if b.style == BorderStyle::Double {
         let off = 1.0 * k;
         let lw = (0.75 * k).max(0.2);
@@ -941,7 +958,7 @@ fn draw_block(pg: &mut Page, b: &Block, gridlines: bool, cf: &mut Option<crate::
         .iter()
         .filter(|c| !skip(c))
         .chain(merges.iter().map(|m| &m.start))
-        .map(|c| (*c, cell_look(b.wb, b.si, sh, *c, cf)))
+        .map(|c| (*c, cell_look(b.wb, b.si, sh, *c, cf, m.mono)))
         .filter(|(c, l)| {
             l.fill.is_some()
                 || l.cf.is_some()
@@ -979,7 +996,7 @@ fn draw_block(pg: &mut Page, b: &Block, gridlines: bool, cf: &mut Option<crate::
         if let Some((frac, rgb, _)) = l.cf.as_ref().and_then(|cf| cf.bar) {
             let pad = 1.5 * b.k;
             let bwid = ((w - 2.0 * pad) * frac.clamp(0.0, 1.0)).max(0.0);
-            pg.fill_rect(x + pad, y + pad, bwid, (h - 2.0 * pad).max(0.0), rgb);
+            pg.fill_rect(x + pad, y + pad, bwid, (h - 2.0 * pad).max(0.0), print_color(rgb, m.mono));
         }
     }
     // Borders.
@@ -996,12 +1013,12 @@ fn draw_block(pg: &mut Page, b: &Block, gridlines: bool, cf: &mut Option<crate::
             ),
             None => (bd.right, bd.bottom),
         };
-        draw_border(pg, &bd.top, b.wb, x, y, x + w, y, b.k);
-        draw_border(pg, &bottom, b.wb, x, y + h, x + w, y + h, b.k);
-        draw_border(pg, &bd.left, b.wb, x, y, x, y + h, b.k);
-        draw_border(pg, &right, b.wb, x + w, y, x + w, y + h, b.k);
-        draw_border(pg, &bd.diag_down, b.wb, x, y, x + w, y + h, b.k);
-        draw_border(pg, &bd.diag_up, b.wb, x, y + h, x + w, y, b.k);
+        draw_border(pg, &bd.top, b.wb, x, y, x + w, y, b.k, m.mono);
+        draw_border(pg, &bottom, b.wb, x, y + h, x + w, y + h, b.k, m.mono);
+        draw_border(pg, &bd.left, b.wb, x, y, x, y + h, b.k, m.mono);
+        draw_border(pg, &right, b.wb, x + w, y, x + w, y + h, b.k, m.mono);
+        draw_border(pg, &bd.diag_down, b.wb, x, y, x + w, y + h, b.k, m.mono);
+        draw_border(pg, &bd.diag_up, b.wb, x, y + h, x + w, y, b.k, m.mono);
     }
     // Text.
     for (c, l) in &looks {
@@ -1009,7 +1026,7 @@ fn draw_block(pg: &mut Page, b: &Block, gridlines: bool, cf: &mut Option<crate::
         if w <= 0.0 || h <= 0.0 {
             continue;
         }
-        if let Some(picture) = sh.cell_pictures.get(c) {
+        if let Some(picture) = sh.cell_pictures.get(c).filter(|_| !m.draft) {
             draw_cell_picture(pg, &picture.data, (x, y, w, h), b.k);
         } else {
             draw_text(pg, b, *c, l, (x, y, w, h), merged, &merges, (bx, bx + bw), m);
@@ -1153,6 +1170,7 @@ fn draw_text(
     if l.cf.as_ref().and_then(|x| x.style.as_ref()).is_some_and(|s| s.font.color != Color::Auto) {
         color = rgb_of(st.font.color, wb).unwrap_or(color);
     }
+    let color = print_color(color, m.mono);
     let is_num = matches!(v, Value::Number(_));
     let wrap = st.align.wrap;
     let mut text = if sh.show_formulas {
@@ -1373,8 +1391,8 @@ fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, 
             continue;
         }
         let (x, y, w, h) = place(r);
-        let fill = rgb_of(shp.fill, wb);
-        let line = rgb_of(shp.line, wb).filter(|_| !shp.format.no_line).map(|c| (c, (0.75 * b.k).max(0.25)));
+        let fill = rgb_of(shp.fill, wb).map(|c| print_color(c, m.mono));
+        let line = rgb_of(shp.line, wb).map(|c| print_color(c, m.mono)).filter(|_| !shp.format.no_line).map(|c| (c, (0.75 * b.k).max(0.25)));
         match shp.kind {
             ShapeKind::Ellipse => {
                 let pts: Vec<[f32; 2]> = (0..72)
@@ -1546,7 +1564,6 @@ fn seg_size(sh: &Sheet, seg: (u32, u32), rows: bool) -> f32 {
 /// Renders laid-out sheets to a PDF. `face` is the font embedded for text WinAnsiEncoding cannot
 /// set; `None` keeps the standard fonts (and their bytes) as they were.
 pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str, face: Option<&gridcraft_pdf::Face>) -> (Vec<u8>, usize) {
-    let m = Metrics { face };
     let mut doc = PdfDoc::new();
     if let Some(f) = face {
         doc.set_font(f.clone());
@@ -1560,6 +1577,8 @@ pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str
     let mut printed_blocks = Vec::new();
     for lay in layouts {
         let Some(sh) = wb.sheet(lay.sheet) else { continue };
+        // Black and white and Draft quality are page-setup settings, so they are per sheet.
+        let m = Metrics { face, mono: lay.settings.black_and_white, draft: lay.settings.draft };
         let mut cf = if sh.cond_formats.is_empty() { None } else { Some(crate::cf::CfCache::new()) };
         let k = lay.k();
         let (aw, ah) = lay.avail();
@@ -1593,7 +1612,8 @@ pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str
                 }
                 y += seg_size(sh, *rs, true) * k;
             }
-            if let Some(b) = &body {
+            // Draft quality prints no graphics: no charts, pictures, shapes or sparklines.
+            if let Some(b) = body.as_ref().filter(|_| !lay.settings.draft) {
                 draw_objects(pg, wb, lay.sheet, sh, b, &m);
             }
             if lay.settings.headings {
@@ -1880,7 +1900,12 @@ fn page_setup(s: &mut Session, p: &Json) -> Result<Json> {
     let fit_page = bool_param(p, "fitToPage");
     let header = str_param(p, "header").map(|t| t.chars().take(255).collect::<String>());
     let footer = str_param(p, "footer").map(|t| t.chars().take(255).collect::<String>());
-    let flags = [("centerH", 0usize), ("centerV", 1), ("gridlines", 2), ("headings", 3)].map(|(k, i)| (i, bool_param(p, k)));
+    let page_order = match str_param(p, "pageOrder").map(str::trim) {
+        None | Some("") => None,
+        Some(t) => Some(PageOrder::parse(t).ok_or_else(|| bad(CMD, format!("pageOrder must be downThenOver or overThenDown, not `{t}`")))?),
+    };
+    let flags = [("centerH", 0usize), ("centerV", 1), ("gridlines", 2), ("headings", 3), ("blackAndWhite", 4), ("draft", 5)]
+        .map(|(k, i)| (i, bool_param(p, k)));
     edit(s, |cx| {
         let pr = &mut cx.sheet_mut(si)?.print;
         if let Some(o) = orientation {
@@ -1913,9 +1938,14 @@ fn page_setup(s: &mut Session, p: &Json) -> Result<Json> {
                     0 => pr.center_h = v,
                     1 => pr.center_v = v,
                     2 => pr.gridlines = v,
-                    _ => pr.headings = v,
+                    3 => pr.headings = v,
+                    4 => pr.black_and_white = v,
+                    _ => pr.draft = v,
                 }
             }
+        }
+        if let Some(o) = page_order {
+            pr.page_order = o;
         }
         if let Some(h) = &header {
             pr.header = h.clone();
@@ -2094,6 +2124,74 @@ mod tests {
         assert_eq!(pv["pageList"][0]["range"], "A1:J45");
         assert_eq!(pv["pageList"][1]["range"], "A46:J60");
         assert_eq!(pv["pageList"][2]["range"], "K1:O45");
+    }
+
+    /// Page Setup ▸ Page order: pages print down the page then over (Excel's default), or over
+    /// then down — and number themselves in that order, since page numbers follow the list.
+    #[test]
+    fn page_order_turns_pagination_over_then_down() {
+        let mut s = s();
+        let rows: Vec<Vec<Json>> = (0..60).map(|r| (0..15).map(|c| json!(r * 100 + c)).collect()).collect();
+        s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+        let ranges = |s: &mut Session| -> Vec<String> {
+            let pv = s.execute("file.printPreview", json!({})).unwrap();
+            pv["pageList"].as_array().map(|a| a.iter().filter_map(|p| p["range"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+        };
+        // Down, then over: the second page is the rest of the first column of pages.
+        assert_eq!(ranges(&mut s), vec!["A1:J45", "A46:J60", "K1:O45", "K46:O60"]);
+        let out = s.execute("pageLayout.pageSetup", json!({"pageOrder": "overThenDown"})).unwrap();
+        assert_eq!(out["page_order"], "OverThenDown");
+        // Over, then down: the second page is the next column of pages.
+        assert_eq!(ranges(&mut s), vec!["A1:J45", "K1:O45", "A46:J60", "K46:O60"]);
+        // The same printer settings, saved and reopened with the workbook.
+        let b64 = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap()["base64"].as_str().unwrap_or_default().to_string();
+        let mut reopened = Session::new();
+        reopened.new_workbook();
+        reopened.execute("file.open", json!({"name": "x.xlsx", "base64": b64})).unwrap();
+        assert_eq!(reopened.doc().unwrap().wb.active().unwrap().print.page_order, PageOrder::OverThenDown);
+        assert_eq!(ranges(&mut reopened), vec!["A1:J45", "K1:O45", "A46:J60", "K46:O60"], "the reopened file prints in the same order");
+        // A value Excel does not have is refused, and the setting stays as it was.
+        assert!(reopened.execute("pageLayout.pageSetup", json!({"pageOrder": "sideways"})).is_err());
+        assert_eq!(reopened.doc().unwrap().wb.active().unwrap().print.page_order, PageOrder::OverThenDown);
+    }
+
+    /// Page Setup ▸ Sheet ▸ Black and white prints every colour as a grey of its lightness, and
+    /// Draft quality prints no graphics at all.
+    #[test]
+    fn black_and_white_prints_greys_and_draft_quality_skips_graphics() {
+        let mut s = s();
+        s.execute("cell.set", json!({"cell": "A1", "input": "Red"})).unwrap();
+        s.execute("home.fontColor", json!({"range": "A1", "color": "#FF0000"})).unwrap();
+        s.execute("home.fillColor", json!({"range": "B1", "color": "#0000FF"})).unwrap();
+        s.execute("cell.set", json!({"cell": "B1", "input": 7})).unwrap();
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_raw(2, 2, vec![255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 0, 0, 0, 0]).unwrap();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let d = s.doc_mut().unwrap();
+        let wb = std::sync::Arc::make_mut(&mut d.wb);
+        let id = wb.next_object_id();
+        wb.sheet_mut(0).unwrap().images.push(Image {
+            id,
+            anchor: Anchor { cell: CellRef::new(5, 5), dx: 0.0, dy: 0.0, width: 40.0, height: 40.0, mode: gridcraft_model::AnchorMode::MoveAndSize },
+            data: png.into(),
+            mime: "image/png".into(),
+            alt: String::new(),
+        });
+        let (colour, _) = pdf_of(&mut s, json!({}));
+        assert!(contains(&colour, "1 0 0 rg"), "the red text prints red by default");
+        assert!(contains(&colour, "0 0 1 rg"), "the blue fill prints blue by default");
+        assert!(contains(&colour, "/Subtype /Image"));
+        let out = s.execute("pageLayout.pageSetup", json!({"blackAndWhite": true, "draft": true})).unwrap();
+        assert_eq!((out["black_and_white"].as_bool(), out["draft"].as_bool()), (Some(true), Some(true)));
+        let (mono, _) = pdf_of(&mut s, json!({}));
+        assert!(!contains(&mono, "1 0 0 rg") && !contains(&mono, "0 0 1 rg"), "colours are gone");
+        assert!(grey_colours_only(&mono), "every colour the page sets is a grey");
+        assert!(!contains(&mono, "/Subtype /Image"), "draft quality prints no pictures");
+        assert!(contains(&mono, "(Red) Tj"), "the cells themselves still print");
+        // Back off: the colours return.
+        s.execute("pageLayout.pageSetup", json!({"blackAndWhite": false, "draft": false})).unwrap();
+        let (again, _) = pdf_of(&mut s, json!({}));
+        assert!(contains(&again, "1 0 0 rg") && contains(&again, "/Subtype /Image"));
     }
 
     #[test]
@@ -2500,6 +2598,30 @@ mod tests {
         assert!(none.execute("file.exportPdf", json!({})).is_err());
     }
 
+    /// True when every fill and stroke colour the PDF sets has equal components.
+    fn grey_colours_only(pdf: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(pdf);
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        let mut any = false;
+        for (i, w) in parts.iter().enumerate() {
+            if *w != "rg" && *w != "RG" {
+                continue;
+            }
+            let (Some(a), Some(b), Some(c)) = (
+                i.checked_sub(3).and_then(|k| parts.get(k)),
+                i.checked_sub(2).and_then(|k| parts.get(k)),
+                i.checked_sub(1).and_then(|k| parts.get(k)),
+            ) else {
+                return false;
+            };
+            if a != b || b != c {
+                return false;
+            }
+            any = true;
+        }
+        any
+    }
+
     #[test]
     fn bands_unit() {
         let b = bands(0, 9, |_| 10.0, |_| 35.0, &[], 100);
@@ -2510,7 +2632,7 @@ mod tests {
         let b = bands(0, 2, |r| if r == 1 { 100.0 } else { 10.0 }, |_| 35.0, &[], 100);
         assert_eq!(b, vec![(0, 0), (1, 1), (2, 2)]);
         assert_eq!(bands(0, 1_000_000, |_| 10.0, |_| 5.0, &[], 3).len(), 3);
-        let m = Metrics { face: None };
+        let m = Metrics { face: None, mono: false, draft: false };
         let w = wrap_lines("the quick brown fox jumps", Font::Helvetica, 10.0, 50.0, &m);
         assert!(w.len() >= 2);
         assert!(w.iter().all(|l| gridcraft_pdf::text_width(Font::Helvetica, 10.0, l) <= 50.0 || !l.contains(' ')));

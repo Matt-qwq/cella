@@ -10,7 +10,7 @@
 //! `(gap + j·(page_w + gap), gap + i·(page_h + gap))`, and its cells start at its top-left margin.
 
 use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef};
-use gridcraft_model::{LineIndex, Sheet, Workbook};
+use gridcraft_model::{LineIndex, PageOrder, Sheet, Workbook};
 
 use crate::cmd::print::{self, PX_TO_PT, PrintOptions};
 
@@ -39,6 +39,8 @@ pub struct PageGrid {
     /// Bands holding printed data: `[first, last]` row bands and column bands.
     pub data_rows: (usize, usize),
     pub data_cols: (usize, usize),
+    /// Page Setup ▸ Page order: across then down, instead of down then over.
+    over_then_down: bool,
     ri: LineIndex,
     ci: LineIndex,
 }
@@ -86,6 +88,7 @@ impl PageGrid {
             col_bands,
             data_rows,
             data_cols,
+            over_then_down: sh.print.page_order == PageOrder::OverThenDown,
             ri: LineIndex::with_hidden(&sh.rows, &sh.filter_hidden, sh.default_row_height, MAX_ROWS),
             ci: LineIndex::new(&sh.cols, sh.default_col_width, MAX_COLS),
         })
@@ -202,7 +205,10 @@ impl PageGrid {
         }
         let rows = self.data_rows.1 - self.data_rows.0 + 1;
         let cols = self.data_cols.1 - self.data_cols.0 + 1;
-        Some(((j - self.data_cols.0) * rows + (i - self.data_rows.0) + 1, rows * cols))
+        let (dr, dc) = (i - self.data_rows.0, j - self.data_cols.0);
+        // Pages number themselves in the order they print (Page Setup's page order).
+        let n = if self.over_then_down { dr * cols + dc } else { dc * rows + dr };
+        Some((n + 1, rows * cols))
     }
 
     /// Page rows and columns overlapping the layout rectangle `[x0, x1] × [y0, y1]`.
@@ -299,6 +305,24 @@ mod tests {
         assert_eq!(g.page_number(0, 0), Some((1, 1)));
         assert_eq!(g.page_number(0, 1), None);
         assert!(g.is_data_page(0, 0) && !g.is_data_page(1, 0));
+        // Page Setup's page order decides what a page calls itself: over then down numbers the
+        // second column of pages 2 when the print area fits one page row.
+        let mut wb = Workbook::new();
+        wb.sheets.clear();
+        let mut sh = Sheet::new("S");
+        for row in 0..200u32 {
+            for col in 0..60u32 {
+                sh.set_value(CellRef::new(row, col), gridcraft_core::Value::Number(f64::from(row * 60 + col)));
+            }
+        }
+        wb.sheets.push(std::sync::Arc::new(sh));
+        let down = PageGrid::build(&wb, 0, 0, 0).unwrap();
+        let (rows, cols) = (down.data_rows.1 - down.data_rows.0, down.data_cols.1 - down.data_cols.0);
+        assert!(rows >= 1 && cols >= 1, "the sheet spans several pages");
+        assert_eq!(down.page_number(down.data_rows.0, down.data_cols.0 + 1), Some((rows + 2, (rows + 1) * (cols + 1))), "down then over");
+        std::sync::Arc::make_mut(&mut wb.sheets[0]).print.page_order = PageOrder::OverThenDown;
+        let across = PageGrid::build(&wb, 0, 0, 0).unwrap();
+        assert_eq!(across.page_number(across.data_rows.0, across.data_cols.0 + 1), Some((2, (rows + 1) * (cols + 1))), "over then down");
     }
 
     #[test]

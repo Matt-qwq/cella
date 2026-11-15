@@ -8,8 +8,8 @@ use gridcraft_core::{CellError, CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRe
 use gridcraft_formula::Expr;
 use gridcraft_model::{
     AutoFilter, Cell, CfOperator, CfRule, CfValueKind, Comment, CondFormat, EditRange, ErrorStyle, FilterCriterion, FilterHidden, Formula, Hyperlink,
-    LineInfo, NoteBox, NoteCorner, Orientation, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn, TotalsFn,
-    Validation, ValidationKind, XmlColumnPr,
+    LineInfo, NoteBox, NoteCorner, Orientation, PageOrder, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn,
+    TotalsFn, Validation, ValidationKind, XmlColumnPr,
 };
 
 use crate::IoError;
@@ -237,6 +237,11 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
                 if let Some(s) = e.attr_u32("scale") {
                     sheet.print.scale = s.clamp(10, 400) as u16;
                 }
+                if let Some(o) = e.attr("pageOrder").and_then(PageOrder::parse) {
+                    sheet.print.page_order = o;
+                }
+                sheet.print.black_and_white = e.flag("blackAndWhite", false);
+                sheet.print.draft = e.flag("draft", false);
                 if fit_to_page || root.child("sheetPr").and_then(|p| p.child("pageSetUpPr")).is_some_and(|p| p.flag("fitToPage", false)) {
                     let w = e.attr_u32("fitToWidth").unwrap_or(1).min(32767) as u16;
                     let h = e.attr_u32("fitToHeight").unwrap_or(1).min(32767) as u16;

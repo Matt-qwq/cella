@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 
 use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
 use gridcraft_model::{
-    Cell, CfOperator, CfRule, CfValueKind, Chart, Color, CondFormat, ErrorStyle, FilterCriterion, LineInfo, NoteBox, NoteCorner, Orientation, Sheet,
-    SparklineKind, Style, Table, TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
+    Cell, CfOperator, CfRule, CfValueKind, Chart, Color, CondFormat, ErrorStyle, FilterCriterion, LineInfo, NoteBox, NoteCorner, Orientation,
+    PageOrder, Sheet, SparklineKind, Style, Table, TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
 };
 
 use crate::drawing::{Obj, image_content_type, image_ext};
@@ -672,6 +672,17 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slic
         let _ = write!(s, " fitToWidth=\"{w}\" fitToHeight=\"{h}\"");
     }
     let _ = write!(s, " orientation=\"{}\"", if p.orientation == Orientation::Landscape { "landscape" } else { "portrait" });
+    // Excel writes the default order only when it is the file's odd one out; both values are
+    // legal, so the default stays out of the file.
+    if p.page_order != PageOrder::DownThenOver {
+        let _ = write!(s, " pageOrder=\"{}\"", p.page_order.id());
+    }
+    if p.black_and_white {
+        s.push_str(" blackAndWhite=\"1\"");
+    }
+    if p.draft {
+        s.push_str(" draft=\"1\"");
+    }
     if let Some(id) = kept.page_setup_id() {
         let _ = write!(s, " r:id=\"{id}\"");
     }
