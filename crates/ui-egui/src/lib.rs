@@ -12,6 +12,7 @@ mod border_preview;
 mod cell_pictures;
 pub mod chart_format;
 pub mod chartview;
+pub mod chrome;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -310,6 +311,8 @@ pub struct SheetApp {
     /// Every unsaved workbook has been answered for quitting (or `app.quit` asked): the next
     /// window close goes through.
     pub allow_close: bool,
+    /// Whether the frame the title bar assumes has been asked for (see [`chrome`]): asked once.
+    frame_asked: bool,
 }
 
 impl SheetApp {
@@ -359,6 +362,7 @@ impl SheetApp {
             tab_run: None,
             started: now_ms(),
             allow_close: false,
+            frame_asked: false,
         }
     }
 
@@ -1332,6 +1336,9 @@ impl SheetApp {
             self.ribbon_keys(&ctx);
         }
         if self.chrome.title_bar {
+            // The strip is the window's caption where the platform has none of its own; ask for
+            // that frame once, before drawing it.
+            self.own_window_frame(&ctx);
             ribbon::title_bar(self, ui);
         }
         if self.backstage.is_some() {
@@ -1354,6 +1361,12 @@ impl SheetApp {
                 grid::show(self, ui);
                 self.perf.grid_ms = now_ms() - g0;
             });
+        }
+        // The window's edges are dragged here when the app owns the frame; after the panels, so
+        // the band sits over whatever is at the edge.
+        if self.chrome.title_bar {
+            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            chrome::resize_grips(ui, maximized);
         }
         dialogs::show(self, &ctx);
         widgets::message_box(self, &ctx);
