@@ -835,6 +835,7 @@ different trade — speed and size against interoperability, and against every t
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | major | **0.12.0.** Six items: SQLite and web connectors (behind an off-by-default `connectors` feature, 46.7 → 54.8 MB), the model pivot's seams (multi-hop dimensions, grouped axes and the Filters area narrow measures), Chinese help for every catalog function (515/515, with a test), real multiple windows on one document (desktop-verified), page order/black-and-white/draft quality plus Solver's AllDifferent and its Options, and window chrome with an icon audit. Decisions recorded: no in-app assistant, no in-app plugin host, no mobile, no co-authoring. The 20×60 soak found a filter command acting on the wrong table (hidden rows came back hand-hidden after a reload); fixed with a regression test. Gate: nine steps green. |
 | 2026-11-14 | minor | **Page Setup 缺失的工作表选项**：打印顺序（先向下再向右 / 先向右再向下，页码按打印顺序）、**黑白**（颜色打印为灰度）、**草稿品质**（不打印图表、图片、形状）——三项随文件保存并往返验证，打印路径真正按它们出页，不是只存不用 |
 | 2026-11-14 | minor | **Solver 的 AllDifferent（dif，Excel 自己的 code 6）**：一组可变单元格必须两两不同——排班/名册类模型的写法；做成「关系」而不是一堆两两不等式，因为两两不等式会把线性模型变成非线性。差值阈值 1e-3 远高于 1e-6 可行性容差。另外补齐 Solver 选项对话框缺的参数（方法、种群、变异率、随机种子、收敛阈值、保界、保留原值、保存模型、整数最优度） |
 | 2026-11-14 | minor | **窗口外观收口（#169/#170/#54/#173）**：窗口边框在一处决定——Windows 保留系统标题栏、应用不再在下面重复工作簿名；macOS 保留标题带、由应用画名字；Linux 由应用自己画标题栏（最小化/还原/关闭 + 边缘拖拽），因为各桌面画的标题栏应用无法匹配。标题栏与功能区标签行合成一个面。图标（全部代码绘制）修了线宽/居中/对称/纸白色在深色背景上的可见性，并新增四个走遍全部图标的测试与一个主题对比度测试 |
