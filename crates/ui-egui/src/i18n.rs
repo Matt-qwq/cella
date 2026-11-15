@@ -316,6 +316,52 @@ mod tests {
         }
     }
 
+    /// Every function in the catalog shows Chinese help: its description and every argument name
+    /// its signature spells. Insert Function prints the description and the formula tooltip prints
+    /// the argument names, so a missing row is English on a Chinese screen. The tables cover the
+    /// whole catalog, and this keeps the next function from landing without them (a catalog
+    /// description with no translation is how the help regressed before).
+    #[test]
+    fn every_function_and_argument_in_the_catalog_has_chinese_help() {
+        let catalog = gridcraft_engine::cmd::formulas::function_list();
+        assert!(catalog.len() > 500, "the function catalog looks empty: {}", catalog.len());
+        let mut untranslated: Vec<String> = Vec::new();
+        for function in &catalog {
+            let name = function["name"].as_str().unwrap_or_default();
+            match function["description"].as_str() {
+                Some(description) if !description.is_empty() => match Language::Zh.function_description(description) {
+                    Some(chinese) => {
+                        // A description that reads as its English is a row that was never written.
+                        assert_ne!(chinese, description, "{name}: the description is translated into itself");
+                    }
+                    None => untranslated.push(format!("{name}: description {description:?}")),
+                },
+                _ => untranslated.push(format!("{name}: the catalog has no English description")),
+            }
+            match function["signature"].as_str() {
+                Some(signature) => {
+                    for argument in crate::formula_locale::argument_names(signature) {
+                        match Language::Zh.function_argument(argument) {
+                            // A one-letter argument is a symbol, not a word (x, A, n), so it stays
+                            // as it is; anything longer has to read as Chinese.
+                            Some(chinese) => {
+                                assert!(argument.len() == 1 || chinese != argument, "{name}: the argument {argument:?} is translated into itself")
+                            }
+                            None => untranslated.push(format!("{name}: argument {argument:?}")),
+                        }
+                    }
+                }
+                None => untranslated.push(format!("{name}: the catalog has no signature")),
+            }
+        }
+        assert!(
+            untranslated.is_empty(),
+            "{} of the {} catalog functions have no Simplified Chinese help: {untranslated:#?}",
+            untranslated.len(),
+            catalog.len()
+        );
+    }
+
     /// Every entry of the Chinese catalog is there once, says something, and is what `translate`
     /// returns: a value that slipped onto its neighbour's key or was left empty shows on screen.
     #[test]
