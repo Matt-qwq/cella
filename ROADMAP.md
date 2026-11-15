@@ -93,6 +93,7 @@ collaboration, mobile, AI).
 | Get & Transform, external data, data model | queries (CSV/JSON/XLSX/Parquet/folder/**SQLite**/**web**), steps, data model, measures, model pivots | ~10% | what is left: calculated items don't narrow measures, no SQL Server/OData — [gaps.md §12](docs/gaps.md) |
 | Insert objects (pictures, shapes, ink, SmartArt, equations) | ~55% | ~45% | 25–40 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | Review, comments, protection, collaboration | single-user review done; **decided: no co-authoring, no cloud service** | — | [gaps.md §16](docs/gaps.md) |
+| Multiple windows | real second OS window on the same document, per-window scroll | ~15% | [gaps.md §20](docs/gaps.md) |
 | Automation (recorded scripts; no VBA) | scripts editable + extensions; **decided: no in-app plugin host**, CLI/MCP is the extension model | ~20% | [gaps.md §21](docs/gaps.md) |
 
 ## Languages

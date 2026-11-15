@@ -37,7 +37,7 @@ connection; nothing sent after it runs. Blank lines are skipped.
 | `ui.ribbon` | `{tab}` | Switch ribbon tab |
 | `ui.dialog` / `ui.dialog.set` / `ui.dialog.confirm` / `ui.dialog.cancel` | `{name}` / `{field, value}` | Open, fill in and confirm dialogs; `confirm` runs the dialog's command with the same parameters as its OK button |
 | `ui.backstage` (via `engine.execute`) | `{page?: home\|new\|open\|info\|saveAs\|print\|export\|options\|account\|close}` | Open the File tab's Backstage view on a page, or close it (`ui.inspect` reports the open page as `backstage`) |
-| `ui.screenshot` | `{path?}` | PNG of the window (base64 when no path) |
+| `ui.screenshot` | `{path?}` | PNG of the **main** window (base64 when no path) — with several windows open on one document, the main one is the window this channel drives |
 | `ui.set` | `{dark?, formulaBar?, ribbonCollapsed?}` | UI preferences (`formulaBar` runs `view.formulaBar`) |
 | `ui.resize` / `ui.focus` | `{width, height}` | Window control |
 | `app.open` / `app.save` / `app.quit` | `{path, password?}` / `{path?}` | Files and lifetime. `password` opens a password-protected workbook; without it, such a workbook returns an error (never a dialog) |

@@ -1031,7 +1031,21 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   **Estimate:** 15–23 h.
 
 ### 20. Multiple windows; pen pressure (H)
-- One window (#162, PR #171); no pressure or tilt in ink. **Estimate:** 10–14 h.
+- **Landed 11-14 (multiple windows).** View ▸ New Window opens a real second OS window on the
+  **same** document — verified on the desktop with the control channel: one window before, two after,
+  titled "Book1" and "Book1:2" the way Excel numbers them, one document behind both. The engine owns
+  the window list (`WindowId`, `DocWindow`, never empty while a document is open; `Session::windows`
+  is the order the Window menu shows) and closes the document with its last window; the egui shell
+  realises each window with `show_viewport_immediate`, paints the whole chrome and grid per window,
+  and keeps the main window last so the control channel's screenshot and pointer mapping stay
+  defined. Scroll position is per window; the active cell and sheet stay the document's. New
+  commands: `view.closeWindow` and `window.activate`; `view.hideWindow`/`unhideWindow`/
+  `switchWindows` name windows instead of documents (the old `hidden_windows` conflated the two and
+  is gone). The browser build has one window by design: `view.newWindow` is disabled with that
+  reason and refuses in `run`, documented in its params doc.
+- **Still missing:** pressure and tilt in ink (needs a tablet to verify); per-window active cell
+  (both windows show the same cursor on purpose, so the document has one selection); window geometry
+  is not saved; `view.arrangeAll` still does nothing.
   [hardware-parity.md](hardware-parity.md)
 
 ### 21. Automation and add-ins (F)
