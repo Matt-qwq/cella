@@ -953,8 +953,16 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - The **Solver Options** the dialog was missing (method, population size, mutation rate, random
   seed, convergence, generations without improvement, require-bounds, keep-values, save-model,
   integer optimality) are real Solver parameters now, with a fixed seed so a run repeats.
-- **Still missing:** the Forecast Sheet's own options (seasonality length, confidence interval,
-  timeline start and the chart output choices).
+- **What was already there, checked before writing any code:** integer/binary constraints, every
+  stop reason (infeasible, iteration limit, unbounded, not linear), and the **whole** Forecast Sheet
+  option set — seasonality (auto or 2–8760), confidence interval, Forecast Start (the hindcast of
+  #785), line or column chart, statistics, fill-missing, aggregate, end and periods — offered by the
+  dialog. The estimate in this section was wrong about them; nothing was added for show.
+- **Limits accepted with the AllDifferent work:** under Simplex LP a group is solved exactly only
+  for binary variables (Σx ≤ 1 and Σx ≥ n−1); a non-binary group reports *not linear* with a
+  dif-specific message. GRG with integer variables reports *infeasible* rather than backtracking
+  when the snapped answer breaks a group. Still missing: the **Sensitivity** and **Population**
+  reports.
 - `data.solver`, `data.analysisToolPak` missing. Forecast Sheet (`data.forecastSheet`) and the
   FORECAST.ETS family are in, including Forecast Start (hindcast, #785). **Estimate:** 15–25 h.
 - Solver (`data.solver`, #327) has Simplex LP with integer/binary branch and bound, a local
@@ -978,8 +986,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   printing order), **black and white** (colours printed as greys) and **draft quality** (no charts,
   pictures or shapes). All three survive save/reopen with a round-trip test, and the print path in
   crates/engine/src/paper.rs honours them rather than only storing them.
-- **Still missing:** the interactive Page Layout view's drag-to-set print area (margins are
-  draggable already) and driver-specific tray/paper options, which need hardware.
+- **Checked before writing code, because the docs were stale:** Different First Page / Odd & Even
+  pages, print ranges, headings and gridlines on every page, and centre-on-page already existed and
+  are honoured per page. The three options above were the genuine gap.
+- **Limits accepted:** black-and-white greys fills, borders, data bars, fonts, chart primitives,
+  sparklines and shape fill/line, but leaves **embedded pictures** in colour; the Page Layout *view*
+  still paints colours and draft content (only print and PDF honour both); driver-specific tray and
+  paper options still need hardware.
+- **Still missing:** header/footer pictures, and dragging a print area on the Page Layout rulers
+  (margins are draggable already).
 - Page Layout view landed (#329): paper view with rulers and in-place header/footer editing.
   Margins are dragged on the rulers (#792). Remaining: pictures in headers/footers, Different First
   Page / Odd & Even pages, print ranges and driver tray/options UI. Desktop submits directly through

@@ -835,6 +835,7 @@ different trade — speed and size against interoperability, and against every t
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | minor | 文档纠错：§13 原写「预测工作表还没有 Forecast Start 等选项」是**错的**——季节长度/置信区间/Forecast Start（#785 的 hindcast）/折线或柱状图/统计量/填充缺失/聚合/结束与期数全部早就在，对话框也都在；§14 原写「Different First Page / Odd & Even / 打印区域缺失」同样过时。两处已按实际状态改写，并记下 AllDifferent 在 Simplex（仅二元精确）与 GRG+整数（报 infeasible）的边界 |
 | 2026-11-14 | major | **0.12.0.** Six items: SQLite and web connectors (behind an off-by-default `connectors` feature, 46.7 → 54.8 MB), the model pivot's seams (multi-hop dimensions, grouped axes and the Filters area narrow measures), Chinese help for every catalog function (515/515, with a test), real multiple windows on one document (desktop-verified), page order/black-and-white/draft quality plus Solver's AllDifferent and its Options, and window chrome with an icon audit. Decisions recorded: no in-app assistant, no in-app plugin host, no mobile, no co-authoring. The 20×60 soak found a filter command acting on the wrong table (hidden rows came back hand-hidden after a reload); fixed with a regression test. Gate: nine steps green. |
 | 2026-11-14 | minor | **Page Setup 缺失的工作表选项**：打印顺序（先向下再向右 / 先向右再向下，页码按打印顺序）、**黑白**（颜色打印为灰度）、**草稿品质**（不打印图表、图片、形状）——三项随文件保存并往返验证，打印路径真正按它们出页，不是只存不用 |
 | 2026-11-14 | minor | **Solver 的 AllDifferent（dif，Excel 自己的 code 6）**：一组可变单元格必须两两不同——排班/名册类模型的写法；做成「关系」而不是一堆两两不等式，因为两两不等式会把线性模型变成非线性。差值阈值 1e-3 远高于 1e-6 可行性容差。另外补齐 Solver 选项对话框缺的参数（方法、种群、变异率、随机种子、收敛阈值、保界、保留原值、保存模型、整数最优度） |
