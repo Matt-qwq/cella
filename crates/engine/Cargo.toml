@@ -29,7 +29,17 @@ gridcraft-dax = { workspace = true }
 gridcraft-chart = { workspace = true }
 gridcraft-pdf = { workspace = true }
 image = { workspace = true }
+rusqlite = { version = "0.43.0", features = ["bundled"], optional = true }
+ureq = { version = "3.5.2", optional = true }
 
 [dev-dependencies]
 gridcraft-xlsx = { workspace = true, features = ["test-support"] }
 zip = { workspace = true }
+
+[features]
+# The two connectors that need the outside world: a SQLite database on disk and a URL over the
+# network. Native targets only — the browser build has no sockets and no filesystem, so the web
+# app leaves this off and the source kinds report that this build cannot read them. This is the
+# dependency decision the owner took on 11-14 (gaps 12): bundled SQLite (a C toolchain, every
+# platform we ship) and ureq with rustls (pure-Rust TLS, no OpenSSL).
+connectors = ["dep:rusqlite", "dep:ureq"]

@@ -14,6 +14,34 @@
 use gridcraft_core::RangeRef;
 use serde::{Deserialize, Serialize};
 
+/// What a URL serves, as the table it becomes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HttpFormat {
+    /// Delimited text (comma unless the query's steps say otherwise).
+    Csv,
+    /// A JSON array of objects, or of arrays.
+    Json,
+}
+
+impl HttpFormat {
+    /// The variant's name, spelled the way serde derives it: the stored part is the model's own
+    /// serde shape, and a test holds the hand-written codec to that. The JSON API of a command
+    /// reads it case-insensitively, so "csv" and "Csv" both work there.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HttpFormat::Csv => "Csv",
+            HttpFormat::Json => "Json",
+        }
+    }
+
+    /// The format a URL names, from its extension: what a person pasting a link expects. A URL
+    /// with no useful extension reads as CSV, the common case for an endpoint that serves one.
+    pub fn from_url(url: &str) -> HttpFormat {
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        if path.to_ascii_lowercase().ends_with(".json") { HttpFormat::Json } else { HttpFormat::Csv }
+    }
+}
+
 /// Most steps one query may hold. A pipeline is read by a person; a thousand steps is a file that
 /// is trying to make the app do work, and every step is a linear pass over the rows.
 pub const MAX_STEPS: usize = 200;
@@ -41,6 +69,18 @@ pub enum QuerySource {
     /// Every file in a folder whose name matches `filter` (`*.csv`), stacked with a source
     /// column (`Folder Path`), the way Excel does it.
     Folder { path: String, filter: String },
+    /// A SQLite database file: `path` is the file, `sql` is one statement whose result set
+    /// becomes the table (its columns are the statement's output columns, so no PromoteHeaders
+    /// step is needed). Opened **read-only**, so a query can never change the database.
+    ///
+    /// Reading it needs the engine's `connectors` feature (a bundled SQLite); a build without it
+    /// keeps the query in the document and reports that it cannot run it, which is what the web
+    /// build does.
+    Sqlite { path: String, sql: String },
+    /// A URL: the bytes it serves are read as `format`. The workbook therefore depends on the
+    /// network when it refreshes — never when it opens, because a source is only read by a
+    /// refresh (or by a preview, which is a refresh of the first steps).
+    Http { url: String, format: HttpFormat },
     /// A table that already lives in this workbook.
     Table { sheet: String, name: String },
     /// A range of a sheet in this workbook (`Sheet1!A1:C9`).
@@ -62,6 +102,8 @@ impl QuerySource {
             QuerySource::Xlsx { .. } => "Xlsx",
             QuerySource::Parquet { .. } => "Parquet",
             QuerySource::Folder { .. } => "Folder",
+            QuerySource::Sqlite { .. } => "Sqlite",
+            QuerySource::Http { .. } => "Http",
             QuerySource::Table { .. } => "Table",
             QuerySource::Range { .. } => "Range",
             QuerySource::Query { .. } => "Query",
@@ -74,6 +116,10 @@ impl QuerySource {
         match self {
             QuerySource::Csv { path, .. } | QuerySource::Json { path, .. } => path.as_deref(),
             QuerySource::Xlsx { path, .. } | QuerySource::Parquet { path } | QuerySource::Folder { path, .. } => Some(path),
+            QuerySource::Sqlite { path, .. } => Some(path),
+            // A URL is shown in the pane's second line exactly as a path is: it is where the rows
+            // come from, and it is the thing that breaks when it breaks.
+            QuerySource::Http { url, .. } => Some(url),
             QuerySource::Query { name } => Some(name),
             QuerySource::Table { .. } | QuerySource::Range { .. } => None,
         }

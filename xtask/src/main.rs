@@ -207,7 +207,13 @@ fn cmd_ci() -> Result<(), String> {
             Box::new(|| {
                 let mut c = cargo();
                 c.args(["test", "--workspace"]);
-                run(c, "cargo test --workspace")
+                run(c, "cargo test --workspace")?;
+                // The connectors are off by default (the browser build has no filesystem and no
+                // sockets), so their tests need the feature named or they would never run — the
+                // one place in the gate that asks for a feature on purpose.
+                let mut c = cargo();
+                c.args(["test", "-p", "gridcraft-engine", "--features", "connectors", "--test", "connectors"]);
+                run(c, "cargo test -p gridcraft-engine --features connectors --test connectors")
             }),
         ),
         ("assets", Box::new(|| assets::run(&root()))),

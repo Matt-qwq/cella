@@ -69,6 +69,22 @@ fn queries() -> Vec<Query> {
             load: QueryLoad::Model,
             columns: vec![],
         },
+        Query {
+            id: 3,
+            name: "Orders (db)".into(),
+            source: QuerySource::Sqlite { path: "/data/shop.db".into(), sql: "SELECT region, amount FROM orders WHERE amount > 10".into() },
+            steps: vec![],
+            load: QueryLoad::Sheet { sheet: None },
+            columns: vec![],
+        },
+        Query {
+            id: 4,
+            name: "Rates".into(),
+            source: QuerySource::Http { url: "https://example.invalid/rates.json?day=today".into(), format: gridcraft_model::HttpFormat::Json },
+            steps: vec![QueryStep::PromoteHeaders],
+            load: QueryLoad::Sheet { sheet: None },
+            columns: vec![],
+        },
     ]
 }
 

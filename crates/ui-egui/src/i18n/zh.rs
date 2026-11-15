@@ -1861,6 +1861,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
             "这样可达 {n} 条命令，参数与菜单传入的完全相同。空参数的命令使用默认值，绝不开对话框。"
         }
 
+        // Data > Get Data > From Web / From Database.
+        "Address:" => "地址：",
+        "The address is read when the query refreshes, not when the workbook opens." => "地址在刷新查询时读取，不在打开工作簿时读取。",
+        "Added the query {name}" => "已添加查询 {name}",
+        "Database:" => "数据库：",
+        "Statement (one SELECT; the file is opened read-only):" => "语句（单条 SELECT；文件以只读方式打开）：",
+        "From Database" => "从数据库",
+        "From Web" => "从 Web",
         // Action Journal > save the steps as a script.
         "Save Steps as Script" => "将步骤另存为脚本",
         "Save these steps as a script:" => "将这些步骤另存为脚本：",

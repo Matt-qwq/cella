@@ -85,6 +85,24 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             has_doc,
             preview
         ),
+        cmd!(
+            "data.fromDatabase",
+            "From Database",
+            ["Data", "Get & Transform Data"],
+            None,
+            "{path, sql, name?} -> {name, sheet, rows, cols} - a SQLite file as a query (read-only, one statement)",
+            has_doc,
+            from_database
+        ),
+        cmd!(
+            "data.fromWeb",
+            "From Web",
+            ["Data", "Get & Transform Data"],
+            None,
+            "{url, format?: csv|json, name?} -> {name, sheet, rows, cols} - a URL as a query",
+            has_doc,
+            from_web
+        ),
         cmd!(query "data.query.list", "Queries", ["Data", "Queries & Connections"], None, "{} -> [{id, name, kind, path, sheet, columns, steps}]", has_doc, list),
         cmd!(query "data.query.steps", "Query Steps", ["Data", "Queries & Connections"], None, "{name} -> [QueryStep]", has_doc, steps_of),
     ]
@@ -121,6 +139,36 @@ fn parse_source(v: &Json) -> Result<QuerySource> {
             Ok(QuerySource::Xlsx { path, sheet: v.get("sheet").and_then(Json::as_str).map(str::to_string) })
         }
         "parquet" => Ok(QuerySource::Parquet { path: path.ok_or_else(|| bad("data.query", "a parquet source needs a path"))? }),
+        "sqlite" | "db" | "database" => {
+            let path = path.ok_or_else(|| bad("data.query", "a sqlite source needs a path"))?;
+            let sql = v
+                .get("sql")
+                .or_else(|| v.get("query"))
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| bad("data.query", "a sqlite source needs a sql statement (e.g. SELECT * FROM orders)"))?;
+            Ok(QuerySource::Sqlite { path, sql: sql.to_string() })
+        }
+        "http" | "web" | "url" => {
+            let url = v
+                .get("url")
+                .or_else(|| v.get("path"))
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| bad("data.query", "an http source needs a url"))?
+                .to_string();
+            let format = match v.get("format").and_then(Json::as_str) {
+                None => gridcraft_model::HttpFormat::from_url(&url),
+                Some(f) => match f.to_ascii_lowercase().as_str() {
+                    "csv" | "text" => gridcraft_model::HttpFormat::Csv,
+                    "json" => gridcraft_model::HttpFormat::Json,
+                    other => return Err(bad("data.query", format!("\"{other}\" is not a web format (csv, json)"))),
+                },
+            };
+            Ok(QuerySource::Http { url, format })
+        }
         "folder" => Ok(QuerySource::Folder {
             path: path.ok_or_else(|| bad("data.query", "a folder source needs a path"))?,
             filter: v.get("filter").and_then(Json::as_str).unwrap_or("*.csv").to_string(),
@@ -144,7 +192,7 @@ fn parse_source(v: &Json) -> Result<QuerySource> {
                 .ok_or_else(|| bad("data.query", "a range source needs a range like A1:C9"))?;
             Ok(QuerySource::Range { sheet, range })
         }
-        other => Err(bad("data.query", format!("\"{other}\" is not a source kind (csv, json, xlsx, parquet, folder, table, range)"))),
+        other => Err(bad("data.query", format!("\"{other}\" is not a source kind (csv, json, xlsx, parquet, sqlite, http, folder, table, range)"))),
     }
 }
 
@@ -205,6 +253,28 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
             Table::new(names, rows).map_err(pipeline_error)
         }
         QuerySource::Folder { path, filter } => folder_table(path, filter),
+        QuerySource::Sqlite { path, sql } => crate::connect::sqlite_table(path, sql),
+        QuerySource::Http { url, format } => {
+            let bytes = crate::connect::http_bytes(url)?;
+            if crate::connect::looks_like_html(&bytes) {
+                return Err(EngineError::Other(format!(
+                    "{url} answered with a web page, not data. A link that needs a login usually does that; use the file instead."
+                )));
+            }
+            match format {
+                gridcraft_model::HttpFormat::Csv => {
+                    let opts = gridcraft_xlsx::CsvOptions { delimiter: b',', parse_values: false, ..Default::default() };
+                    let wb = gridcraft_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(format!("{url}: {e}")))?;
+                    let sh = wb.sheet(0).ok_or(EngineError::NoDocument)?;
+                    grid_from_sheet(sh, None)
+                }
+                gridcraft_model::HttpFormat::Json => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let rows = json_rows(&text)?;
+                    Table::from_rows(rows, false).map_err(pipeline_error)
+                }
+            }
+        }
         QuerySource::Query { name } => query_table(s, name, 0, &mut Vec::new()),
         QuerySource::Table { sheet, name } => {
             let d = s.doc()?;
@@ -610,6 +680,57 @@ fn run_query(s: &mut Session, name: &str) -> Result<Ran> {
 }
 
 // ---------------------------------------------------------------- the commands
+
+// ---------------------------------------------------------------- Get Data: web and database
+
+/// A name for a query made from a URL or a file path: the last meaningful segment, made free by
+/// numbering. "sales.csv" from a URL is a better name than "Query3", and the pane is where names
+/// are read.
+fn derived_name(s: &Session, from: &str, fallback: &str) -> String {
+    let tail = from.split(['?', '#']).next().unwrap_or(from).trim_end_matches('/');
+    let stem = tail.rsplit(['/', '\\']).next().unwrap_or("");
+    let base = stem.rsplit_once('.').map_or(stem, |(b, _)| b);
+    let base = base.trim();
+    let base = if base.is_empty() { fallback } else { base };
+    let queries = s.doc().map(|d| d.wb.queries.clone()).unwrap_or_default();
+    if gridcraft_model::query_name_is_free(&queries, base, None) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base} ({n})");
+        if gridcraft_model::query_name_is_free(&queries, &candidate, None) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// data.fromWeb: a query whose source is a URL, loaded onto its own sheet. The dialog is only for
+/// people; an agent passes the URL and gets the same query a step pipeline can build on.
+fn from_web(s: &mut Session, p: &Json) -> Result<Json> {
+    let Some(url) = str_param(p, "url").map(str::to_string) else {
+        s.ui_requests.push(crate::UiRequest::Dialog("fromWeb".into(), json!({})));
+        return ok();
+    };
+    let mut source = json!({"kind": "http", "url": url});
+    if let Some(f) = str_param(p, "format") {
+        source["format"] = json!(f);
+    }
+    let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| derived_name(s, &url, "Web Query"));
+    s.execute("data.query.add", json!({"name": name, "source": source, "steps": ["PromoteHeaders"], "load": "sheet"}))
+}
+
+/// data.fromDatabase: a statement against a SQLite file, as a query. The columns are the
+/// statement's own, so no PromoteHeaders step: a SELECT names its columns.
+fn from_database(s: &mut Session, p: &Json) -> Result<Json> {
+    let (Some(path), Some(sql)) = (str_param(p, "path").map(str::to_string), str_param(p, "sql").map(str::to_string)) else {
+        s.ui_requests.push(crate::UiRequest::Dialog("fromDatabase".into(), json!({})));
+        return ok();
+    };
+    let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| derived_name(s, &path, "Database Query"));
+    s.execute("data.query.add", json!({"name": name, "source": {"kind": "sqlite", "path": path, "sql": sql}, "load": "sheet"}))
+}
 
 fn add(s: &mut Session, p: &Json) -> Result<Json> {
     let source = parse_source(p.get("source").ok_or_else(|| bad("data.query.add", "missing source"))?)?;

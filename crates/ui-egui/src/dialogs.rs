@@ -759,6 +759,8 @@ impl Dialog {
             "manageRules" => Dialog::custom("manageRules", "Conditional Formatting Rules Manager", json!({})),
             "commandSearch" => Dialog::custom("commandSearch", "Search Commands", json!({})),
             "agents" => Dialog::custom("agents", "Agent Control", json!({})),
+            "fromWeb" => Dialog::custom("fromWeb", "From Web", json!({"url": ""})),
+            "fromDatabase" => Dialog::custom("fromDatabase", "From Database", json!({"path": "", "sql": "SELECT * FROM "})),
             "about" => {
                 let mut d = Dialog::custom("about", "About GridCraft", json!({}));
                 d.tab = match p("tab").as_str() {
@@ -1223,6 +1225,8 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
         "analysisToolPak" => 420.0,
         "solver" => 460.0,
         "zoom" => 220.0,
+        "fromWeb" => 420.0,
+        "fromDatabase" => 540.0,
         "pasteSpecial" => 480.0,
         _ => 380.0,
     };
@@ -1250,6 +1254,8 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
             "find" => find(app, ui, &mut d),
             "goTo" => go_to(app, ui, &mut d, &mut confirm),
             "zoom" => zoom(ui, &mut d, &mut confirm, &mut open),
+            "fromWeb" => from_web(app, ui, &mut d, &mut confirm),
+            "fromDatabase" => from_database(app, ui, &mut d, &mut confirm),
             "sort" => sort(app, ui, &mut d, &mut confirm),
             "nameManager" => name_manager(app, ui, &mut d, &mut open),
             "manageRules" => manage_rules(app, ui),
@@ -2491,6 +2497,69 @@ const ZOOM_PRESETS: [(&str, &str); 5] = [("200", "200%"), ("100", "100%"), ("75"
 /// The `preset` that shows a zoom percentage: its Magnification entry, or Custom.
 fn zoom_preset(percent: f64) -> &'static str {
     ZOOM_PRESETS.iter().map(|(val, _)| *val).find(|val| val.parse::<f64>().ok() == Some(percent)).unwrap_or("custom")
+}
+
+/// Data > Get Data > From Web: a URL, and the query it becomes. One field, because the format
+/// follows the address (".json" reads as JSON, anything else as CSV) and a step can change it.
+fn from_web(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool) {
+    let mut url = d.values.get("url").and_then(Json::as_str).unwrap_or("").to_string();
+    ui.label(crate::widgets::tr(ui, "Address:"));
+    ui.add(egui::TextEdit::singleline(&mut url).desired_width(f32::INFINITY).hint_text("https://"));
+    ui.label(
+        egui::RichText::new(crate::widgets::tr(ui, "The address is read when the query refreshes, not when the workbook opens."))
+            .small()
+            .color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+    );
+    d.values.insert("url".into(), json!(url.clone()));
+    let mut open = true;
+    ok_cancel(ui, confirm, &mut open);
+    if *confirm {
+        match app.run("data.fromWeb", json!({"url": url})) {
+            Ok(r) => {
+                let name = r["name"].as_str().unwrap_or("").to_string();
+                app.toast = Some((crate::widgets::tr(ui, "Added the query {name}").replace("{name}", &name), crate::now_ms()))
+            }
+            Err(e) => app.message = Some(("From Web".into(), crate::clean_error(&e))),
+        }
+    }
+    if !open {
+        *confirm = true;
+    }
+}
+
+/// Data > Get Data > From Database: a SQLite file and the statement to run against it. The
+/// statement is a box of its own rather than a form field, because a SELECT is several lines and a
+/// one-line box is where multi-line SQL gets truncated.
+fn from_database(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool) {
+    let mut path = d.values.get("path").and_then(Json::as_str).unwrap_or("").to_string();
+    let mut sql = d.values.get("sql").and_then(Json::as_str).unwrap_or("SELECT * FROM ").to_string();
+    ui.horizontal(|ui| {
+        ui.label(crate::widgets::tr(ui, "Database:"));
+        ui.add(egui::TextEdit::singleline(&mut path).desired_width(320.0));
+        if ui.button(crate::widgets::tr(ui, "Browse…")).clicked()
+            && let Some(p) = app.services.pick_open.as_ref().and_then(|pick| pick())
+        {
+            path = p;
+        }
+    });
+    ui.label(crate::widgets::tr(ui, "Statement (one SELECT; the file is opened read-only):"));
+    ui.add(egui::TextEdit::multiline(&mut sql).desired_width(f32::INFINITY).desired_rows(6).font(egui::TextStyle::Monospace));
+    d.values.insert("path".into(), json!(path.clone()));
+    d.values.insert("sql".into(), json!(sql.clone()));
+    let mut open = true;
+    ok_cancel(ui, confirm, &mut open);
+    if *confirm {
+        match app.run("data.fromDatabase", json!({"path": path, "sql": sql})) {
+            Ok(r) => {
+                let name = r["name"].as_str().unwrap_or("").to_string();
+                app.toast = Some((crate::widgets::tr(ui, "Added the query {name}").replace("{name}", &name), crate::now_ms()))
+            }
+            Err(e) => app.message = Some(("From Database".into(), crate::clean_error(&e))),
+        }
+    }
+    if !open {
+        *confirm = true;
+    }
 }
 
 /// View › Zoom, laid out as Excel's: one Magnification column of 200% to 25%, Fit selection and

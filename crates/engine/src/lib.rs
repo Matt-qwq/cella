@@ -11,6 +11,7 @@ pub mod cf;
 mod chart_svg;
 mod clip_html;
 pub mod cmd;
+pub mod connect;
 pub mod display;
 pub mod fill;
 pub mod io;

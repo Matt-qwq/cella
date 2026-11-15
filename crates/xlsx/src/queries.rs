@@ -202,6 +202,20 @@ fn push_source(s: &mut String, source: &QuerySource) {
             push_text(s, filter);
             s.push_str("}}");
         }
+        QuerySource::Sqlite { path, sql } => {
+            s.push_str("{\"Sqlite\":{\"path\":");
+            push_text(s, path);
+            s.push_str(",\"sql\":");
+            push_text(s, sql);
+            s.push_str("}}");
+        }
+        QuerySource::Http { url, format } => {
+            s.push_str("{\"Http\":{\"url\":");
+            push_text(s, url);
+            s.push_str(",\"format\":");
+            push_text(s, format.as_str());
+            s.push_str("}}");
+        }
         QuerySource::Table { sheet, name } => {
             s.push_str("{\"Table\":{\"sheet\":");
             push_text(s, sheet);
@@ -512,6 +526,25 @@ fn as_source(v: &Json) -> Result<QuerySource, String> {
                 path: as_text(field(o, "path", what)?, "the Folder source's path")?,
                 filter: as_text(field(o, "filter", what)?, "the Folder source's filter")?,
             }
+        }
+        "Sqlite" => {
+            let o = as_object(details(body, name)?, what)?;
+            QuerySource::Sqlite {
+                path: as_text(field(o, "path", what)?, "the Sqlite source's path")?,
+                sql: as_text(field(o, "sql", what)?, "the Sqlite source's SQL")?,
+            }
+        }
+        "Http" => {
+            let o = as_object(details(body, name)?, what)?;
+            let format = match as_text(field(o, "format", what)?, "the Http source's format")?.to_ascii_lowercase().as_str() {
+                "csv" => gridcraft_model::HttpFormat::Csv,
+                "json" => gridcraft_model::HttpFormat::Json,
+                // A part written by a newer version names a format this one cannot read: dropping
+                // the whole query would lose the steps, so it is read as CSV and the refresh
+                // reports what actually came back.
+                _ => gridcraft_model::HttpFormat::Csv,
+            };
+            QuerySource::Http { url: as_text(field(o, "url", what)?, "the Http source's URL")?, format }
         }
         "Table" => {
             let o = as_object(details(body, name)?, what)?;

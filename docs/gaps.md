@@ -895,6 +895,27 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   (`cmd/slicer.rs` still reads sheet sources only). The field list does work: the PivotTable Fields
   pane lists the model's `Table[Column]` fields (with samples) and its measures, and ticking one
   adds it to the report.
+- **Landed 11-14 (the two connectors that need the outside world, after the owner's dependency
+  decision):** a query's source may now be a **SQLite file** (`{"kind":"sqlite","path":…,"sql":…}`,
+  opened `SQLITE_OPEN_READ_ONLY`, one statement, its output columns are the table's, BLOB columns
+  refused by name, 64 KiB statement cap) or a **URL** (`{"kind":"http","url":…,"format":"csv"|"json"}`,
+  30 s timeout, 64 MiB reply cap, only http/https so a `file:` or `data:` URL cannot dress a path up as
+  a link, and an HTML reply — the login page an endpoint answers with — refused as "a web page, not
+  data"). Both read *only on refresh*, never on open. The Data tab gained **From Database** and a real
+  **From Web** (`data.fromDatabase`, `data.fromWeb`; the second used to be a catalog entry with
+  nothing behind it), each a small dialog that creates a **query**, not a one-shot import, so the
+  result has steps, a refresh and a name derived from what it read (`sales.csv` → "sales", then
+  "sales (2)").
+- **What it cost, measured:** the desktop binary went from **46.7 MB to 54.6 MB (+7.9 MB)** with
+  bundled SQLite and rustls — inside the 10–30 MB the estimate guessed, and the reason the feature is
+  a feature rather than a default of every crate.
+- **How the dependency is paid for:** both live behind the engine's `connectors` feature — bundled
+  SQLite (a C compiler on every platform we ship) and ureq with rustls (pure-Rust TLS, no OpenSSL).
+  The feature is **off by default**, because the browser build has no filesystem and no sockets, and
+  the desktop app, the CLI and MCP turn it on. A build without it keeps the query in the document,
+  round-trips it, and reports "this build cannot read SQLite or web sources" when it runs — the same
+  bargain as a preserved part. `cargo xtask` gained the one step that runs those tests with the
+  feature named, or they would never run at all.
 - **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
   no query) by design — the pane's button is the query path; adding a step from the pane is
   command-side only, there is no step parameter editor; the model's relationships have no UI (a
@@ -940,8 +961,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   **Estimate:** 13–22 h. [function-parity.md](function-parity.md)
 
 ### 16. Collaboration and review (F)
-- No co-authoring, Show Changes, comment navigation, notes ↔ comments
-  conversion; cloud storage requested (#86). **Estimate:** 35–55 h (co-authoring scope needs the owner).
+- **Decided 11-14: no co-authoring, no cloud storage of our own.** Asked and answered: the owner does
+  not need collaboration (real-time editing, shared links, a hosted service). The review half that
+  a single person uses stays as it is — comments, threads, the review pane, protection, Show Changes
+  is the one piece still absent. What a workbook shared through someone else's drive does is
+  documented in file-format-parity.md; nothing here builds a server.
 
 ### 17. Insert objects (F)
 - Ink strokes now survive XLSX save/reopen as editable polylines. Inserted icons still lose their
@@ -1056,7 +1080,10 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   provider and a network client, which is the owner decision above.
 
 ### 23. Mobile (platform)
-- No iOS, iPadOS or Android layout. **Estimate:** 30–60 h.
+- **Decided 11-14: not doing it.** Asked and answered: the owner does not need an iOS/iPadOS/Android
+  layout, and it was the largest open item after the four feature waves (30–60 h of touch layout,
+  on-screen keyboards and a WebAssembly shell). The web build still runs in a tablet's browser; what
+  does not exist is a layout designed for touch. If that changes it is a new decision.
 
 ### 24. Fonts and look (U)
 - Font weights beyond regular/bold (#168), system font list (#4), Calibri metrics (#29), macOS

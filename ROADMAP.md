@@ -90,21 +90,21 @@ collaboration, mobile, AI).
 | Charts and sparklines | ~52% | ~55% | 28–42 | [chart-parity.md](docs/chart-parity.md) |
 | Page layout, print, PDF | ~86% | ~62% | 10–17 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | What-if and analysis (Goal Seek, Solver, ToolPak, Forecast) | ~50% | ~40% | 22–35 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
-| Get & Transform, external data, data model | ~15% | ~10% | 60–100 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
+| Get & Transform, external data, data model | queries (CSV/JSON/XLSX/Parquet/folder/**SQLite**/**web**), steps, data model, measures, model pivots | ~10% | what is left: one-hop relationships, grouped axes don't narrow measures, no SQL Server/OData — [gaps.md §12](docs/gaps.md) |
 | Insert objects (pictures, shapes, ink, SmartArt, equations) | ~55% | ~45% | 25–40 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
-| Review, comments, protection, collaboration | ~55% | ~44% | 32–50 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
+| Review, comments, protection, collaboration | single-user review done; **decided: no co-authoring, no cloud service** | — | [gaps.md §16](docs/gaps.md) |
 | Automation (recorded scripts; no VBA) | scripts editable + extensions; **decided: no in-app plugin host**, CLI/MCP is the extension model | ~20% | [gaps.md §21](docs/gaps.md) |
 
 ## Languages
 
-The ribbon is translated into Japanese, Simplified Chinese, Korean, Brazilian Portuguese, Russian
-and German (266–268 labels each, ~12% of ~2,200 strings; merged 10-10 in #31, #104, #82, German
-added 10-11), the
-interface follows the system language, and CJK, Thai and Hebrew text falls back to system fonts
-(#38). Japanese (10-17) and Brazilian Portuguese also translate the dialog titles and labels,
-message boxes, Backstage/File-view items, template names and native menus: 943 strings each, ~43%.
-The remaining dialogs, menus and messages are English; formulas and number formats are en-US only.
-Localized German formulas and numbers are in PR #163. Detail: [localization-parity.md](docs/localization-parity.md).
+**Two languages, deliberately: English and Simplified Chinese** (decided 11-14 — the eleven
+machine-translated catalogues that had accumulated were dropped; translation multiplies whatever
+strings exist, so depth in the two that are actually reviewed beats breadth in twelve). All **489**
+user-visible labels have a Chinese entry, all **362** command labels included, and the Chinese UI was
+verified in the running app surface by surface (menus, dialogs, Backstage, panes, the status bar,
+runtime-built text). Formulas, number formats, command ids and file extensions stay en-US, exactly as
+in Microsoft's Chinese build. CJK, Thai and Hebrew text falls back to system fonts (#38). Detail:
+[localization-parity.md](docs/localization-parity.md).
 
 | Language | Code | Status | UI strings |
 |---|---|---|---|
