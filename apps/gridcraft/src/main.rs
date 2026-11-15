@@ -364,9 +364,10 @@ fn main() -> eframe::Result<()> {
         .with_min_inner_size([640.0, 420.0])
         .with_app_id("ai.storyteller.gridcraft")
         .with_drag_and_drop(true);
-    if cfg!(target_os = "macos") {
-        viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
-    }
+    // Who draws the window's frame is the library's decision, not this entry point's: macOS gets
+    // the caption band with the app's strip inside it, Linux the app's own frame from the first
+    // frame (a system caption the app cannot match is what #54 was), Windows its own caption.
+    viewport = gridcraft_ui_egui::chrome::viewport(viewport);
     if let Some(i) = icon() {
         viewport = viewport.with_icon(i);
     }

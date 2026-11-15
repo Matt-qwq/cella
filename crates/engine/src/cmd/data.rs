@@ -500,8 +500,12 @@ fn sorted_anchor(sh: &Sheet, a: Anchor, bottom: (u32, u32, f32, f32), by_cols: b
 fn toggle_filter(s: &mut Session, p: &Json) -> Result<Json> {
     let (sheet, r) = data_target(s, p, "data.filter")?;
     super::refuse_unless_allowed(s, sheet, "Filtering", |p| p.autofilter)?;
-    // The active cell belongs to the active sheet: on another sheet the table is the one at `range`.
-    let at = if sheet == s.doc()?.wb.active_sheet { s.doc()?.selection.active } else { r.start };
+    // Which table the command is about: the one at the range it was given, else the one the
+    // active cell is in (a menu click has no range and means "the table I am in"). The selection
+    // must not decide it when a range was named — a filter command over B20:F22 was toggling the
+    // dropdown of whatever table the cursor happened to sit in, which silently turned that table's
+    // filter off and left the sheet's filter nowhere to be written.
+    let at = if p.get("range").is_some() || sheet != s.doc()?.wb.active_sheet { r.start } else { s.doc()?.selection.active };
     let has = s.doc()?.wb.sheet(sheet).is_some_and(|sh| sh.autofilter.is_some());
     let in_table = s.doc()?.wb.sheet(sheet).and_then(|sh| sh.table_at(at).map(|t| t.name.clone()));
     if let Some(name) = in_table {
