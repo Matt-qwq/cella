@@ -1,6 +1,6 @@
 # Function parity: worksheet functions and formulas
 
-> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (GETPIVOTDATA added: 515 functions, 514 of Microsoft's 523 by name, 505 working) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** major (upstream-adoption round: 492 registered + 35 special forms; the counts in the body were corrected against the registry after they had drifted - see the 2026-11-16 revision row. Earlier: GETPIVOTDATA added, 515 functions, 514 of Microsoft's 523 by name, 505 working) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Excel's worksheet functions, category by category, against GridCraft's function library. Part of
 [target-app-parity.md](target-app-parity.md); gaps feed [gaps.md](gaps.md).
@@ -28,7 +28,7 @@ Excel's worksheet functions, category by category, against GridCraft's function 
 
 ## Coverage
 
-**Measured: 514 / 523 by name (98.3%); 505 / 523 working (96.6%).**
+**Measured: 492 registered functions + 35 special forms.** By Microsoft 523 names: 513 present by name (98.1%) and 504 working (96.4%) - the category table below still counts the 515/505 form it was built with, which the registry does not support; the 2026-11-16 revision row records the correction.
 
 | Category | Excel | Ours | Working | % working | Missing |
 |---|---|---|---|---|---|
@@ -138,6 +138,7 @@ workbooks; results checked in as data, not Excel files) and fixing what it finds
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | major | **Upstream-adoption round**: `ECMA.CEILING` added (**492 registered + 35 special forms**; this page's older counts of 515/514 and 513/523 were wrong — they contradicted the registry: `PERCENTOF` is registered, `STOCKHISTORY` is not). Depth ported from v0.19.1 with its Excel-observed tests: statistics and mathematics (MOD's 1.1259E12 quotient limit, GCD/LCM rejecting negative fractions before truncation, MINVERSE's scale-relative noise floor, HARMEAN's `#N/A`, PERCENTRANK's 15-digit results and `#DIV/0!` at significance ≥ 309, GAMMA/BETA/WEIBULL/T/F distribution edges, BINOM/POISSON Loader saddle points, LINEST/LOGEST/TREND by Householder QR, FREQUENCY with a NaN bin); financial and engineering (the PMT family by `ln_1p`/`exp_m1`, ACCRINTM, base conversions that reject padded text, `DEC2*` negative `places`, huge bit shifts, IMSQRT); and the **707-case golden number-format corpus** (152 codes × 75 values + 555 General widths) recorded byte-identically, which also fixed the Hijri `B2` calendar and the rejection of invalid `B1`/`B2` codes. Formula evaluation is now metered: nesting, a work budget, LAMBDA fuel and call cap, and an 896 KiB native-stack guard, so a hostile formula is an error value rather than an abort |
 | 2026-11-02 | minor | GETPIVOTDATA works: the evaluator reads the report's own labels (a cell depends on its PivotTable's written area, so a refresh recalculates it) and it is in the Insert Function list. 515 functions, 514 of Microsoft's 523 by name, 505 working; the "Generate GetPivotData" click option is still missing |
 | 2026-11-02 | minor | Coverage re-measured from the library (514 functions, 513 of Microsoft's 523 by name, 504 working): PERCENTOF and TRIMRANGE are present, so the stale per-category "Ours"/"Missing" columns are corrected and the ten genuinely missing names listed |
 | 2026-10-30 | minor | Documentation-derived formula oracle suite: 595 worked examples for 275 functions through the evaluator, with #57/#133/#139/#140/#134 regressions (not an Excel-computed corpus) |

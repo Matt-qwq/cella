@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (bound Undo's retained cell storage) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (bound Undo's retained cell storage) · **Target:** Microsoft Excel (Microsoft 365)
 
 How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -79,6 +79,7 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | major | The upstream-adoption round changed five subsystems this page describes: **the JSON workbook is a versioned envelope** (`{formatVersion, workbook}` with unknown fields retained at every level and read caps); **Undo groups** (`group_begin`/`group_end`/`group_rollback`, one group is one history entry and Undo/Redo refuse while one is open, which is what makes a script run atomic); **a macro engine** in `crates/engine/src/macros` (recorder, runner, trust policy, step-through) bound to the workbook's existing script list, so `macro.*` are aliases over `automate.*` rather than a second document shape; **form controls** as model objects (`crates/model/src/controls.rs`) written as ctrlProps + `mc:AlternateContent` + VML; **one view per window** (`WindowView { selection, sheet, sheet_name, sheet_selections }`, swapped around a command, and a swap is not an edit). The workbook's own data store moved from one literal per defined name to `_gc_<key>_<n>` chunks that respect Excel's 255-character literal and 8,192-unit formula limits |
 | 2026-11-16 | minor | Document the evaluator's work budget, LAMBDA fuel and native-stack guard |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |

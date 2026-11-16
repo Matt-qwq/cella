@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -10,6 +10,37 @@ docs; the summary is in [target-app-parity.md](target-app-parity.md).
 
 Kinds: **F** feature · **U** UI/UX · **FF** file format · **H** hardware · **L** localization ·
 **P** performance · **S** stability.
+
+## Closed by the upstream-adoption round (2026-11-16)
+
+Eighteen batches taken from `storytold/gridcraft` v0.19.1 (our fork diverged at v0.11.1). The
+table below is what this closed; everything else in this file still stands.
+
+| was open | now |
+| --- | --- |
+| a workbook's own data store was one string literal in one defined name — past Excel's 255-character literal and 8,192-unit formula limits, and XML-illegal characters were dropped on save | `_gc_<key>_<n>` chunks with an escape for XML-illegal characters; legacy `_sc_*` still read (B1) |
+| "Set precision as displayed" was stored and round-tripped but never applied — a `fullPrecision="0"` file computed at full precision | the option rounds typed constants on entry and forces results to their cell's format on every pass (C1) |
+| a deeply recursive formula could overflow the native stack, which aborts the process instead of panicking | nesting cap, work budget, LAMBDA fuel and call cap, 896 KiB stack guard: an error value (C2) |
+| PivotTable Show Details on a hand-edited (stale) report returned **another cell's** records | refused with "refresh the PivotTable" (E7) |
+| no Solver Sensitivity report; no saved Solver models | Sensitivity report (textbook-verified duals, allowables, reduced costs) and `data.solver{Save,Load,Reset}Model` (E7) |
+| no WordArt | `insert.wordArt`/`wordArt.set`, ten presets, in-place edit, xlsx round trip (W9) |
+| no chart data tables | `c:dTable` modelled, drawn under column/bar/line/area charts (H13) |
+| no macro recording, running or trust policy | recorder, runner with one undo step per run and rollback on a failed step, trust policy, `macro.debug` (M11) |
+| no form controls | buttons, sliders and spin buttons modelled, round-tripped as ctrlProps + AlternateContent + VML, painted and clickable (C12) |
+| the JSON workbook was a raw dump of the live model: a rename changed the format and unknown fields were lost | versioned envelope with retained unknown fields and read caps (J8) |
+| every window on a document shared one selection and one active sheet | one view per window (N15) |
+| no undo grouping | `group_begin`/`group_end`/`group_rollback`, Undo/Redo refused inside a group (E10) |
+| view/outline settings silently reset on open+save (`workbookView` flags, `tabRatio`, `filterPrivacy`, `refMode`, `outlinePr`, `readingOrder`) | all modelled and written back (X1) |
+| pre-dynamic-array formulas evaluated as if they were dynamic; Google Sheets exports kept their `__xludf.DUMMYFUNCTION` wrapper | legacy implicit intersection applied on read; the wrapper unwrapped when every function inside is known (X2) |
+| numbers had no reference corpus, so rendering divergences were invisible; `B1`/`B2` codes were leniently ignored | 707 upstream golden cases byte-identical, Hijri `B2`, invalid codes rejected (F17) |
+| statistics/mathematics, financial and engineering functions were shallower than upstream's (MOD, GCD/LCM, MINVERSE, distributions, LINEST, PMT family, base conversions…) | ported with their Excel-observed tests; `ECMA.CEILING` added (F16, F18) |
+| twelve small command ids were missing (`range.move`, `selection.nextCorner`, `formulas.pasteName`/`traceError`, `pivot.options`, `data.outlineSettings`, four `view.show*`, `window.list`) | added, and `formulas.*` now refuses to edit the store's own `_gc_*` chunks (E6) |
+
+Deliberately not taken: `craft-gridcraft-format` and the craftrules shared crates (our own envelope
+instead), upstream's `.xls` reader (ours reads charts, shapes, comments, CF, hyperlinks and freeze
+panes; theirs does not), its chart writer (we patch unmodelled options through instead of
+regenerating), equations on `ratex` (**owner's decision**) and Python cells with `crates/sandbox`
+(**owner's decision** — the project has "PY out of scope" recorded).
 
 ## Beta blockers
 

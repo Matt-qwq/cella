@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (a timeline's selected range handles drag on the sheet: resize either end or slide the band, one undo step, the field's date axis cached per revision) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (a timeline's selected range handles drag on the sheet: resize either end or slide the band, one undo step, the field's date axis cached per revision) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Interaction, controls and feel, against Excel. Part of [target-app-parity.md](target-app-parity.md).
 **UI/UX fidelity: ~55% ready, 50–80 h** (estimated). Ribbon command coverage is measured
@@ -337,6 +337,7 @@ scrollbar bugs 2–4 · pixel/feel pass against observed Excel 7–12.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | major | **Upstream-adoption round**: **WordArt** (`insert.wordArt`, `wordArt.set`, ten presets painted in code, `NW` keytip, in-place text edit through the shape text editor, `ShapeFormat::text_shadow`); **form controls** (buttons, sliders, spin buttons painted above every object, a click runs the button's action through the macro policy, a drag follows the slider, the arrows step a spin button; `control.{assign,format,list,press,setValue}` and `insert.{button,slider,spinButton}`); the ribbon's painted icon, toggle and split buttons now carry an accessible name and a pressed state (`WidgetInfo::selected`) instead of an anonymous click rectangle, which also makes them addressable by UI tests; clicking the horizontal alignment a cell already has no longer falls back to General (Excel leaves it). Undo gained grouping, so a script run of N steps is one undo |
 | 2026-11-02 | minor | Word-wrapped cells shape line by line (`GridText::wrap`: per-paragraph cluster measure, breaks at spaces/hyphens/CJK, then each line shaped; per-line alignment and the RTL General flip) and chart labels are shaped with the shaped measure driving the layout. Printable ASCII wrapped text keeps epaint's wrap bit for bit. Text boxes and rotated wrap jobs remain |
 | 2026-11-02 | minor | Shift+F10 on a selected chart, picture, shape or slicer opens its own context menu at the object's frame (the right-click menu: delete, Select Data, Format Chart Area, slicer actions), and the cell menu otherwise; the test drives `keymap::dispatch` with a real `Geo`. `grid::selected_object` is the model side (kind, id, anchor) and has its own test |
 | 2026-11-02 | minor | The status bar carries an **Accessibility** entry: the `review.checkAccessibility` issue count (cached per document revision, since the check walks every sheet), a focusable button that opens the same Check Accessibility dialog as the Review tab. Two tests (the count and its caching, and a status-bar frame that runs the command) |
