@@ -36,6 +36,22 @@ fn golden(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden").join(name)
 }
 
+/// The bytes with every CRLF collapsed to LF, so a Windows checkout compares equal to what
+/// the writer emits.
+fn strip_crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
 fn check_golden(name: &str, actual: &[u8]) {
     let path = golden(name);
     if std::env::var_os("GRIDCRAFT_BLESS_GOLDEN").is_some() {
@@ -43,6 +59,9 @@ fn check_golden(name: &str, actual: &[u8]) {
         return;
     }
     let expected = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    // A checkout with `core.autocrlf` on gives the file CRLF line endings; the format's bytes are
+    // LF, and a golden file is about content, not about how git materialised it.
+    let expected = strip_crlf(&expected);
     assert!(
         expected == actual,
         "{name} changed: the writer gave {} bytes, the golden file has {}. If this is deliberate, bump \
@@ -192,7 +211,7 @@ fn the_writers_output_for_a_small_workbook_is_stable() {
 
 #[test]
 fn the_golden_workbook_opens_and_saves_back_unchanged() {
-    let expected = std::fs::read(golden("json_envelope_v1.json")).expect("the golden file");
+    let expected = strip_crlf(&std::fs::read(golden("json_envelope_v1.json")).expect("the golden file"));
     let (wb, warnings) = io::open_bytes("book.json", &expected).expect("the golden file opens");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(save(&wb) == expected, "the golden workbook saved back differently");
