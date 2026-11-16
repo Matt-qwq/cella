@@ -158,23 +158,24 @@ fn is_lambda_definition(e: &Expr) -> bool {
 
 /// Collects the static references of an expression with their sheets resolved; `dynamic` is
 /// set when the formula uses INDIRECT/OFFSET, a volatile function, or a name or table whose
-/// target can move, and `trim` when one of its references is read through the used range (see
-/// [`trimmed`]).
+/// target can move, `trim` when one of its references is read through the used range (see
+/// [`trimmed`]), and `volatile` when it calls a function whose answer changes on its own
+/// (`NOW`, `RAND`, `TODAY`… see [`FnSpec::volatile`](gridcraft_functions::FnSpec)).
 ///
 /// A name that stands for cells is a precedent like a written reference: `Rate` defined as
 /// `Sheet1!$B$1` makes `=Rate*A1` read A1 and B1, so an edit elsewhere does not recalculate it
 /// and an edit of B1 does. `names` keeps the resolved definitions between calls.
-pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, bool, bool) {
+pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, bool, bool, bool) {
     let mut out = Vec::new();
-    let (dynamic, trim) = precedents_into(names, wb, sheet, e, &mut out);
-    (out, dynamic, trim)
+    let (dynamic, trim, volatile) = precedents_into(names, wb, sheet, e, &mut out);
+    (out, dynamic, trim, volatile)
 }
 
 /// [`precedents`] appending to a buffer the caller reuses and emptying it first.
 ///
 /// Building the graph asks a million formulas for their precedents; one `Vec` per formula is a
 /// million allocations that say nothing the graph does not already know.
-pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, out: &mut Vec<Area>) -> (bool, bool) {
+pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, out: &mut Vec<Area>) -> (bool, bool, bool) {
     out.clear();
     // One budget for the whole walk, shared by the definitions it follows: past
     // `MAX_PRECEDENT_NODES` the result is conservative (the formula is marked `dynamic`, so it
@@ -186,9 +187,21 @@ pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &E
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize, out: &mut Vec<Area>) -> (bool, bool) {
+fn precedents_at(
+    names: &mut NameCache,
+    wb: &Workbook,
+    sheet: usize,
+    e: &Expr,
+    depth: usize,
+    left: &mut usize,
+    out: &mut Vec<Area>,
+) -> (bool, bool, bool) {
     let mut dynamic = false;
     let mut trim = false;
+    // Whether the formula calls a function that answers differently every time it is evaluated.
+    // Recorded here because this walk visits every node anyway — the graph keeps the flag, so a
+    // workbook's formulas never have to be walked again to find out (see `recalc_on_open`).
+    let mut volatile = false;
     let push = |out: &mut Vec<Area>, r: &Reference, range: RangeRef| match &r.sheet {
         SheetSel::Current => out.push(Area { sheet, range }),
         SheetSel::Named(n) => {
@@ -212,6 +225,21 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             return;
         }
         *left -= 1;
+        // The registry entry of a call's function, looked up once for the two questions below ask
+        // of it: is it volatile, and is it a function at all?
+        let call = match x {
+            Expr::Call(n, _) => Some((n, gridcraft_functions::lookup(n))),
+            _ => None,
+        };
+        // A volatile function's cached value is out of date by definition, so a formula calling one
+        // is recalculated on open even though the file carries a value for it. A measure reads the
+        // data model, which is refreshed outside the cell graph (a query reload, a relationship or
+        // measure edit), so its cached value can be out of date the moment the file opens.
+        if let Some((n, spec)) = call
+            && (spec.is_some_and(|f| f.volatile) || n.eq_ignore_ascii_case("MEASURE"))
+        {
+            volatile = true;
+        }
         match x {
             Expr::Ref(r) => {
                 let range = r.range();
@@ -261,9 +289,11 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             }
             Expr::Name(n) => match names.target(wb, sheet, n) {
                 NameTarget::Definition(def, scope) if depth < MAX_NAME_DEPTH && *left > 0 && !is_lambda_definition(&def) => {
-                    let (d, t) = precedents_at(names, wb, scope, &def, depth + 1, left, out);
+                    let (d, t, v) = precedents_at(names, wb, scope, &def, depth + 1, left, out);
                     dynamic |= d;
                     trim |= t;
+                    // `Rate` defined as `NOW()` is as volatile as the call it stands for.
+                    volatile |= v;
                 }
                 NameTarget::Table { area, .. } => out.push(area),
                 _ => dynamic = true,
@@ -278,7 +308,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
                 }
             }
             Expr::Struct(_) => dynamic = true,
-            Expr::Call(n, _) if gridcraft_functions::lookup(n).is_none() && !is_special(n) => dynamic = true,
+            Expr::Call(n, _) if call.is_some_and(|(_, spec)| spec.is_none()) && !is_special(n) => dynamic = true,
 
             // A range ending in a function's result (`A1:INDEX(B1:B9,n)`) covers the cells between
             // the references inside it, not only those references.
@@ -298,7 +328,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             _ => {}
         }
     });
-    (dynamic, trim)
+    (dynamic, trim, volatile)
 }
 
 fn is_special(n: &str) -> bool {

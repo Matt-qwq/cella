@@ -153,6 +153,9 @@ const MAY_SPILL: u8 = 2;
 const TRIM: u8 = 4;
 /// The anchor of a legacy (Ctrl+Shift+Enter) array formula; its range is in [`Graph::legacy_range`].
 const LEGACY: u8 = 8;
+/// The formula calls a function that answers differently every time (`NOW`, `RAND`, `TODAY`…), so
+/// its cached value is out of date on open and it is recalculated then.
+const VOLATILE: u8 = 16;
 
 impl Node {
     pub(super) fn new(expr: Option<std::sync::Arc<Expr>>, dynamic: bool, may_spill: bool, trim: bool) -> Self {
@@ -167,6 +170,19 @@ impl Node {
             flags |= TRIM;
         }
         Node { start: 0, len: 0, expr, flags }
+    }
+
+    /// The same node, marked volatile (see [`VOLATILE`]).
+    pub(super) fn with_volatile(mut self, volatile: bool) -> Self {
+        if volatile {
+            self.flags |= VOLATILE;
+        }
+        self
+    }
+
+    /// Whether the formula calls a volatile function.
+    pub(super) fn is_volatile(&self) -> bool {
+        self.flags & VOLATILE != 0
     }
 }
 
@@ -367,6 +383,13 @@ impl Graph {
     /// The range of the legacy array anchored at `k`, if it is one.
     pub(super) fn legacy_of(&self, k: Key) -> Option<RangeRef> {
         self.legacy_range.get(&k).copied()
+    }
+
+    /// Whether the formula at `k` calls a volatile function — the flag the precedents walk
+    /// recorded when it visited its last node, so opening a workbook never walks a formula tree to
+    /// find out. A cell without a node (no formula, or one that does not parse) is not volatile.
+    pub(super) fn is_volatile(&self, k: Key) -> bool {
+        self.nodes.get(&k).is_some_and(Node::is_volatile)
     }
 
     /// Reserves room for `formulas` formulas, so a bulk build does not grow its tables a dozen
