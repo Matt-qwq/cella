@@ -818,9 +818,10 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 .open_memory(popup_command(forced, fa.clicked()))
                 .show(|ui| {
                     if let Some(c) = color_palette(ui, &theme_colors(app), "No Fill") {
-                        if c != "none" {
-                            app.grid.last_fill = c.clone();
-                        }
+                        // The remembered colour is what the button's main half applies next, so
+                        // "No Fill" has to be remembered too: otherwise the button went on
+                        // painting the previous colour after the user had cleared it.
+                        app.grid.last_fill = c.clone();
                         act(app, "home.fillColor", json!({"color": c}));
                         ui.close();
                     }
@@ -838,9 +839,9 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 .open_memory(popup_command(forced, ca.clicked()))
                 .show(|ui| {
                     if let Some(c) = color_palette(ui, &theme_colors(app), "Automatic") {
-                        if c != "none" {
-                            app.grid.last_font_color = c.clone();
-                        }
+                        // Automatic is a colour choice like any other: the main half applies
+                        // whatever was picked last, automatic included.
+                        app.grid.last_font_color = if c == "none" { "auto".to_string() } else { c.clone() };
                         act(app, "home.fontColor", json!({"color": if c == "none" { "auto".to_string() } else { c }}));
                         ui.close();
                     }

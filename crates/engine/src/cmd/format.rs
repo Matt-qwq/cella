@@ -309,6 +309,10 @@ fn toggle(s: &mut Session, p: &Json, get: fn(&Style) -> bool, set: fn(&mut Style
 }
 
 fn underline(s: &mut Session, p: &Json) -> Result<Json> {
+    // Naming a style is a choice, not a toggle: the menu's "Double Underline" sets a double line
+    // even on a cell that already has a single one. Without a style it is the button, and a
+    // button turns any underline off before it turns one on again.
+    let named = str_param(p, "style").is_some();
     let style = match str_param(p, "style").unwrap_or("single") {
         "double" => Underline::Double,
         "singleAccounting" => Underline::SingleAccounting,
@@ -317,7 +321,7 @@ fn underline(s: &mut Session, p: &Json) -> Result<Json> {
         _ => Underline::Single,
     };
     let cur = active_style(s)?.font.underline;
-    let on = bool_param(p, "on").unwrap_or(cur != style);
+    let on = bool_param(p, "on").unwrap_or(named || cur == Underline::None);
     let u = if on { style } else { Underline::None };
     apply_style(s, p, |st| st.font.underline = u)?;
     Ok(json!({"on": on}))
