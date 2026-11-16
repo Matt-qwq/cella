@@ -291,3 +291,5 @@ row in `ATTRIBUTION.md` (`cargo xtask assets`).
 build job checks `github.ref == 'refs/heads/release'`, so a manual run from another branch is
 skipped. Only `packaging-lint.yml` (no build, no secrets) runs on `main` and PRs.
 - Locally: `cargo xtask ci` (fmt, clippy, tests, assets, layers, wasm, parity check).
+- Before tagging: `cargo xtask perf` — the performance gate against `xtask/perf-budgets.txt`
+  (release build at 100k and 1M rows; it is not part of `ci`; see [performance.md](performance.md)).

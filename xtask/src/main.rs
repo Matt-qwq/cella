@@ -17,6 +17,7 @@ mod layers;
 mod oracle;
 #[cfg_attr(not(feature = "engine"), allow(dead_code))]
 mod parity;
+mod perf;
 mod stats;
 mod version;
 
@@ -47,6 +48,11 @@ commands:
                   list the user-visible literals in crates/ui-egui/src that skip the translation
                   lookup, with a ratchet baseline in xtask/i18n-baseline.txt (--write: refresh it,
                   --check: fail on a new literal)
+  perf [--update] [--rows=N,N] [--scenario=ID,...] [--repeat=N] [--budgets=PATH] [--scale=F]
+                  the performance gate: run crates/engine/examples/perf.rs in release at 100k and
+                  1M rows and compare it with xtask/perf-budgets.txt (--update records the current
+                  numbers; GRIDCRAFT_PERF_SCALE slackens every budget for a slower machine).
+                  NOT part of `ci` — run it before a release (see docs/performance.md)
   version [set X.Y.Z[-pre]]
                   print or set the workspace version ([workspace.package] in Cargo.toml)
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
@@ -74,6 +80,7 @@ fn main() -> ExitCode {
         Some("oracle") => Err("`oracle` needs the engine feature (on by default)".to_string()),
         Some("keytips") => keytips::run(&root(), &rest),
         Some("i18n") => i18n::run(&root(), &rest),
+        Some("perf") => perf::run(&root(), &rest),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),
         Some("-h" | "--help" | "help") | None => {
