@@ -59,6 +59,20 @@ fn click(h: &mut Harness, label: &str) {
     h.run_steps(2);
 }
 
+/// Clicks a choice inside a pane combo's popup. The ribbon's alignment buttons carry the same
+/// names ("Center"), and they are painted in the strip at the top: the pane's popup is the lower one.
+fn click_pane(h: &mut Harness, label: &str) {
+    let node = h.get_all_by_label(label).max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y));
+    node.expect("a choice in the pane's combo").click();
+    h.run_steps(2);
+}
+
+/// The pane's Bold and Italic are checkboxes, and the ribbon's toggles carry the same names.
+fn tick(h: &mut Harness, label: &str) {
+    h.get_by_role_and_label(Role::CheckBox, label).click();
+    h.run_steps(2);
+}
+
 fn header(h: &Harness, title: &str) -> bool {
     h.query_by_role_and_label(Role::Button, title).is_some()
 }
@@ -143,8 +157,8 @@ fn the_shape_line_changes_through_the_command() {
 fn the_text_section_formats_the_shape_text() {
     let (mut h, id) = text_box();
     expand(&mut h, "Text");
-    click(&mut h, "Bold");
-    click(&mut h, "Italic");
+    tick(&mut h, "Bold");
+    tick(&mut h, "Italic");
     let f = shape(&h, id).format;
     assert!(f.bold && f.italic, "the checkboxes reach the command");
 
@@ -157,7 +171,7 @@ fn the_text_section_formats_the_shape_text() {
     // Both the alignment and the vertical anchor read "Default"; the alignment is the first.
     h.get_all_by_value("Default").next().expect("the alignment combo").click();
     h.run_steps(2);
-    click(&mut h, "Center");
+    click_pane(&mut h, "Center");
     assert_eq!(shape(&h, id).format.align, Some(ShapeTextAlign::Center));
     choose(&mut h, "Default", "Bottom");
     assert_eq!(shape(&h, id).format.anchor, Some(ShapeTextAnchor::Bottom));

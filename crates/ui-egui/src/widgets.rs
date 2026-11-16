@@ -53,8 +53,13 @@ pub fn tooltip_text(ui: &Ui, tip: &str) -> String {
 }
 
 /// A flat square icon button with hover highlight and tooltip.
+///
+/// The tooltip's name is also the button's accessible name: the ribbon is painted from icons, so
+/// the tooltip is the only text a control has, and a screen reader (or a UI test) needs it.
 pub fn icon_button(ui: &mut Ui, icon: Icon, color: Color32, tip: &str, size: egui::Vec2) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (name, enabled) = (tr(ui, tip), ui.is_enabled());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
     let t = Tokens::get(ui.ctx());
     if resp.is_pointer_button_down_on() {
         ui.painter().rect_filled(rect, 4.0, t.pressed);
@@ -66,8 +71,12 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, color: Color32, tip: &str, size: egu
 }
 
 /// A toggle-able small button (e.g. Bold) showing a checked state.
+///
+/// Also reported to assistive technology as a pressed button (Bold is "pressed", not "checked").
 pub fn toggle_button(ui: &mut Ui, icon: Icon, on: bool, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::click());
+    let (name, enabled) = (tr(ui, tip), ui.is_enabled());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name));
     let t = Tokens::get(ui.ctx());
     if on {
         ui.painter().rect_filled(rect, 4.0, t.pressed);
@@ -176,6 +185,8 @@ pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, on: Option
         Some(on) => egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name.clone()),
         None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone()),
     });
+    // Both halves share the control's name; a query tells them apart by their rectangles.
+    a.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone()));
     (m.on_hover_text(name).clicked(), a)
 }
 
