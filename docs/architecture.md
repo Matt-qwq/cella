@@ -43,7 +43,11 @@ including tests, 2026-10-10.
    The estimate is a history policy, not a measure or hard cap of process memory.
 3. **Recalc** marks dependents of changed cells dirty through the dependency graph (with range
    nodes for range dependents), evaluates in topological order, spills dynamic arrays and reports
-   `#SPILL!`/cycles. Volatile functions are always dirty.
+   `#SPILL!`/cycles. Volatile functions are always dirty. Every formula is metered: a nesting cap,
+   a work budget per cell (`#CALC!`), a fuel charge per LAMBDA call (`#CALC!`), a cap on the calls in
+   progress and a budget on the native stack the evaluation may use (`#NUM!`). A formula that runs
+   past one is an error value, so a hostile file cannot recurse until the stack overflows (an abort
+   no code can catch) with the user's workbook in the tab.
 4. **Rendering**: the egui grid reads display values (number formats applied in `engine/display.rs`)
    for the visible window only; charts render through `crates/chart` primitives.
 5. **Files**: `engine/io.rs` sniffs content (XLSX, XLSB, ODS) before trusting the extension and
@@ -75,5 +79,6 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | Document the evaluator's work budget, LAMBDA fuel and native-stack guard |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |
