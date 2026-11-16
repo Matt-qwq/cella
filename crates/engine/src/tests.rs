@@ -1421,6 +1421,29 @@ fn sort_with_a_sheet_prefix_sorts_the_named_sheet() {
     assert_eq!(col(&s, "Sheet1"), ["a", "b", "c"].map(Value::from));
 }
 
+/// A sort is a permutation of its block, and the commit recalculates what reads the block: a
+/// formula outside it sees the new rows, and a formula inside it travels with its own row (its
+/// relative references shifted with it), so both must agree after the sort.
+#[test]
+fn sort_recalculates_the_rows_it_moved() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:C4", "values": [["d", 4, "=B1*2"], ["b", 2, "=B2*2"], ["a", 1, "=B3*2"], ["c", 3, "=B4*2"]]}))
+        .unwrap();
+    s.execute("cell.set", json!({"cell": "E1", "input": "=B1*10"})).unwrap();
+    s.execute("cell.set", json!({"cell": "E2", "input": "=E1+1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "E3", "input": "=B1+B2"})).unwrap();
+    s.execute("data.sort", json!({"range": "A1:C4", "header": false, "keys": [{"column": "A"}]})).unwrap();
+    let col: Vec<Value> = (1..=4).map(|r| v(&s, &format!("A{r}"))).collect();
+    assert_eq!(col, ["a", "b", "c", "d"].map(Value::from));
+    // Each doubled column moved with its row and still reads that row's B.
+    let doubles: Vec<Value> = (1..=4).map(|r| v(&s, &format!("C{r}"))).collect();
+    assert_eq!(doubles, [2.0, 4.0, 6.0, 8.0].map(Value::Number));
+    // Dependents outside the block were recalculated, through a chain.
+    assert_eq!(v(&s, "E1"), Value::Number(10.0));
+    assert_eq!(v(&s, "E2"), Value::Number(11.0));
+    assert_eq!(v(&s, "E3"), Value::Number(3.0));
+}
+
 #[test]
 fn remove_duplicates_compares_shown_text() {
     let mut s = s();

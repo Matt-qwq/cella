@@ -209,6 +209,20 @@ struct SortKey {
     list: Option<Vec<String>>,
 }
 
+/// One line's key at one level, read from the sheet once and compared from memory: the value, the
+/// colour a colour sort orders on, and the key's position in the sort's custom list (looked up once
+/// per cell; it used to be scanned again on every comparison).
+struct SortCell {
+    value: Value,
+    color: u32,
+    list: u32,
+}
+
+/// The most keys one sort may hold at once (lines x levels). Keys are kept for the whole sort, so
+/// this is a memory cap like [`super::MAX_BULK_CELLS`]: a million rows by six levels sits far under
+/// it, a 64-level sort of a whole sheet is refused rather than grown to gigabytes.
+const MAX_SORT_KEY_CELLS: u64 = 24_000_000;
+
 /// The sheet and range a sort works on: the sheet `sheet` or a `Sheet!` prefix on `range` names,
 /// else the active one. The selection belongs to the active sheet, so another sheet needs `range`.
 fn sort_target(s: &Session, p: &Json) -> Result<(usize, RangeRef)> {
@@ -309,17 +323,38 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
             };
             (v, color)
         };
+        // Every key of every line in one buffer, laid out line by line. A `Vec` per line is a
+        // million allocations on a big sort, and the comparator runs about n log n times, so each
+        // key is read from the sheet once and compared from here.
+        let nk = keys.len();
+        let total = (n as usize).saturating_mul(nk);
+        if total as u64 > MAX_SORT_KEY_CELLS {
+            return Err(EngineError::Other(format!("The sort is too large ({n} lines x {nk} levels).")));
+        }
+        let mut keyed: Vec<SortCell> = Vec::with_capacity(total);
+        for i in 0..n {
+            for k in &keys {
+                let (value, color) = key_val(i, k);
+                let list = match (&k.list, value.as_text()) {
+                    (Some(l), Some(t)) => l.iter().position(|x| x.eq_ignore_ascii_case(t)).and_then(|p| u32::try_from(p).ok()).unwrap_or(u32::MAX),
+                    _ => u32::MAX,
+                };
+                keyed.push(SortCell { value, color, list });
+            }
+        }
         let mut order: Vec<u32> = (0..n).collect();
-        let keyed: Vec<Vec<(Value, u32)>> = (0..n).map(|i| keys.iter().map(|k| key_val(i, k)).collect()).collect();
+        // A stable sort of the permutation: equal keys keep the order they were in, and the rows
+        // themselves are moved once, afterwards.
         order.sort_by(|&a, &b| {
             for (ki, k) in keys.iter().enumerate() {
-                let (va, ca) = &keyed[a as usize][ki];
-                let (vb, cb) = &keyed[b as usize][ki];
+                let (Some(sa), Some(sb)) = (keyed.get(a as usize * nk + ki), keyed.get(b as usize * nk + ki)) else {
+                    return Ordering::Equal;
+                };
+                let (va, vb) = (&sa.value, &sb.value);
                 let o = if k.by != "values" {
-                    ca.cmp(cb)
-                } else if let Some(list) = &k.list {
-                    let pos = |v: &Value| v.as_text().and_then(|t| list.iter().position(|x| x.eq_ignore_ascii_case(t))).unwrap_or(usize::MAX);
-                    pos(va).cmp(&pos(vb))
+                    sa.color.cmp(&sb.color)
+                } else if k.list.is_some() {
+                    sa.list.cmp(&sb.list)
                 } else if case && va.is_text() && vb.is_text() {
                     sort_compare(va, vb).then_with(|| case_order(va.as_text().unwrap_or(""), vb.as_text().unwrap_or("")))
                 } else {
@@ -341,20 +376,35 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // Notes and hyperlinks hang off a cell, not a row, so they travel with the row they
         // describe — the way cell pictures and row heights do. Collect them before inserting,
         // so a swap can't resurrect one from a destination that is also a source.
-        let side: Vec<(CellRef, Comment)> = order
-            .iter()
-            .enumerate()
-            .flat_map(|(dst_i, &src_i)| lanes.iter().map(move |&k| (src_i, dst_i as u32, k)))
-            .filter_map(|(src_i, dst_i, k)| sh.comments.get(&line(src_i, k)).map(|cm| (line(dst_i, k), cm.clone())))
-            .collect();
-        let links: Vec<(CellRef, Hyperlink)> = order
-            .iter()
-            .enumerate()
-            .flat_map(|(dst_i, &src_i)| lanes.iter().map(move |&k| (src_i, dst_i as u32, k)))
-            .filter_map(|(src_i, dst_i, k)| sh.hyperlinks.get(&line(src_i, k)).map(|h| (line(dst_i, k), h.clone())))
-            .collect();
-        let mut moved: Vec<(CellRef, Option<Cell>)> = Vec::with_capacity(body.count() as usize);
+        // A sheet with no notes (or no links, or no pictures) skips the walk: it is one line-lane
+        // pair per cell of the body, which on a million rows is six million lookups into nothing.
+        let side: Vec<(CellRef, Comment)> = if sh.comments.is_empty() {
+            Vec::new()
+        } else {
+            order
+                .iter()
+                .enumerate()
+                .flat_map(|(dst_i, &src_i)| lanes.iter().map(move |&k| (src_i, dst_i as u32, k)))
+                .filter_map(|(src_i, dst_i, k)| sh.comments.get(&line(src_i, k)).map(|cm| (line(dst_i, k), cm.clone())))
+                .collect()
+        };
+        let links: Vec<(CellRef, Hyperlink)> = if sh.hyperlinks.is_empty() {
+            Vec::new()
+        } else {
+            order
+                .iter()
+                .enumerate()
+                .flat_map(|(dst_i, &src_i)| lanes.iter().map(move |&k| (src_i, dst_i as u32, k)))
+                .filter_map(|(src_i, dst_i, k)| sh.hyperlinks.get(&line(src_i, k)).map(|h| (line(dst_i, k), h.clone())))
+                .collect()
+        };
+        // The body's cells in destination order (line by line, lane by lane). An absent cell stays
+        // `None`: the destination is emptied rather than written as a blank.
+        let mut moved: Vec<Option<Cell>> = Vec::with_capacity(body.count() as usize);
         let mut pictures = Vec::new();
+        // A legacy array or a dynamic array re-spills from its new anchor, and the cells it spilled
+        // are derived state the permutation does not move.
+        let mut body_arrays = false;
         for (dst_i, &src_i) in order.iter().enumerate() {
             for &k in &lanes {
                 let src = line(src_i, k);
@@ -362,17 +412,29 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 let mut cell = sh.cell(src);
                 if let Some(c) = cell.as_mut()
                     && let Some(f) = &c.formula
-                    && let Some(e) = f.expr()
                 {
-                    let shifted = gridcraft_formula::adjust::shift_relative(e, dst.row as i64 - src.row as i64, dst.col as i64 - src.col as i64);
-                    c.formula = Some(Arc::new(Formula::from_expr(shifted)));
+                    body_arrays |= f.array.is_some() || f.dynamic;
+                    if let Some(e) = f.expr() {
+                        let shifted = gridcraft_formula::adjust::shift_relative(e, dst.row as i64 - src.row as i64, dst.col as i64 - src.col as i64);
+                        c.formula = Some(Arc::new(Formula::from_expr(shifted)));
+                    }
                 }
-                if let Some(picture) = sh.cell_pictures.get(&src) {
+                if !sh.cell_pictures.is_empty()
+                    && let Some(picture) = sh.cell_pictures.get(&src)
+                {
                     pictures.push((dst, picture.clone()));
                 }
-                moved.push((dst, cell));
+                moved.push(cell);
             }
         }
+        // Spilled cells and the ranges they come from are not part of the permutation either, so a
+        // body that holds one gets the full recalculation that lays the spills out again. A legacy
+        // array that merely overlaps the body counts too: an edit of part of an array is not
+        // something a sort may do quietly, and the store answers "is there one at all" in O(1).
+        let spilled = sh.spill.keys().any(|c| body.contains(*c)) || sh.spill_ranges.values().any(|r| r.intersects(&body));
+        let arrays = body_arrays
+            || (sh.cells.has_array_anchors()
+                && sh.cells.formulas().any(|(c, f, _)| f.array.is_some_and(|r| r.start == c && !r.is_single() && r.intersects(&body))));
         // Row heights travel with rows.
         let heights: Vec<Option<LineInfo>> =
             if by_cols { vec![] } else { order.iter().map(|&i| sh.rows.get(&(body.start.row + i)).copied()).collect() };
@@ -403,73 +465,100 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 (tc, tr, (x2 - sh.col_left(tc)) as f32, (y2 - sh.row_top(tr)) as f32)
             })
             .collect();
-        let shm = cx.sheet_mut(sheet)?;
-        for (c, cell) in &moved {
-            match cell {
-                Some(x) => shm.set_cell(*c, x.clone()),
-                None => {
-                    shm.remove_cell(*c);
+        let any_formulas = cx.wb.sheets.iter().any(|s| s.cells.formulas().next().is_some());
+        {
+            let shm = cx.sheet_mut(sheet)?;
+            // Written back a whole destination row at a time: the store packs cells by row, so that is
+            // one band and row lookup instead of one per cell, and the write-back was most of the
+            // sort's own time. A column sort's destinations are columns, so its cells go one at a time.
+            let mut buf: Vec<(u32, Cell)> = Vec::with_capacity(lanes.len());
+            let mut i = 0usize;
+            for dst_i in 0..n {
+                buf.clear();
+                for &k in &lanes {
+                    let dst = line(dst_i, k);
+                    match moved.get_mut(i).and_then(Option::take) {
+                        Some(cell) if by_cols => shm.set_cell(dst, cell),
+                        Some(cell) => buf.push((dst.col, cell)),
+                        None => {
+                            shm.remove_cell(dst);
+                        }
+                    }
+                    i += 1;
+                }
+                if !by_cols && !buf.is_empty() {
+                    shm.set_row_cells(body.start.row + dst_i, &mut buf);
                 }
             }
-        }
-        // Every cell of the body is the destination of exactly one source cell, so clearing the
-        // body and inserting the permuted entries is the same permutation the cells went through.
-        for c in body.iter() {
-            shm.comments.remove(&c);
-            shm.hyperlinks.remove(&c);
-        }
-        for (at, cm) in side {
-            shm.comments.insert(at, cm);
-        }
-        for (at, h) in links {
-            shm.hyperlinks.insert(at, h);
-        }
-        shm.cell_pictures.extend(pictures);
-        for (i, h) in heights.into_iter().enumerate() {
-            let row = body.start.row + i as u32;
-            match h {
-                Some(info) => {
-                    shm.rows.insert(row, LineInfo { hidden: shm.rows.get(&row).is_some_and(|x| x.hidden), ..info });
-                }
-                None => {
-                    if let Some(e) = shm.rows.get_mut(&row) {
-                        e.size = None;
+            // Every cell of the body is the destination of exactly one source cell, so clearing the
+            // body and inserting the permuted entries is the same permutation the cells went through.
+            for c in body.iter() {
+                shm.comments.remove(&c);
+                shm.hyperlinks.remove(&c);
+            }
+            for (at, cm) in side {
+                shm.comments.insert(at, cm);
+            }
+            for (at, h) in links {
+                shm.hyperlinks.insert(at, h);
+            }
+            // Pictures travel with their cells: the body's own entries go (each of them was collected
+            // above, from the line it moves with) and the collected ones are put back.
+            shm.cell_pictures.retain(|c, _| !body.contains(*c));
+            shm.cell_pictures.extend(pictures);
+            for (i, h) in heights.into_iter().enumerate() {
+                let row = body.start.row + i as u32;
+                match h {
+                    Some(info) => {
+                        shm.rows.insert(row, LineInfo { hidden: shm.rows.get(&row).is_some_and(|x| x.hidden), ..info });
+                    }
+                    None => {
+                        if let Some(e) = shm.rows.get_mut(&row) {
+                            e.size = None;
+                        }
                     }
                 }
             }
-        }
-        // Re-anchor floating objects now that the row heights are final. `objs` was collected as
-        // images ++ charts ++ shapes, so the same index maps straight onto each vec.
-        // Only objects anchored inside the sorted block move: within its lines on the sort axis
-        // and within its span on the other axis (a picture beside the block stays put).
-        let (b0, b1) = if by_cols { (body.start.col, body.end.col) } else { (body.start.row, body.end.row) };
-        let (o0, o1) = if by_cols { (body.start.row, body.end.row) } else { (body.start.col, body.end.col) };
-        let ni = shm.images.len();
-        let nch = shm.charts.len();
-        for (i, (a, desc)) in objs.into_iter().zip(descs).enumerate() {
-            let other = if by_cols { a.cell.row } else { a.cell.col };
-            if other < o0 || other > o1 {
-                continue;
-            }
-            let na = sorted_anchor(shm, a, desc, by_cols, b0, b1, &dst_of);
-            if na != a {
-                if i < ni {
-                    if let Some(o) = shm.images.get_mut(i) {
+            // Re-anchor floating objects now that the row heights are final. `objs` was collected as
+            // images ++ charts ++ shapes, so the same index maps straight onto each vec.
+            // Only objects anchored inside the sorted block move: within its lines on the sort axis
+            // and within its span on the other axis (a picture beside the block stays put).
+            let (b0, b1) = if by_cols { (body.start.col, body.end.col) } else { (body.start.row, body.end.row) };
+            let (o0, o1) = if by_cols { (body.start.row, body.end.row) } else { (body.start.col, body.end.col) };
+            let ni = shm.images.len();
+            let nch = shm.charts.len();
+            for (i, (a, desc)) in objs.into_iter().zip(descs).enumerate() {
+                let other = if by_cols { a.cell.row } else { a.cell.col };
+                if other < o0 || other > o1 {
+                    continue;
+                }
+                let na = sorted_anchor(shm, a, desc, by_cols, b0, b1, &dst_of);
+                if na != a {
+                    if i < ni {
+                        if let Some(o) = shm.images.get_mut(i) {
+                            o.anchor = na;
+                        }
+                    } else if i < ni + nch {
+                        if let Some(o) = shm.charts.get_mut(i - ni) {
+                            o.anchor = na;
+                        }
+                    } else if let Some(o) = shm.shapes.get_mut(i - ni - nch) {
                         o.anchor = na;
                     }
-                } else if i < ni + nch {
-                    if let Some(o) = shm.charts.get_mut(i - ni) {
-                        o.anchor = na;
-                    }
-                } else if let Some(o) = shm.shapes.get_mut(i - ni - nch) {
-                    o.anchor = na;
                 }
             }
         }
-        for (c, _) in moved {
-            cx.changed.push((sheet, c));
+        // Every cell of the body was rewritten, so every one of them changed. When no cell in the
+        // workbook holds a formula there is nothing for that list to recalculate, and its only
+        // other reader is row fitting, which a commit only takes up to 200k cells — so a big sort
+        // of plain data skips building six million entries nothing reads.
+        if body.count() <= 200_000 || any_formulas {
+            cx.changed.extend(body.iter().map(|c| (sheet, c)));
         }
-        cx.structural = true;
+        // A sort is a permutation of the body, not a structural edit: the changed cells above are
+        // what the commit's recalculation walks, so only what depends on them is recomputed
+        // instead of the whole workbook. Arrays and spills are the exception (see above).
+        cx.structural = arrays || spilled;
         Ok(Json::Null)
     })?;
     Ok(json!({"sorted": body.a1()}))
