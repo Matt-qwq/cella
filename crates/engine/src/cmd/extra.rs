@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Chart Element",
             ["Chart Design", "Chart Layouts"],
             None,
-            "{chart?, element: title|legend|dataLabels|gridlines|axisTitles|smooth|trendline, on?: bool, position?: bottom|top|left|right; trendline: series?: index (default all), type?: linear|exponential|linearForecast|movingAverage|logarithmic|power|polynomial, order?: 2..6, period?: 2..255, forward?, backward?, displayEquation?, displayRSquared?}",
+            "{chart?, element: title|legend|dataLabels|dataTable|gridlines|axisTitles|smooth|trendline, on?: bool, position?: bottom|top|left|right; dataTable: dataTableKeys?: bool, dataTableHorizontalBorder?: bool, dataTableVerticalBorder?: bool, dataTableOutline?: bool (a column, bar, line or area chart, or a combo of those); trendline: series?: index (default all), type?: linear|exponential|linearForecast|movingAverage|logarithmic|power|polynomial, order?: 2..6, period?: 2..255, forward?, backward?, displayEquation?, displayRSquared?}",
             has_doc,
             add_element
         ),
@@ -411,6 +411,7 @@ fn add_element(s: &mut Session, p: &Json) -> Result<Json> {
                 }
             }
             "dataLabels" => c.data_labels = on,
+            "dataTable" => update_data_table(c, p, Some(on))?,
             "gridlines" => c.gridlines = on,
             "axisTitles" => {
                 c.x_title = on.then(|| c.x_title.clone().unwrap_or_else(|| "Axis Title".into()));
@@ -451,6 +452,35 @@ fn add_element(s: &mut Session, p: &Json) -> Result<Json> {
         }
         Ok(())
     })
+}
+
+/// The chart's data table (Add Chart Element ▸ Data Table): on or off, and its legend keys and
+/// three border sets. A chart kind without a table in Excel refuses it instead of storing a setting
+/// that would never be drawn.
+pub(crate) fn update_data_table(c: &mut Chart, p: &Json, on: Option<bool>) -> Result<()> {
+    const C: &str = "chart.addElement";
+    if p.get("dataTable").is_some_and(|v| !v.is_boolean()) {
+        return Err(bad(C, "`dataTable` must be a boolean"));
+    }
+    if on == Some(false) {
+        c.data_table = None;
+        return Ok(());
+    }
+    let fields = ["dataTableKeys", "dataTableHorizontalBorder", "dataTableVerticalBorder", "dataTableOutline"];
+    if on == Some(true) || fields.iter().any(|k| p.get(*k).is_some()) {
+        if !c.supports_data_table() {
+            return Err(bad(C, "a data table needs a column, bar, line or area chart (or a combo of those)"));
+        }
+        let table = c.data_table.get_or_insert_with(ChartDataTable::default);
+        for (key, value) in
+            fields.into_iter().zip([&mut table.show_keys, &mut table.horizontal_border, &mut table.vertical_border, &mut table.outline])
+        {
+            if let Some(v) = p.get(key) {
+                *value = v.as_bool().ok_or_else(|| bad(C, format!("`{key}` must be a boolean")))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The trendline described by `chart.addElement`'s trendline parameters (Excel's Add Chart

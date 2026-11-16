@@ -812,6 +812,10 @@ enum CatAxis<'a> {
     /// one entry per category, non-empty where a group starts), and where the value axis crosses
     /// the category axis.
     Labels(&'a [String], &'a [Vec<String>], AxisCrossing),
+    /// A data table prints the category labels under the plot instead of along the axis, so the
+    /// frame reserves the table's stub (its series-name column) and draws no label row: the
+    /// labels, and where the value axis crosses, are the table's.
+    Table(&'a [String], f32, AxisCrossing),
     /// A numeric category axis (a scatter chart's X): scale, format, where the value axis crosses
     /// it and the display units its labels are divided by.
     Numeric(Scale, &'a Fmt, AxisCrossing, Option<DisplayUnits>),
@@ -897,8 +901,13 @@ fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Option<&ValAxis
     let lh = ls * 1.4;
     let ylabels = y.labels();
     let maxw = |ctx: &Ctx, l: &[(f64, String)]| l.iter().map(|(_, t)| ctx.tw(t, ls)).fold(0.0f32, f32::max);
+    // A data table's stub must clear the plot: its series names start left of the value axis.
+    let stub = match &cat {
+        CatAxis::Table(_, width, _) => *width,
+        _ => 0.0,
+    };
     if !horizontal {
-        let left = (maxw(ctx, &ylabels) + 6.0).min(area.w * 0.4);
+        let left = (maxw(ctx, &ylabels) + 6.0).min(area.w * 0.4).max(stub);
         let y2labels = y2.map(|a| a.labels());
         let right = match (&y2labels, &cat) {
             (Some(l), _) => (maxw(ctx, l) + 6.0).min(area.w * 0.3),
@@ -907,7 +916,7 @@ fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Option<&ValAxis
         };
         let levels = match &cat {
             CatAxis::Labels(_, o, _) => o.len() as f32,
-            CatAxis::Numeric(..) => 0.0,
+            CatAxis::Numeric(..) | CatAxis::Table(..) => 0.0,
         };
         let plot = Bx { x: area.x + left, y: area.y + lh * 0.5, w: area.w - left - right, h: area.h - lh * 1.5 - 4.0 - lh * levels };
         if !plot.ok() {
@@ -950,6 +959,8 @@ fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Option<&ValAxis
             ctx.text(plot.x - 4.0, plot.y, u.label(), ls * 0.9, TEXT, HAlign::Right, VAlign::Bottom);
         }
         match cat {
+            // The table prints the labels and its own borders: nothing is drawn below the plot.
+            CatAxis::Table(..) => {}
             CatAxis::Labels(l, outer, crosses) => {
                 let n = l.len().max(1);
                 let cw = plot.w / n as f32;
@@ -1031,6 +1042,9 @@ fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Option<&ValAxis
     } else {
         let (labels, outer, crosses): (Vec<String>, &[Vec<String>], AxisCrossing) = match cat {
             CatAxis::Labels(l, o, c) => (l.to_vec(), o, c),
+            // A bar chart's categories run down the plot, so its labels stay where the bars can be
+            // read against them; the table below repeats the values.
+            CatAxis::Table(l, _, c) => (l.to_vec(), &[], c),
             CatAxis::Numeric(..) => (vec![], &[], AxisCrossing::AutoZero),
         };
         let lw = (labels.iter().take(2000).map(|t| ctx.tw(t, ls)).fold(0.0f32, f32::max) + 6.0).min(area.w * 0.35);
@@ -1051,7 +1065,8 @@ fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Option<&ValAxis
         let edge = |l: &[(f64, String)]| l.last().map(|(_, t)| ctx.tw(t, ls) / 2.0).unwrap_or(0.0);
         let right = edge(&ylabels).max(y2labels.as_deref().map(edge).unwrap_or(0.0)).min(area.w * 0.2) + 2.0;
         let h = if y2labels.is_some() { area.h - band - lh - 4.0 } else { area.h - lh - 6.0 };
-        let plot = Bx { x: area.x + lw + levels_w, y: area.y + band, w: area.w - lw - levels_w - right, h };
+        let left = (lw + levels_w).max(stub);
+        let plot = Bx { x: area.x + left, y: area.y + band, w: area.w - left - right, h };
         if !plot.ok() {
             return plot;
         }
@@ -1472,6 +1487,145 @@ fn draw_trend_labels(ctx: &mut Ctx, plot: Bx, labels: &[String]) {
     }
 }
 
+// ---------------------------------------------------------------- data table
+
+/// Most value columns a data table draws. A source with more categories is too dense to print row
+/// by row, so the table says so instead of shrinking every column to nothing.
+const MAX_TABLE_COLS: usize = 128;
+/// Most series rows a data table draws (the chart's series cap is above this).
+const MAX_TABLE_ROWS: usize = 32;
+/// Narrowest a value column may be drawn at.
+const MIN_TABLE_COL: f32 = 18.0;
+
+/// Where a chart's data table sits, in chart coordinates. The table is a band under the plot: one
+/// header row per outer category level, one for the categories, then one row per series.
+#[derive(Clone, Copy, Debug)]
+struct TableLayout {
+    /// The top of the table's first row.
+    top: f32,
+    row_height: f32,
+    /// Header rows above the series rows (the outer category levels plus the categories).
+    headers: usize,
+    /// The width of the stub: the series names, and their legend keys, left of the plot.
+    stub: f32,
+    /// The value columns, one per category the plot shows.
+    columns: usize,
+}
+
+/// The category axis a chart reads its labels off: the table's when it shows one (so the labels are
+/// not drawn twice over and the stub clears the plot), the axis's own otherwise.
+fn table_cat_axis<'a>(table: &Option<TableLayout>, labels: &'a [String], outer: &'a [Vec<String>], crosses: AxisCrossing) -> CatAxis<'a> {
+    match table {
+        Some(t) => CatAxis::Table(labels, t.stub, crosses),
+        None => CatAxis::Labels(labels, outer, crosses),
+    }
+}
+
+/// Reserves the band a data table needs under the plot. At most half the chart's height: a table
+/// that cannot fit is labelled as such rather than dropping rows or allocating a series x point
+/// sized grid (the rows are drawn one at a time, straight from the resolved data).
+fn table_reserve(ctx: &mut Ctx, chart: &Chart, data: &ChartData, mut area: Bx, columns: usize) -> (Bx, Option<TableLayout>) {
+    if chart.data_table.is_none() || !chart.supports_data_table() {
+        return (area, None);
+    }
+    let headers = data.category_levels.len().min(3) + 1;
+    let rows = headers.saturating_add(data.series.len());
+    let row_height = LABEL_SIZE * 1.4 + 4.0;
+    let height = row_height * rows as f32;
+    let key_width = if chart.data_table.as_ref().is_some_and(|t| t.show_keys) { 22.0 } else { 0.0 };
+    let names = data.series.iter().take(MAX_TABLE_ROWS).map(|s| ctx.tw(&s.name, LABEL_SIZE)).fold(0.0f32, f32::max);
+    let stub = (names + key_width + 10.0).clamp(24.0, (area.w * 0.3).max(24.0));
+    if columns == 0
+        || columns > MAX_TABLE_COLS
+        || data.series.len() > MAX_TABLE_ROWS
+        || height > area.h * 0.5
+        || (area.w * 0.6) / (columns as f32) < MIN_TABLE_COL
+    {
+        let message = ctx.fit("Data table needs more space", LABEL_SIZE, area.w);
+        ctx.text(area.cx(), area.bottom(), &message, LABEL_SIZE, TEXT, HAlign::Center, VAlign::Bottom);
+        area.h = (area.h - row_height).max(0.0);
+        return (area, None);
+    }
+    area.h -= height;
+    (area, Some(TableLayout { top: area.bottom(), row_height, headers, stub, columns }))
+}
+
+/// Draws the data table in the band table_reserve left free: the outer category levels, the
+/// category names, then the source values row by row (a blank cell stays blank, not a zero), with
+/// the borders and the legend keys the chart's settings ask for.
+#[allow(clippy::too_many_arguments)]
+fn table_draw(ctx: &mut Ctx, chart: &Chart, data: &ChartData, plot: Bx, labels: &[String], outer: &[Vec<String>], layout: Option<&TableLayout>) {
+    let Some(layout) = layout else { return };
+    let Some(settings) = chart.data_table.as_ref() else { return };
+    let x0 = plot.x - layout.stub;
+    let top = layout.top;
+    let series = data.series.len().min(MAX_TABLE_ROWS);
+    let rows = layout.headers.saturating_add(series);
+    let bottom = top + layout.row_height * rows as f32;
+    let columns = layout.columns;
+    if columns == 0 {
+        return;
+    }
+    let cw = plot.w / columns as f32;
+    if !(cw.is_finite() && cw > 0.0) {
+        return;
+    }
+    // Outermost category level first, then the individual categories.
+    for (i, level) in outer.iter().take(layout.headers.saturating_sub(1)).rev().enumerate() {
+        for (first, end) in level_groups(level, columns) {
+            let text = level.get(first).map(String::as_str).unwrap_or("");
+            let text = ctx.fit(text, LABEL_SIZE, end.saturating_sub(first) as f32 * cw - 4.0);
+            let x = plot.x + first.saturating_add(end) as f32 * cw / 2.0;
+            ctx.text(x, top + (i as f32 + 0.5) * layout.row_height, &text, LABEL_SIZE, TEXT, HAlign::Center, VAlign::Middle);
+        }
+    }
+    let header_y = top + (layout.headers as f32 - 0.5) * layout.row_height;
+    for j in 0..columns {
+        let text = labels.get(j).cloned().unwrap_or_default();
+        let text = ctx.fit(&text, LABEL_SIZE, cw - 4.0);
+        ctx.text(plot.x + (j as f32 + 0.5) * cw, header_y, &text, LABEL_SIZE, TEXT, HAlign::Center, VAlign::Middle);
+    }
+    for (i, s) in data.series.iter().take(series).enumerate() {
+        let y = top + (layout.headers as f32 + i as f32 + 0.5) * layout.row_height;
+        let name_x = if settings.show_keys { x0 + 25.0 } else { x0 + 4.0 };
+        if settings.show_keys {
+            let swatch = match plot_kind(chart, s) {
+                ChartKind::Line | ChartKind::LineStacked => Swatch::Line,
+                ChartKind::LineMarkers => Swatch::LineMarker,
+                _ => Swatch::Box,
+            };
+            draw_swatch(ctx, swatch, x0 + 4.0, y, 7.0, s.color);
+        }
+        let name = ctx.fit(&s.name, LABEL_SIZE, plot.x - name_x - 4.0);
+        ctx.text(name_x, y, &name, LABEL_SIZE, TEXT, HAlign::Left, VAlign::Middle);
+        let fmt = Fmt::new(&s.number_format);
+        for j in 0..columns {
+            let value = s.values.get(j).copied().flatten().map(|v| fmt.format(v, None)).unwrap_or_default();
+            let text = ctx.fit(&value, LABEL_SIZE, cw - 4.0);
+            ctx.text(plot.x + (j as f32 + 0.5) * cw, y, &text, LABEL_SIZE, TEXT, HAlign::Center, VAlign::Middle);
+        }
+    }
+    // The table's own lines, each set independent of the others.
+    if settings.horizontal_border {
+        for row in 1..rows {
+            ctx.hline(x0, plot.right(), top + row as f32 * layout.row_height, AXIS, 0.75);
+        }
+    }
+    if settings.vertical_border {
+        ctx.vline(plot.x, top, bottom, AXIS, 0.75);
+        // The outer headers span groups; the category dividers begin at the innermost header row.
+        for j in 1..columns {
+            ctx.vline(plot.x + j as f32 * cw, top + layout.headers.saturating_sub(1) as f32 * layout.row_height, bottom, AXIS, 0.75);
+        }
+    }
+    if settings.outline {
+        ctx.hline(x0, plot.right(), top, AXIS, 0.75);
+        ctx.hline(x0, plot.right(), bottom, AXIS, 0.75);
+        ctx.vline(x0, top, bottom, AXIS, 0.75);
+        ctx.vline(plot.right(), top, bottom, AXIS, 0.75);
+    }
+}
+
 // ---------------------------------------------------------------- cartesian (column/bar/line/area/combo)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1651,7 +1805,8 @@ fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, horizonta
         .iter()
         .map(|l| (0..ncat_slots).map(|p| cat_at(p).and_then(|c| l.get(c).cloned()).unwrap_or_default()).collect())
         .collect();
-    let plot = frame(ctx, area, CatAxis::Labels(&labels, &outer, chart.x_axis.crosses), &y1, y2.as_ref(), horizontal, GridSpans::of(chart));
+    let (area, table) = table_reserve(ctx, chart, data, area, ncat_slots);
+    let plot = frame(ctx, area, table_cat_axis(&table, &labels, &outer, chart.x_axis.crosses), &y1, y2.as_ref(), horizontal, GridSpans::of(chart));
     if !plot.ok() {
         return;
     }
@@ -1901,6 +2056,7 @@ fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, horizonta
         draw_trendlines(ctx, s, &pts, &frac, &px, &mut trend_labels, (0.5, ncat_slots as f64 + 0.5));
     }
     draw_trend_labels(ctx, plot, &trend_labels);
+    table_draw(ctx, chart, data, plot, &labels, &outer, table.as_ref());
 }
 
 // ---------------------------------------------------------------- scatter & bubble

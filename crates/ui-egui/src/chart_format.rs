@@ -46,6 +46,9 @@ const NO_CHARTEX_MARKER: &str = "No chartex chart type draws markers: a chartex 
 /// Why a pie-like chart's legend entries cannot be deleted from the pane.
 const LEGEND_ENTRIES_ARE_POINTS: &str = "This chart's legend entries are its points, not its series, so none of them can be deleted from here.";
 
+/// Why a chart kind has no data table: Excel offers one on column, bar, line and area charts only.
+const NO_DATA_TABLE: &str = "A data table needs a column, bar, line or area chart (or a combo of those).";
+
 /// What the Format pane is editing, from its "Current selection" list (Excel's Chart Elements
 /// dropdown).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -412,6 +415,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
         Selection::Chart => {
             chart_area(app, ui, &chart, id);
             gridlines(app, ui, &chart, id);
+            data_table(app, ui, &chart, id);
             data_labels(app, ui, &chart, id, None);
             error_bars(app, ui, &chart, id, None);
             data_point(app, ui, &chart, id, None);
@@ -571,6 +575,55 @@ fn chart_area(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
             ui.data_mut(|d| d.remove::<(f32, f32)>(draft));
         }
     });
+}
+
+/// Add Chart Element ▸ Data Table: the grid of source values under the plot, its legend keys
+/// and its three border sets, through `chart.addElement`. A chart kind with no table in Excel
+/// says so instead of offering controls whose setting would never be drawn.
+fn data_table(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
+    let reason = data_table_reason(chart);
+    let mut on = chart.data_table.is_some();
+    section(ui, "Data Table", reason, |ui| {
+        if ui.checkbox(&mut on, crate::widgets::tr(ui, "Show the data table")).changed() {
+            run_data_table(app, id, json!({"element": "dataTable", "on": on}));
+        }
+        // The four options only mean something once the table is on.
+        let Some(t) = chart.data_table else { return };
+        let mut keys = t.show_keys;
+        if ui.checkbox(&mut keys, crate::widgets::tr(ui, "Legend keys in the table")).changed() {
+            run_data_table(app, id, json!({"dataTableKeys": keys}));
+        }
+        let mut h = t.horizontal_border;
+        if ui.checkbox(&mut h, crate::widgets::tr(ui, "Horizontal borders")).changed() {
+            run_data_table(app, id, json!({"dataTableHorizontalBorder": h}));
+        }
+        let mut v = t.vertical_border;
+        if ui.checkbox(&mut v, crate::widgets::tr(ui, "Vertical borders")).changed() {
+            run_data_table(app, id, json!({"dataTableVerticalBorder": v}));
+        }
+        let mut outline = t.outline;
+        if ui.checkbox(&mut outline, crate::widgets::tr(ui, "Table outline")).changed() {
+            run_data_table(app, id, json!({"dataTableOutline": outline}));
+        }
+    });
+}
+
+/// Why this chart cannot show a data table (a chartex part, or a kind Excel has no table for).
+fn data_table_reason(chart: &Chart) -> Option<&'static str> {
+    if chart.kind.is_chartex() {
+        return Some(CHARTEX);
+    }
+    (!chart.supports_data_table()).then_some(NO_DATA_TABLE)
+}
+
+/// One data-table option, through `chart.addElement`.
+fn run_data_table(app: &mut SheetApp, id: u32, params: Json) {
+    let mut all = Map::new();
+    all.insert("chart".into(), json!(id));
+    if let Json::Object(m) = params {
+        all.extend(m);
+    }
+    app.run_or_alert("chart.addElement", Json::Object(all));
 }
 
 /// Format Gridlines (Chart Design ▸ Add Chart Element ▸ Gridlines): one axis at a time, its major

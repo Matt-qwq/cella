@@ -1290,6 +1290,55 @@ mod tests {
         assert!(cs.cells.is_empty(), "a chart sheet holds no cells");
         assert_eq!(cs.used_range(), None);
     }
+
+    /// Add Chart Element ▸ Data Table: the table and its four flags live on the chart, toggle in
+    /// one undo step, and a chart kind that has no table in Excel refuses one.
+    #[test]
+    fn the_data_table_element_toggles_the_chart_and_undoes() {
+        use gridcraft_model::ChartDataTable;
+
+        let (mut s, id) = session();
+        let table = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts[0].data_table;
+        // It is the ribbon's Add Chart Element that offers the table, and it is listed.
+        let info = crate::cmd::find_command("chart.addElement").unwrap().info(&s);
+        assert_eq!(info.menu, vec!["Chart Design", "Chart Layouts"]);
+        assert!(info.params.contains("dataTable"), "{}", info.params);
+        assert_eq!(table(&s), None, "a new chart has no table");
+        // On, with the keys and the outline the caller asks for; the other two keep Excel's defaults.
+        s.execute("chart.addElement", json!({"chart": id, "element": "dataTable", "dataTableKeys": false, "dataTableOutline": false})).unwrap();
+        let want = ChartDataTable { show_keys: false, horizontal_border: true, vertical_border: true, outline: false };
+        assert_eq!(table(&s), Some(want));
+        // One flag at a time: the table stays and only the named flag changes.
+        s.execute("chart.addElement", json!({"element": "dataTable", "dataTableHorizontalBorder": false})).unwrap();
+        assert_eq!(table(&s), Some(ChartDataTable { horizontal_border: false, ..want }));
+        // Both steps undo and redo on their own.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(table(&s), Some(want));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(table(&s), None);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(table(&s), Some(want));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(table(&s), Some(ChartDataTable { horizontal_border: false, ..want }));
+        // Off, and one undo brings it back as it was.
+        s.execute("chart.addElement", json!({"element": "dataTable", "on": false})).unwrap();
+        assert_eq!(table(&s), None);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(table(&s), Some(ChartDataTable { horizontal_border: false, ..want }));
+        // A pie chart has no data table in Excel: changing the type drops the table, and the
+        // command then refuses one instead of storing a setting nothing would draw.
+        s.execute("chart.set", json!({"type": "pie"})).unwrap();
+        assert_eq!(table(&s), None, "a kind change drops a table it cannot show");
+        let err = s.execute("chart.addElement", json!({"element": "dataTable"})).unwrap_err().to_string();
+        assert!(err.contains("data table needs"), "{err}");
+        let err = s.execute("chart.set", json!({"dataTable": true})).unwrap_err().to_string();
+        assert!(err.contains("data table needs"), "{err}");
+        assert_eq!(table(&s), None, "a refused table leaves the chart alone");
+        // Back to columns: the table is offered again, and chart.set adds it too.
+        s.execute("chart.set", json!({"type": "column", "dataTable": true})).unwrap();
+        assert_eq!(table(&s), Some(ChartDataTable::default()));
+    }
+
     /// A bar chart's series keeps its bars when it moves to the secondary axis: the combo default
     /// (columns for the first series, a line for the rest) would turn the chart sideways. A column
     /// chart still gets that default, so the command behaves as it always has for columns.
