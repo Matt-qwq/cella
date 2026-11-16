@@ -142,17 +142,25 @@ pub fn small_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: b
     resp.on_hover_text(tooltip_text(ui, tip))
 }
 
-/// A split button: main part runs the default action, the arrow opens a menu.
+/// A split button: main part runs the default action (a toggle, when `on`), the arrow opens a
+/// menu. The main part is named for assistive tech the way its tooltip names it: it is painted, so
+/// it has no widget info of its own and a reader would meet an unnamed button.
 /// Returns (main clicked, arrow response).
-pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, tip: &str) -> (bool, Response) {
+pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, on: Option<bool>, tip: &str) -> (bool, Response) {
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(38.0, 24.0), Sense::hover());
     let main = Rect::from_min_size(rect.min, vec2(25.0, 24.0));
     let arrow = Rect::from_min_max(pos2(main.right(), rect.top()), rect.max);
     let m = ui.interact(main, ui.id().with((tip, "main")), Sense::click());
     let a = ui.interact(arrow, ui.id().with((tip, "arrow")), Sense::click());
-    if m.hovered() || a.hovered() {
+    if on == Some(true) {
+        // A toggle's pressed state wins over hover, as it does on the plain toggle buttons.
+        ui.painter().rect_filled(rect, 4.0, t.pressed);
+        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+    } else if m.hovered() || a.hovered() {
         ui.painter().rect_filled(rect, 4.0, t.hover);
+    }
+    if m.hovered() || a.hovered() {
         ui.painter().line_segment([pos2(main.right(), rect.top() + 3.0), pos2(main.right(), rect.bottom() - 3.0)], Stroke::new(1.0, t.separator));
     }
     icons::paint(ui.painter(), Rect::from_center_size(main.center() - vec2(0.0, 2.0), vec2(16.0, 16.0)), icon, t.text);
@@ -160,7 +168,15 @@ pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, tip: &str)
         ui.painter().rect_filled(Rect::from_min_size(pos2(main.left() + 4.0, main.bottom() - 5.0), vec2(17.0, 3.0)), 0.0, c);
     }
     icons::paint(ui.painter(), Rect::from_center_size(arrow.center(), vec2(10.0, 10.0)), Icon::Chevron, t.text_dim);
-    (m.on_hover_text(tooltip_text(ui, tip)).clicked(), a)
+    // Translated before the closure: widget_info runs while egui holds the context lock, so
+    // reading the frame language inside it deadlocks.
+    let name = tooltip_text(ui, tip);
+    let enabled = ui.is_enabled();
+    m.widget_info(|| match on {
+        Some(on) => egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name.clone()),
+        None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone()),
+    });
+    (m.on_hover_text(name).clicked(), a)
 }
 
 /// A one-line text field for a value stored in the workbook, which callers reload every frame. The text being typed is

@@ -364,6 +364,19 @@ fn sep(ui: &mut Ui) {
     ui.painter().line_segment([pos2(r.center().x, r.top() + 6.0), pos2(r.center().x, r.bottom() - 6.0)], Stroke::new(1.0, t.separator));
 }
 
+/// Gives a painted ribbon widget the name a screen reader announces for it (its tooltip: the
+/// command, then its shortcut) and, for a toggle, its pressed state. Painted widgets carry no
+/// widget info of their own, so without this a reader meets an unnamed button. The text is
+/// translated before the closure because widget_info runs while egui holds the context lock.
+fn name_widget(ui: &Ui, response: &egui::Response, on: Option<bool>, tip: &str) {
+    let name = crate::widgets::tooltip_text(ui, tip);
+    let enabled = ui.is_enabled();
+    response.widget_info(|| match on {
+        Some(on) => egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name.clone()),
+        None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone()),
+    });
+}
+
 fn active_style(app: &SheetApp) -> Style {
     app.session
         .active()
@@ -711,11 +724,13 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
             font_combo(app, ui, &st);
             size_combo(app, ui, &st);
             let __k = icon_button(ui, Icon::Plus, t.text, "Increase Font Size", vec2(22.0, 23.0));
+            name_widget(ui, &__k, None, "Increase Font Size");
             control_keytip(app, ui, &__k, "home.increaseFontSize");
             if __k.clicked() {
                 act(app, "home.increaseFontSize", json!({}));
             }
             let __k = icon_button(ui, Icon::Minus, t.text, "Decrease Font Size", vec2(22.0, 23.0));
+            name_widget(ui, &__k, None, "Decrease Font Size");
             control_keytip(app, ui, &__k, "home.decreaseFontSize");
             if __k.clicked() {
                 act(app, "home.decreaseFontSize", json!({}));
@@ -723,16 +738,19 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
         });
         ui.horizontal(|ui| {
             let __k = toggle_button(ui, Icon::Bold, st.font.bold, "Bold");
+            name_widget(ui, &__k, Some(st.font.bold), "Bold");
             control_keytip(app, ui, &__k, "home.bold");
             if __k.clicked() {
                 act(app, "home.bold", json!({}));
             }
             let __k = toggle_button(ui, Icon::Italic, st.font.italic, "Italic");
+            name_widget(ui, &__k, Some(st.font.italic), "Italic");
             control_keytip(app, ui, &__k, "home.italic");
             if __k.clicked() {
                 act(app, "home.italic", json!({}));
             }
-            let (u, ua) = split_button(ui, Icon::Underline, None, "Underline");
+            let underlined = st.font.underline != gridcraft_engine::model::Underline::None;
+            let (u, ua) = split_button(ui, Icon::Underline, None, Some(underlined), "Underline");
             control_keytip(app, ui, &ua, "home.underline");
             if u {
                 act(app, "home.underline", json!({}));
@@ -748,11 +766,12 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 );
             });
             let __k = toggle_button(ui, Icon::Strike, st.font.strike, "Strikethrough");
+            name_widget(ui, &__k, Some(st.font.strike), "Strikethrough");
             control_keytip(app, ui, &__k, "home.strikethrough");
             if __k.clicked() {
                 act(app, "home.strikethrough", json!({}));
             }
-            let (b, ba) = split_button(ui, Icon::Borders, None, "Borders");
+            let (b, ba) = split_button(ui, Icon::Borders, None, None, "Borders");
             control_keytip(app, ui, &ba, "home.borders");
             if b {
                 act(app, "home.borders", json!({"preset": app.grid.last_border.clone()}));
@@ -788,7 +807,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
             });
             let fill = app.grid.last_fill.clone();
             let fill_c = gridcraft_engine::model::Color::from_hex(&fill).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
-            let (f, fa) = split_button(ui, Icon::Fill, fill_c, "Fill Color");
+            let (f, fa) = split_button(ui, Icon::Fill, fill_c, None, "Fill Color");
             control_keytip(app, ui, &fa, "home.fillColor");
             if f {
                 act(app, "home.fillColor", json!({"color": fill}));
@@ -808,7 +827,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 });
             let fc = app.grid.last_font_color.clone();
             let fc_c = gridcraft_engine::model::Color::from_hex(&fc).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
-            let (c, ca) = split_button(ui, Icon::FontColor, fc_c, "Font Color");
+            let (c, ca) = split_button(ui, Icon::FontColor, fc_c, None, "Font Color");
             control_keytip(app, ui, &ca, "home.fontColor");
             if c {
                 act(app, "home.fontColor", json!({"color": fc}));
@@ -893,7 +912,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
             if __k.clicked() {
                 act(app, "home.increaseIndent", json!({}));
             }
-            let (m, ma) = split_button(ui, Icon::Merge, None, "Merge & Center");
+            let (m, ma) = split_button(ui, Icon::Merge, None, None, "Merge & Center");
             control_keytip(app, ui, &ma, "home.mergeCenter");
             if m {
                 act(app, "home.mergeCenter", json!({}));
@@ -918,7 +937,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
     ui.vertical(|ui| {
         number_combo(app, ui, &st);
         ui.horizontal(|ui| {
-            let (c, ca) = split_button(ui, Icon::Currency, None, "Accounting Number Format");
+            let (c, ca) = split_button(ui, Icon::Currency, None, None, "Accounting Number Format");
             control_keytip(app, ui, &ca, "home.accounting");
             if c {
                 act(app, "home.accounting", json!({}));
@@ -1065,7 +1084,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
     // Editing
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
-            let (s, sa) = split_button(ui, Icon::Sum, None, "AutoSum");
+            let (s, sa) = split_button(ui, Icon::Sum, None, None, "AutoSum");
             control_keytip(app, ui, &sa, "formulas.autoSum");
             if s {
                 act(app, "formulas.autoSum", json!({}));
