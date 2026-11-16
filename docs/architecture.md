@@ -15,7 +15,7 @@ including tests, 2026-10-10.
 | L0 | `core` | ~1.3k | Cell and range addresses (A1, R1C1, sheet-qualified; 1,048,576 × 16,384), `Value`, `CellError`, Excel coercion, 1900/1904 date serials, typed-input parsing |
 | L0 | `numfmt` | ~2.1k | Excel number-format codes (sections, conditions, colours, dates, elapsed time, fractions, scientific, fill), General, `TEXT()`; en-US only |
 | L1 | `formula` | ~1.7k | Tokenizer, parser, AST, printer (A1 and R1C1), reference adjustment for copy, fill and structural edits |
-| L1 | `functions` | ~13.4k | The function library: `FnSpec` registry (name, arity, category, scalar args, signature, description) and pure implementations; automatic array lifting |
+| L1 | `functions` | ~13.4k | The function library: `FnSpec` registry (name, arity, category, scalar args, value args, signature, description) and pure implementations; automatic array lifting, where an Analysis-ToolPak value parameter rejects a multi-cell reference with `#VALUE!` |
 | L2 | `model` | ~2.2k | Workbook, sheets, copy-on-write cell store (64-row bands behind `Arc`), interned styles, names, tables, CF, validation, comments, charts, shapes, images, sparklines, print settings, protection |
 | L2 | `calc` | ~2.9k | Evaluator (references, names, tables, LET/LAMBDA, special forms like OFFSET/INDIRECT/SUBTOTAL) and dependency-graph recalculation with dynamic arrays, spills and cycle detection; single-threaded |
 | L2 | `xlsx` | ~10.7k | XLSX read/write (transitional and strict read), CSV/TSV, XLSB and ODS data import, PivotTable caches, DrawingML charts and drawings, and two parts of our own (`xl/gridcraft/`: queries and model PivotTables); byte slices only (WASM-safe); lenient reader that reports warnings |
@@ -79,6 +79,7 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | Document the registry's value parameters (single-value arguments that reject a multi-cell reference) |
 | 2026-11-16 | minor | Document the evaluator's work budget, LAMBDA fuel and native-stack guard |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |

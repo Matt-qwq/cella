@@ -30,6 +30,7 @@ macro_rules! f {
             category: $crate::Category::$cat,
             volatile: true,
             scalar_args: $scal,
+            value_args: &[],
             signature: $sig,
             description: $desc,
             imp: {
@@ -48,6 +49,7 @@ macro_rules! f {
             category: $crate::Category::$cat,
             volatile: false,
             scalar_args: $scal,
+            value_args: &[],
             signature: $sig,
             description: $desc,
             imp: {
@@ -163,6 +165,11 @@ pub struct FnSpec {
     /// (broadcast like Excel's dynamic arrays). The last entry repeats for variadic tails; an
     /// empty slice means no lifting.
     pub scalar_args: &'static [bool],
+    /// Parameter positions that take a single value and reject a reference to more than one
+    /// cell with `#VALUE!` (the Analysis ToolPak functions: EOMONTH, WORKDAY, COUPDAYS, BIN2DEC…),
+    /// where other scalar parameters lift the range. Arrays that aren't references still lift.
+    /// Same layout as `scalar_args`; filled at registration from [`lift::value_args`].
+    pub value_args: &'static [bool],
     pub signature: &'static str,
     pub description: &'static str,
     pub imp: FnImpl,
@@ -180,6 +187,14 @@ impl FnSpec {
         match self.scalar_args.get(i) {
             Some(b) => *b,
             None => self.scalar_args.last().copied().unwrap_or(false),
+        }
+    }
+
+    /// Whether parameter `i` takes a single value, so a multi-cell reference there is `#VALUE!`.
+    pub fn is_value_arg(&self, i: usize) -> bool {
+        match self.value_args.get(i) {
+            Some(b) => *b,
+            None => self.value_args.last().copied().unwrap_or(false),
         }
     }
 
@@ -210,6 +225,9 @@ fn registry() -> &'static (Vec<FnSpec>, HashMap<&'static str, usize>) {
             database::specs(),
         ] {
             v.extend(list);
+        }
+        for s in &mut v {
+            s.value_args = lift::value_args(s.name);
         }
         let mut map = HashMap::with_capacity(v.len());
         for (i, s) in v.iter().enumerate() {
@@ -269,6 +287,30 @@ mod tests {
         for s in all() {
             assert!(lookup(&format!("_xlfn.{}", s.name.to_ascii_lowercase())).is_some_and(|x| x.name == s.name));
         }
+    }
+
+    /// Mirrors upstream's `regexreplace_bounds_its_result` (#2162): REGEXREPLACE gives up on a
+    /// too-long result while building it, and otherwise replaces as before (every match, `$n` groups).
+    #[test]
+    fn regexreplace_bounds_its_result() {
+        use crate::util::testutil::*;
+        use gridcraft_core::CellError;
+        let many = "a".repeat(32_767);
+        assert_eq!(ev("REGEXREPLACE", vec![t(&many), t("."), t(&"b".repeat(32_767))]), Value::Error(CellError::Value));
+        assert_eq!(ev("REGEXREPLACE", vec![t(&many), t("a"), t("b")]), Value::text("b".repeat(32_767)));
+        assert_eq!(ev("REGEXREPLACE", vec![t("a1b22c"), t("[0-9]+"), t("#")]), Value::text("a#b#c"));
+        assert_eq!(ev("REGEXREPLACE", vec![t("2026-10-22"), t("(\\d+)-(\\d+)-(\\d+)"), t("$3/$2/$1")]), Value::text("22/10/2026"));
+        assert_eq!(ev("REGEXREPLACE", vec![t("abc"), t("x*"), t("-")]), Value::text("-a-b-c-"));
+        assert_eq!(ev("REGEXREPLACE", vec![t("a1b2"), t("[0-9]"), t("#"), n(2.0)]), Value::text("a1b#"));
+        assert_eq!(ev("REGEXREPLACE", vec![t("a1b2"), t("[0-9]"), t("#"), n(-2.0)]), Value::text("a#b2"));
+        assert_eq!(ev("REGEXREPLACE", vec![t("a1b2"), t("[0-9]"), t("#"), n(-3.0)]), Value::text("a1b2"));
+        // 2^32 is no occurrence the text has (and on 32-bit targets it must not wrap to 0).
+        for occurrence in [4_294_967_296.0, -4_294_967_296.0] {
+            assert_eq!(ev("REGEXREPLACE", vec![t("a1b2"), t("[0-9]"), t("#"), n(occurrence)]), Value::text("a1b2"));
+        }
+        // One match whose replacement repeats it 10,000 times: refused before it is built.
+        assert_eq!(ev("REGEXREPLACE", vec![t(&many), t("^.*$"), t(&"$0".repeat(10_000))]), Value::Error(CellError::Value));
+        assert_eq!(ev("REGEXREPLACE", vec![t(&many), t("^.*$"), t(&"$0".repeat(10_000)), n(1.0)]), Value::Error(CellError::Value));
     }
 
     #[test]
