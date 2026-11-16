@@ -5240,7 +5240,9 @@ fn a_formula_never_reads_the_watch_list() {
         }
         s.execute("cell.set", json!({"cell": "C3", "input": format!("=SUM({name})")})).unwrap();
         assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name), "{name}");
-        s.execute("formulas.deleteName", json!({"name": name})).unwrap();
+        // `force`: the name commands refuse a chunk of the store unless told twice, and this test
+        // is about what a formula sees, so it clears the name the way its own writer would.
+        s.execute("formulas.deleteName", json!({"name": name, "force": true})).unwrap();
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name), "{name} after undo");
         s.execute("formulas.calculateNow", json!({})).unwrap();

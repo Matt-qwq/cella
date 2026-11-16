@@ -108,6 +108,15 @@ pub fn specs() -> Vec<CommandSpec> {
             show_levels
         ),
         cmd!(
+            "data.outlineSettings",
+            "Outline Settings",
+            ["Data", "Outline"],
+            None,
+            "{sheet?, summaryBelow?: bool, summaryRight?: bool} (summary rows below their detail, summary columns right of it; off puts them above / left) → {summaryBelow, summaryRight}. Stored on the sheet and saved with the file (`<outlinePr>`); the outline's grouping itself is read as summaries below / right, as Excel's default has it.",
+            has_doc,
+            outline_settings
+        ),
+        cmd!(
             "data.subtotal",
             "Subtotal",
             ["Data", "Outline"],
@@ -1609,6 +1618,22 @@ fn show_levels(s: &mut Session, p: &Json) -> Result<Json> {
         }
         cx.structural = true;
         Ok(Json::Null)
+    })
+}
+
+/// Data › Outline › Settings: where the summary line of a group sits. The setting is kept on the
+/// sheet and travels with the file; without a param the command reports it.
+fn outline_settings(s: &mut Session, p: &Json) -> Result<Json> {
+    let si = target_sheet(s, p)?;
+    edit(s, |cx| {
+        let sh = cx.sheet_mut(si)?;
+        if let Some(on) = bool_param(p, "summaryBelow") {
+            sh.summary_below = on;
+        }
+        if let Some(on) = bool_param(p, "summaryRight") {
+            sh.summary_right = on;
+        }
+        Ok(json!({"summaryBelow": sh.summary_below, "summaryRight": sh.summary_right}))
     })
 }
 

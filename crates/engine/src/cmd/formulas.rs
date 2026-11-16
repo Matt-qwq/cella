@@ -32,23 +32,49 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Name…",
             ["Formulas", "Defined Names"],
             None,
-            "{name, refersTo?: \"=Sheet1!$A$1:$A$10\" (default: the selection), scope?: \"Workbook\"|sheet name, comment?, oldName?, oldScope?} (oldName: edit that name (Name Manager › Edit); a new name also renames it in formulas)",
+            "{name, refersTo?: \"=Sheet1!$A$1:$A$10\" (default: the selection), scope?: \"Workbook\"|sheet name, comment?, oldName?, oldScope?, force?: bool} (oldName: edit that name (Name Manager › Edit); a new name also renames it in formulas; a name holding part of the workbook's own stored data is refused unless force is true)",
             has_doc,
             define_name
         ),
-        cmd!("formulas.deleteName", "Delete Name", [], None, "{name, scope?: \"Workbook\"|sheet name (default: every scope)}", has_doc, delete_name),
+        cmd!(
+            "formulas.deleteName",
+            "Delete Name",
+            [],
+            None,
+            "{name, scope?: \"Workbook\"|sheet name (default: every scope), force?: bool} (a name holding part of the workbook's own stored data is refused unless force is true)",
+            has_doc,
+            delete_name
+        ),
         cmd!(query "formulas.nameManager", "Name Manager", ["Formulas", "Defined Names"], Some("Cmd+F3"), "{} → names with values", has_doc, name_manager),
         cmd!(
             "formulas.createFromSelection",
             "Create from Selection",
             ["Formulas", "Defined Names"],
             Some("Cmd+Shift+F3"),
-            "{range?, top?: true, left?: false, bottom?: false, right?: false, replace?: false (existing names are kept and listed in `skipped`)}",
+            "{range?, top?: true, left?: false, bottom?: false, right?: false, replace?: false (existing names are kept and listed in `skipped`), force?: false (labels that name part of the workbook's own stored data are listed in `skipped` unless force is true)}",
             has_doc,
             create_from_selection
         ),
+        cmd!(
+            "formulas.pasteName",
+            "Paste Names…",
+            ["Formulas", "Defined Names"],
+            Some("F3"),
+            "{name?: \"Sales\" (one of the names listed: puts the name at the caret of the cell being edited, or starts `=Sales` in the active cell), list?: true (Paste List: writes each name and what it refers to in two columns, from `at`), at?: cell (default the active cell)} → {names: [{name, refersTo}]}: the names the Paste Name dialog lists (workbook names and the active sheet’s own, hidden names left out, in alphabetical order). With neither parameter nothing changes.",
+            has_doc,
+            paste_name
+        ),
         cmd!(query "formulas.tracePrecedents", "Trace Precedents", ["Formulas", "Formula Auditing"], None, "{cell?} → ranges", has_doc, trace_precedents),
         cmd!(query "formulas.traceDependents", "Trace Dependents", ["Formulas", "Formula Auditing"], None, "{cell?} → cells", has_doc, trace_dependents),
+        cmd!(
+            query "formulas.traceError",
+            "Trace Error",
+            ["Formulas", "Formula Auditing"],
+            None,
+            "{cell?} → {sheet, cell, error, source: {sheet, cell}, arrows: [{from: {sheet, range}, to: {sheet, cell}, kind: \"error\"|\"precedent\"}], truncated}: from the cell, follows the first reference that shows the same error (in a range, its first cell showing it) back to the cell the error starts in, `source`. `error` arrows link the cells on the way; `precedent` arrows lead from the source’s own references into it. A cell without an error gives `error` and `source` null and no arrows. A chain longer than 10,000 links stops there with `truncated` true and `source` null.",
+            has_doc,
+            trace_error
+        ),
         cmd!(noundo "formulas.selectPrecedents", "Select Precedents", ["Formulas", "Formula Auditing"], Some("Ctrl+["), "{cell?, all?: true = every level (Ctrl+Shift+[)} → selects the precedent cells", has_doc, select_precedents),
         cmd!(noundo "formulas.selectDependents", "Select Dependents", ["Formulas", "Formula Auditing"], Some("Ctrl+]"), "{cell?, all?: true = every level (Ctrl+Shift+])}", has_doc, select_dependents),
         cmd!(noundo "formulas.removeArrows", "Remove Arrows", ["Formulas", "Formula Auditing"], None, "{}", has_doc, |_, _| ok()),
@@ -266,6 +292,23 @@ pub(crate) fn is_r1c1(n: &str) -> bool {
     rest.is_empty() && !n.is_empty()
 }
 
+/// Refuses a name GridCraft keeps part of its own workbook data in ([super::stash]): defining,
+/// renaming or deleting one would replace or remove one chunk of an item (a stored macro, script
+/// or view) and leave the rest behind, so the store would stop reading back. `force: true` lets the
+/// call go ahead.
+///
+/// A name that merely looks like an item (`_gc_<key>_<n>` the workbook doesn't hold, or the legacy
+/// `_sc_<key>` form) is someone's own name and is left alone — see [stash::holds_chunk].
+fn refuse_store_name(wb: &gridcraft_model::Workbook, p: &Json, name: &str) -> Result<()> {
+    if !stash::holds_chunk(wb, name) || bool_param(p, "force").unwrap_or(false) {
+        return Ok(());
+    }
+    let item = stash::item_key(name).unwrap_or_default();
+    Err(EngineError::Other(format!(
+        "'{name}' can't be changed: it holds one part of the workbook's own store of GridCraft data (the defined names that hold the saved '{item}' item), and changing one part would leave the rest of it behind. Pass `force: true` to change it anyway."
+    )))
+}
+
 fn define_name(s: &mut Session, p: &Json) -> Result<Json> {
     let Some(name) = str_param(p, "name").map(str::to_string) else {
         s.ui_requests.push(crate::UiRequest::Dialog("defineName".into(), json!({})));
@@ -273,6 +316,9 @@ fn define_name(s: &mut Session, p: &Json) -> Result<Json> {
     };
     if !valid_name(&name) {
         return Err(EngineError::Other("The name that you entered is not valid.".into()));
+    }
+    for n in [Some(name.as_str()), str_param(p, "oldName")].into_iter().flatten() {
+        refuse_store_name(&s.doc()?.wb, p, n)?;
     }
     let d = s.doc()?;
     let scope = match str_param(p, "scope") {
@@ -381,8 +427,140 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
     }
 }
 
+/// The names Paste Names lists, as (name, refers-to text with `=`): the workbook's names and the
+/// active sheet's own, without hidden names, in alphabetical order. A sheet's name hides the
+/// workbook name it shares.
+pub fn pasteable_names(wb: &Workbook) -> Vec<(String, String)> {
+    let sheet = wb.active_sheet;
+    let shown = |local: bool| wb.names.iter().filter(move |n| !n.hidden && n.scope.is_some() == local && n.scope.is_none_or(|i| i == sheet));
+    let local: std::collections::HashSet<String> = shown(true).map(|n| n.name.to_lowercase()).collect();
+    let mut out: Vec<(String, String)> = shown(true).map(|n| (n.name.clone(), format!("={}", n.formula))).collect();
+    for n in shown(false) {
+        if !local.contains(&n.name.to_lowercase()) {
+            out.push((n.name.clone(), format!("={}", n.formula)));
+        }
+    }
+    out.sort_by_cached_key(|(n, _)| n.to_lowercase());
+    out
+}
+
+/// Paste Names (F3): lists the names, puts one at the caret of the cell being edited (or starts
+/// `=name` in the active cell), or writes the list onto the sheet with Paste List.
+fn paste_name(s: &mut Session, p: &Json) -> Result<Json> {
+    let d = s.doc()?;
+    let names = pasteable_names(&d.wb);
+    let listed: Vec<Json> = names.iter().map(|(n, r)| json!({"name": n, "refersTo": r})).collect();
+    // The list goes onto the active sheet, which is the one the active cell is on.
+    if !bool_param(p, "list").unwrap_or(false) {
+        if let Some(name) = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
+            let Some((listed_name, _)) = names.iter().find(|(n, _)| gridcraft_formula::same_name(n, name)) else {
+                return Err(EngineError::Other(format!("There's no name \"{name}\" to paste.")));
+            };
+            s.ui_requests.push(crate::UiRequest::InsertName(listed_name.clone()));
+        }
+        return Ok(json!({"names": listed}));
+    }
+    if names.is_empty() {
+        return Err(EngineError::Other("This workbook has no names to paste.".into()));
+    }
+    let at = cell_param(s, p, "at")?.unwrap_or(d.selection.active);
+    let rows = u32::try_from(names.len()).unwrap_or(u32::MAX);
+    if at.row.saturating_add(rows) > gridcraft_core::MAX_ROWS || at.col.saturating_add(2) > gridcraft_core::MAX_COLS {
+        return Err(EngineError::Other("There isn't room on the sheet for the list of names.".into()));
+    }
+    let sheet = d.wb.active_sheet;
+    let range = RangeRef::new(at, CellRef::new(at.row + rows - 1, at.col + 1));
+    edit(s, |cx| {
+        for (row, (name, refers)) in (at.row..).zip(&names) {
+            for (col, text) in [(at.col, name), (at.col + 1, refers)] {
+                let c = CellRef::new(row, col);
+                let sh = cx.sheet_mut(sheet)?;
+                let style = sh.style_id(c);
+                // The second column holds the refers-to text as a text value, with no formula.
+                let mut cell = gridcraft_model::Cell::value(Value::text(text.as_str()));
+                cell.style = style;
+                sh.set_cell(c, cell);
+                cx.touch(sheet, c);
+            }
+        }
+        Ok(json!({"names": listed, "range": range.a1()}))
+    })
+}
+
+/// Trace Error goes back at most this many links; a longer chain stops there.
+const TRACE_ERROR_LINKS: usize = 10_000;
+
+/// Trace Error: from the cell, the first reference in its formula that shows the same error
+/// (in a range, its first cell showing it), back to the cell the error starts in. The trace comes
+/// back as JSON, the way the other inspect commands report, so it needs no dialog.
+fn trace_error(s: &mut Session, p: &Json) -> Result<Json> {
+    use std::collections::HashSet;
+    let d = s.doc()?;
+    let at = cell_param(s, p, "cell")?.unwrap_or(d.selection.active);
+    let sheet = d.wb.active_sheet;
+    let name = |si: usize| d.wb.sheet(si).map(|sh| sh.name.clone());
+    let cell = |(si, c): (usize, CellRef)| json!({"sheet": name(si), "cell": c.a1()});
+    let Some(error) = d.wb.sheet(sheet).and_then(|sh| sh.value(at).as_error()) else {
+        return Ok(json!({"sheet": name(sheet), "cell": at.a1(), "error": null, "source": null, "arrows": [], "truncated": false}));
+    };
+    // A value spilled by a dynamic array comes from its anchor's formula.
+    let precedents = |(si, c): (usize, CellRef)| {
+        let anchor = d.wb.sheet(si).filter(|sh| sh.cell(c).is_none_or(|x| x.formula.is_none())).and_then(|sh| sh.spill_anchor(c));
+        d.calc.graph.precedents_of((si, anchor.unwrap_or(c)))
+    };
+    // The walk keeps to cells it hasn't been to, so a circular reference ends it.
+    let mut chain = vec![(sheet, at)];
+    let mut seen: HashSet<(usize, CellRef)> = HashSet::from([(sheet, at)]);
+    let mut truncated = false;
+    let mut last = (sheet, at);
+    while let Some(next) = precedents(last).iter().find_map(|a| first_showing(&d.wb, a, error)) {
+        if !seen.insert(next) {
+            break;
+        }
+        if chain.len() > TRACE_ERROR_LINKS {
+            truncated = true;
+            break;
+        }
+        chain.push(next);
+        last = next;
+    }
+    let mut arrows = Vec::new();
+    // A chain cut short hasn't reached its source.
+    if !truncated {
+        let mut drawn = HashSet::new();
+        for a in precedents(last) {
+            if drawn.insert(a) {
+                arrows.push(json!({"from": {"sheet": name(a.sheet), "range": a.range.a1()}, "to": cell(last), "kind": "precedent"}));
+            }
+        }
+    }
+    // From the source outwards, as the error travels.
+    for pair in chain.windows(2).rev() {
+        if let [to, from] = pair {
+            arrows.push(json!({"from": {"sheet": name(from.0), "range": from.1.a1()}, "to": cell(*to), "kind": "error"}));
+        }
+    }
+    let source = if truncated { Json::Null } else { cell(last) };
+    Ok(json!({"sheet": name(sheet), "cell": at.a1(), "error": error.as_str(), "source": source, "arrows": arrows, "truncated": truncated}))
+}
+
+/// The first cell of an area, row by row, that shows `error`: a stored cell or a value spilled
+/// into the area by a dynamic array.
+fn first_showing(wb: &Workbook, a: &gridcraft_calc::Area, error: CellError) -> Option<(usize, CellRef)> {
+    let sh = wb.sheet(a.sheet)?;
+    let holds = |c: &gridcraft_model::Cell| !c.value.is_empty() || c.formula.is_some();
+    let stored = sh.cells.iter_range(a.range).find(|(_, c)| holds(c) && c.value.as_error() == Some(error)).map(|(at, _)| at);
+    let spilled = sh
+        .spill
+        .range(a.range.start..=a.range.end)
+        .find(|(at, v)| a.range.contains(**at) && v.as_error() == Some(error) && sh.cell(**at).is_none_or(|c| !holds(&c)))
+        .map(|(at, _)| *at);
+    stored.into_iter().chain(spilled).min().map(|c| (a.sheet, c))
+}
+
 fn delete_name(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("formulas.deleteName", "missing `name`"))?.to_string();
+    refuse_store_name(&s.doc()?.wb, p, &name)?;
     let scope = match str_param(p, "scope") {
         None => None,
         Some("Workbook") => Some(None),
@@ -467,8 +645,12 @@ fn create_from_selection(s: &mut Session, p: &Json) -> Result<Json> {
     }
     // Excel asks before replacing an existing name; here it's kept unless `replace` is set, and
     // reported.
+    let force = bool_param(p, "force").unwrap_or(false);
     let exists = |n: &str| d.wb.names.iter().any(|x| x.name.eq_ignore_ascii_case(n) && x.scope.is_none());
-    let (made, skipped): (Vec<_>, Vec<_>) = made.into_iter().partition(|(n, _)| replace || !exists(n));
+    // A label that names part of GridCraft's own stored data would replace a chunk of an item
+    // (see `refuse_store_name`): it is skipped, not written.
+    let ours = |n: &str| !force && stash::holds_chunk(&d.wb, n);
+    let (made, skipped): (Vec<_>, Vec<_>) = made.into_iter().partition(|(n, _)| !ours(n) && (replace || !exists(n)));
     let skipped: Vec<String> = skipped.into_iter().map(|(n, _)| n).collect();
     let n = made.len();
     edit(s, |cx| {

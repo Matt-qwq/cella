@@ -565,7 +565,20 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
         let pw = wb.structure_password.as_ref().map(|h| crate::sheet_write::password_attrs(h, "workbook")).unwrap_or_default();
         let _ = write!(w, "<workbookProtection{pw} lockStructure=\"1\"/>");
     }
-    let _ = write!(w, "<bookViews><workbookView activeTab=\"{}\"/></bookViews><sheets>{sheets_xml}</sheets>", kept.file_index(active));
+    // <workbookView>: the tabs and scroll bars the workbook shows, then the tab bar's share.
+    let _ = write!(w, "<bookViews><workbookView activeTab=\"{}\"", kept.file_index(active));
+    for (key, on) in [("showSheetTabs", wb.view.show_sheet_tabs), ("showHorizontalScroll", wb.view.show_horizontal_scroll)] {
+        if !on {
+            let _ = write!(w, " {key}=\"0\"");
+        }
+    }
+    if !wb.view.show_vertical_scroll {
+        w.push_str(" showVerticalScroll=\"0\"");
+    }
+    if wb.view.tab_ratio != 600 {
+        let _ = write!(w, " tabRatio=\"{}\"", wb.view.tab_ratio.min(gridcraft_model::WorkbookView::MAX_TAB_RATIO));
+    }
+    let _ = write!(w, "/></bookViews><sheets>{sheets_xml}</sheets>");
     w.push_str(&kept.elements);
     if !names.is_empty() {
         let _ = write!(w, "<definedNames>{names}</definedNames>");

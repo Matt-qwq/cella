@@ -325,6 +325,14 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
         wb.protected_structure = p.flag("lockStructure", false);
         wb.structure_password = if wb.protected_structure { crate::sheet_read::read_password(p, "workbook") } else { None };
     }
+    if let Some(v) = wb_xml.path(&["bookViews", "workbookView"]) {
+        wb.view = gridcraft_model::WorkbookView {
+            show_sheet_tabs: v.flag("showSheetTabs", true),
+            show_horizontal_scroll: v.flag("showHorizontalScroll", true),
+            show_vertical_scroll: v.flag("showVerticalScroll", true),
+            tab_ratio: v.attr_u32("tabRatio").unwrap_or(600).min(gridcraft_model::WorkbookView::MAX_TAB_RATIO),
+        };
+    }
     let active_tab = wb_xml.path(&["bookViews", "workbookView"]).and_then(|v| v.attr_u32("activeTab")).unwrap_or(0) as usize;
 
     // Sheets. `file_to_model[i]` maps the i-th <sheet> to a model sheet index.

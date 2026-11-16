@@ -128,6 +128,16 @@ pub struct Sheet {
     pub show_headings: bool,
     pub show_formulas: bool,
     pub show_zeros: bool,
+    /// View › Show › Outline Symbols (Ctrl+8): the outline's brackets, level buttons and
+    /// − / + buttons draw beside the row and column headings.
+    #[serde(default = "crate::workbook::yes")]
+    pub show_outline_symbols: bool,
+    /// Data › Outline › Settings: summary rows sit below their detail (`<outlinePr
+    /// summaryBelow>`, on unless the file says otherwise) and summary columns right of it.
+    #[serde(default = "crate::workbook::yes")]
+    pub summary_below: bool,
+    #[serde(default = "crate::workbook::yes")]
+    pub summary_right: bool,
     pub right_to_left: bool,
     pub zoom: u16,
     pub cond_formats: Vec<CondFormat>,
@@ -219,6 +229,9 @@ impl Sheet {
             show_headings: true,
             show_formulas: false,
             show_zeros: true,
+            show_outline_symbols: true,
+            summary_below: true,
+            summary_right: true,
             right_to_left: false,
             zoom: 100,
             cond_formats: vec![],

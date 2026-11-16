@@ -29,6 +29,53 @@ pub enum ShowObjects {
     None,
 }
 
+/// The workbook window's display settings from `<workbookView>` (Excel: File › Options › Advanced,
+/// "Display options for this workbook"): whether the window shows the sheet tabs and the two
+/// scroll bars, and how much of the horizontal bar the tabs take (`tabRatio`, thousandths of the
+/// bar; the format's default is 600).
+///
+/// The values are modelled so that an open and a save keep them — a workbook Excel saved with its
+/// tabs hidden must not come back with them shown and the settings gone — and the View commands
+/// (`view.showSheetTabs`, `view.showHorizontalScrollBar`, `view.showVerticalScrollBar`) set them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkbookView {
+    #[serde(default = "yes")]
+    pub show_sheet_tabs: bool,
+    #[serde(default = "yes")]
+    pub show_horizontal_scroll: bool,
+    #[serde(default = "yes")]
+    pub show_vertical_scroll: bool,
+    /// The tab bar's share of the horizontal bar, in thousandths (0–1000; the default is 600).
+    #[serde(default = "default_tab_ratio")]
+    pub tab_ratio: u32,
+}
+
+/// Serde default for a flag the format writes only when it is off (`<workbookView
+/// showSheetTabs="0"/>`, `<sheetPr><outlinePr summaryBelow="0"/>`): absent means on.
+pub(crate) fn yes() -> bool {
+    true
+}
+
+fn default_tab_ratio() -> u32 {
+    600
+}
+
+impl Default for WorkbookView {
+    fn default() -> Self {
+        WorkbookView { show_sheet_tabs: true, show_horizontal_scroll: true, show_vertical_scroll: true, tab_ratio: default_tab_ratio() }
+    }
+}
+
+impl WorkbookView {
+    /// The entire bar, in thousandths: the upper bound used by XLSX I/O.
+    pub const MAX_TAB_RATIO: u32 = 1000;
+
+    /// Whether every setting is the format's default, which the writer then leaves out.
+    pub fn is_default(&self) -> bool {
+        *self == WorkbookView::default()
+    }
+}
+
 /// File › Options › Formulas › Calculation options, stored per workbook (`<calcPr>`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CalcSettings {
@@ -153,6 +200,9 @@ pub struct Workbook {
     pub calc: CalcSettings,
     #[serde(default, skip_serializing_if = "is_all")]
     pub show_objects: ShowObjects,
+    /// The window's display settings (`<workbookView>`): sheet tabs and the two scroll bars.
+    #[serde(default, skip_serializing_if = "WorkbookView::is_default")]
+    pub view: WorkbookView,
     pub active_sheet: usize,
     pub props: DocProps,
     /// Workbook structure protection.
@@ -230,6 +280,7 @@ impl Workbook {
             date_system: DateSystem::D1900,
             calc: CalcSettings::default(),
             show_objects: ShowObjects::All,
+            view: WorkbookView::default(),
             active_sheet: 0,
             props: DocProps::default(),
             protected_structure: false,

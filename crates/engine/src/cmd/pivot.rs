@@ -225,6 +225,15 @@ pub fn specs() -> Vec<CommandSpec> {
             generate_get_pivot_data
         ),
         cmd!(
+            "pivot.options",
+            "PivotTable Options",
+            ["PivotTable Analyze", "PivotTable"],
+            None,
+            "{pivot?, layout?: compact|outline|tabular, subtotals?: bool|top|bottom|none, grandTotalsRows?: bool, grandTotalsCols?: bool, showHeaders?: bool, style?: \"PivotStyleMedium9\", valuesOnRows?: bool, generateGetPivotData?: bool} → {pivot, layout, subtotals, subtotalsTop, grandTotalsRows, grandTotalsCols, showHeaders, style, valuesOnRows, generateGetPivotData}. PivotTable Analyze › Options: one entry for the options this model holds. Without params it reports them and refreshes nothing; with params it sets the ones given, one undo step, and reports the result. Options Excel’s dialog has that the model does not hold (repeat item labels, insertion of blank rows, Enable show details) are not params: nothing would read them.",
+            has_doc,
+            options
+        ),
+        cmd!(
             "pivot.delete",
             "Delete PivotTable",
             ["PivotTable Analyze", "Actions"],
@@ -1958,6 +1967,93 @@ fn change_source(s: &mut Session, p: &Json) -> Result<Json> {
         prune_value_filters(pt);
         prune_calc_items(wb, &src, pt);
         Ok(json!({"source": source, "kind": source_kind_name(kind), "dropped": dropped}))
+    })
+}
+
+/// PivotTable Analyze › Options: the report's options as one command. Without params it reports
+/// them (and touches nothing, so reading costs no refresh); with params it sets the ones given and
+/// reports the result. The options Excel's dialog has that this model does not hold are not
+/// params — a param nothing reads would be a lie. The layout ones are the same ones `pivot.layout`
+/// takes, so a caller can use either.
+fn options(s: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "pivot.options";
+    let (si, pi) = find_pivot(s, p)?;
+    let report = |pt: &PivotTable| -> Json {
+        json!({
+            "pivot": pt.name,
+            "layout": layout_name(pt.layout),
+            "subtotals": pt.subtotals,
+            "subtotalsTop": pt.subtotals_top,
+            "grandTotalsRows": pt.grand_totals_rows,
+            "grandTotalsCols": pt.grand_totals_cols,
+            "showHeaders": pt.show_headers,
+            "style": pt.style,
+            "valuesOnRows": pt.values_on_rows,
+            "generateGetPivotData": pt.generate_get_pivot_data,
+        })
+    };
+    let lay = match str_param(p, "layout").map(|x| x.to_ascii_lowercase()) {
+        Some(l) if l == "compact" => Some(PivotLayout::Compact),
+        Some(l) if l == "outline" => Some(PivotLayout::Outline),
+        Some(l) if l == "tabular" => Some(PivotLayout::Tabular),
+        Some(l) => return Err(bad(C, format!("unknown layout `{l}` (compact|outline|tabular)"))),
+        None => None,
+    };
+    let subtotals: Option<(bool, Option<bool>)> = match p.get("subtotals") {
+        Some(Json::Bool(b)) => Some((*b, None)),
+        Some(Json::String(m)) => match m.to_ascii_lowercase().as_str() {
+            "top" => Some((true, Some(true))),
+            "bottom" => Some((true, Some(false))),
+            "none" | "off" => Some((false, None)),
+            o => return Err(bad(C, format!("unknown subtotals `{o}` (top|bottom|none)"))),
+        },
+        _ => None,
+    };
+    let style = str_param(p, "style").map(str::to_string);
+    if style.as_ref().is_some_and(|s| s.len() > 64) {
+        return Err(bad(C, "style name too long"));
+    }
+    let (gr, gc, hd) = (bool_param(p, "grandTotalsRows"), bool_param(p, "grandTotalsCols"), bool_param(p, "showHeaders"));
+    let vor = bool_param(p, "valuesOnRows");
+    let gp = bool_param(p, "generateGetPivotData");
+    if lay.is_none() && subtotals.is_none() && style.is_none() && gr.is_none() && gc.is_none() && hd.is_none() && vor.is_none() && gp.is_none() {
+        // Nothing to set: report, without recomputing the report (a read has no side effects).
+        let d = s.doc()?;
+        let pt = d.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).ok_or_else(|| other("There's no such PivotTable."))?;
+        return Ok(report(pt));
+    }
+    update(s, p, |pt, _, _| {
+        if let Some(l) = lay {
+            pt.layout = l;
+            if l == PivotLayout::Tabular {
+                pt.subtotals_top = false;
+            }
+        }
+        if let Some((on, top)) = subtotals {
+            pt.subtotals = on;
+            if let Some(t) = top {
+                pt.subtotals_top = t;
+            }
+        }
+        if let Some(st) = &style {
+            pt.style = st.clone();
+        }
+        if let Some(v) = gr {
+            pt.grand_totals_rows = v;
+        }
+        if let Some(v) = gc {
+            pt.grand_totals_cols = v;
+        }
+        if let Some(v) = hd {
+            pt.show_headers = v;
+        }
+        if let Some(v) = vor {
+            pt.values_on_rows = v;
+        }
+        if let Some(v) = gp {
+            pt.generate_get_pivot_data = v;
+        }
+        Ok(report(pt))
     })
 }
 

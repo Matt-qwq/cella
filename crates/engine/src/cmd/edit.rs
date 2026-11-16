@@ -32,6 +32,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "selection.set", "Select", [], None, "{range: \"A1:B2,D4\" | cell, active?: \"A1\", sheet?}", has_doc, selection_set),
         cmd!(noundo "selection.move", "Move Selection", [], None, "{dr, dc, extend?: bool, jump?: bool (Ctrl+arrow), page?: bool}", has_doc, selection_move),
         cmd!(noundo "selection.next", "Next Cell in Selection", [], None, "{forward?: true, byRow?: false} (Enter/Tab inside a selection)", has_doc, selection_next),
+        cmd!(
+            noundo "selection.nextCorner",
+            "Next Corner of Selection",
+            [],
+            Some("Ctrl+."),
+            "{} (the active cell moves clockwise to the next corner of the selected area, which stays selected; Ctrl+.)",
+            has_doc,
+            selection_next_corner
+        ),
         cmd!(noundo "edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{} (current region first, then the whole sheet)", has_doc, select_all),
         cmd!(noundo "selection.currentRegion", "Select Current Region", [], Some("Ctrl+Shift+8"), "{}", has_doc, select_region),
         cmd!(noundo "selection.row", "Select Entire Row", [], Some("Shift+Space"), "{}", has_doc, select_row),
@@ -50,6 +59,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{at?: \"C3\", text?: \"tab-separated text from the system clipboard\", html?: \"the clipboard's HTML flavour; cells the source recorded as numbers (x:num, sdval) stay numbers\"}",
             has_doc,
             paste
+        ),
+        cmd!(
+            "range.move",
+            "Drag and Drop",
+            [],
+            None,
+            "{range?, to: \"C3\", overwrite?: bool} (dragging the selection's border: a cut and paste that adjusts the references that pointed at the moved cells and asks before replacing data unless overwrite)",
+            has_doc,
+            range_move
         ),
         cmd!(
             "edit.pasteSpecial",
@@ -539,6 +557,23 @@ fn selection_move(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"selection": sel.a1(), "active": sel.active.a1()}))
 }
 
+/// Ctrl+. (Next Corner of Selection): the active cell moves to the next corner of the selected
+/// area, clockwise, and becomes the anchor. The corners that are in a hidden line, that the
+/// sheet's protection doesn't let you select, or that lead out of the area are skipped.
+fn selection_next_corner(s: &mut Session, _: &Json) -> Result<Json> {
+    let d = s.doc_mut()?;
+    let Some(sheet) = d.wb.active() else { return Err(EngineError::NoDocument) };
+    let area = d.selection.current();
+    let stop = |c: CellRef| {
+        Some(sheet.merge_at(c).map_or(c, |m| m.start))
+            .filter(|c| area.contains(*c) && !sheet.is_row_hidden(c.row) && !sheet.is_col_hidden(c.col) && cell_selectable(&d.wb, sheet, *c))
+    };
+    let mut next = d.selection.clone();
+    next.next_corner_by(stop);
+    d.selection = next;
+    Ok(json!({"active": d.selection.active.a1(), "selection": d.selection.a1()}))
+}
+
 fn selection_next(s: &mut Session, p: &Json) -> Result<Json> {
     let fwd = bool_param(p, "forward").unwrap_or(true);
     let by_row = bool_param(p, "byRow").unwrap_or(false);
@@ -977,6 +1012,39 @@ pub(crate) fn parse_tsv(text: &str) -> Vec<Vec<String>> {
         rows.push(row);
     }
     rows
+}
+
+/// Dragging the selection's border: a cut and paste, with the references that pointed at the
+/// moved cells following them. It asks before replacing data — a programmatic caller that means
+/// to replace says so with `overwrite: true`.
+fn range_move(s: &mut Session, p: &Json) -> Result<Json> {
+    let sheet = target_sheet(s, p)?;
+    let to = cell_param_on(s, p, "to", sheet)?.ok_or_else(|| bad("range.move", "missing `to`: the cell the range is dropped on"))?;
+    let kept = s.clipboard.take();
+    let moved = cut(s, p).and_then(|_| {
+        let src = s.clipboard.as_ref().map(|c| c.range).unwrap_or_default();
+        let dest = to.offset(i64::from(src.height()) - 1, i64::from(src.width()) - 1).map(|end| RangeRef::new(to, end));
+        if bool_param(p, "overwrite") != Some(true)
+            && let Some(dest) = dest
+            && let Some(sh) = s.doc()?.wb.sheet(sheet)
+            && (sh.cells.iter_range(dest).any(|(c, cell)| !src.contains(c) && (!cell.value.is_empty() || cell.formula.is_some()))
+                || sh.spill.iter().any(|(c, v)| dest.contains(*c) && !src.contains(*c) && *v != Value::Empty))
+        {
+            return Err(EngineError::Other("There's already data here. Pass `overwrite: true` to replace it.".into()));
+        }
+        // On the range's sheet, which `paste` would leave to the active one. The selection
+        // belongs to the active sheet: it follows the moved cells only when they are on it.
+        let selection = s.doc()?.selection.clone();
+        let pasted = paste_special(s, &json!({"what": "all", "at": to.a1(), "sheet": sheet}))?;
+        if sheet != s.doc()?.wb.active_sheet {
+            s.doc_mut()?.selection = selection;
+        }
+        Ok(pasted)
+    });
+    if moved.is_err() {
+        s.clipboard = kept;
+    }
+    moved
 }
 
 fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
