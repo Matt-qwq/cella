@@ -635,8 +635,12 @@ impl Calc {
     pub fn cells_changed_with_used(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
         self.parallel_fallback = false;
         let mut cleared: Vec<(usize, RangeRef)> = Vec::new();
+        // Whether the edit put a formula anywhere: when it did not, and the workbook has none
+        // stored either, no cell can depend on the change and the pass below has nothing to plan.
+        let mut formulas = false;
         for &k in changed {
             let formula = wb.sheet(k.0).and_then(|s| s.cell(k.1)).and_then(|c| c.formula.clone());
+            formulas |= formula.is_some();
             let parsed = formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array)));
             match parsed {
                 Some((e, legacy)) => {
@@ -667,6 +671,19 @@ impl Calc {
             }
         }
         self.graph.settle();
+        // Nothing can be recalculated: the edit stored no formula, the workbook holds none, no
+        // array spills anywhere and no used range moved. Scanning a million changed cells for
+        // precedents of a data import used to cost more than writing them.
+        if !formulas
+            && self.graph.nodes.is_empty()
+            && self.graph.trim.is_empty()
+            && cleared.is_empty()
+            && used_changed.is_empty()
+            && wb.sheets.iter().all(|s| s.spill_ranges.is_empty() && s.spill.is_empty())
+        {
+            self.last_recalc_cells = 0;
+            return;
+        }
         if wb.calc.mode == CalcMode::Manual {
             // Only the edited formulas themselves are evaluated.
             let own: Vec<Key> = changed.iter().copied().filter(|k| self.graph.nodes.contains_key(k)).collect();
@@ -677,115 +694,130 @@ impl Calc {
         for &si in used_changed {
             seeds.extend(self.graph.trim.iter().filter(|k| k.0 == si).copied());
         }
-        let mut emptied: Vec<Key> = Vec::new();
-        // Per-sheet bounds of the edit, so a bulk change scans for blocked arrays once instead of
-        // once per cell: redoing a whole row of Remove Duplicates used to walk a 64×64 block for
-        // each of a million changed cells.
-        let mut bounds: Vec<(usize, u32, u32, u32, u32)> = Vec::new();
-        for &k in changed {
-            let Some(sh) = wb.sheet(k.0) else { continue };
-            match bounds.iter_mut().find(|x| x.0 == k.0) {
-                Some(x) => {
-                    x.1 = x.1.min(k.1.row);
-                    x.2 = x.2.min(k.1.col);
-                    x.3 = x.3.max(k.1.row);
-                    x.4 = x.4.max(k.1.col);
-                }
-                None => bounds.push((k.0, k.1.row, k.1.col, k.1.row, k.1.col)),
-            }
-            if !sh.cells.has(k.1) {
-                match emptied.iter_mut().find(|x| x.0 == k.0) {
-                    Some(x) => x.1 = CellRef::new(x.1.row.max(k.1.row), x.1.col.max(k.1.col)),
-                    None => emptied.push(k),
-                }
-            }
+        // Arrays are the only reason to look past the changed cells themselves: a formula that may
+        // spill, a dynamic reference, a legacy array, or an area already spilled. With none of
+        // those in the workbook no cell can be blocked and no area can move, so a bulk edit of a
+        // plain sheet — a data import, a column of formulas — costs its own cells instead of a
+        // scan of the area they cover.
+        let arrays = !self.graph.may_spill.is_empty()
+            || !self.graph.dynamic.is_empty()
+            || !self.graph.legacy.is_empty()
+            || wb.sheets.iter().any(|s| !s.spill_ranges.is_empty() || !s.spill.is_empty());
+        #[cfg(test)]
+        {
+            self.seed_probes = 0;
         }
-        // The per-cell scan looks at the 64×64 block above and to the left of each changed cell.
-        // For a bulk edit, scan the union of those blocks once (or keep the per-cell scan when the
-        // changed cells are scattered and the union would be much larger).
-        let mut per_sheet: Vec<(usize, usize)> = bounds.iter().map(|b| (b.0, 0)).collect();
-        for &k in changed {
-            if let Some(x) = per_sheet.iter_mut().find(|x| x.0 == k.0) {
-                x.1 += 1;
-            }
-        }
-        let per_cell_cost = (changed.len() as u64).saturating_mul(4096);
-        let union_cost: u64 = bounds.iter().map(|&(_, r0, c0, r1, c1)| (u64::from(r1 - r0) + 64).saturating_mul(u64::from(c1 - c0) + 64)).sum();
-        let bulk_spill_scan = changed.len() > 64 && union_cost <= per_cell_cost;
-        if bulk_spill_scan {
-            for &(si, r0, c0, r1, c1) in &bounds {
-                let Some(sh) = wb.sheet(si) else { continue };
-                let area = RangeRef::new(CellRef::new(r0.saturating_sub(64), c0.saturating_sub(64)), CellRef::new(r1, c1));
-                for (c, cell) in sh.cells.iter_range(area) {
-                    if spilled_nothing(&cell.value) {
-                        seeds.push((si, c));
-                    }
-                }
-                let body = RangeRef::new(CellRef::new(r0, c0), CellRef::new(r1, c1));
-                for (anchor, r) in &sh.spill_ranges {
-                    if r.intersects(&body) {
-                        seeds.push((si, *anchor));
-                    }
-                }
-            }
-        } else {
-            // Typing into (or clearing) a cell a dynamic array spills over (or would spill over)
-            // re-evaluates the anchor, which may now be blocked or unblocked. With many areas on
-            // the sheet they are indexed once, so the batch costs the cells it changed rather than
-            // the areas times the cells.
-            let mut areas = SpillIndex::default();
-            let mut strategy: Vec<(usize, bool)> = Vec::new();
-            let mut hits: Vec<CellRef> = Vec::new();
+        if arrays {
+            let mut emptied: Vec<Key> = Vec::new();
+            // Per-sheet bounds of the edit, so a bulk change scans for blocked arrays once instead of
+            // once per cell: redoing a whole row of Remove Duplicates used to walk a 64×64 block for
+            // each of a million changed cells.
+            let mut bounds: Vec<(usize, u32, u32, u32, u32)> = Vec::new();
             for &k in changed {
                 let Some(sh) = wb.sheet(k.0) else { continue };
-                let on_sheet = per_sheet.iter().find(|x| x.0 == k.0).map_or(0, |x| x.1);
-                let indexed = match strategy.iter().find(|x| x.0 == k.0) {
-                    Some(x) => x.1,
-                    None => {
-                        let indexed = index_spills(changed.len(), on_sheet, sh.spill_ranges.values());
-                        if indexed {
-                            for (anchor, r) in &sh.spill_ranges {
-                                areas.insert_rect((k.0, *anchor), *r, false);
+                match bounds.iter_mut().find(|x| x.0 == k.0) {
+                    Some(x) => {
+                        x.1 = x.1.min(k.1.row);
+                        x.2 = x.2.min(k.1.col);
+                        x.3 = x.3.max(k.1.row);
+                        x.4 = x.4.max(k.1.col);
+                    }
+                    None => bounds.push((k.0, k.1.row, k.1.col, k.1.row, k.1.col)),
+                }
+                if !sh.cells.has(k.1) {
+                    match emptied.iter_mut().find(|x| x.0 == k.0) {
+                        Some(x) => x.1 = CellRef::new(x.1.row.max(k.1.row), x.1.col.max(k.1.col)),
+                        None => emptied.push(k),
+                    }
+                }
+            }
+            // The per-cell scan looks at the 64×64 block above and to the left of each changed cell.
+            // For a bulk edit, scan the union of those blocks once (or keep the per-cell scan when the
+            // changed cells are scattered and the union would be much larger).
+            let mut per_sheet: Vec<(usize, usize)> = bounds.iter().map(|b| (b.0, 0)).collect();
+            for &k in changed {
+                if let Some(x) = per_sheet.iter_mut().find(|x| x.0 == k.0) {
+                    x.1 += 1;
+                }
+            }
+            let per_cell_cost = (changed.len() as u64).saturating_mul(4096);
+            let union_cost: u64 = bounds.iter().map(|&(_, r0, c0, r1, c1)| (u64::from(r1 - r0) + 64).saturating_mul(u64::from(c1 - c0) + 64)).sum();
+            let bulk_spill_scan = changed.len() > 64 && union_cost <= per_cell_cost;
+            if bulk_spill_scan {
+                for &(si, r0, c0, r1, c1) in &bounds {
+                    let Some(sh) = wb.sheet(si) else { continue };
+                    let area = RangeRef::new(CellRef::new(r0.saturating_sub(64), c0.saturating_sub(64)), CellRef::new(r1, c1));
+                    for (c, cell) in sh.cells.iter_range(area) {
+                        if spilled_nothing(&cell.value) {
+                            seeds.push((si, c));
+                        }
+                    }
+                    let body = RangeRef::new(CellRef::new(r0, c0), CellRef::new(r1, c1));
+                    for (anchor, r) in &sh.spill_ranges {
+                        if r.intersects(&body) {
+                            seeds.push((si, *anchor));
+                        }
+                    }
+                }
+            } else {
+                // Typing into (or clearing) a cell a dynamic array spills over (or would spill over)
+                // re-evaluates the anchor, which may now be blocked or unblocked. With many areas on
+                // the sheet they are indexed once, so the batch costs the cells it changed rather than
+                // the areas times the cells.
+                let mut areas = SpillIndex::default();
+                let mut strategy: Vec<(usize, bool)> = Vec::new();
+                let mut hits: Vec<CellRef> = Vec::new();
+                for &k in changed {
+                    let Some(sh) = wb.sheet(k.0) else { continue };
+                    let on_sheet = per_sheet.iter().find(|x| x.0 == k.0).map_or(0, |x| x.1);
+                    let indexed = match strategy.iter().find(|x| x.0 == k.0) {
+                        Some(x) => x.1,
+                        None => {
+                            let indexed = index_spills(changed.len(), on_sheet, sh.spill_ranges.values());
+                            if indexed {
+                                for (anchor, r) in &sh.spill_ranges {
+                                    areas.insert_rect((k.0, *anchor), *r, false);
+                                }
+                            }
+                            strategy.push((k.0, indexed));
+                            indexed
+                        }
+                    };
+                    if indexed {
+                        // Anchor order, as walking `spill_ranges` gives.
+                        areas.meeting(k.0, RangeRef::new(k.1, k.1), &mut hits);
+                        seeds.extend(hits.iter().filter(|a| **a != k.1).map(|a| (k.0, *a)));
+                    } else {
+                        for (anchor, r) in &sh.spill_ranges {
+                            if *anchor != k.1 && r.contains(k.1) {
+                                seeds.push((k.0, *anchor));
                             }
                         }
-                        strategy.push((k.0, indexed));
-                        indexed
                     }
-                };
-                if indexed {
-                    // Anchor order, as walking `spill_ranges` gives.
-                    areas.meeting(k.0, RangeRef::new(k.1, k.1), &mut hits);
-                    seeds.extend(hits.iter().filter(|a| **a != k.1).map(|a| (k.0, *a)));
-                } else {
-                    for (anchor, r) in &sh.spill_ranges {
-                        if *anchor != k.1 && r.contains(k.1) {
-                            seeds.push((k.0, *anchor));
+                    for (c, cell) in sh.cells.iter_range(RangeRef::new(CellRef::new(k.1.row.saturating_sub(64), k.1.col.saturating_sub(64)), k.1)) {
+                        if c != k.1 && spilled_nothing(&cell.value) {
+                            seeds.push((k.0, c));
                         }
                     }
                 }
-                for (c, cell) in sh.cells.iter_range(RangeRef::new(CellRef::new(k.1.row.saturating_sub(64), k.1.col.saturating_sub(64)), k.1)) {
-                    if c != k.1 && spilled_nothing(&cell.value) {
-                        seeds.push((k.0, c));
+                #[cfg(test)]
+                {
+                    self.seed_probes = areas.probes();
+                }
+            }
+            // An emptied cell can unblock an anchor any distance above or to the left of it.
+            for (si, end) in emptied {
+                for &(s, c) in self.graph.nodes.keys() {
+                    if s == si && c.row <= end.row && c.col <= end.col && wb.sheet(s).is_some_and(|sh| spilled_nothing(&sh.value(c))) {
+                        seeds.push((s, c));
                     }
                 }
             }
-            #[cfg(test)]
-            {
-                self.seed_probes = areas.probes();
-            }
-        }
-        // An emptied cell can unblock an anchor any distance above or to the left of it.
-        for (si, end) in emptied {
-            for &(s, c) in self.graph.nodes.keys() {
-                if s == si && c.row <= end.row && c.col <= end.col && wb.sheet(s).is_some_and(|sh| spilled_nothing(&sh.value(c))) {
-                    seeds.push((s, c));
+            // Spill areas of changed anchors also change.
+            for &k in changed {
+                if let Some(r) = wb.sheet(k.0).and_then(|s| s.spill_ranges.get(&k.1)) {
+                    seeds.extend(r.iter().map(|c| (k.0, c)));
                 }
-            }
-        }
-        // Spill areas of changed anchors also change.
-        for &k in changed {
-            if let Some(r) = wb.sheet(k.0).and_then(|s| s.spill_ranges.get(&k.1)) {
-                seeds.extend(r.iter().map(|c| (k.0, c)));
             }
         }
         for (si, r) in &cleared {

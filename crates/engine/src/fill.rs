@@ -133,8 +133,12 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
                 FillMode::ValuesOnly | FillMode::Series | FillMode::Alternate | FillMode::Copy | FillMode::Extend => {
                     let style = if mode == FillMode::ValuesOnly { sh.cell(*t).map(|c| c.style).unwrap_or_default() } else { cell.style };
                     if let Some(f) = &cell.formula {
-                        if let Some(e) = f.expr() {
-                            let shifted = gridcraft_formula::adjust::shift_relative(e, t.row as i64 - sc.row as i64, t.col as i64 - sc.col as i64);
+                        if let Some(e) = f.expr_arc() {
+                            // The source tree stays where it is: shift_relative_copy walks it once,
+                            // where reading it out and shifting the copy walked it twice.
+                            let dr = t.row as i64 - sc.row as i64;
+                            let dc = t.col as i64 - sc.col as i64;
+                            let shifted = gridcraft_formula::adjust::shift_relative_copy(&e, dr, dc);
                             cell.formula = Some(Arc::new(Formula::from_expr(shifted)));
                             cell.value = Value::Empty;
                         }
