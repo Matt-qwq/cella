@@ -154,6 +154,52 @@ Reading it:
 Known hotspots and what is left of them are tracked in [`gaps.md` §2](gaps.md) — this page owns
 the measurement, that entry owns the work.
 
+## The performance round of 2026-11-16, measured on a quiet machine
+
+Five batches took the numbers above and moved them. **Same workbook, same command sequence, release,
+best of three passes on an otherwise idle machine** (`cargo run --release -p gridcraft-engine
+--example perf -- 1000000 --repeat=3`):
+
+| scenario (1M rows × 6 columns, 72 MB .xlsx) | before | after | change |
+|---|---|---|---|
+| open 72 MB + full recalc | 15.29 s | **5.94–6.26 s** | −60% |
+| sort 1M rows | 11.40 s | **6.92 s** | −39% |
+| fill 1M values | 4.48 s | **2.44–2.50 s** | −45% |
+| fill 1M formulas | 5.49 s | **2.64 s** | −52% |
+| 1M chained formulas | 6.21 s | **3.58 s** | −42% |
+| save 72 MB | 4.22 s | **3.46–3.52 s** | −17% |
+| edit one cell → recalc 1M cells | 2.47 s | **2.12 s** | −14% |
+| undo of that edit | 4.03 s | **24 ms** | −99% |
+| aggregates | 1.15 s | **0.96–0.99 s** | −17% |
+| dependency-graph rebuild, 2M formulas | 3.87 s | **1.58–1.86 s** | −57% |
+
+What each batch did, in one line each:
+
+- **Opening and saving** — the reader parsed and printed every formula twice and the writer re-printed
+  the tree it already had, then built fresh `String`s through `format!`; both paths now build once and
+  append (`crates/xlsx/src/{fmla,xml}.rs`, `write.rs`, `sheet_read.rs`, `sheet_write.rs`).
+- **The dependency graph** — three one-element `HashSet`s and a `Vec<Area>` per formula were ~250 MB of
+  churn per million rows; dependencies are now an inline `One/Two/Many` enum, precedent areas live in
+  one arena, flags in one `u8`, and a formula tree is walked with a reusable buffer
+  (`crates/calc/src/{graph.rs,walk.rs}`).
+- **Undo and redo** — a history entry is already a workbook snapshot, so undo never recalculated; it did
+  rebuild the precedent graph of **every** formula to fix the few the edit touched. `Calc::restore`
+  now re-inserts only the formulas the two versions disagree on, found for free through the store's
+  shared bands (`crates/model/src/store.rs`, `crates/calc/src/recalc.rs`).
+- **Filling** — `range.setValues` writes a row at a time through the store's whole-row path and only
+  builds an input string where one is needed; two recalc guards skip work a value-only bulk edit was
+  paying for; `edit.autoFill` shifts formulas in one walk instead of cloning the tree
+  (`crates/engine/src/cmd/edit.rs`, `crates/calc/src/recalc.rs`, `crates/formula/src/adjust.rs`).
+- **Sorting** — one flat key buffer, custom-list position resolved once per cell, borrowed comparisons,
+  whole-row write-back, and a sort no longer treated as a structural edit
+  (`crates/engine/src/cmd/data.rs`).
+
+The budgets in `xtask/perf-budgets.txt` are recorded at roughly twice these numbers (the file's
+convention) so a real regression fails the gate and ordinary machine noise does not.
+
+Not done, and what they would take: the sheet-XML **build is still serial** (66% of save; parallelising
+it needs an order-independent shared-string table), and `edit.recalc` over a single dependency chain is
+inherently sequential (its cost is per-formula lookups, measured at ~1.7 µs before the graph work).
 ## Adding a scenario
 
 1. Add a `fn` to `crates/engine/examples/perf.rs` and an entry to its `STEPS` table (id, what it
