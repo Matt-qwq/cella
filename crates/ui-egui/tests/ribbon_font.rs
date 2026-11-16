@@ -30,7 +30,10 @@ fn harness() -> Harness {
         },
         SheetApp::new(s, Default::default()),
     );
-    h.run_steps(4);
+    // The machine's font catalog is scanned in the background (see fonts::start_scan); when it
+    // lands, the font set is rebuilt and one pass paints nothing. Give the harness enough passes
+    // that the ribbon exists no matter when that happens.
+    h.run_steps(16);
     h
 }
 
@@ -40,6 +43,21 @@ fn click_at(h: &mut Harness, p: egui::Pos2) {
     h.run_steps(2);
     h.input_mut().events.push(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
+}
+
+/// Clicks a menu entry of a split button, retrying the open: a font set rebuilt by the background
+/// catalog scan can swallow the frame the popup opens on, and the click then lands on nothing.
+fn menu_item(h: &mut Harness, label: &str, item: &str) {
+    for _ in 0..4 {
+        click_arrow(h, label);
+        h.run_steps(3);
+        if let Some(node) = h.query_by_label(item) {
+            let at = node.rect().center();
+            click_at(h, at);
+            return;
+        }
+    }
+    panic!("the {label} menu never showed {item}");
 }
 
 /// Clicks the middle of the named widget.
@@ -293,18 +311,12 @@ fn the_borders_button_applies_its_last_preset_and_the_menu_sets_each() {
     let mut fresh = harness();
     fresh.state_mut().session.run("selection.set", json!({"range": "A1:B2"})).unwrap();
     fresh.run_steps(2);
-    click_arrow(&mut fresh, "Borders");
-    fresh.run_steps(2);
-    fresh.get_by_label("Inside Borders").click();
-    fresh.run_steps(2);
+    menu_item(&mut fresh, "Borders", "Inside Borders");
     assert_eq!(style_of(&fresh, "A1").borders, one(None, Some(thin), None, Some(thin)), "A1 keeps its inside edges");
     assert_eq!(style_of(&fresh, "B2").borders, one(Some(thin), None, Some(thin), None), "B2 keeps its inside edges");
 
     // The main half re-applies whatever the menu last set.
-    click_arrow(&mut h, "Borders");
-    h.run_steps(2);
-    h.get_by_label("All Borders").click();
-    h.run_steps(2);
+    menu_item(&mut h, "Borders", "All Borders");
     run(&mut h, "edit.clearFormats", json!({}));
     assert_eq!(style(&h).borders, Borders::default(), "cleared");
     click(&mut h, "Borders");

@@ -328,6 +328,8 @@ pub struct SheetApp {
     window_close_handled: std::collections::HashSet<WindowId>,
     /// Whether the frame the title bar assumes has been asked for (see [`chrome`]): asked once.
     frame_asked: bool,
+    /// Whether GRIDCRAFT_FONT_DEBUG has been served for this font set.
+    fonts_dump_written: bool,
 }
 
 impl SheetApp {
@@ -382,6 +384,7 @@ impl SheetApp {
             window_focused: None,
             window_close_handled: std::collections::HashSet::new(),
             frame_asked: false,
+            fonts_dump_written: false,
         }
     }
 
@@ -390,6 +393,10 @@ impl SheetApp {
     ///
     /// [`logic`]: SheetApp::logic
     pub fn setup_context(ctx: &egui::Context, dark: bool) {
+        // The catalog of installed fonts is what makes a workbook's own face (宋体, 仿宋…) render
+        // with its real bold and italic. Reading the machine's font folders is the host's decision,
+        // not a library one: the desktop app calls this (see apps/gridcraft) and so does the
+        // snapshot example; a headless test keeps its own font state untouched.
         fonts::start_scan();
         Self::setup_context_for_language(ctx, dark, i18n::Language::En);
     }
@@ -1294,6 +1301,34 @@ impl SheetApp {
                     ctx.request_repaint();
                 }
             }
+        }
+        // GRIDCRAFT_FONT_DEBUG=<path>: write what the font set bound and what it has to fake.
+        // "bold does nothing" is a question about these two lists, and they only exist in a
+        // running app (the scan and the workbook's fonts are process state).
+        if self.fonts_ready
+            && !self.fonts_dump_written
+            && let Some(path) = std::env::var_os("GRIDCRAFT_FONT_DEBUG")
+        {
+            let used = self.used_fonts();
+            let mut out = String::new();
+            out.push_str(&format!("used: {used:?} scan_done={}\n", crate::fonts::scan_done()));
+            for name in &used {
+                let faces = crate::fonts::faces_of(name);
+                out.push_str(&format!("faces {name}: {:?}\n", faces.iter().map(|f| (f.weight, f.italic)).collect::<Vec<_>>()));
+            }
+            out.push_str(&format!("installed among: {:?}\n", crate::fonts::installed_among(&used)));
+            for (role, synth) in crate::fonts::bound_roles() {
+                out.push_str(&format!("{role}\tbold={} italic={}\n", synth.bold, synth.italic));
+            }
+            for name in &used {
+                for (b, i) in [(false, false), (true, false), (false, true), (true, true)] {
+                    let f = theme::cell_family(name, b, i);
+                    let s = theme::cell_synthesis(name, b, i);
+                    out.push_str(&format!("cell {name} bold={b} italic={i}\t{f:?}\tbold={} italic={}\n", s.bold, s.italic));
+                }
+            }
+            self.fonts_dump_written = true;
+            let _ = std::fs::write(std::path::PathBuf::from(path), out);
         }
         if let Some(answer) = self.desktop_theme.take_change() {
             self.desktop_dark = Some(answer);

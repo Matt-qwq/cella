@@ -404,6 +404,10 @@ fn main() -> eframe::Result<()> {
                 let Some(mut app) = pending.take() else {
                     return Err("the app was already created".into());
                 };
+                // Catalog the machine's fonts before the first frame: without the catalog no
+                // workbook font is ever bound, so a file set in 宋体 drew in a substitute family and
+                // its bold and italic fell back to Latin faces with no Chinese glyphs.
+                gridcraft_ui_egui::fonts::start_scan();
                 SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
                 if let Some(port) = control_port {
                     match control_server::start(port, cc.egui_ctx.clone()) {

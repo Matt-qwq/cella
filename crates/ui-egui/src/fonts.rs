@@ -460,6 +460,13 @@ pub fn synthesis(role: &str) -> Synthesis {
     bound().read().unwrap_or_else(|e| e.into_inner()).get(role).copied().unwrap_or_default()
 }
 
+/// Every bound role with what has to be faked for it, sorted by role: the font debug dump.
+pub fn bound_roles() -> Vec<(String, Synthesis)> {
+    let mut v: Vec<(String, Synthesis)> = bound().read().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, s)| (k.clone(), *s)).collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
 /// Serializes tests that mutate the process-wide bound-family registry.
 #[cfg(test)]
 pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
