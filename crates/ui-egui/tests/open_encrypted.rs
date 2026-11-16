@@ -162,11 +162,11 @@ fn app_open_over_the_control_channel_never_opens_a_dialog() {
         Outcome::Done(v) => v,
         Outcome::Screenshot { .. } => json!(null),
     };
-    let r = reply(handle(h.state_mut(), &ctx, "app.open", &json!({"path": p})));
+    let r = reply(handle(h.state_mut(), &ctx, "app.open", json!({"path": p})));
     assert_eq!(r["ok"], json!(false), "{r}");
     assert!(r["error"].as_str().unwrap_or_default().contains(gridcraft_engine::io::PASSWORD_REQUIRED), "{r}");
     assert_eq!(dialog(&h), None, "programmatic calls never open dialogs");
-    let r = reply(handle(h.state_mut(), &ctx, "app.open", &json!({"path": p, "password": PW})));
+    let r = reply(handle(h.state_mut(), &ctx, "app.open", json!({"path": p, "password": PW})));
     assert_eq!(r["ok"], json!(true), "{r}");
     assert_eq!(r["result"]["title"], json!("Secret.xlsx"));
     assert_eq!(a1(&h), Value::Number(42.0));

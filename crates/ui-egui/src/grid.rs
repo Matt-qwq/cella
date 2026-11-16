@@ -202,6 +202,14 @@ pub struct GridState {
     /// `review.checkAccessibility`'s issue count for the status bar, cached per document revision:
     /// the check walks every sheet's cells and objects, far too slow to repeat every frame.
     pub a11y: Option<((u64, u64), usize)>,
+    /// The status bar's selection statistics, cached per (document uid, revision, sheet and that
+    /// sheet's `Arc` identity) and the selection they were taken for: `display::stats` walks every
+    /// selected cell, and a whole column or Ctrl+A on a 1M-row sheet cost 130 ms and 840 ms a
+    /// frame. The key carries the selection too — a Sum left over from another selection is a wrong
+    /// answer, not a slow one — and the sheet's identity, because a recalculation
+    /// (`formulas.calculateNow`, F9) replaces the sheet's cells without bumping the revision, the
+    /// same guard `paper_view::cache_key` makes for its page grid.
+    pub stats: Option<((u64, u64, usize, usize), gridcraft_engine::Selection, gridcraft_engine::display::Stats)>,
     /// Conditional-format statistics and the laid-out charts and sparklines of the sheet being
     /// painted, kept across frames (see [`PaintCache`]).
     pub paint: Option<PaintCache>,

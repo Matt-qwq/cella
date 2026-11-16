@@ -407,7 +407,7 @@ fn language_switch_translates_the_ribbon_and_persists() {
     assert_eq!(h.state().ui.language, Language::En);
     // The language commands are listed with the other UI commands.
     let ctx = h.ctx.clone();
-    let gridcraft_ui_egui::control::Outcome::Done(listed) = gridcraft_ui_egui::control::handle(h.state_mut(), &ctx, "engine.commands", &json!({}))
+    let gridcraft_ui_egui::control::Outcome::Done(listed) = gridcraft_ui_egui::control::handle(h.state_mut(), &ctx, "engine.commands", json!({}))
     else {
         panic!("engine.commands returns a response");
     };

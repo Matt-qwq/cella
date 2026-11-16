@@ -226,14 +226,32 @@ fn filter_commands(commands: Vec<Json>, search: Option<&str>) -> Vec<Json> {
     commands.into_iter().filter(|c| has(c, "id") || has(c, "label") || in_menu(c)).collect()
 }
 
-pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -> Outcome {
-    let s = |k: &str| p.get(k).and_then(Json::as_str);
-    let f = |k: &str| p.get(k).and_then(Json::as_f64).unwrap_or(0.0) as f32;
+/// The string parameter `k` of a request: its value, or `None` when it is missing or not a string.
+fn str_param<'a>(p: &'a Json, k: &str) -> Option<&'a str> {
+    p.get(k).and_then(Json::as_str)
+}
+
+/// The number parameter `k` of a request, 0 when it is missing or not a number.
+fn num_param(p: &Json, k: &str) -> f32 {
+    p.get(k).and_then(Json::as_f64).unwrap_or(0.0) as f32
+}
+
+/// Run one control request. The params come in owned: a request that hands its whole params tree to
+/// a command — `engine.execute` of a whole-sheet `range.setValues`, or the command's own id as the
+/// method — takes it without a copy. Copying it once here and once in the host's control server is
+/// what made one 6M-cell write peak hundreds of megabytes above the same write in 20 chunks.
+pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, mut p: Json) -> Outcome {
     let out = match method {
         "engine.execute" | "command" | "ui.menu.invoke" => {
-            let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
-            let params = p.get("params").cloned().unwrap_or(json!({}));
-            wrap(run(app, id, if params.is_null() { json!({}) } else { params }))
+            let Some(id) = str_param(&p, "command").or(str_param(&p, "id")).map(str::to_string) else {
+                return err("missing `command`");
+            };
+            // Moved out of the request rather than copied: this tree is the bulk of a big write.
+            let params = match p.get_mut("params").map(Json::take) {
+                Some(params) if !params.is_null() => params,
+                _ => json!({}),
+            };
+            wrap(run(app, &id, params))
         }
         "engine.commands" => {
             let mut v: Vec<Json> = app.session.commands().into_iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
@@ -262,13 +280,13 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             ] {
                 v.push(json!({"id": id, "label": label, "params": params, "enabled": true, "ui": true}));
             }
-            ok(Json::Array(filter_commands(v, s("search"))))
+            ok(Json::Array(filter_commands(v, str_param(&p, "search"))))
         }
         "engine.journal" => ok(json!(app.session.journal.iter().map(|(id, p)| json!({"command": id, "params": p})).collect::<Vec<_>>())),
-        "document.inspect" | "sheet.read" | "cell.get" | "selection.stats" => wrap(app.session.run(method, p.clone())),
+        "document.inspect" | "sheet.read" | "cell.get" | "selection.stats" => wrap(app.session.run(method, p)),
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.ribbon" => {
-            app.ui.ribbon_tab = s("tab").unwrap_or("Home").to_string();
+            app.ui.ribbon_tab = str_param(&p, "tab").unwrap_or("Home").to_string();
             app.ui.ribbon_collapsed = false;
             ok(Json::Null)
         }
@@ -290,16 +308,17 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             ok(out)
         }
         "ui.dialog" => {
-            app.open_dialog(s("name").unwrap_or(""), p.clone());
+            let name = str_param(&p, "name").unwrap_or("").to_string();
+            app.open_dialog(&name, p);
             ok(json!({"dialog": app.dialog.as_ref().map(|d| d.name.clone())}))
         }
         "ui.dialog.set" => match app.dialog.as_mut() {
             Some(d) => {
-                let Some(field) = s("field") else { return err("missing `field`") };
+                let Some(field) = str_param(&p, "field") else { return err("missing `field`") };
                 if field == "tab" {
-                    d.tab = s("value").unwrap_or("").to_string();
+                    d.tab = str_param(&p, "value").unwrap_or("").to_string();
                 } else if field == "search" {
-                    d.search = s("value").unwrap_or("").to_string();
+                    d.search = str_param(&p, "value").unwrap_or("").to_string();
                 } else {
                     d.set_value(field, p.get("value").cloned().unwrap_or(Json::Null));
                 }
@@ -333,19 +352,19 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             ok(Json::Null)
         }
         "ui.edit.begin" => {
-            app.begin_edit(s("text").map(str::to_string), false);
+            app.begin_edit(str_param(&p, "text").map(str::to_string), false);
             ok(Json::Null)
         }
         "ui.edit.text" => match app.editor.as_mut() {
             Some(e) => {
-                e.text = s("text").unwrap_or("").to_string();
+                e.text = str_param(&p, "text").unwrap_or("").to_string();
                 e.caret = e.text.chars().count();
                 ok(Json::Null)
             }
             None => err("not editing"),
         },
         "ui.edit.commit" => {
-            let (dr, dc) = match s("move") {
+            let (dr, dc) = match str_param(&p, "move") {
                 Some("right") => (0, 1),
                 Some("up") => (-1, 0),
                 Some("left") => (0, -1),
@@ -363,8 +382,8 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             ok(Json::Null)
         }
         "ui.key" => {
-            let Some(k) = s("key").and_then(key_from) else { return err("unknown or missing `key`") };
-            let m = modifiers(p);
+            let Some(k) = str_param(&p, "key").and_then(key_from) else { return err("unknown or missing `key`") };
+            let m = modifiers(&p);
             app.synthetic.push_back(vec![
                 egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: m },
                 egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers: m },
@@ -372,62 +391,71 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             ok(Json::Null)
         }
         "ui.text" => {
-            app.synthetic.push_back(vec![egui::Event::Text(s("text").unwrap_or("").to_string())]);
+            app.synthetic.push_back(vec![egui::Event::Text(str_param(&p, "text").unwrap_or("").to_string())]);
             ok(Json::Null)
         }
         "ui.move" => {
-            app.synthetic.push_back(vec![egui::Event::PointerMoved(egui::pos2(f("x"), f("y")))]);
+            app.synthetic.push_back(vec![egui::Event::PointerMoved(egui::pos2(num_param(&p, "x"), num_param(&p, "y")))]);
             ok(Json::Null)
         }
         "ui.click" => {
-            let button = if s("button") == Some("right") { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
+            let button = if str_param(&p, "button") == Some("right") { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
             let count = p.get("count").and_then(Json::as_u64).unwrap_or(1).min(u64::from(u32::MAX)) as u32;
-            match push_click(app, egui::pos2(f("x"), f("y")), button, count, modifiers(p)) {
+            match push_click(app, egui::pos2(num_param(&p, "x"), num_param(&p, "y")), button, count, modifiers(&p)) {
                 Ok(()) => ok(Json::Null),
                 Err(e) => err(e),
             }
         }
         "ui.drag" => {
             let steps = p.get("steps").and_then(Json::as_u64).unwrap_or(8).min(u64::from(u32::MAX)) as usize;
-            match push_drag(app, egui::pos2(f("x"), f("y")), egui::pos2(f("toX"), f("toY")), steps, modifiers(p)) {
+            match push_drag(
+                app,
+                egui::pos2(num_param(&p, "x"), num_param(&p, "y")),
+                egui::pos2(num_param(&p, "toX"), num_param(&p, "toY")),
+                steps,
+                modifiers(&p),
+            ) {
                 Ok(()) => ok(Json::Null),
                 Err(e) => err(e),
             }
         }
         "ui.cell.click" => {
-            let Some(c) = s("cell").and_then(CellRef::parse) else { return err("missing `cell`") };
+            let Some(c) = str_param(&p, "cell").and_then(CellRef::parse) else { return err("missing `cell`") };
             let Some(pos) = cell_center(app, c) else { return err("no grid yet") };
-            let button = if s("button") == Some("right") { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
+            let button = if str_param(&p, "button") == Some("right") { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
             let count = p.get("count").and_then(Json::as_u64).unwrap_or(1).min(u64::from(u32::MAX)) as u32;
-            match push_click(app, pos, button, count, modifiers(p)) {
+            match push_click(app, pos, button, count, modifiers(&p)) {
                 Ok(()) => ok(json!({"x": pos.x, "y": pos.y})),
                 Err(e) => err(e),
             }
         }
         "ui.cell.drag" => {
-            let (Some(a), Some(b)) = (s("from").and_then(CellRef::parse), s("to").and_then(CellRef::parse)) else {
+            let (Some(a), Some(b)) = (str_param(&p, "from").and_then(CellRef::parse), str_param(&p, "to").and_then(CellRef::parse)) else {
                 return err("missing `from`/`to`");
             };
             let (Some(pa), Some(pb)) = (cell_center(app, a), cell_center(app, b)) else { return err("no grid yet") };
-            match push_drag(app, pa, pb, 8, modifiers(p)) {
+            match push_drag(app, pa, pb, 8, modifiers(&p)) {
                 Ok(()) => ok(Json::Null),
                 Err(e) => err(e),
             }
         }
         "ui.resize" => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(f("width").max(400.0), f("height").max(300.0))));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                num_param(&p, "width").max(400.0),
+                num_param(&p, "height").max(300.0),
+            )));
             ok(Json::Null)
         }
         "ui.focus" => {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ok(Json::Null)
         }
-        "ui.screenshot" => return Outcome::Screenshot { path: s("path").map(str::to_string) },
+        "ui.screenshot" => return Outcome::Screenshot { path: str_param(&p, "path").map(str::to_string) },
         "app.open" => {
-            let Some(path) = s("path") else { return err("missing `path`") };
+            let Some(path) = str_param(&p, "path") else { return err("missing `path`") };
             // Not `open_path`: that asks for a missing password in a dialog, and programmatic
             // calls never open one. A password-protected workbook takes `password` instead.
-            let r = app.run("file.open", json!({"path": path, "password": s("password")}));
+            let r = app.run("file.open", json!({"path": path, "password": str_param(&p, "password")}));
             if let Ok(r) = &r {
                 app.after_open(Some(path), r);
             }
@@ -438,7 +466,7 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
                 (Ok(_), None) => ok(json!({"title": app.session.active().map(|d| d.display_title())})),
             }
         }
-        "app.save" => wrap(app.run("file.save", json!({"path": s("path")}))),
+        "app.save" => wrap(app.run("file.save", json!({"path": str_param(&p, "path")}))),
         "app.quit" => {
             // Programmatic calls never open dialogs: quitting from here doesn't ask about unsaved work.
             app.allow_close = true;
@@ -446,7 +474,7 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             ok(Json::Null)
         }
         // Anything else that names a command runs it.
-        other if gridcraft_engine::find_command(other).is_some() => wrap(run(app, other, p.clone())),
+        other if gridcraft_engine::find_command(other).is_some() => wrap(run(app, other, p)),
         other => err(format!("unknown method `{other}`")),
     };
     ctx.request_repaint();
@@ -461,16 +489,19 @@ pub fn poll(app: &mut SheetApp, ctx: &egui::Context) {
         if !req.take() {
             continue;
         }
-        let outcome = handle(app, ctx, &req.method, &req.params);
+        // The params move into the handler: a big request's tree is handed to its command whole,
+        // never copied on the way (see `handle`).
+        let ControlRequest { method, params, reply, .. } = req;
+        let outcome = handle(app, ctx, &method, params);
         match outcome {
             Outcome::Done(v) => {
-                let _ = req.reply.send(v);
+                let _ = reply.send(v);
             }
             Outcome::Screenshot { path } => {
                 app.shots.token += 1;
                 let token = app.shots.token;
                 app.shots.queued.push((token, crate::now_ms() + 100.0, 0));
-                app.shots.pending.push((token, path, req.reply, crate::now_ms() + 8000.0));
+                app.shots.pending.push((token, path, reply, crate::now_ms() + 8000.0));
             }
         }
     }
@@ -608,7 +639,7 @@ mod tests {
         let mut session = gridcraft_engine::Session::new();
         session.new_workbook();
         let mut app = SheetApp::new(session, crate::Services::default());
-        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), "engine.commands", &json!({"search":"print"})) else {
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), "engine.commands", json!({"search":"print"})) else {
             panic!("command discovery must return immediately");
         };
         assert_eq!(reply["ok"], true);
@@ -633,7 +664,7 @@ mod tests {
         let mut session = gridcraft_engine::Session::new();
         session.new_workbook();
         let mut app = SheetApp::new(session, crate::Services::default());
-        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), "engine.commands", &json!({"search":"language"})) else {
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), "engine.commands", json!({"search":"language"})) else {
             panic!("command discovery must return immediately");
         };
         let commands = reply["result"].as_array().unwrap();

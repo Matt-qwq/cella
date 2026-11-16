@@ -42,6 +42,32 @@ fn accessibility_status(app: &mut SheetApp) -> (String, usize) {
     (label, n)
 }
 
+/// The status bar's Average / Count / Sum for the current selection, or `None` when the entry
+/// does not show (no document, a chart sheet, a single cell). `display::stats` walks every
+/// selected cell, so its answer is cached per (document uid, revision, sheet) and selection — a
+/// repaint reads the cache, an edit or a selection change recomputes once. The key carries the
+/// revision *and* the selection: a stale Sum is a wrong answer, worse than the stall it saves.
+fn selection_stats(app: &mut SheetApp) -> Option<gridcraft_engine::display::Stats> {
+    let d = app.session.active()?;
+    if d.selection.is_single_cell() {
+        return None;
+    }
+    // The sheet's `Arc` identity joins the key: a recalculation replaces its cells without
+    // bumping the revision, and the bar must follow F9 (paper_view's cache key carries the same guard).
+    let si = d.wb.active_sheet;
+    let sheet_ptr = d.wb.sheets.get(si).map_or(0, |sh| Arc::as_ptr(sh) as usize);
+    let key = (d.uid, d.revision, si, sheet_ptr);
+    if let Some((k, sel, st)) = &app.grid.stats
+        && *k == key
+        && *sel == d.selection
+    {
+        return Some(st.clone());
+    }
+    let st = gridcraft_engine::display::stats(d.wb.active()?, &d.selection.ranges);
+    app.grid.stats = Some((key, d.selection.clone(), st.clone()));
+    Some(st)
+}
+
 /// Rows of the All Sheets navigator as `(workbook index, name)`. Hidden sheets stay out, like on the tab strip:
 /// Unhide is the way to reach them.
 fn navigator_items(sheets: &[Arc<Sheet>]) -> Vec<(String, String)> {
@@ -401,12 +427,12 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
                         app.open_dialog("accessibility", json!({}));
                     }
                     ui.add_space(16.0);
-                    // Average / Count / Sum.
-                    if let Some(d) = app.session.active()
+                    // Average / Count / Sum, from the per-revision cache: the walk covers every
+                    // selected cell (see `selection_stats`).
+                    if let Some(st) = selection_stats(app)
+                        && let Some(d) = app.session.active()
                         && let Some(sh) = d.wb.active()
-                        && !d.selection.is_single_cell()
                     {
-                        let st = gridcraft_engine::display::stats(sh, &d.selection.ranges);
                         let fmt = |v: f64| {
                             let code = d.wb.styles.get(sh.style_id(d.selection.active)).num_fmt.as_str().to_string();
                             let code = if code == "General" { "#,##0.##########".to_string() } else { code };
@@ -523,6 +549,98 @@ mod tests {
         assert_eq!(app.session.active().unwrap().wb.active_sheet, 1, "the corrected value commits and the sheet changes");
         let a1 = gridcraft_engine::core::CellRef::parse("A1").unwrap();
         assert!(app.session.active().unwrap().wb.sheet(0).unwrap().cell(a1).is_some(), "the value lands on the first sheet");
+    }
+}
+
+#[cfg(test)]
+mod status_stats_tests {
+    use super::selection_stats;
+    use crate::SheetApp;
+    use serde_json::json;
+
+    fn app_with_values() -> SheetApp {
+        let mut session = gridcraft_engine::Session::default();
+        session.new_workbook();
+        let mut app = SheetApp::new(session, Default::default());
+        app.run("sheet.rename", json!({"sheet": 0, "name": "Data"})).unwrap();
+        for (cell, input) in [("A1", "1"), ("A2", "2"), ("B1", "10")] {
+            app.run("cell.set", json!({"cell": cell, "input": input})).unwrap();
+        }
+        app.run("selection.set", json!({"range": "A1:A2"})).unwrap();
+        app
+    }
+
+    #[test]
+    fn the_status_bar_statistics_follow_edits_and_selection_changes() {
+        let mut app = app_with_values();
+        let st = selection_stats(&mut app).expect("two selected cells show statistics");
+        assert_eq!((st.count, st.numeric), (2, 2));
+        assert_eq!(st.sum, 3.0);
+        assert_eq!(st.average, Some(1.5));
+        // A repaint without a change reads the cache rather than walking the selection again.
+        let revision = app.session.active().unwrap().revision;
+        let cached = app.grid.stats.as_ref().map(|(k, ..)| *k);
+        assert_eq!(selection_stats(&mut app).unwrap().sum, 3.0);
+        assert_eq!(app.grid.stats.as_ref().map(|(k, ..)| *k), cached, "the same selection keeps its entry");
+
+        // An edit recomputes: the stale Sum is the failure mode this cache risks.
+        app.run("cell.set", json!({"cell": "A2", "input": "40"})).unwrap();
+        assert_ne!(app.session.active().unwrap().revision, revision, "the edit bumps the revision");
+        let st = selection_stats(&mut app).expect("still two selected cells");
+        assert_eq!(st.sum, 41.0, "the Sum follows the edit");
+        assert_eq!(st.average, Some(20.5));
+
+        // So does a selection change: `selection.set` leaves the revision alone, so the selection
+        // is part of the key on its own.
+        let revision = app.session.active().unwrap().revision;
+        app.run("selection.set", json!({"range": "B1:B2"})).unwrap();
+        assert_eq!(app.session.active().unwrap().revision, revision, "a selection change is not an edit");
+        let st = selection_stats(&mut app).expect("two selected cells");
+        assert_eq!((st.count, st.numeric), (1, 1), "B2 is empty");
+        assert_eq!(st.sum, 10.0, "the Sum follows the selection");
+
+        // Another sheet has its own numbers even though the document revision did not change.
+        app.run("home.insertSheet", json!({})).unwrap();
+        app.run("cell.set", json!({"cell": "A1", "input": "7"})).unwrap();
+        app.run("selection.set", json!({"range": "A1:A1"})).unwrap();
+        assert!(selection_stats(&mut app).is_none(), "a single cell shows no statistics");
+    }
+
+    #[test]
+    fn a_recalculation_refreshes_the_statistics_without_an_edit() {
+        let mut app = app_with_values();
+        // Manual calculation: an edited cell is evaluated on its own, its dependents wait for
+        // `formulas.calculateNow` — which recalculates without an undo step, so the revision does
+        // not move while B1's answer changes under the same selection.
+        app.run("formulas.calculationOptions", json!({"mode": "manual"})).unwrap();
+        app.run("cell.set", json!({"cell": "B1", "input": "=A1*10"})).unwrap();
+        app.run("cell.set", json!({"cell": "A1", "input": "7"})).unwrap();
+        app.run("selection.set", json!({"range": "A1:B2"})).unwrap();
+        let before = selection_stats(&mut app).unwrap();
+        let revision = app.session.active().unwrap().revision;
+        app.run("formulas.calculateNow", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().revision, revision, "a recalculation is not an edit");
+        let fresh = {
+            let d = app.session.active().unwrap();
+            gridcraft_engine::display::stats(d.wb.active().unwrap(), &d.selection.ranges)
+        };
+        assert_ne!(fresh.sum, before.sum, "B1 waited for the calculation: the scenario is stale on purpose");
+        let st = selection_stats(&mut app).unwrap();
+        assert_eq!(st, fresh, "the bar shows what the sheet now holds, not what it held before F9");
+    }
+
+    #[test]
+    fn the_cache_does_not_outlive_its_document() {
+        let mut app = app_with_values();
+        assert_eq!(selection_stats(&mut app).unwrap().sum, 3.0);
+        let first = app.session.active().unwrap().uid;
+        app.run("file.new", json!({})).and_then(|_| app.run("cell.set", json!({"cell": "A1", "input": "5"}))).unwrap();
+        app.run("selection.set", json!({"range": "A1:A2"})).unwrap();
+        if let Some(d) = app.session.active() {
+            assert_ne!(d.uid, first, "a new workbook is a new document");
+        }
+        let st = selection_stats(&mut app).unwrap();
+        assert_eq!((st.count, st.sum), (1, 5.0), "the new document's own numbers, not the old one's");
     }
 }
 
