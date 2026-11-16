@@ -390,6 +390,93 @@ fn nominal_glyph(face: &ChainFace, c: char) -> Option<u16> {
     font.charmap().map(c).map(|g| u16::try_from(g.to_u32()).unwrap_or(0))
 }
 
+// ---------------------------------------------------------------- faked weight and slant
+
+/// The uv scale the atlas uses, for the mesh tests: the quad coordinates are texels, and the tests
+/// only care about the positions.
+fn uv_scale() -> egui::Vec2 {
+    egui::vec2(1.0 / 1024.0, 1.0 / 1024.0)
+}
+
+/// What the paint path hands the renderer: a faked style is one mesh (both passes in one draw
+/// call, or a shear), and a style the family has a face for is egui's own text shape — so a real
+/// bold is never painted twice either.
+#[test]
+fn a_faked_style_is_painted_as_one_mesh_and_a_real_one_as_a_text_shape() {
+    let ctx = ubuntu_context();
+    let engine = ubuntu_engine();
+    let line = engine.line(&ctx, &font(16.0), "Hello", Direction::Auto, Color32::BLACK);
+    let shapes = |synth| {
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            line.paint_styled(&ui.painter().clone(), Pos2::new(4.0, 20.0), Color32::BLACK, synth);
+        });
+        out.textures_delta.clear();
+        out.shapes.iter().map(|s| s.shape.clone()).collect::<Vec<egui::Shape>>()
+    };
+    let plain = shapes(Synthesis::NONE);
+    assert_eq!(plain.len(), 1);
+    assert!(matches!(plain.first(), Some(egui::Shape::Text(_))), "nothing to fake is egui's own text shape");
+
+    for synth in [Synthesis { bold: true, italic: false }, Synthesis { bold: false, italic: true }, Synthesis { bold: true, italic: true }] {
+        let painted = shapes(synth);
+        assert_eq!(painted.len(), 1, "{synth:?}: one shape, {painted:?}");
+        let egui::Shape::Mesh(mesh) = &painted[0] else { panic!("{synth:?} is painted as a mesh") };
+        assert!(!mesh.vertices.is_empty() && !mesh.indices.is_empty(), "{synth:?} draws glyphs");
+        // Normalized atlas coordinates: epaint divides a row's texel coordinates by the atlas
+        // size, and a mesh handed to the painter has to be in the same space.
+        assert!(mesh.vertices.iter().all(|v| (0.0..=1.0).contains(&v.uv.x) && (0.0..=1.0).contains(&v.uv.y)));
+    }
+}
+
+#[test]
+fn a_synthesised_bold_thickens_in_proportion_to_the_text() {
+    // An 11 pt cell at 100% zoom, where a point is a pixel at 96 dpi: inside the 0.5–0.8 px band
+    // Windows paints a faked bold in.
+    let at_100 = bold_offset(11.0 * 96.0 / 72.0, 1.0);
+    assert!((0.5..=0.8).contains(&at_100), "{at_100} pt is not a sub-pixel pass offset");
+    // The offset is a share of the em, so a 200% screen (twice the points, twice the pixels) is
+    // thickened by the same fraction of the letter.
+    let at_200 = bold_offset(2.0 * 11.0 * 96.0 / 72.0, 2.0);
+    assert!((at_200 - 2.0 * at_100).abs() < 1e-3, "200% must scale with pixels_per_point: {at_200} vs {at_100}");
+    // Tiny text still gains half a device pixel.
+    assert!(bold_offset(0.5, 2.0) >= 0.25 - 1e-4);
+    assert!(bold_offset(f32::NAN, f32::NAN).is_finite());
+}
+
+#[test]
+fn a_synthesised_bold_draws_the_glyphs_twice_and_an_italic_shears_them_about_the_baseline() {
+    let ctx = ubuntu_context();
+    let engine = ubuntu_engine();
+    let line = engine.line(&ctx, &font(16.0), "Hello", Direction::Auto, Color32::BLACK);
+    let plain = synthetic_mesh(&line.galley, line.size, Pos2::ZERO, Color32::BLACK, Synthesis::NONE, 0.0, 1.0, uv_scale());
+    assert!(!plain.vertices.is_empty() && !plain.indices.is_empty(), "the fixture draws glyphs");
+
+    // Bold: the same quads a second time, offset along the line by exactly one bold offset.
+    let bold = synthetic_mesh(&line.galley, line.size, Pos2::ZERO, Color32::BLACK, Synthesis { bold: true, italic: false }, 0.0, 1.0, uv_scale());
+    let n = plain.vertices.len();
+    assert_eq!(bold.vertices.len(), 2 * n, "one extra pass");
+    let dx = bold_offset(line.size, 1.0);
+    for i in 0..n {
+        let (a, b) = (plain.vertices[i], bold.vertices[i + n]);
+        assert!((bold.vertices[i].pos.x - a.pos.x).abs() < 1e-4, "the first pass keeps the pen where it was");
+        assert!((b.pos.x - a.pos.x - dx).abs() < 1e-4, "the second pass sits {dx} pt to the right");
+        assert!((b.pos.y - a.pos.y).abs() < 1e-4, "a bold pass does not move vertically");
+    }
+
+    // Italic: each vertex moves by its height above the row's baseline, and nothing else changes.
+    let italic = synthetic_mesh(&line.galley, line.size, Pos2::ZERO, Color32::BLACK, Synthesis { bold: false, italic: true }, 0.0, 1.0, uv_scale());
+    let row = line.galley.rows.first().expect("one row");
+    let baseline = row.pos.y + row.size.y * 0.82;
+    assert_eq!(italic.vertices.len(), n, "a shear adds no pass");
+    for (a, b) in plain.vertices.iter().zip(&italic.vertices) {
+        assert!((b.pos.y - a.pos.y).abs() < 1e-4, "a shear moves no glyph up or down");
+        let expected = a.pos.x + SYNTHETIC_OBLIQUE * (baseline - a.pos.y);
+        assert!((b.pos.x - expected).abs() < 1e-4, "the shear is proportional to the height above the baseline");
+    }
+    // The baseline itself is where it was: the pen, the measure and the cell rectangle still fit.
+    assert!(plain.vertices.iter().any(|v| (v.pos.y - baseline).abs() < 1.0), "the fixture has glyph pixels at the baseline");
+}
+
 // ---------------------------------------------------------------- wrapped text
 
 #[test]

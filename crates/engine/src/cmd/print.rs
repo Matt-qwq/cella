@@ -721,6 +721,18 @@ impl Metrics<'_> {
     fn w(&self, font: Font, size: f32, text: &str) -> f32 {
         gridcraft_pdf::text_width_with(self.face, font, size, text)
     }
+
+    /// What the PDF writer has to fake for a cell in this style.
+    ///
+    /// The page draws every character WinAnsiEncoding lacks with one *regular* face: the embedded
+    /// subset when `fontPath`/the system resolution found one, the predefined Song CID font
+    /// otherwise. So a bold or italic cell in 宋体 needs the weight and slant synthesised on the
+    /// page exactly as the grid synthesises them on screen; a face that already is bold or italic
+    /// (an explicit `fontPath`) is printed as it is, so nothing is double-stroked or doubly
+    /// slanted. Text a standard font sets is unaffected either way (see `gridcraft_pdf::Synthesis`).
+    fn synthesis(&self, bold: bool, italic: bool) -> gridcraft_pdf::Synthesis {
+        gridcraft_pdf::Synthesis { bold: bold && self.face.is_none_or(|f| !f.is_bold()), italic: italic && self.face.is_none_or(|f| !f.is_italic()) }
+    }
 }
 
 /// Maps chart-space coordinates to the page.
@@ -1161,6 +1173,7 @@ fn draw_text(
     let st = &l.style;
     let mut size = st.font.size.clamp(1.0, 409.0) * b.scale;
     let font = font_for(st);
+    let synth = m.synthesis(st.font.bold, st.font.italic);
     let pad = PAD_PX * b.k;
     let indent = st.align.indent as f32 * 9.0 * b.k;
     let avail = (w - 2.0 * pad - indent).max(0.0);
@@ -1283,7 +1296,7 @@ fn draw_text(
             } else {
                 (x + pad + (last - i) * line_h, y + pad + size * 0.8)
             };
-            pg.text_rotated(ox, oy, size, font, color, t, angle);
+            pg.text_rotated_styled(ox, oy, size, font, color, t, angle, synth);
         }
         pg.restore();
         return;
@@ -1295,7 +1308,7 @@ fn draw_text(
         for ch in chars {
             let s = ch.to_string();
             let cw = m.w(font, size, &s);
-            pg.text(x + (w - cw) / 2.0, yy, size, font, color, &s);
+            pg.text_styled(x + (w - cw) / 2.0, yy, size, font, color, &s, synth);
             yy += line_h;
             if yy > y + h + line_h {
                 break;
@@ -1315,7 +1328,7 @@ fn draw_text(
         if ly - size > y + h || ly < y - line_h {
             continue;
         }
-        pg.text(lx, ly, size, font, color, line);
+        pg.text_styled(lx, ly, size, font, color, line, synth);
         if st.font.underline != Underline::None {
             let uw = (size * 0.06).max(0.2);
             pg.stroke_line(lx, ly + size * 0.12, lx + lw, ly + size * 0.12, uw, color);
@@ -1993,6 +2006,21 @@ mod tests {
     fn contains(hay: &[u8], needle: &str) -> bool {
         hay.windows(needle.len()).any(|w| w == needle.as_bytes())
     }
+    /// The six numbers of every text matrix (`Tm`) in a document's content streams.
+    fn matrices(pdf: &[u8]) -> Vec<[f32; 6]> {
+        String::from_utf8_lossy(pdf)
+            .split('\n')
+            .filter(|l| l.ends_with(" Tm"))
+            .filter_map(|l| {
+                let v: Vec<f32> = l.trim_end_matches(" Tm").split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                <[f32; 6]>::try_from(v).ok()
+            })
+            .collect()
+    }
+    /// Whether any text on the page is sheared (a synthesised italic).
+    fn shears(pdf: &[u8]) -> bool {
+        matrices(pdf).iter().any(|m| m[2].abs() > 0.1)
+    }
 
     #[test]
     fn pdf_export_keeps_safe_links_on_their_printed_pages() {
@@ -2015,6 +2043,34 @@ mod tests {
         let cropped = String::from_utf8_lossy(&cropped);
         assert_eq!(cropped.matches("/Subtype /Link").count(), 1);
         assert!(!cropped.contains("/Dest ["));
+    }
+
+    /// The page face for CJK is one *regular* face (宋体's `simsun.ttc` on Windows, or a resolved
+    /// system face, or the predefined Song CID font): a Bold cell has to be synthesised the way the
+    /// grid synthesises it, or Bold would print as regular.
+    #[test]
+    fn a_bold_cell_outside_winansi_is_stroked_in_the_pdf() {
+        let mut s = s();
+        s.execute("cell.set", json!({"cell": "A1", "input": "合一"})).unwrap();
+        // Reading the flags back keeps the export independent of which face this machine resolves.
+        s.execute("home.bold", json!({"range": "A1", "on": true})).unwrap();
+        let (pdf, _) = pdf_of(&mut s, json!({"range": "A1"}));
+        assert!(contains(&pdf, " w 2 Tr"), "a bold 宋体-style cell is stroked, not only filled");
+        assert!(contains(&pdf, "0 Tr"), "the text render mode is restored");
+        // Italic shears the text matrix instead (the true slant belongs to the face it has not).
+        s.execute("home.italic", json!({"range": "A1", "on": true})).unwrap();
+        let (italic_pdf, _) = pdf_of(&mut s, json!({"range": "A1"}));
+        assert!(shears(&italic_pdf), "the cell's text matrix is sheared");
+        // And with neither flag the page is exactly what it always was.
+        s.execute("home.bold", json!({"range": "A1", "on": false})).unwrap();
+        s.execute("home.italic", json!({"range": "A1", "on": false})).unwrap();
+        let (pdf, _) = pdf_of(&mut s, json!({"range": "A1"}));
+        assert!(!contains(&pdf, "2 Tr"), "plain text keeps the default render mode");
+        assert!(!shears(&pdf), "plain text is not sheared");
+        // The shear is Windows' 12° and it only leans the glyphs: the matrix still scales and
+        // turns the line the way it did, so the pen position and the alignment are unaffected.
+        let m = matrices(&italic_pdf).into_iter().find(|m| (m[2] - 0.2126).abs() < 0.002).expect("a sheared matrix");
+        assert!(m[0] == 1.0 && m[1] == 0.0 && m[3] == 1.0, "{m:?}");
     }
 
     #[test]

@@ -267,6 +267,8 @@ struct FamilySlot {
     bold: bool,
     italic: bool,
     family: FontFamily,
+    /// What the painter has to fake for this role (see [`crate::fonts::Synthesis`]).
+    synthesis: crate::fonts::Synthesis,
 }
 
 thread_local! {
@@ -299,7 +301,15 @@ fn family_slot(name: &str, bold: bool, italic: bool) -> usize {
 /// The answer is memoised per thread (see [`FAMILY_MEMO`]): the grid asks once per visible cell,
 /// every frame, and this is on that path.
 pub fn cell_family(name: &str, bold: bool, italic: bool) -> FontFamily {
-    cell_family_at(name, bold, italic, crate::fonts::bound_generation())
+    cell_role_at(name, bold, italic, crate::fonts::bound_generation()).0
+}
+
+/// What the painter has to fake for this cell's font: 宋体 (`simsun.ttc`) is one regular face, so
+/// its Bold is painted twice and its Italic sheared, the way Windows does it; 等线 has real faces
+/// and answers [`crate::fonts::Synthesis::NONE`]. Same memo and same cost as [`cell_family`]: one
+/// lookup per (name, weight, slant) per font set, never a per-cell font-file search.
+pub fn cell_synthesis(name: &str, bold: bool, italic: bool) -> crate::fonts::Synthesis {
+    cell_role_at(name, bold, italic, crate::fonts::bound_generation()).1
 }
 
 /// [`cell_family`] against a font set named by its generation.
@@ -307,36 +317,49 @@ pub fn cell_family(name: &str, bold: bool, italic: bool) -> FontFamily {
 /// The generation is a parameter so the memo can be tested without racing every other test in the
 /// binary that binds fonts (which moves the live generation under this one's feet): a memo keyed by
 /// a number is exactly as testable as the number is.
+#[cfg(test)]
 fn cell_family_at(name: &str, bold: bool, italic: bool, generation: u64) -> FontFamily {
+    cell_role_at(name, bold, italic, generation).0
+}
+
+/// The memoised pair behind [`cell_family`] and [`cell_synthesis`]: the role family and what has to
+/// be faked for it, computed together so a cell asks once.
+fn cell_role_at(name: &str, bold: bool, italic: bool, generation: u64) -> (FontFamily, crate::fonts::Synthesis) {
     let slot = family_slot(name, bold, italic);
     let remembered = FAMILY_MEMO.with(|memo| {
         let memo = memo.borrow();
         match memo.get(slot).and_then(Option::as_ref) {
-            Some(e) if e.generation == generation && e.bold == bold && e.italic == italic && e.name == name => Some(e.family.clone()),
+            Some(e) if e.generation == generation && e.bold == bold && e.italic == italic && e.name == name => Some((e.family.clone(), e.synthesis)),
             _ => None,
         }
     });
-    if let Some(family) = remembered {
-        return family;
+    if let Some(answer) = remembered {
+        return answer;
     }
-    let family = resolve_cell_family(name, bold, italic);
+    let (family, synthesis) = resolve_cell_role(name, bold, italic);
     FAMILY_MEMO.with(|memo| {
         if let Some(slot) = memo.borrow_mut().get_mut(slot) {
-            *slot = Some(FamilySlot { generation, name: name.to_owned(), bold, italic, family: family.clone() });
+            *slot = Some(FamilySlot { generation, name: name.to_owned(), bold, italic, family: family.clone(), synthesis });
         }
     });
-    family
+    (family, synthesis)
 }
 
 /// [`cell_family`] without the memo: the role family built from the name and style.
+#[cfg(test)]
 fn resolve_cell_family(name: &str, bold: bool, italic: bool) -> FontFamily {
+    resolve_cell_role(name, bold, italic).0
+}
+
+/// The role family for a cell font name and style, and what has to be faked for it.
+fn resolve_cell_role(name: &str, bold: bool, italic: bool) -> (FontFamily, crate::fonts::Synthesis) {
     let role = crate::fonts::role_key(name, bold, italic);
     if crate::fonts::is_bound(&role) {
-        return FontFamily::Name(role.into());
+        return (FontFamily::Name(role.clone().into()), crate::fonts::synthesis(&role));
     }
     let lower = name.to_ascii_lowercase();
     if lower.contains("courier") || lower.contains("mono") || lower.contains("consolas") {
-        return FontFamily::Name(MONO.into());
+        return (FontFamily::Name(MONO.into()), crate::fonts::Synthesis::NONE);
     }
     if lower.contains("times")
         || lower.contains("georgia")
@@ -344,17 +367,15 @@ fn resolve_cell_family(name: &str, bold: bool, italic: bool) -> FontFamily {
         || lower.contains("serif") && !lower.contains("sans")
         || lower.contains("garamond")
     {
-        return FontFamily::Name(SERIF.into());
+        return (FontFamily::Name(SERIF.into()), crate::fonts::Synthesis::NONE);
     }
-    FontFamily::Name(
-        match (bold, italic) {
-            (true, true) => CELL_BOLD_ITALIC,
-            (true, false) => CELL_BOLD,
-            (false, true) => CELL_ITALIC,
-            (false, false) => CELL,
-        }
-        .into(),
-    )
+    let role = match (bold, italic) {
+        (true, true) => CELL_BOLD_ITALIC,
+        (true, false) => CELL_BOLD,
+        (false, true) => CELL_ITALIC,
+        (false, false) => CELL,
+    };
+    (FontFamily::Name(role.into()), crate::fonts::synthesis(role))
 }
 
 /// Width in points, at 100% zoom, of one line of cell text drawn as the grid draws it: in the
@@ -622,7 +643,7 @@ pub fn font_definitions_with(language: crate::i18n::Language, used: &[String], e
     let mut fonts = FontDefinitions::default();
     let base_prop: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let base_mono: Vec<String> = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
-    let mut bound: Vec<String> = Vec::new();
+    let mut bound: Vec<crate::fonts::BoundRole> = Vec::new();
     // The non-Latin fallback faces have to sit at the end of each chain: a Latin font owns Latin,
     // and epaint picks the first face that has the glyph, so they only catch their own scripts.
     let fallback = load_fallback(&mut fonts, HanOrder::of(language));
@@ -647,8 +668,9 @@ pub fn font_definitions_with(language: crate::i18n::Language, used: &[String], e
         chain.extend(if role == MONO { base_mono.clone() } else { base_prop.clone() });
         chain.extend(fallback.iter().cloned());
         chain.retain(|k| fonts.font_data.contains_key(k));
+        let synthesis = builtin_synthesis(role, &chain);
         fonts.families.insert(FontFamily::Name(role.into()), chain);
-        bound.push(role.to_string());
+        bound.push(crate::fonts::BoundRole { key: role.to_string(), synthesis });
     }
     // Installed workbook fonts, so a cell's chosen font actually renders in it. The workbook's
     // East Asian face follows each of them, for the scripts the Latin face has no glyphs for.
@@ -680,9 +702,21 @@ pub fn font_definitions_with(language: crate::i18n::Language, used: &[String], e
     }
     drop_unparseable_fonts(&mut fonts);
     // Only families egui still has data for count as bound (a dropped face can empty a chain).
-    bound.retain(|f| fonts.families.get(&FontFamily::Name(f.as_str().into())).is_some_and(|c| !c.is_empty()));
-    crate::fonts::set_bound(bound);
+    bound.retain(|r| fonts.families.get(&FontFamily::Name(r.key.as_str().into())).is_some_and(|c| !c.is_empty()));
+    crate::fonts::set_bound(bound.into_iter().map(|r| (r.key, r.synthesis)));
     fonts
+}
+
+/// What a built-in cell role has to fake: its candidates are files named per style
+/// (`calibrib.ttf`, `arialbi.ttf`), so a chain that starts with one of those has the face it
+/// asked for. A machine with none of them (no Calibri, Carlito, Arial, Liberation or DejaVu) chains
+/// down to the plain regular `sys-cell`, and then the weight or slant is synthesised, as for a
+/// workbook family that ships only one face.
+fn builtin_synthesis(role: &str, chain: &[String]) -> crate::fonts::Synthesis {
+    let head = chain.first().map(String::as_str).unwrap_or_default();
+    let bold = matches!(role, CELL_BOLD | CELL_BOLD_ITALIC) && head != "sys-cell-bold" && head != "sys-cell-bold-italic";
+    let italic = matches!(role, CELL_ITALIC | CELL_BOLD_ITALIC) && head != "sys-cell-italic" && head != "sys-cell-bold-italic";
+    crate::fonts::Synthesis { bold, italic }
 }
 
 /// Loads the system non-Latin fallback faces (one file per script family) and returns their keys so
@@ -1069,9 +1103,13 @@ pub fn color32(rgb: [u8; 3]) -> Color32 {
 mod font_binding_tests {
     use super::*;
 
-    /// The families [`font_definitions`] always binds, whatever is installed.
-    fn always_bound() -> Vec<String> {
-        [UI, UI_BOLD, CELL, CELL_BOLD, CELL_ITALIC, CELL_BOLD_ITALIC, SERIF, MONO].iter().map(|s| s.to_string()).collect()
+    /// The families [`font_definitions`] always binds, whatever is installed, with nothing to
+    /// fake (each comes from a per-style font file).
+    fn always_bound() -> Vec<(String, crate::fonts::Synthesis)> {
+        [UI, UI_BOLD, CELL, CELL_BOLD, CELL_ITALIC, CELL_BOLD_ITALIC, SERIF, MONO]
+            .iter()
+            .map(|s| (s.to_string(), crate::fonts::Synthesis::NONE))
+            .collect()
     }
 
     #[test]
@@ -1091,7 +1129,7 @@ mod font_binding_tests {
     fn a_bound_installed_font_is_used_by_name() {
         let _g = crate::fonts::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let role = crate::fonts::role_key("Ubuntu", true, false);
-        crate::fonts::set_bound(always_bound().into_iter().chain([role.clone()]));
+        crate::fonts::set_bound(always_bound().into_iter().chain([(role.clone(), crate::fonts::Synthesis::NONE)]));
         assert!(matches!(cell_family("Ubuntu", true, false), FontFamily::Name(f) if *f == *role));
         // The same family in a style that wasn't bound falls back to a built-in role that is.
         let FontFamily::Name(fallback) = cell_family("Ubuntu", false, true) else { panic!("should name a family") };
@@ -1506,8 +1544,14 @@ mod tests {
         // Nothing binds that name, so the answer is the built-in bold role family.
         assert_eq!(family(NAME, true, false), FontFamily::Name(CELL_BOLD.into()));
         assert_eq!(family(NAME, true, false), resolve_cell_family(NAME, true, false), "the memo agrees with the real answer");
-        let planted =
-            |generation: u64| FamilySlot { generation, name: NAME.to_owned(), bold: true, italic: false, family: FontFamily::Name(SERIF.into()) };
+        let planted = |generation: u64| FamilySlot {
+            generation,
+            name: NAME.to_owned(),
+            bold: true,
+            italic: false,
+            family: FontFamily::Name(SERIF.into()),
+            synthesis: crate::fonts::Synthesis::NONE,
+        };
         // A live slot is used as it stands: that is what makes this a memo and not a recompute.
         FAMILY_MEMO.with(|memo| memo.borrow_mut()[slot] = Some(planted(generation)));
         assert_eq!(family(NAME, true, false), FontFamily::Name(SERIF.into()));
@@ -1518,6 +1562,28 @@ mod tests {
         assert_eq!(family(NAME, false, false), FontFamily::Name(CELL.into()));
         assert_eq!(family(NAME, false, true), FontFamily::Name(CELL_ITALIC.into()));
         assert_eq!(family(NAME, true, true), FontFamily::Name(CELL_BOLD_ITALIC.into()));
+    }
+
+    /// The built-in cell roles pick a file per style; only a chain that had to fall back to the
+    /// plain regular face has anything to fake.
+    #[test]
+    fn a_built_in_cell_role_fakes_only_the_style_it_could_not_load() {
+        let chain = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        let none = crate::fonts::Synthesis::NONE;
+        // Every style has its own file.
+        assert_eq!(builtin_synthesis(CELL, &chain(&["sys-cell", "base"])), none);
+        assert_eq!(builtin_synthesis(CELL_BOLD, &chain(&["sys-cell-bold", "base"])), none);
+        assert_eq!(builtin_synthesis(CELL_ITALIC, &chain(&["sys-cell-italic", "base"])), none);
+        assert_eq!(builtin_synthesis(CELL_BOLD_ITALIC, &chain(&["sys-cell-bold-italic", "base"])), none);
+        // No bold file at all: the bold roles chained to the regular face, so the weight is faked.
+        assert_eq!(builtin_synthesis(CELL_BOLD, &chain(&["sys-cell", "base"])), crate::fonts::Synthesis { bold: true, italic: false });
+        assert_eq!(builtin_synthesis(CELL_ITALIC, &chain(&["sys-cell", "base"])), crate::fonts::Synthesis { bold: false, italic: true });
+        // Both missing: both faked; a regular role never is.
+        assert_eq!(builtin_synthesis(CELL_BOLD_ITALIC, &chain(&["sys-cell", "base"])), crate::fonts::Synthesis { bold: true, italic: true });
+        assert_eq!(builtin_synthesis(CELL, &chain(&[])), none);
+        // A bold file but no bold-italic: the chain starts at the regular face, and faking both is
+        // closer to Excel than drawing it plain.
+        assert_eq!(builtin_synthesis(CELL_BOLD_ITALIC, &chain(&["sys-cell", "base"])), crate::fonts::Synthesis { bold: true, italic: true });
     }
 
     #[test]

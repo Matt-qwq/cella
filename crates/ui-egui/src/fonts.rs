@@ -286,12 +286,59 @@ pub fn role_key(family: &str, bold: bool, italic: bool) -> String {
     format!("fnt:{family}:{}{}", if bold { 'b' } else { 'n' }, if italic { 'i' } else { 'n' })
 }
 
+/// Weight at and above which a face counts as the bold of its family (`Bold`, `SemiBold`, …).
+const BOLD_WEIGHT: f32 = 600.0;
+
+/// What a role's text has to fake, because the family has no face of its own for the weight or
+/// slant the cell asks for.
+///
+/// 宋体 is one regular face (`simsun.ttc`): Windows GDI and DirectWrite *synthesise* its bold (the
+/// outline is drawn a fraction of a pixel to the right of itself) and its italic (the outline is
+/// sheared about the baseline), which is what makes Bold and Italic look right in Excel. egui and
+/// epaint do neither, so the painter and the PDF writer do — and only for a role that really
+/// resolved to the regular face: a family with the face itself (等线/DengXian's Bold is a file of
+/// its own) is drawn with it and never double-painted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Synthesis {
+    /// Paint the text twice, the second pass a fraction of a pixel to the right.
+    pub bold: bool,
+    /// Shear the text about its baseline into an oblique.
+    pub italic: bool,
+}
+
+impl Synthesis {
+    /// Nothing to fake: the family has the faces the role asked for.
+    pub const NONE: Self = Self { bold: false, italic: false };
+
+    /// Whether the role is drawn exactly as bound.
+    pub fn is_none(self) -> bool {
+        !self.bold && !self.italic
+    }
+}
+
+/// What the painter has to fake for a role whose primary face is `primary`: the role's own weight
+/// and slant, minus what that face already is.
+fn synthesis_of(primary: &Face, bold: bool, italic: bool) -> Synthesis {
+    Synthesis { bold: bold && primary.weight < BOLD_WEIGHT, italic: italic && !primary.italic }
+}
+
+/// What has to be faked for `(bold, italic)` out of the faces a family was found to have — the
+/// decision [`bind_faces`] records.
+///
+/// Answered from a face list, so it is tested with fake faces on a machine that has no fonts at all:
+/// one regular face (宋体) fakes both; Regular + Bold fakes only the slant; a family with all four
+/// faces fakes nothing and is therefore never double-painted.
+pub fn synthesis_for(faces: &[Face], bold: bool, italic: bool) -> Synthesis {
+    pick_face(faces, bold, italic).map(|primary| synthesis_of(primary, bold, italic)).unwrap_or_default()
+}
+
 /// The face to use for a role, or `None` when the family has no faces. Missing bold/italic faces
-/// fall back to the family's regular face, so every bound role has data behind it.
+/// fall back to the family's regular face, so every bound role has data behind it — and then
+/// [`synthesis_of`] says the style has to be faked for it.
 fn pick_face(faces: &[Face], bold: bool, italic: bool) -> Option<&Face> {
     let regular = || faces.iter().find(|f| !f.italic && (f.weight - 400.0).abs() < 1.0);
     let exact = |wanted_bold: bool, wanted_italic: bool| {
-        faces.iter().find(|f| f.italic == wanted_italic && if wanted_bold { f.weight >= 600.0 } else { f.weight < 600.0 })
+        faces.iter().find(|f| f.italic == wanted_italic && if wanted_bold { f.weight >= BOLD_WEIGHT } else { f.weight < BOLD_WEIGHT })
     };
     (match (bold, italic) {
         (true, true) => exact(true, true).or_else(|| exact(true, false)).or_else(|| exact(false, true)),
@@ -309,11 +356,20 @@ fn face_key(face: &Face) -> String {
     format!("fnt-src:{}:{}", face.path.display(), face.index)
 }
 
+/// One role family [`bind_faces`] bound to font data, and what the painter must fake for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundRole {
+    /// The egui family name of the role (see [`role_key`]).
+    pub key: String,
+    /// The weight and slant the family has no faces of its own for (see [`Synthesis`]).
+    pub synthesis: Synthesis,
+}
+
 /// Bind one installed family's faces into `fonts` under `family` (the name the workbook uses), one
 /// egui family per cell role, and return the
-/// role keys that are now bound. A role with no exact face chains to the family's regular face, so
-/// no role is ever left pointing at missing data (egui panics on that). A family with no faces
-/// binds nothing.
+/// roles that are now bound. A role with no exact face chains to the family's regular face, so
+/// no role is ever left pointing at missing data (egui panics on that); such a role comes back with
+/// the weight or slant it is missing marked as synthesised. A family with no faces binds nothing.
 ///
 /// `script` holds the workbook's East Asian faces (the theme's 宋体): they sit right after the
 /// family's own faces, so a Calibri cell draws Latin in Calibri and Chinese in 宋体, as Excel does,
@@ -321,14 +377,15 @@ fn face_key(face: &Face) -> String {
 ///
 /// Each role's chain ends with egui's default proportional fonts, so glyphs the installed font
 /// lacks (emoji, a stray script) still render.
-pub fn bind_faces(fonts: &mut egui::FontDefinitions, family: &str, faces: &[Face], script: &[Face]) -> Vec<String> {
+pub fn bind_faces(fonts: &mut egui::FontDefinitions, family: &str, faces: &[Face], script: &[Face]) -> Vec<BoundRole> {
     if faces.is_empty() {
         return Vec::new();
     }
     let base: Vec<String> = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
-    let mut bound: Vec<String> = Vec::new();
+    let mut bound: Vec<BoundRole> = Vec::new();
     for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
         let Some(primary) = pick_face(faces, bold, italic) else { continue };
+        let synthesis = synthesis_of(primary, bold, italic);
         let mut chain: Vec<String> = Vec::new();
         for face in [Some(primary), pick_face(faces, false, false)].into_iter().flatten().chain(script.iter()) {
             let key = face_key(face);
@@ -349,28 +406,29 @@ pub fn bind_faces(fonts: &mut egui::FontDefinitions, family: &str, faces: &[Face
         chain.extend(base.iter().cloned());
         let role = role_key(family, bold, italic);
         fonts.families.insert(egui::FontFamily::Name(role.clone().into()), chain);
-        bound.push(role);
+        bound.push(BoundRole { key: role, synthesis });
     }
     bound
 }
 
 /// Bind every installed face of `family`, found by any of its names (see [`bind_faces`]).
-pub fn bind_family(fonts: &mut egui::FontDefinitions, family: &str) -> Vec<String> {
+pub fn bind_family(fonts: &mut egui::FontDefinitions, family: &str) -> Vec<BoundRole> {
     bind_faces(fonts, family, &faces_of(family), &[])
 }
 
 /// Bind every installed face of `family` with `script` (the workbook's East Asian faces) behind
 /// them (see [`bind_faces`]).
-pub fn bind_family_with_script(fonts: &mut egui::FontDefinitions, family: &str, script: &[Face]) -> Vec<String> {
+pub fn bind_family_with_script(fonts: &mut egui::FontDefinitions, family: &str, script: &[Face]) -> Vec<BoundRole> {
     bind_faces(fonts, family, &faces_of(family), script)
 }
 
-/// The role families currently bound to font data. `cell_family` consults this, so it never names a
-/// family egui hasn't been given.
-static BOUND: OnceLock<std::sync::RwLock<HashSet<String>>> = OnceLock::new();
+/// The role families currently bound to font data, and what has to be faked for each of them.
+/// `cell_family` consults this, so it never names a family egui hasn't been given, and
+/// `cell_synthesis` reads the faking decision out of the same map.
+static BOUND: OnceLock<std::sync::RwLock<std::collections::HashMap<String, Synthesis>>> = OnceLock::new();
 
-fn bound() -> &'static std::sync::RwLock<HashSet<String>> {
-    BOUND.get_or_init(|| std::sync::RwLock::new(HashSet::new()))
+fn bound() -> &'static std::sync::RwLock<std::collections::HashMap<String, Synthesis>> {
+    BOUND.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
 /// Counts changes to the registry: [`crate::theme::cell_family`] memoises its answers per thread
@@ -383,15 +441,23 @@ pub fn bound_generation() -> u64 {
     BOUND_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Record the role families a freshly built [`egui::FontDefinitions`] bound.
-pub fn set_bound(keys: impl IntoIterator<Item = String>) {
-    *bound().write().unwrap_or_else(|e| e.into_inner()) = keys.into_iter().collect();
+/// Record the role families a freshly built [`egui::FontDefinitions`] bound, with the weight and
+/// slant each of them has to fake (`(role key, synthesis)`).
+pub fn set_bound(roles: impl IntoIterator<Item = (String, Synthesis)>) {
+    *bound().write().unwrap_or_else(|e| e.into_inner()) = roles.into_iter().collect();
     BOUND_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Is this exact role family bound to font data?
 pub fn is_bound(role: &str) -> bool {
-    bound().read().unwrap_or_else(|e| e.into_inner()).contains(role)
+    bound().read().unwrap_or_else(|e| e.into_inner()).contains_key(role)
+}
+
+/// What the painter must fake for this exact role family: the decision [`bind_faces`] made when the
+/// font set was built. Nothing for a role that has the faces it asked for, and nothing for a role
+/// that isn't bound at all (its caller then names a built-in family instead).
+pub fn synthesis(role: &str) -> Synthesis {
+    bound().read().unwrap_or_else(|e| e.into_inner()).get(role).copied().unwrap_or_default()
 }
 
 /// Serializes tests that mutate the process-wide bound-family registry.
@@ -428,10 +494,13 @@ mod tests {
         // A role key is only safe to name after font_definitions bound it.
         let k = role_key("Some Installed Font", true, false);
         assert!(!is_bound(&k));
-        set_bound([k.clone()]);
+        assert!(!is_bound(&k) && synthesis(&k).is_none());
+        set_bound([(k.clone(), Synthesis { bold: true, italic: false })]);
         assert!(is_bound(&k));
+        assert_eq!(synthesis(&k), Synthesis { bold: true, italic: false }, "the faking decision is recorded with the role");
         set_bound([]);
         assert!(!is_bound(&k));
+        assert!(synthesis(&k).is_none(), "an unbound role fakes nothing");
     }
 
     #[test]
@@ -484,10 +553,17 @@ mod tests {
         let mut fonts = egui::FontDefinitions::default();
         let bound = bind_faces(&mut fonts, "Ubuntu", std::slice::from_ref(&face), &[]);
         assert_eq!(bound.len(), 4, "regular, bold, italic and bold-italic roles");
-        for key in &bound {
-            let chain = fonts.families.get(&egui::FontFamily::Name(key.as_str().into())).expect("role family");
+        for role in &bound {
+            let chain = fonts.families.get(&egui::FontFamily::Name(role.key.as_str().into())).expect("role family");
             assert!(chain.iter().all(|k| fonts.font_data.contains_key(k)), "every chained key has data");
         }
+        // Ubuntu Light is one regular face, so the bold and italic roles resolve to it and are
+        // synthesised — the 宋体 case, from a font every machine can read.
+        let synth = |b, i| bound.iter().find(|r| r.key == role_key("Ubuntu", b, i)).map(|r| r.synthesis);
+        assert_eq!(synth(false, false), Some(Synthesis::NONE));
+        assert_eq!(synth(true, false), Some(Synthesis { bold: true, italic: false }));
+        assert_eq!(synth(false, true), Some(Synthesis { bold: false, italic: true }));
+        assert_eq!(synth(true, true), Some(Synthesis { bold: true, italic: true }));
         // A family with no faces binds nothing and never touches the map.
         assert!(bind_faces(&mut fonts, "No Such Font", &[], &[]).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -599,6 +675,49 @@ mod tests {
         assert_eq!(medium.iter().map(|f| f.weight).collect::<Vec<_>>(), [500.0]);
     }
 
+    /// A face of one family with a weight and a slant, for the synthesis decision.
+    fn styled(path: &str, weight: f32, italic: bool) -> Face {
+        let mut f = face("Song", &["Song"], path, weight);
+        f.italic = italic;
+        f
+    }
+
+    /// The decision the whole fix rests on: a role that resolved to the family's regular face gets
+    /// its weight/slant faked, and a role that found a real face gets nothing.
+    #[test]
+    fn a_regular_only_family_fakes_its_bold_and_italic() {
+        // 宋体: `simsun.ttc` ships one regular face, so both styles are synthesised.
+        let simsun = [styled("simsun.ttc", 400.0, false)];
+        assert_eq!(synthesis_for(&simsun, false, false), Synthesis::NONE);
+        assert_eq!(synthesis_for(&simsun, true, false), Synthesis { bold: true, italic: false });
+        assert_eq!(synthesis_for(&simsun, false, true), Synthesis { bold: false, italic: true });
+        assert_eq!(synthesis_for(&simsun, true, true), Synthesis { bold: true, italic: true });
+
+        // 等线/DengXian has all four faces: nothing is faked, so nothing is double-painted.
+        let dengxian = [
+            styled("deng.ttf", 400.0, false),
+            styled("dengb.ttf", 700.0, false),
+            styled("dengi.ttf", 400.0, true),
+            styled("dengbi.ttf", 700.0, true),
+        ];
+        for (b, i) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(synthesis_for(&dengxian, b, i), Synthesis::NONE, "{b} {i} is a real face");
+        }
+
+        // A real bold but no italic (or the other way round) fakes only what is missing.
+        let bold_only = [styled("b.ttf", 400.0, false), styled("bb.ttf", 700.0, false)];
+        assert_eq!(synthesis_for(&bold_only, true, false), Synthesis::NONE);
+        assert_eq!(synthesis_for(&bold_only, false, true), Synthesis { bold: false, italic: true });
+        assert_eq!(synthesis_for(&bold_only, true, true), Synthesis { bold: false, italic: true }, "a real bold, a faked slant");
+        let italic_only = [styled("i.ttf", 400.0, false), styled("ii.ttf", 400.0, true)];
+        assert_eq!(synthesis_for(&italic_only, true, true), Synthesis { bold: true, italic: false }, "a real slant, a faked weight");
+
+        // Semibold counts as a bold face (the threshold is 600).
+        assert_eq!(synthesis_for(&[styled("sb.ttf", 600.0, false)], true, false), Synthesis::NONE);
+        // No faces at all: nothing is bound, so there is nothing to fake.
+        assert_eq!(synthesis_for(&[], true, true), Synthesis::NONE);
+    }
+
     #[test]
     fn installed_names_are_kept_as_the_workbook_spells_them() {
         // The binding is keyed on the name `cell_family` looks up, so every spelling in use is
@@ -623,8 +742,8 @@ mod tests {
         let before = fonts.font_data.len();
         let mut bound = bind_faces(&mut fonts, "Ubuntu", std::slice::from_ref(&f), &[]);
         bound.extend(bind_faces(&mut fonts, "우분투", std::slice::from_ref(&f), &[]));
-        assert!(bound.contains(&role_key("우분투", false, false)), "bound under the workbook's name");
-        assert!(bound.contains(&role_key("Ubuntu", true, true)));
+        assert!(bound.iter().any(|r| r.key == role_key("우분투", false, false)), "bound under the workbook's name");
+        assert!(bound.iter().any(|r| r.key == role_key("Ubuntu", true, true)));
         assert_eq!(fonts.font_data.len(), before + 1, "one file, loaded once");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -650,7 +769,7 @@ mod tests {
         assert_eq!(chain.first().map(String::as_str), Some(face_key(&cell).as_str()), "the cell font draws what it has");
         assert_eq!(chain.get(1).map(String::as_str), Some(face_key(&ea).as_str()), "the workbook's 宋体 draws the rest");
         assert_eq!(fonts.font_data.len(), egui::FontDefinitions::default().font_data.len() + 2, "both files loaded once");
-        assert!(bound.contains(&role_key("Calibri", true, true)));
+        assert!(bound.iter().any(|r| r.key == role_key("Calibri", true, true)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -90,6 +90,11 @@ pub struct Face {
     descent: i16,
     bbox: [i16; 4],
     italic_angle: f32,
+    /// The file declares a bold weight (`head.macStyle`'s bold bit, or an `OS/2` weight class of
+    /// 600 and up).
+    bold: bool,
+    /// The file declares a slant (`head.macStyle`'s italic bit, or a non-zero `post` italic angle).
+    italic: bool,
     /// Per glyph: 0 = not checked, 1 = its outline data can be read, 2 = it cannot. Shared by
     /// clones (the answer never changes for a given file) and atomic so a [`Face`] stays `Send`.
     sound: Arc<Vec<std::sync::atomic::AtomicU8>>,
@@ -152,8 +157,14 @@ impl Face {
         let ascent = i16_at(hhea, 4).ok_or(Error::Bad("hhea"))?;
         let descent = i16_at(hhea, 6).ok_or(Error::Bad("hhea"))?;
         let italic_angle = table(b"post").and_then(|p| u32_at(p, 4)).map(|v| v as i32 as f32 / 65536.0).filter(|v| v.is_finite()).unwrap_or(0.0);
+        // The style flags a synthesised weight or slant must not double up on: a face that already
+        // is bold is drawn as it is, and only one that is not gets the fake stroke.
+        let mac_style = u16_at(head, 44).unwrap_or(0);
+        let weight_class = table(b"OS/2").and_then(|t| u16_at(t, 4)).unwrap_or(400);
+        let bold = mac_style & 1 != 0 || weight_class >= 600;
+        let italic = mac_style & 2 != 0 || italic_angle != 0.0;
         let sound = Arc::new((0..num_glyphs).map(|_| std::sync::atomic::AtomicU8::new(0u8)).collect());
-        let face = Face { data, dir, units_per_em, num_glyphs, loca_format, num_h_metrics, ascent, descent, bbox, italic_angle, sound };
+        let face = Face { data, dir, units_per_em, num_glyphs, loca_format, num_h_metrics, ascent, descent, bbox, italic_angle, bold, italic, sound };
         // `loca` is validated once here so every later glyph lookup is a slice, not a check.
         face.check_loca()?;
         let cmap = face.table(b"cmap").ok_or(Error::Missing("cmap"))?;
@@ -193,6 +204,16 @@ impl Face {
     /// Italic angle in degrees (from `post`).
     pub fn italic_angle(&self) -> f32 {
         self.italic_angle
+    }
+
+    /// Whether the face is bold in its own right (`head.macStyle` or the `OS/2` weight class).
+    pub fn is_bold(&self) -> bool {
+        self.bold
+    }
+
+    /// Whether the face is already slanted (`head.macStyle` or a non-zero `post` italic angle).
+    pub fn is_italic(&self) -> bool {
+        self.italic
     }
 
     /// The `name` table's family name (name ID 1), or `None`.

@@ -40,7 +40,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use egui::emath::GuiRounding as _;
 use egui::{Color32, Context, FontData, FontId, Galley, Painter, Pos2};
+
+use crate::fonts::Synthesis;
 use gridcraft_engine::core::text::{Direction, FaceId, FontSize, ShapedText, TextEngine};
 use gridcraft_engine::model;
 
@@ -242,6 +245,9 @@ fn is_wide(c: char) -> bool {
 pub struct Line {
     /// Width in points: what the `####` overflow test, AutoFit and the editor's size use.
     pub width: f32,
+    /// The size the line was laid out at, in points: what a synthesised bold thickens in
+    /// proportion to (see [`bold_offset`]).
+    pub size: f32,
     /// The single galley the painter draws. For a shaped line its glyphs are in visual order.
     pub galley: std::sync::Arc<Galley>,
     /// The engine's shaping, when the line went through it; `None` on the fast path.
@@ -259,6 +265,12 @@ impl Line {
         painter.galley(pos, self.galley.clone(), color);
     }
 
+    /// Paint the line, faking the weight or slant its font family has no face for (see
+    /// [`paint_galley`]).
+    pub fn paint_styled(&self, painter: &Painter, pos: Pos2, color: Color32, synth: Synthesis) {
+        paint_galley(painter, pos, &self.galley, self.size, color, synth);
+    }
+
     /// True when the glyphs are not in logical order — right-to-left text, a bidi mix, or a
     /// reordered/merged cluster — so a caret character index does not map straight to an x the way
     /// egui's own text widget assumes, and [`CaretMap`] has to do the mapping.
@@ -274,6 +286,115 @@ impl Line {
             differs
         })
     }
+}
+
+// ------------------------------------------------------------------ faked weight and slant
+
+/// The shear of a synthesised italic: tan 12°, the slant Windows GDI and DirectWrite give a face
+/// that has no italic of its own.
+pub const SYNTHETIC_OBLIQUE: f32 = 0.2126;
+
+/// The share of the text size a synthesised bold thickens by.
+const SYNTHETIC_BOLD: f32 = 0.045;
+
+/// The smallest offset a synthesised bold uses, in device pixels: a hairline must still be covered.
+const MIN_BOLD_PIXELS: f32 = 0.5;
+
+/// How far apart the two passes of a synthesised bold are, in points.
+///
+/// A point is a pixel at 96 dpi, so this is about 0.65 px on an 11 pt cell at 100% zoom: the
+/// thickness Windows paints for a face with no bold. The offset is a share of the text size, which
+/// is itself in points, so the *physical* offset follows `pixels_per_point` with the glyphs — at
+/// 200% the em is twice as many pixels and so is the offset — and it is the same fraction of the
+/// letter at 100%, at 200% and in a zoomed grid. The floor of half a device pixel keeps small text
+/// from gaining nothing.
+pub fn bold_offset(size: f32, pixels_per_point: f32) -> f32 {
+    let size = if size.is_finite() { size.max(0.0) } else { 0.0 };
+    let ppp = if pixels_per_point.is_finite() { pixels_per_point.max(0.1) } else { 1.0 };
+    (size * SYNTHETIC_BOLD).max(MIN_BOLD_PIXELS / ppp)
+}
+
+/// Paint `galley` with its top-left corner at `pos`, faking what the family has no faces for.
+///
+/// Nothing to fake is egui's own text shape, unchanged. Otherwise the glyphs come from one mesh
+/// built here: a synthesised bold is the same quads a fraction of a point to the right (see
+/// [`bold_offset`]), a synthesised italic moves each vertex by the height it sits above its row's
+/// baseline, and the two combine. The baseline itself does not move, so the pen position, the
+/// line's width ([`Line::width`], which the `####` test, AutoFit and Shrink to fit measure) and the
+/// cell's rectangle — for clipping and for hit-testing — are exactly what they were.
+pub fn paint_galley(painter: &Painter, pos: Pos2, galley: &std::sync::Arc<Galley>, size: f32, color: Color32, synth: Synthesis) {
+    paint_galley_rotated(painter, pos, galley, size, color, synth, 0.0);
+}
+
+/// [`paint_galley`] for text turned by `angle` radians clockwise about `pos`, as a rotated cell
+/// draws it.
+pub fn paint_galley_rotated(painter: &Painter, pos: Pos2, galley: &std::sync::Arc<Galley>, size: f32, color: Color32, synth: Synthesis, angle: f32) {
+    if synth.is_none() {
+        painter.add(egui::epaint::TextShape::new(pos, galley.clone(), color).with_angle(angle));
+        return;
+    }
+    let ppp = painter.pixels_per_point();
+    // The rows' quads carry atlas coordinates in texels, like every text shape epaint tessellates;
+    // the final mesh needs them normalized, as the tessellator would.
+    let uv_scale = painter.fonts(|f| {
+        let [w, h] = f.font_image_size();
+        egui::vec2(1.0 / (w.max(1) as f32), 1.0 / (h.max(1) as f32))
+    });
+    painter.add(synthetic_mesh(galley, size, pos, color, synth, angle, ppp, uv_scale));
+}
+
+/// The galley's glyph quads as one mesh, sheared and doubled according to `synth`.
+///
+/// Built from the rows' tessellated quads because a text shape can only be moved and turned as a
+/// whole: the quads *are* the pixels the regular face drew (their atlas coordinates are rebased on
+/// the atlas size the way the tessellator rebases a text shape), so this is a real thick/slanted
+/// render of the same glyphs and not a stretched copy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn synthetic_mesh(
+    galley: &Galley,
+    size: f32,
+    pos: Pos2,
+    color: Color32,
+    synth: Synthesis,
+    angle: f32,
+    ppp: f32,
+    uv_scale: egui::Vec2,
+) -> egui::Mesh {
+    let bold = if synth.bold { bold_offset(size, ppp) } else { 0.0 };
+    let passes: u32 = if synth.bold { 2 } else { 1 };
+    let rotator = egui::emath::Rot2::from_angle(angle);
+    // A text shape's position is snapped to the pixel grid by the tessellator; the mesh is laid out
+    // here instead, so it snaps the same way and the text stays as crisp as it was.
+    let origin = pos.round_to_pixels(ppp);
+    let mut mesh = egui::Mesh::default();
+    for placed in &galley.rows {
+        let row = &placed.row;
+        let visuals = &row.visuals;
+        if visuals.mesh.is_empty() {
+            continue;
+        }
+        mesh.texture_id = visuals.mesh.texture_id;
+        // This row's baseline, in galley-local points: the same share of the line height the grid
+        // draws its underlines along.
+        let baseline = placed.pos.y + row.size.y * 0.82;
+        for pass in 0..passes {
+            let dx = bold * pass as f32;
+            let first = mesh.vertices.len() as u32;
+            for v in &visuals.mesh.vertices {
+                let mut local = v.pos + placed.pos.to_vec2();
+                if synth.italic {
+                    local.x += SYNTHETIC_OBLIQUE * (baseline - local.y);
+                }
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: origin + rotator * egui::vec2(local.x + dx, local.y),
+                    uv: (v.uv.to_vec2() * uv_scale).to_pos2(),
+                    color: if v.color == Color32::PLACEHOLDER { color } else { v.color },
+                });
+            }
+            mesh.indices.extend(visuals.mesh.indices.iter().map(|i| i + first));
+        }
+    }
+    mesh
 }
 
 impl GridText {
@@ -294,7 +415,7 @@ impl GridText {
             return line;
         }
         let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), color));
-        Line { width: galley.size().x, galley, shaped: None }
+        Line { width: galley.size().x, size: font.size, galley, shaped: None }
     }
 
     /// The shaped lines a cell's text wraps into at `width` points — one per explicit line break
@@ -515,7 +636,7 @@ impl GridText {
             self.lock().warn("combine", "the shaped runs cannot be folded into one galley; drawing the text unshaped");
             None
         })?;
-        Some(Line { width: shaped.width, galley, shaped: Some(shaped) })
+        Some(Line { width: shaped.width, size: font.size, galley, shaped: Some(shaped) })
     }
 
     /// The caret geometry of `line` (the shaped one: a plain line needs none).

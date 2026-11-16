@@ -1486,6 +1486,9 @@ pub(crate) fn paint_quadrant(
         let st = &lk.style;
         let size = st.font.size * 96.0 / 72.0 * z;
         let fam = theme::cell_family(&st.font.name, st.font.bold, st.font.italic);
+        // 宋体 has one regular face: its Bold and Italic are synthesised here, the way Windows
+        // paints them; a family with real faces (等线) answers NONE and is drawn as it is.
+        let synth = theme::cell_synthesis(&st.font.name, st.font.bold, st.font.italic);
         let font = FontId::new(size, fam);
         // Digits fit by the cell's own font and size, not the default 11pt (9pt marks in narrow columns).
         let char_w = zero_widths.of(p, &font);
@@ -1540,7 +1543,7 @@ pub(crate) fn paint_quadrant(
                         HAlign::Right => rect.right() - pad - lw,
                         _ => text_left + pad + indent,
                     };
-                    line.paint(&clip, pos2(lx, y), color);
+                    line.paint_styled(&clip, pos2(lx, y), color, synth);
                     y += line.height();
                 }
                 continue;
@@ -1558,7 +1561,7 @@ pub(crate) fn paint_quadrant(
                 _ => text_left + pad + indent,
             };
             let y = wrapped_cell_text_y(st.align.v, *rect, galley.size().y, z);
-            p.with_clip_rect(rect.intersect(p.clip_rect())).galley(pos2(x, y), galley, color);
+            crate::text::paint_galley(&p.with_clip_rect(rect.intersect(p.clip_rect())), pos2(x, y), &galley, font.size, color, synth);
             continue;
         }
         // Wrap Text off: Excel ignores the line breaks and draws the whole string on one line.
@@ -1679,11 +1682,9 @@ pub(crate) fn paint_quadrant(
                 line.galley.clone()
             };
             let pos = rotated_text_pos(*rect, galley.size(), angle, painted_halign(st.align.h, geo.rtl), st.align.v, pad, indent);
-            let mut shape = egui::epaint::TextShape::new(pos, galley, color);
-            shape.angle = angle;
-            cp.add(shape);
+            crate::text::paint_galley_rotated(&cp, pos, &galley, font.size, color, synth, angle);
         } else {
-            line.paint(&cp, pos2(x, y), color);
+            line.paint_styled(&cp, pos2(x, y), color, synth);
         }
         let baseline = y + gh * 0.82;
         match st.font.underline {

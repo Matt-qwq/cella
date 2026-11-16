@@ -79,6 +79,57 @@ pub enum Family {
     Mono,
 }
 
+/// A weight or slant the document's text face has no face of its own for, to be *synthesised*.
+///
+/// The writer draws every character WinAnsiEncoding cannot set with one embedded face (`set_font`)
+/// or with the predefined Song CID font — and both are a single regular face. Excel's Bold on 宋体
+/// looks bold because Windows GDI thickens the outlines and DirectWrite shears them; PDF has no such
+/// fallback, so the writer does what the screen does: **bold** switches the text render mode to
+/// fill-and-stroke with a stroke a few percent of the em wide, and **italic** adds a 12° shear to
+/// the text matrix about the baseline. Neither changes a glyph advance, so measuring, aligning and
+/// wrapping stay exactly as they were, and text set in a standard font — which has real bold and
+/// italic faces — ignores this (see [`Page::text_styled`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Synthesis {
+    /// Thicken the glyphs by stroking their outlines (a synthetic bold).
+    pub bold: bool,
+    /// Shear the glyphs about their baseline (a synthetic oblique).
+    pub italic: bool,
+}
+
+impl Synthesis {
+    /// The weight and slant are already in the face.
+    pub const NONE: Self = Self { bold: false, italic: false };
+
+    /// Whether there is anything to synthesise.
+    pub fn is_none(self) -> bool {
+        !self.bold && !self.italic
+    }
+}
+
+/// The shear of a synthesised italic: tan 12°, the slant Windows gives a face with no italic of its
+/// own (the same angle the screen's painter uses).
+pub const SYNTHETIC_SHEAR: f32 = 0.2126;
+
+/// How wide a synthesised bold's stroke is, as a share of the em.
+const SYNTHETIC_BOLD_WIDTH: f32 = 0.03;
+
+/// The operators that switch a synthesised bold on (text render mode 2 — fill *and* stroke — with a
+/// line width) or off again.
+fn bold_state(on: bool, size: f32) -> String {
+    if on {
+        format!(
+            "{} w 2 Tr
+",
+            n((size * SYNTHETIC_BOLD_WIDTH).clamp(0.05, 20.0))
+        )
+    } else {
+        "0 Tr
+"
+        .to_owned()
+    }
+}
+
 impl Font {
     pub const ALL: [Font; 12] = [
         Font::Helvetica,
@@ -927,14 +978,52 @@ impl Page {
 
     /// [`Page::text_rotated`] with an explicit base direction.
     pub fn text_rotated_dir(&mut self, x: f32, y: f32, size: f32, font: Font, color: Rgb, text: &str, angle: f32, direction: Direction) {
+        self.text_styled_dir(x, y, size, font, color, text, angle, direction, Synthesis::NONE);
+    }
+
+    /// Text whose weight or slant the document's face has no face for, to be synthesised (see
+    /// [`Synthesis`]): what a bold or italic 宋体 cell needs on the page.
+    pub fn text_styled(&mut self, x: f32, y: f32, size: f32, font: Font, color: Rgb, text: &str, synthesis: Synthesis) {
+        self.text_styled_dir(x, y, size, font, color, text, 0.0, Direction::Auto, synthesis);
+    }
+
+    /// [`Page::text_styled`] rotated by `angle` radians about its baseline origin.
+    pub fn text_rotated_styled(&mut self, x: f32, y: f32, size: f32, font: Font, color: Rgb, text: &str, angle: f32, synthesis: Synthesis) {
+        self.text_styled_dir(x, y, size, font, color, text, angle, Direction::Auto, synthesis);
+    }
+
+    /// [`Page::text_styled`] with an explicit base direction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_styled_dir(
+        &mut self,
+        x: f32,
+        y: f32,
+        size: f32,
+        font: Font,
+        color: Rgb,
+        text: &str,
+        angle: f32,
+        direction: Direction,
+        synthesis: Synthesis,
+    ) {
         if text.is_empty() || !extent(size) || !finite(&[x, y]) {
             return;
         }
         let size_pt = size.min(10_000.0);
-        let size_text = n(size_pt);
+        // A synthesised slant is a shear in text space, applied before the rotation: the matrix
+        // below maps a glyph point (u, v) to (cs·u + (cs·k + sn)·v, -sn·u + (cs - sn·k)·v), so the
+        // baseline (v = 0) does not move and the ascenders lean right — the same shear the grid's
+        // painter applies. Text with a visible character a standard font will set keeps its own
+        // faces: those already have a real italic, and a shear on top would slant it twice.
+        let shear = if synthesis.italic && !text.chars().any(|c| !needs_cid(c) && !c.is_whitespace()) { SYNTHETIC_SHEAR } else { 0.0 };
         let (sn, cs) = if angle.is_finite() { angle.sin_cos() } else { (0.0, 1.0) };
+        let (a, b, c, d) = (cs, -sn, cs * shear + sn, cs - sn * shear);
         // Clockwise in y-down = counter-clockwise negated in PDF's y-up space.
-        let mut s = format!("BT\n{}\n{} {} {} {} {} {} Tm\n", rgb_op(color, false), n(cs), n(-sn), n(sn), n(cs), n(x), n(self.y(y)));
+        let mut s = format!("BT\n{}\n{} {} {} {} {} {} Tm\n", rgb_op(color, false), n(a), n(b), n(c), n(d), n(x), n(self.y(y)));
+        if synthesis.bold {
+            // The synthetic bold strokes the glyphs with the text colour: same paint, wider pen.
+            s.push_str(&format!("{}\n", rgb_op(color, true)));
+        }
         let shared = Rc::clone(&self.font);
         // Plain WinAnsi text is written in stored order (byte for byte as it always was): a
         // standard font has no layout features, so shaping it could not change a glyph.
@@ -955,21 +1044,21 @@ impl Page {
                     && let Some(font_use) = bank.as_mut()
                 {
                     let mut enc = Encoder::new(size_pt);
-                    emit_shaped(&mut enc, &shaped, text, size_pt, font, font_use, &mut used, &mut embedded);
+                    emit_shaped(&mut enc, &shaped, text, size_pt, font, font_use, &mut used, &mut embedded, synthesis.bold);
                     s.push_str(&enc.finish());
                     drew = true;
                 }
                 if !drew {
                     // The face was already borrowed (a re-entrant call): keep the stored-order
                     // fallback rather than dropping the text.
-                    self.emit_unshaped(&mut s, text, &size_text, font);
+                    self.emit_unshaped(&mut s, text, size_pt, font, synthesis.bold);
                 }
                 for (u, f) in self.fonts.iter_mut().zip(used) {
                     *u |= f;
                 }
                 self.embedded_used |= embedded;
             }
-            None => self.emit_unshaped(&mut s, text, &size_text, font),
+            None => self.emit_unshaped(&mut s, text, size_pt, font, synthesis.bold),
         }
         s.push_str("ET");
         self.op(&s);
@@ -979,8 +1068,10 @@ impl Page {
     /// the embedded subset when the document set one that covers them, and the predefined CID font
     /// otherwise. This is the path every plain (WinAnsi, LTR) string takes, and the fallback when
     /// shaping is unavailable.
-    fn emit_unshaped(&mut self, s: &mut String, text: &str, size: &str, font: Font) {
+    fn emit_unshaped(&mut self, s: &mut String, text: &str, size: f32, font: Font, bold: bool) {
         let fi = font.index();
+        let size_text = n(size);
+        let mut stroked = false;
         let mut rest = text;
         while !rest.is_empty() {
             let (class, end, glyphs) = self.next_run(rest);
@@ -998,8 +1089,18 @@ impl Page {
             if slot == EMBED_FONT {
                 self.embedded_used = true;
             }
-            let _ = writeln!(s, "/F{} {} Tf\n{} Tj", slot + 1, size, string);
+            // Only the embeddable/CID runs are faked: a standard font has a real bold face, and a
+            // stroke on top of it would be a bold twice over.
+            let fake = bold && slot >= CID_FONT;
+            if fake != stroked {
+                s.push_str(&bold_state(fake, size));
+                stroked = fake;
+            }
+            let _ = writeln!(s, "/F{} {} Tf\n{} Tj", slot + 1, size_text, string);
             rest = tail;
+        }
+        if stroked {
+            s.push_str(&bold_state(false, size));
         }
     }
 
@@ -1081,6 +1182,7 @@ fn emit_shaped(
     font_use: &mut FontUse,
     used: &mut [bool; FONT_SLOTS],
     embedded: &mut bool,
+    bold: bool,
 ) {
     let mut pen = 0.0f32; // the shaper's pen, in points from the text origin
     let mut pdf_pen = 0.0f32; // where the content stream's pen actually is
@@ -1103,6 +1205,7 @@ fn emit_shaped(
                 // literal (and one `Tj`) while no adjustment separates them, which keeps a mixed
                 // run's bytes identical to the unshaped path's.
                 enc.font(font.index());
+                enc.synthetic_bold(false);
                 used[font.index()] = true;
                 let width = text_width(font, size, cluster_text);
                 pdf_pen += enc.gap(position(pen) - pdf_pen);
@@ -1111,6 +1214,7 @@ fn emit_shaped(
                 pen += width;
             } else if let Some(cids) = embedded_cids(font_use, cluster, cluster_text, size) {
                 enc.font(EMBED_FONT);
+                enc.synthetic_bold(bold);
                 used[EMBED_FONT] = true;
                 *embedded = true;
                 font_use.note_chars(cluster_text);
@@ -1134,6 +1238,7 @@ fn emit_shaped(
                 // the cluster's logical text (the existing fallback for characters no embedded
                 // face can set).
                 enc.font(CID_FONT);
+                enc.synthetic_bold(bold);
                 used[CID_FONT] = true;
                 let width = cid_width(cluster_text, size);
                 pdf_pen += enc.gap(position(pen) - pdf_pen);
@@ -1222,6 +1327,8 @@ struct Encoder {
     arr: String,
     strings: usize,
     numbers: usize,
+    /// Whether the synthesised-bold stroke is on, so it is switched only on a change.
+    stroked: bool,
     /// The string being built: adjacent glyphs or characters in the same font merge into one
     /// string while nothing has to move the pen between them.
     pending: Pending,
@@ -1235,7 +1342,17 @@ enum Pending {
 
 impl Encoder {
     fn new(size: f32) -> Encoder {
-        Encoder { out: String::new(), size, size_text: n(size), slot: None, arr: String::new(), strings: 0, numbers: 0, pending: Pending::None }
+        Encoder {
+            out: String::new(),
+            size,
+            size_text: n(size),
+            slot: None,
+            arr: String::new(),
+            strings: 0,
+            numbers: 0,
+            stroked: false,
+            pending: Pending::None,
+        }
     }
 
     fn font(&mut self, slot: usize) {
@@ -1339,7 +1456,18 @@ impl Encoder {
         let _ = writeln!(self.out, "{} Ts", n(points));
     }
 
+    /// Switches the synthesised-bold stroke on or off before the next run (see [`bold_state`]).
+    fn synthetic_bold(&mut self, on: bool) {
+        if self.stroked == on {
+            return;
+        }
+        self.flush();
+        self.out.push_str(&bold_state(on, self.size));
+        self.stroked = on;
+    }
+
     fn finish(mut self) -> String {
+        self.synthetic_bold(false);
         self.flush();
         self.out
     }

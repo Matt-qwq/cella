@@ -185,6 +185,81 @@ fn page_content(d: &PdfDoc) -> &str {
     &d.pages[0].content
 }
 
+/// The six numbers of the first `Tm` (the text matrix) of a page's content stream.
+fn text_matrix(d: &PdfDoc) -> Vec<f32> {
+    let content = page_content(d);
+    let line = content.split('\n').find(|l| l.ends_with(" Tm")).expect("a text matrix");
+    line.trim_end_matches(" Tm").split_whitespace().map(|x| x.parse::<f32>().expect("a matrix entry")).collect()
+}
+
+/// A synthesised bold strokes the glyphs (text render mode 2) *only* for the runs the embedded or
+/// CID face draws: a standard font already has a real bold, so a stroke there would be a bold twice
+/// over. This is what makes a bold 宋体 cell bold on the page.
+#[test]
+fn a_synthesised_bold_strokes_only_the_runs_a_standard_font_cannot_set() {
+    let synth = Synthesis { bold: true, italic: false };
+    // Latin text is set in Helvetica-Bold: no stroke, and the text render mode stays the default.
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    p.text_styled(20.0, 40.0, 12.0, Font::HelveticaBold, [0, 0, 0], "Bold ASCII", synth);
+    assert!(!page_content(&d).contains("2 Tr"), "a real bold face is not synthesised again");
+
+    // 合一 is outside WinAnsiEncoding, so it is set in the predefined CID font (a single regular
+    // face): the text is filled *and* stroked, and the mode is put back before ET.
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    p.text_styled(20.0, 40.0, 12.0, Font::HelveticaBold, [0, 0, 0], "合一", synth);
+    let content = page_content(&d);
+    assert!(content.contains("2 Tr"), "the CID run is stroked: {content}");
+    assert!(content.contains(" w 2 Tr"), "the stroke has a width: {content}");
+    assert!(content.contains("0 Tr"), "the render mode is restored before ET");
+    assert!(content.contains("0 0 0 RG"), "the stroke paints in the text colour");
+
+    // Without the flag nothing is stroked, which keeps every existing document byte-identical.
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    p.text_styled(20.0, 40.0, 12.0, Font::HelveticaBold, [0, 0, 0], "合一", Synthesis::NONE);
+    assert!(!page_content(&d).contains("2 Tr"));
+}
+
+/// A synthesised italic shears the text matrix about the baseline — and only when every visible
+/// character is set in that one face: ASCII is drawn in Helvetica's real Oblique, and shearing it
+/// too would slant it twice.
+#[test]
+fn a_synthesised_italic_shears_the_text_matrix() {
+    let synth = Synthesis { bold: false, italic: true };
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    p.text_styled(20.0, 40.0, 12.0, Font::HelveticaOblique, [0, 0, 0], "合一", synth);
+    let m = text_matrix(&d);
+    assert_eq!(m.len(), 6);
+    assert!(m[0] == 1.0 && m[1] == 0.0 && m[3] == 1.0, "the baseline is not scaled or turned: {m:?}");
+    assert!((m[2] - SYNTHETIC_SHEAR).abs() < 0.002, "the ascenders lean right: {m:?}");
+    // The baseline origin, and so the pen position, is untouched.
+    assert!(m[4] == 20.0 && m[5] == text_matrix(&d)[5], "{m:?}");
+
+    // Text with visible ASCII keeps its own (real) italic face: no shear.
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    p.text_styled(20.0, 40.0, 12.0, Font::HelveticaOblique, [0, 0, 0], "合计 3", synth);
+    let m = text_matrix(&d);
+    assert!(m[2] == 0.0, "a standard-font run is not sheared: {m:?}");
+    // No flag, no shear: every existing document is unchanged.
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    p.text_styled(20.0, 40.0, 12.0, Font::HelveticaOblique, [0, 0, 0], "合一", Synthesis::NONE);
+    assert!(text_matrix(&d)[2] == 0.0);
+}
+
+#[test]
+fn a_face_declares_whether_it_is_already_bold_or_italic() {
+    // Ubuntu Light is weight 300 with no slant: the face a synthesis is needed for.
+    let face = Face::parse(epaint_default_fonts::UBUNTU_LIGHT.to_vec()).expect("Ubuntu Light parses");
+    assert!(!face.is_bold(), "Ubuntu Light is not a bold face");
+    assert!(!face.is_italic(), "Ubuntu Light is not an italic face");
+    assert_eq!(face.italic_angle(), 0.0);
+}
+
 #[test]
 fn text_width_does_not_overflow() {
     // 8,000,000 x 556 units exceeds u32::MAX: a u32 sum panics in debug builds.
