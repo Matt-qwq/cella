@@ -380,7 +380,7 @@ const MAX_HEADER_FOOTER: usize = 255;
 
 fn header_footer(s: &mut Session, p: &Json) -> Result<Json> {
     const CMD: &str = "pageLayout.headerFooter";
-    let si = target_sheet(s, p)?;
+    let si = target_any_sheet(s, p)?;
     let cap = |t: &str| t.chars().take(MAX_HEADER_FOOTER).collect::<String>();
     // One section edited in place (Page Layout view).
     let section = match (str_param(p, "part"), str_param(p, "section")) {

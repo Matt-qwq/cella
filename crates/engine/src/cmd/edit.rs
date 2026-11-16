@@ -452,12 +452,12 @@ fn cell_selectable(wb: &gridcraft_model::Workbook, sheet: &gridcraft_model::Shee
 
 fn selection_set(s: &mut Session, p: &Json) -> Result<Json> {
     if p.get("sheet").is_some() {
-        let i = target_sheet(s, p)?;
+        let i = target_any_sheet(s, p)?;
         s.doc_mut()?.wb_switch_sheet(i);
     } else if let Some(r) = str_param(p, "range").or_else(|| str_param(p, "cell"))
         && let (Some(_), _) = split_sheet(r)
     {
-        let i = target_sheet(s, p)?;
+        let i = target_any_sheet(s, p)?;
         s.doc_mut()?.wb_switch_sheet(i);
     }
     let ranges = target_ranges(s, p)?;

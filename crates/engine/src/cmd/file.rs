@@ -256,7 +256,7 @@ fn export(s: &mut Session, p: &Json, ext: &str) -> Result<Json> {
     let d = s.doc()?;
     let mut wb = (*d.wb).clone();
     if p.get("sheet").is_some() {
-        wb.active_sheet = target_sheet(s, p)?;
+        wb.active_sheet = target_any_sheet(s, p)?;
     }
     let target = if path.ends_with(&format!(".{ext}")) { path.clone() } else { format!("{path}.{ext}") };
     let bytes = crate::io::save_bytes(&wb, &target)?;
