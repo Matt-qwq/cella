@@ -116,6 +116,7 @@
           }
         },
         "cond_formats": [],
+        "controls": [],
         "default_col_width": 64.0,
         "default_row_height": 20.0,
         "equations": [],
