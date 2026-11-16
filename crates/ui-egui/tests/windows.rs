@@ -183,3 +183,113 @@ fn switching_windows_restores_that_windows_sheet_and_selection() {
     );
     assert_eq!(h.state().session.documents().len(), 1, "one document, one workbook, two views");
 }
+
+/// The two windows of a new second window: the app's first one and the one View ▸ New Window
+/// added (which has the focus).
+fn two_windows(app: &mut SheetApp) -> (gridcraft_engine::WindowId, gridcraft_engine::WindowId) {
+    app.run("view.newWindow", json!({})).expect("a second window");
+    let ids: Vec<_> = app.session.windows().into_iter().map(|(_, w)| w.id).collect();
+    assert_eq!(ids.len(), 2, "two windows on the document");
+    (ids[0], ids[1])
+}
+
+/// What the cell draft holds, when one is open.
+fn draft(app: &SheetApp) -> Option<&str> {
+    app.editor.as_ref().map(|e| e.text.as_str())
+}
+
+/// Two windows on one document share its workbook but not their interface state: a draft typed in
+/// one is that window's, so switching windows shows the other window without it.
+#[test]
+fn a_draft_stays_in_the_window_it_was_typed_in() {
+    let mut app = app();
+    let (first, second) = two_windows(&mut app);
+    assert_eq!(app.session.active_window(), Some(second));
+    assert_eq!(app.ui_window(), Some(second), "the new window holds the interface state");
+
+    // A formula typed into the second window's formula bar: a draft, not committed yet.
+    app.begin_edit(Some("=SUM(A1:A9)".into()), true);
+    assert_eq!(draft(&app), Some("=SUM(A1:A9)"));
+
+    app.run("window.activate", json!({"window": first.0})).expect("switch to the first window");
+    assert_eq!((app.session.active_window(), app.ui_window()), (Some(first), Some(first)));
+    assert_eq!(draft(&app), None, "the first window has no draft of its own");
+    assert_eq!(app.parked_window_with_draft(), Some(second), "the draft is parked in the second window");
+
+    app.run("window.activate", json!({"window": second.0})).expect("back to the second window");
+    assert_eq!(draft(&app), Some("=SUM(A1:A9)"), "the draft comes back where it was typed");
+    assert_eq!(app.parked_window_with_draft(), None, "nothing else holds a draft");
+    // The draft was never committed: the cell is still empty on the shared workbook.
+    assert_eq!(shown(&app, "A1"), "");
+}
+
+/// A dialog opened in one window is that window's: the other window shows the sheet, not it.
+#[test]
+fn a_dialog_stays_in_the_window_it_was_opened_in() {
+    let mut app = app();
+    let (first, second) = two_windows(&mut app);
+    app.open_dialog("zoom", json!({}));
+    assert_eq!(app.dialog.as_ref().map(|d| d.name()), Some("zoom"));
+
+    app.run("window.activate", json!({"window": first.0})).expect("switch to the first window");
+    assert!(app.dialog.is_none(), "the dialog belongs to the second window");
+
+    app.run("window.activate", json!({"window": second.0})).expect("back to the second window");
+    assert_eq!(app.dialog.as_ref().map(|d| d.name()), Some("zoom"), "the dialog is back in its window");
+}
+
+/// The File tab's Backstage view is per window too, like the dialog it is drawn as.
+#[test]
+fn the_file_view_belongs_to_its_window() {
+    let mut app = app();
+    let (first, second) = two_windows(&mut app);
+    app.open_backstage(gridcraft_ui_egui::backstage::Page::Print);
+    assert_eq!(app.backstage.as_ref().map(|b| b.page.id()), Some("print"));
+
+    app.run("window.activate", json!({"window": first.0})).expect("switch to the first window");
+    assert!(app.backstage.is_none(), "the first window shows the ribbon, not the File view");
+    app.run("window.activate", json!({"window": second.0})).expect("back to the second window");
+    assert_eq!(app.backstage.as_ref().map(|b| b.page.id()), Some("print"), "the File view is on Print, where it was left");
+}
+
+/// Closing a window closes the interface state it kept parked: its draft is not left in the app
+/// for a window that no longer exists.
+#[test]
+fn closing_a_window_drops_its_parked_state() {
+    let mut app = app();
+    let (first, second) = two_windows(&mut app);
+    app.begin_edit(Some("42".into()), false);
+    app.open_dialog("zoom", json!({}));
+    app.run("window.activate", json!({"window": first.0})).expect("switch to the first window");
+    assert_eq!(app.parked_window_with_draft(), Some(second), "the second window keeps its draft");
+
+    app.run("view.closeWindow", json!({"window": second.0})).expect("the second window closes");
+    assert!(app.session.window_doc(second).is_none(), "the window is gone");
+    assert_eq!(app.parked_window_with_draft(), None, "its parked draft went with it");
+    assert!(app.dialog.is_none(), "and so did its dialog");
+    assert_eq!((app.session.active_window(), app.ui_window()), (Some(first), Some(first)));
+}
+
+/// A painted frame ends on the window the user works in — its interface state, not the last
+/// window drawn — so the next command, keystroke or control request acts in what is on screen.
+#[test]
+fn a_frame_ends_on_the_focused_windows_interface_state() {
+    let mut app = app();
+    let (first, second) = two_windows(&mut app);
+    app.begin_edit(Some("draft".into()), false);
+    app.open_dialog("zoom", json!({}));
+    app.run("window.activate", json!({"window": first.0})).expect("switch to the first window");
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+        |ui, app: &mut SheetApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert_eq!(h.state().ui_window(), Some(first), "the frame ends on the window the user is in");
+    assert_eq!(draft(h.state()), None, "the second window's draft is not painted with it");
+    assert!(h.state().dialog.is_none(), "nor its dialog");
+    assert_eq!(h.state().parked_window_with_draft(), Some(second));
+}
