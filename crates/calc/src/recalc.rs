@@ -17,7 +17,7 @@ mod pass_host;
 
 pub use graph::{FxHasher, Graph, Key};
 use graph::{HashMap, HashSet, Node};
-use pass_host::{PassHost, Slot, holds_content, spilled_nothing, spills_as_before};
+use pass_host::{PassHost, Slot, Trees, holds_content, spilled_nothing, spills_as_before};
 
 use gridcraft_core::{CellError, CellRef, RangeRef, Value};
 use gridcraft_formula::{Expr, UnOp};
@@ -293,7 +293,126 @@ fn is_scalar_function(name: &str) -> bool {
 /// Independent formulas a pass needs before splitting across threads: below this, starting
 /// threads and building one expression map per thread costs more than the pass.
 #[cfg(not(target_arch = "wasm32"))]
-const PARALLEL_MIN: usize = 16_384;
+const PARALLEL_MAX_THREADS: usize = 8;
+
+/// Independent formulas per thread a wave needs before splitting: below this, starting the threads
+/// and building one slot table per thread costs more than the pass (measured on a 1M-row sheet: some
+/// two thousand formulas a thread pay for themselves).
+#[cfg(not(target_arch = "wasm32"))]
+const PARALLEL_MIN_PER_THREAD: usize = 2_048;
+
+/// The machine's threads, capped, or 1 where they cannot be had (wasm).
+fn parallel_threads() -> usize {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(PARALLEL_MAX_THREADS)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        1
+    }
+}
+
+/// Independent formulas a pass needs before splitting across `threads` threads.
+#[cfg(not(target_arch = "wasm32"))]
+fn parallel_min(threads: usize) -> usize {
+    PARALLEL_MIN_PER_THREAD.saturating_mul(threads.max(1))
+}
+
+/// Most cells the dense map below will index; past this a hash set is smaller than the box.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_DIRTY_BITS: usize = 1 << 27;
+
+/// Where a pass's dirty formulas are: the leaf scan asks it whether a precedent cell is one the pass
+/// is recalculating, once per cell of every candidate's precedent blocks.
+///
+/// A dirty set is a block — the formulas of a column, a filled range, a copied table — so one bit
+/// per cell of its bounding box a sheet answers that test with two compares and a shift, where a
+/// hash entry per key cost an insert to build and a cache miss per probe. On a million-formula pass
+/// gathering the set cost a third of the scan it fed. A sheet whose dirty cells are spread wider
+/// than `MAX_DIRTY_BITS` cells (a paste over a whole sheet) falls back to a hash set, where a probe
+/// costs what it used to.
+#[cfg(not(target_arch = "wasm32"))]
+struct DirtyCells {
+    boxes: HashMap<usize, DirtyBox>,
+    fallback: Option<HashSet<Key>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct DirtyBox {
+    row: u32,
+    col: u32,
+    height: u32,
+    width: u32,
+    bits: Vec<u64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DirtyCells {
+    fn build(dirty: &[Key]) -> Self {
+        // The bounding box of each sheet's dirty cells first, so the map is sized once.
+        let mut bounds: HashMap<usize, (u32, u32, u32, u32)> = HashMap::default();
+        for &(sheet, c) in dirty {
+            match bounds.get_mut(&sheet) {
+                Some(b) => {
+                    b.0 = b.0.min(c.row);
+                    b.1 = b.1.max(c.row);
+                    b.2 = b.2.min(c.col);
+                    b.3 = b.3.max(c.col);
+                }
+                None => {
+                    bounds.insert(sheet, (c.row, c.row, c.col, c.col));
+                }
+            }
+        }
+        let cells = bounds.values().fold(0usize, |n, (r0, r1, c0, c1)| n.saturating_add((r1 - r0 + 1) as usize * (c1 - c0 + 1) as usize));
+        if cells > MAX_DIRTY_BITS {
+            return Self { boxes: HashMap::default(), fallback: Some(dirty.iter().copied().collect()) };
+        }
+        let mut boxes: HashMap<usize, DirtyBox> = HashMap::default();
+        for (&sheet, &(r0, r1, c0, c1)) in &bounds {
+            let (height, width) = (r1 - r0 + 1, c1 - c0 + 1);
+            let bits = vec![0u64; (height as usize * width as usize).div_ceil(64)];
+            boxes.insert(sheet, DirtyBox { row: r0, col: c0, height, width, bits });
+        }
+        for &(sheet, c) in dirty {
+            if let Some(b) = boxes.get_mut(&sheet) {
+                b.set(c);
+            }
+        }
+        Self { boxes, fallback: None }
+    }
+
+    fn contains(&self, sheet: usize, c: CellRef) -> bool {
+        match &self.fallback {
+            Some(cells) => cells.contains(&(sheet, c)),
+            None => self.boxes.get(&sheet).is_some_and(|b| b.contains(c)),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DirtyBox {
+    fn set(&mut self, c: CellRef) {
+        let (dr, dc) = (c.row - self.row, c.col - self.col);
+        let i = dr as usize * self.width as usize + dc as usize;
+        if let Some(w) = self.bits.get_mut(i / 64) {
+            *w |= 1 << (i % 64);
+        }
+    }
+
+    fn contains(&self, c: CellRef) -> bool {
+        if c.row < self.row || c.col < self.col {
+            return false;
+        }
+        let (dr, dc) = (c.row - self.row, c.col - self.col);
+        if dr >= self.height || dc >= self.width {
+            return false;
+        }
+        let i = dr as usize * self.width as usize + dc as usize;
+        self.bits.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
+    }
+}
 
 /// Largest precedent block a leaf may read and still be a parallel candidate. A formula reading a
 /// whole column is left to the sequential pass rather than checking a million cells for a dirty
@@ -342,13 +461,6 @@ pub(crate) fn share_exprs(wb: &mut Workbook, mut shared: Vec<(Key, std::sync::Ar
     }
 }
 
-/// Writes values back in row-major order. One sheet at a time, so the sheet's cells are borrowed
-/// once rather than looked up per value; the store rewrites the packed value slot in place.
-fn write_values(wb: &mut Workbook, mut values: Vec<(Key, Value)>) {
-    values.sort_unstable_by_key(|(k, _)| (k.0, k.1.row, k.1.col));
-    write_values_ordered(wb, &values);
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 impl Calc {
     /// Evaluates the independent leaf formulas of `dirty` on the machine's threads and writes their
@@ -362,22 +474,25 @@ impl Calc {
     /// expression and result maps, and returns them in row order; the values are merged and written
     /// in that order.
     fn try_parallel(&mut self, wb: &mut Workbook, dirty: &mut Vec<Key>) -> bool {
-        if self.parallel_fallback || dirty.len() < PARALLEL_MIN || wb.calc.iterative {
+        let threads = parallel_threads();
+        let min = parallel_min(threads);
+        // Counting the dirty formulas against the wave's price first: below it no arrangement of
+        // them can pay for the threads, and the scan below (which is what a wave that finds nothing
+        // costs) is not run at all. A chain of formulas — each reading the one above it, the shape
+        // of a running total — has a million dirty formulas and one leaf; an edit's dirty set is
+        // mostly its own dependents, so that shape is the common one.
+        if self.parallel_fallback || threads < 2 || dirty.len() < min || wb.calc.iterative {
             return false;
         }
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
-        if threads < 2 {
-            return false;
-        }
-        let dirty_set: HashSet<Key> = dirty.iter().copied().collect();
+        let cells = DirtyCells::build(dirty);
         // A dynamic or array formula can read or write cells the static graph does not name; leave
         // the whole pass to the sequential path if one is being recalculated. The graph keeps these
         // sets small (they are formulas that can spill or are volatile), so checking them costs a
         // handful of lookups, not a scan of every formula.
-        let intersects = |set: &HashSet<Key>| {
-            if set.len() <= dirty_set.len() { set.iter().any(|k| dirty_set.contains(k)) } else { dirty_set.iter().any(|k| set.contains(k)) }
-        };
-        if intersects(&self.graph.dynamic) || intersects(&self.graph.may_spill) || intersects(&self.graph.legacy) {
+        if self.graph.dynamic.iter().any(|k| cells.contains(k.0, k.1))
+            || self.graph.may_spill.iter().any(|k| cells.contains(k.0, k.1))
+            || self.graph.legacy.iter().any(|k| cells.contains(k.0, k.1))
+        {
             return false;
         }
         let chunk = dirty.len().div_ceil(threads);
@@ -385,7 +500,7 @@ impl Calc {
         let seed = self.rng;
         let graph = &self.graph;
         let wb_ref: &Workbook = wb;
-        let dirty_set = &dirty_set;
+        let cells = &cells;
         let started = prof_now();
         let shards: Vec<std::thread::Result<Shard>> = std::thread::scope(|scope| {
             let mut handles = Vec::new();
@@ -401,7 +516,7 @@ impl Calc {
                                 break;
                             }
                             for c in area.range.iter() {
-                                if dirty_set.contains(&(area.sheet, c)) {
+                                if cells.contains(area.sheet, c) {
                                     leaf = false;
                                     break;
                                 }
@@ -417,12 +532,15 @@ impl Calc {
                     if local.is_empty() {
                         return Shard { values: Vec::new(), clean: true };
                     }
-                    let mut exprs: HashMap<Key, std::sync::Arc<Expr>> = HashMap::with_capacity_and_hasher(local.len(), Default::default());
+                    // A shard keeps slot tables of its own: the values cannot be shared (the pass's
+                    // are a `&mut` borrow its threads do not have), and its leaves only read cells
+                    // outside the dirty set anyway.
+                    let mut trees = Trees::with_capacity(local.len());
                     let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
                     for &k in &local {
                         if let Some(node) = graph.nodes.get(&k) {
                             if let Some(e) = &node.expr {
-                                exprs.insert(k, std::sync::Arc::clone(e));
+                                trees.push(k, e);
                             }
                             if let Some(r) = graph.legacy_of(k) {
                                 legacy.insert(k, r);
@@ -433,10 +551,10 @@ impl Calc {
                     // A shard keeps a cache of its own: the pass's is a `&mut` borrow, which the
                     // threads can't share, and a shard resolves each name once at most anyway.
                     let mut names = crate::eval::NameCache::default();
-                    let mut host = PassHost::new(wb_ref, graph, &exprs, &legacy, &mut names, &mut rng, now);
+                    let mut host = PassHost::new(wb_ref, graph, &trees, &legacy, &mut names, &mut rng, now);
                     host.iterate = false;
-                    for &k in &local {
-                        host.calculate(k);
+                    for (slot, k) in trees.iter() {
+                        host.calculate_at(k, slot);
                     }
                     let clean = host.spills.is_empty()
                         && host.cycles.is_empty()
@@ -449,8 +567,7 @@ impl Calc {
                         && host.members.is_empty()
                         && host.depth == 0;
                     // Keep the local order: the values then concatenate into a row-major list.
-                    let values: Vec<(Key, Value)> =
-                        local.iter().filter_map(|k| host.results.get(k).and_then(|s| s.value.as_ref()).map(|v| (*k, v.clone()))).collect();
+                    let values: Vec<(Key, Value)> = trees.keys().iter().filter_map(|k| host.value(*k).map(|v| (*k, v.clone()))).collect();
                     let clean = clean && values.len() == local.len();
                     Shard { values, clean }
                 }));
@@ -459,7 +576,10 @@ impl Calc {
         });
         let eval_ms = prof_now() - started;
         let total: usize = shards.iter().filter_map(|r| r.as_ref().ok()).map(|s| s.values.len()).sum();
-        if total < PARALLEL_MIN {
+        if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+            eprintln!("  wave: {} dirty, {total} leaves on {threads} threads (min {min}), {eval_ms:.1} ms", dirty.len());
+        }
+        if total < min {
             return false;
         }
         let mut values = Vec::with_capacity(total);
@@ -976,12 +1096,14 @@ impl Calc {
             }
             // The graph already holds each formula's parsed expression (and the range of a
             // legacy array): the pass reads them from there instead of rebuilding 100k cells.
-            let mut exprs: HashMap<Key, std::sync::Arc<Expr>> = HashMap::with_capacity_and_hasher(dirty.len(), Default::default());
+            // One dense table of the formulas to evaluate, in the row-major order `dirty` is in: the
+            // pass looks a cell up once (its slot), and the write-back below walks the same order.
+            let mut trees = Trees::with_capacity(dirty.len());
             let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
             for k in &dirty {
                 if let Some(node) = self.graph.nodes.get(k) {
                     if let Some(e) = &node.expr {
-                        exprs.insert(*k, std::sync::Arc::clone(e));
+                        trees.push(*k, e);
                     }
                     if let Some(r) = self.graph.legacy_of(*k) {
                         legacy.insert(*k, r);
@@ -991,11 +1113,11 @@ impl Calc {
             let now = self.now();
             let mut rng = self.rng;
             let tp = prof_now();
-            let (mut results, mut spills, cycles) = {
-                let mut host = PassHost::new(wb, &self.graph, &exprs, &legacy, &mut self.names, &mut rng, now);
+            let (mut slots, mut spills, cycles) = {
+                let mut host = PassHost::new(wb, &self.graph, &trees, &legacy, &mut self.names, &mut rng, now);
                 host.iterate = wb.calc.iterative;
-                for k in &dirty {
-                    host.calculate(*k);
+                for (slot, k) in trees.iter() {
+                    host.calculate_at(k, slot);
                 }
                 if host.iterate && !host.members.is_empty() {
                     let passes = host.iterate_loops(&dirty, wb.calc.max_iterations, wb.calc.max_change);
@@ -1008,7 +1130,7 @@ impl Calc {
                     self.read_probes += host.spill_index.probes();
                     self.block_probes += host.block_probes();
                 }
-                (host.results, host.spills, host.cycles)
+                (host.slots, host.spills, host.cycles)
             };
             self.rng = rng;
             // A formula that read its own cell is circular even when the function swallowed the
@@ -1024,7 +1146,9 @@ impl Calc {
             let mut discarded: Vec<(usize, RangeRef)> = Vec::new();
             if !wb.calc.iterative && !cycles.is_empty() {
                 for k in &cycles {
-                    results.insert(*k, Slot { value: Some(Value::Error(CellError::Circ)) });
+                    if let Some(state) = trees.slot(*k).and_then(|slot| slots.get_mut(slot as usize)) {
+                        *state = Slot::circular();
+                    }
                     if let Some(arr) = spills.remove(k) {
                         let end = CellRef::new(
                             k.1.row.saturating_add((arr.rows as u32).saturating_sub(1)),
@@ -1035,10 +1159,10 @@ impl Calc {
                 }
             }
             if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
-                eprintln!("  eval {} formulas {:.1} ms", results.len(), prof_now() - tp);
+                let done = slots.iter().filter(|s| s.value().is_some()).count();
+                eprintln!("  eval {done} formulas {:.1} ms", prof_now() - tp);
             }
             let tw = prof_now();
-            self.last_recalc_cells += results.len();
             found_cycles.extend(cycles.iter().copied());
             // Write back.
             let mut spill_changes: Vec<Key> = Vec::new();
@@ -1047,12 +1171,14 @@ impl Calc {
             }
             let mut freed: Vec<(usize, RangeRef)> = Vec::new();
             let twr = prof_now();
-            // Row-major order: the results come out of a hash map, and walking bands in row order
-            // is what makes the write-back touch each band once instead of jumping between 1,563
-            // of them at random. Values only change, so the store rewrites the packed slot and
-            // nothing else (no `Cell` built, no formula or style looked up).
-            let values: Vec<(Key, Value)> = results.into_iter().filter_map(|(k, s)| s.value.map(|v| (k, v))).collect();
-            write_values(wb, values);
+            // Row-major order: the slots are in `dirty`'s order, and walking bands in row order is
+            // what makes the write-back touch each band once instead of jumping between 1,563 of
+            // them at random. Values only change, so the store rewrites the packed slot and nothing
+            // else (no `Cell` built, no formula or style looked up).
+            let values: Vec<(Key, Value)> = trees.keys().iter().copied().zip(slots).filter_map(|(k, s)| s.into_value().map(|v| (k, v))).collect();
+            debug_assert!(values.windows(2).all(|w| (w[0].0.0, w[0].0.1.row, w[0].0.1.col) <= (w[1].0.0, w[1].0.1.row, w[1].0.1.col)));
+            self.last_recalc_cells += values.len();
+            write_values_ordered(wb, &values);
             let two = prof_now();
             if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
                 eprintln!("  write values {:.1} ms", two - twr);
@@ -1231,13 +1357,13 @@ pub fn evaluate(wb: &Workbook, sheet: usize, at: CellRef, formula: &str) -> Valu
 }
 
 pub fn evaluate_expr(wb: &Workbook, sheet: usize, at: CellRef, expr: &Expr) -> Value {
-    let exprs = HashMap::default();
+    let trees = Trees::default();
     let legacy = HashMap::default();
     let graph = Graph::default();
     let mut rng = 0x1234_5678_9ABC_DEF0u64;
     // One formula, so its own cache (and its names resolved once, however many of them it mentions).
     let mut names = crate::eval::NameCache::default();
-    let mut host = PassHost::new(wb, &graph, &exprs, &legacy, &mut names, &mut rng, now_serial());
+    let mut host = PassHost::new(wb, &graph, &trees, &legacy, &mut names, &mut rng, now_serial());
     let mut ev = Evaluator::new(&mut host, sheet, at);
     ev.value(expr)
 }
@@ -1264,7 +1390,7 @@ pub(crate) mod tests {
     use crate::eval::Host;
 
     use super::graph::Intervals;
-    use super::{Calc, Graph, HashMap, Key, PassHost};
+    use super::{Calc, Graph, HashMap, Key, PassHost, Trees};
 
     /// xorshift64 for repeatable pseudo-random cases.
     fn rng(state: &mut u64) -> u64 {
@@ -1957,6 +2083,29 @@ pub(crate) mod tests {
         assert!(column_j(&named, n).iter().all(|v| *v == Value::Number(20.0)));
     }
 
+    /// A column of formulas each reading the one above it — a running total — has one leaf in a
+    /// million, so the pass leaves it to one thread: no wave is started (and the dirty cells are
+    /// counted before the leaf scan, which is all a wave that finds nothing would cost).
+    #[test]
+    fn a_chain_of_formulas_stays_on_one_thread() {
+        let n = 17_000u32;
+        let mut wb = Workbook::new();
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.set(CellRef::new(0, 1), Cell::value(Value::Number(1.0)));
+            sh.cells.set(CellRef::new(0, 9), Cell::formula(Formula::new("=B1")));
+            for r in 1..n {
+                sh.cells.set(CellRef::new(r, 1), Cell::value(Value::Number(1.0)));
+                sh.cells.set(CellRef::new(r, 9), Cell::formula(Formula::new(&format!("=J{}+B{}", r, r + 1))));
+            }
+        }
+        let mut calc = Calc::new();
+        calc.recalc_all(&mut wb);
+        assert_eq!(calc.parallel_runs, 0, "a chain of formulas has no independent wave");
+        for r in 0..n {
+            assert_eq!(wb.sheet(0).unwrap().value(CellRef::new(r, 9)), Value::Number((r + 1) as f64), "row {r}");
+        }
+    }
+
     #[test]
     fn independent_range_leaves_recalc_on_threads() {
         let n = 17_000u32;
@@ -2056,11 +2205,11 @@ pub(crate) mod tests {
     fn wide_read_at_the_nesting_limit_suspends_once() {
         const WIDTH: u32 = 3000;
         let mut wb = Workbook::new();
-        let mut exprs = HashMap::default();
+        let mut trees = Trees::default();
         let mut put = |wb: &mut Workbook, at: String, text: String| {
             let at = CellRef::parse(&at).unwrap();
             wb.sheet_mut(0).unwrap().cells.set(at, Cell::formula(Formula::new(&text)));
-            exprs.insert((0, at), std::sync::Arc::new(gridcraft_formula::parse(&text[1..]).unwrap()));
+            trees.push((0, at), &std::sync::Arc::new(gridcraft_formula::parse(&text[1..]).unwrap()));
         };
         // A1 reads A2, ..., A64 (the 64th formula deep) reads a wide range of formulas.
         for r in 1..64 {
@@ -2074,10 +2223,10 @@ pub(crate) mod tests {
         let graph = Graph::default();
         let legacy = HashMap::default();
         let mut names = crate::eval::NameCache::default();
-        let mut host = PassHost::new(&wb, &graph, &exprs, &legacy, &mut names, &mut rng, 0.0);
+        let mut host = PassHost::new(&wb, &graph, &trees, &legacy, &mut names, &mut rng, 0.0);
         host.calculate((0, CellRef::parse("A1").unwrap()));
         let total = (WIDTH * (WIDTH + 1)) as f64;
-        assert_eq!(host.results.get(&(0, CellRef::parse("A1").unwrap())).and_then(|s| s.value.as_ref()), Some(&Value::Number(total + 63.0)));
+        assert_eq!(host.value((0, CellRef::parse("A1").unwrap())), Some(&Value::Number(total + 63.0)));
         assert!(host.cycles.is_empty());
         assert!(host.suspensions <= 3, "{} suspensions", host.suspensions);
     }
@@ -2086,10 +2235,10 @@ pub(crate) mod tests {
     /// values it hands over for `range` while the formulas in `pending` (cell, formula) have not been
     /// calculated yet, or `None` when it declines the block.
     pub(crate) fn probe_visit_range(wb: &Workbook, pending: &[(&str, &str)], range: RangeRef) -> Option<Vec<Value>> {
-        let mut exprs = HashMap::default();
+        let mut trees = Trees::default();
         for (at, formula) in pending {
             let expr = gridcraft_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).ok()?;
-            exprs.insert((0, CellRef::parse(at)?), std::sync::Arc::new(expr));
+            trees.push((0, CellRef::parse(at)?), &std::sync::Arc::new(expr));
         }
 
         // A cell in `pending` is calculated the first time something reads it, which is the state
@@ -2099,7 +2248,7 @@ pub(crate) mod tests {
         let graph = Graph::default();
         let legacy = HashMap::default();
         let mut names = crate::eval::NameCache::default();
-        let mut host = PassHost::new(wb, &graph, &exprs, &legacy, &mut names, &mut rng, 0.0);
+        let mut host = PassHost::new(wb, &graph, &trees, &legacy, &mut names, &mut rng, 0.0);
 
         let mut seen = Vec::new();
         host.visit_range(0, range, &mut |v| {

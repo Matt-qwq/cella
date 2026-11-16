@@ -83,11 +83,102 @@ const MAX_CACHED_BLOCK_CELLS: usize = 4_000_000;
 /// All shared blocks together, at 24 bytes a value.
 const MAX_CACHED_BLOCK_CELLS_TOTAL: usize = 4_000_000;
 
-/// One formula's state in a pass: its value once calculated, `None` while it is being evaluated
-/// (which is what makes reading it a circular reference).
+/// The formulas a pass evaluates, one slot each: a cell's slot, and the tree to evaluate there.
+///
+/// One table for what used to be asked of three — an expression map for the tree, the result map
+/// for the value, and the result map again for "is it in flight" and for storing the value, five
+/// hash lookups on the common path. The slots are dense and in the order the caller lists the cells
+/// (row-major, which is also the order the write-back walks), so a value is a bounds-checked index
+/// and evaluating a formula is one lookup.
+#[derive(Debug, Default)]
+pub(super) struct Trees {
+    index: HashMap<Key, u32>,
+    keys: Vec<Key>,
+    trees: Vec<std::sync::Arc<Expr>>,
+}
+
+impl Trees {
+    /// Room for `cells` formulas, so a million-formula pass neither grows nor rehashes twice.
+    pub(super) fn with_capacity(cells: usize) -> Self {
+        Self {
+            index: HashMap::with_capacity_and_hasher(cells, Default::default()),
+            keys: Vec::with_capacity(cells),
+            trees: Vec::with_capacity(cells),
+        }
+    }
+
+    /// Adds the tree to evaluate at `k`, unless the cell already has a slot. A pass of more than
+    /// four billion formulas cannot be listed (a sheet holds 17 billion cells, but a workbook that
+    /// large cannot be held in memory); cells past that limit would be left to the stored values
+    /// rather than clobber the slots before them.
+    pub(super) fn push(&mut self, k: Key, tree: &std::sync::Arc<Expr>) {
+        if self.index.contains_key(&k) {
+            return;
+        }
+        let Ok(slot) = u32::try_from(self.trees.len()) else { return };
+        self.index.insert(k, slot);
+        self.keys.push(k);
+        self.trees.push(std::sync::Arc::clone(tree));
+    }
+
+    /// The slot of the formula at `k`, when this pass evaluates it.
+    pub(super) fn slot(&self, k: Key) -> Option<u32> {
+        self.index.get(&k).copied()
+    }
+
+    /// The tree to evaluate in `slot`.
+    pub(super) fn tree(&self, slot: u32) -> Option<&std::sync::Arc<Expr>> {
+        self.trees.get(slot as usize)
+    }
+
+    /// The cells, in the order their slots were added.
+    pub(super) fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
+    /// Each cell with its slot, for a pass that calculates every formula of the table.
+    pub(super) fn iter(&self) -> impl Iterator<Item = (u32, Key)> + '_ {
+        self.keys.iter().enumerate().filter_map(|(i, k)| u32::try_from(i).ok().map(|slot| (slot, *k)))
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.trees.len()
+    }
+}
+
+/// One formula's state in a pass: its value once calculated, and whether an evaluation for it is in
+/// progress (which is what makes reading it a circular reference).
 #[derive(Clone, Debug, Default)]
 pub(super) struct Slot {
-    pub(super) value: Option<Value>,
+    value: Option<Value>,
+    in_flight: bool,
+}
+
+impl Slot {
+    /// A formula being evaluated.
+    pub(super) fn running() -> Self {
+        Self { value: None, in_flight: true }
+    }
+
+    /// A formula whose value is known.
+    pub(super) fn done(value: Value) -> Self {
+        Self { value: Some(value), in_flight: false }
+    }
+
+    /// The `#CIRC!` a circular formula shows.
+    pub(super) fn circular() -> Self {
+        Self::done(Value::Error(CellError::Circ))
+    }
+
+    /// The value, once calculated.
+    pub(super) fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+
+    /// The value, taken out of the slot.
+    pub(super) fn into_value(self) -> Option<Value> {
+        self.value
+    }
 }
 
 pub(super) struct PassHost<'a> {
@@ -99,12 +190,14 @@ pub(super) struct PassHost<'a> {
     /// formulas mentions is resolved and parsed once rather than once per cell (see
     /// [`crate::eval::NameCache`]).
     names: &'a mut crate::eval::NameCache,
-    exprs: &'a HashMap<Key, std::sync::Arc<Expr>>,
+    /// The formulas this pass evaluates: cell to slot, and the tree in each slot (see [`Trees`]).
+    trees: &'a Trees,
     /// The anchors of legacy array formulas in this pass (usually none).
     legacy: &'a HashMap<Key, RangeRef>,
-    pub(super) results: HashMap<Key, Slot>,
-    /// Formulas whose slot has no value yet. Zero for all of a row-major pass, which is when the
-    /// "is it already being evaluated?" hash lookup can be skipped.
+    /// One slot per formula in `trees`, in the same order.
+    pub(super) slots: Vec<Slot>,
+    /// Formulas whose slot is marked in flight. Zero for all of a row-major pass, which is when the
+    /// "is it already being evaluated?" test can be skipped.
     in_flight: usize,
     /// New spills found during the pass: anchor → array.
     pub(super) spills: HashMap<Key, std::sync::Arc<Array>>,
@@ -230,7 +323,7 @@ impl<'a> PassHost<'a> {
         #[cfg(test)]
         self.stored_visits.set(self.stored_visits.get().saturating_add(sh.spill_ranges.len() as u64));
         for (anchor, range) in &sh.spill_ranges {
-            if !self.exprs.contains_key(&(sheet, *anchor)) {
+            if self.trees.slot((sheet, *anchor)).is_none() {
                 index.insert_rect((sheet, *anchor), *range, false);
             }
         }
@@ -240,7 +333,7 @@ impl<'a> PassHost<'a> {
     pub(super) fn new(
         wb: &'a Workbook,
         graph: &'a Graph,
-        exprs: &'a HashMap<Key, std::sync::Arc<Expr>>,
+        trees: &'a Trees,
         legacy: &'a HashMap<Key, RangeRef>,
         names: &'a mut crate::eval::NameCache,
         rng: &'a mut u64,
@@ -250,9 +343,9 @@ impl<'a> PassHost<'a> {
             wb,
             graph,
             names,
-            exprs,
+            trees,
             legacy,
-            results: HashMap::with_capacity_and_hasher(exprs.len(), Default::default()),
+            slots: vec![Slot::default(); trees.len()],
             in_flight: 0,
             spills: HashMap::default(),
             spill_index: SpillIndex::default(),
@@ -287,6 +380,29 @@ impl<'a> PassHost<'a> {
             stack_top: 0,
             out_of_stack: false,
         }
+    }
+
+    /// The value the pass calculated for the formula at `k`, when it has one.
+    pub(super) fn value(&self, k: Key) -> Option<&Value> {
+        self.trees.slot(k).and_then(|slot| self.slot_value(slot))
+    }
+
+    /// The value in `slot`, once calculated.
+    fn slot_value(&self, slot: u32) -> Option<&Value> {
+        self.slots.get(slot as usize).and_then(Slot::value)
+    }
+
+    /// Puts a state in `slot`.
+    fn set_slot(&mut self, slot: u32, state: Slot) {
+        if let Some(s) = self.slots.get_mut(slot as usize) {
+            *s = state;
+        }
+    }
+
+    /// Takes the value out of `slot`, leaving it empty — the last iteration's value.
+    fn take_slot(&mut self, slot: u32) -> Option<Value> {
+        let state = std::mem::take(self.slots.get_mut(slot as usize)?);
+        state.into_value()
     }
 }
 
@@ -425,11 +541,26 @@ impl PassHost<'_> {
     /// go deeper than [`MAX_NESTED`], it suspends what is in progress, the formula it needed is
     /// calculated from here, then the suspended ones again (reading the results kept so far).
     pub(super) fn calculate(&mut self, k: Key) {
+        let Some(slot) = self.trees.slot(k) else { return };
+        self.calculate_at(k, slot);
+    }
+
+    /// Calculates the formula in `slot`, whose cell is `k`: the caller walks the pass's slots, so
+    /// the cell's slot is known and is not looked up again.
+    pub(super) fn calculate_at(&mut self, k: Key, slot: u32) {
         // Formulas to calculate, innermost last, each with the ones abandoned to calculate the
         // next.
         let mut work: Vec<(Key, Vec<Key>)> = vec![(k, Vec::new())];
+        let mut first = Some(slot);
         while let Some(&(top, _)) = work.last() {
-            self.compute(top);
+            match first.take() {
+                Some(slot) => {
+                    self.compute_at(top, slot);
+                }
+                None => {
+                    self.compute(top);
+                }
+            }
             match self.suspend.take() {
                 Some(next) => {
                     #[cfg(test)]
@@ -466,16 +597,26 @@ impl PassHost<'_> {
     }
 
     fn compute(&mut self, k: Key) -> Value {
-        if let Some(v) = self.results.get(&k).and_then(|s| s.value.as_ref()) {
-            let v = v.clone();
+        let Some(slot) = self.trees.slot(k) else {
+            return self.wb.sheet(k.0).map(|s| s.value(k.1)).unwrap_or_default();
+        };
+        self.compute_at(k, slot)
+    }
+
+    /// Calculates the formula at `k`, whose slot is `slot`: one lookup for the tree, the value it
+    /// may already have and the "is it in flight" mark, where the pass used to ask three tables.
+    fn compute_at(&mut self, k: Key, slot: u32) -> Value {
+        let trees = self.trees;
+        let current = self.slots.get(slot as usize).cloned().unwrap_or_default();
+        if let Some(v) = current.value {
             if self.iterate && self.tainted.contains(&k) {
                 self.taint = true;
             }
             return v;
         }
-        // A slot without a value is a formula being evaluated: reading it is a circular reference.
-        let running = self.in_flight > 0 && self.results.contains_key(&k);
-        let Some(expr) = self.exprs.get(&k) else {
+        // A slot marked in flight is a formula being evaluated: reading it is a circular reference.
+        let running = self.in_flight > 0 && current.in_flight;
+        let Some(expr) = trees.tree(slot) else {
             return self.wb.sheet(k.0).map(|s| s.value(k.1)).unwrap_or_default();
         };
         if self.suspend.is_some() {
@@ -504,7 +645,7 @@ impl PassHost<'_> {
         if self.depth == 0 {
             self.stack_top = crate::eval::stack_position();
         }
-        self.results.insert(k, Slot::default());
+        self.set_slot(slot, Slot::running());
         self.in_flight += 1;
         self.depth += 1;
         let outer_taint = std::mem::replace(&mut self.taint, false);
@@ -523,7 +664,7 @@ impl PassHost<'_> {
             // top instead, as a formula needed at `MAX_NESTED` levels deep is.
             self.suspend = Some(k);
             self.depth -= 1;
-            self.results.remove(&k);
+            self.set_slot(slot, Slot::default());
             self.in_flight = self.in_flight.saturating_sub(1);
             if self.iterate {
                 self.stack.pop();
@@ -534,7 +675,7 @@ impl PassHost<'_> {
         if self.suspend.is_some() {
             // Abandoned: `calculate` evaluates this formula again once the one it needs is done.
             self.depth -= 1;
-            self.results.remove(&k);
+            self.set_slot(slot, Slot::default());
             self.in_flight = self.in_flight.saturating_sub(1);
             self.abandoned.push(k);
             if self.iterate {
@@ -605,39 +746,45 @@ impl PassHost<'_> {
         };
         // An array that can't spill is #SPILL! for the formulas evaluated after it in this pass too.
         // One that spills over its own source is circular: no layout, `#CIRC!`.
-        let v = match self.spills.get(&k) {
-            Some(a) if reads_own_spill(self, k, a) => {
-                self.drop_spill(k);
-                if self.cycle_seen.insert(k) {
-                    self.cycles.push(k);
+        // Nothing can be spilled when the pass has laid none out: the lookup is skipped, and so is
+        // the "did it read its own cell?" one below.
+        let v = if self.spills.is_empty() {
+            v
+        } else {
+            match self.spills.get(&k) {
+                Some(a) if reads_own_spill(self, k, a) => {
+                    self.drop_spill(k);
+                    if self.cycle_seen.insert(k) {
+                        self.cycles.push(k);
+                    }
+                    Value::Error(CellError::Circ)
                 }
-                Value::Error(CellError::Circ)
-            }
-            Some(a) if spill_blocked(self, k, a) => {
-                self.drop_spill(k);
-                Value::Error(CellError::Spill)
-            }
-            Some(a) if spill_feeds_its_source(self, k, a) => {
-                self.drop_spill(k);
-                if self.cycle_seen.insert(k) {
-                    self.cycles.push(k);
+                Some(a) if spill_blocked(self, k, a) => {
+                    self.drop_spill(k);
+                    Value::Error(CellError::Spill)
                 }
-                Value::Error(CellError::Circ)
+                Some(a) if spill_feeds_its_source(self, k, a) => {
+                    self.drop_spill(k);
+                    if self.cycle_seen.insert(k) {
+                        self.cycles.push(k);
+                    }
+                    Value::Error(CellError::Circ)
+                }
+                _ => v,
             }
-            _ => v,
         };
         // A formula that read its own cell — directly, or through a range read that came back to
         // it — is circular now, not only when the pass ends: a formula evaluated after it reads
         // the #CIRC! a full recalculation gives it, instead of a number computed from whatever the
         // cell showed mid-pass. Two formulas that feed each other that way otherwise swap values
         // every round until the round limit cuts the pass off in one of the two states.
-        let v = if !self.iterate && self.cycle_seen.contains(&k) {
+        let v = if !self.iterate && !self.cycle_seen.is_empty() && self.cycle_seen.contains(&k) {
             self.drop_spill(k);
             Value::Error(CellError::Circ)
         } else {
             v
         };
-        self.results.insert(k, Slot { value: Some(v.clone()) });
+        self.set_slot(slot, Slot::done(v.clone()));
         self.in_flight = self.in_flight.saturating_sub(1);
         v
     }
@@ -678,7 +825,15 @@ impl PassHost<'_> {
         let max_passes = u32::try_from(MAX_ITERATION_WORK / again.len().max(1)).unwrap_or(u32::MAX).max(1);
         let mut passes = 1u32;
         while passes < max_iterations.min(max_passes) && !self.converged(max_change) {
-            self.prev = again.iter().filter_map(|k| self.results.remove(k).and_then(|s| s.value).map(|v| (*k, v))).collect();
+            let mut previous: HashMap<Key, Value> = HashMap::default();
+            for k in &again {
+                if let Some(slot) = self.trees.slot(*k)
+                    && let Some(v) = self.take_slot(slot)
+                {
+                    previous.insert(*k, v);
+                }
+            }
+            self.prev = previous;
             let gone: Vec<Key> = self.spills.keys().filter(|a| set.contains(a)).copied().collect();
             for a in gone {
                 self.drop_spill(a);
@@ -695,7 +850,7 @@ impl PassHost<'_> {
     /// logical and error values: not at all).
     fn converged(&self, max_change: f64) -> bool {
         self.members.iter().all(|k| {
-            let Some(new) = self.results.get(k).and_then(|s| s.value.as_ref()) else { return true };
+            let Some(new) = self.value(*k) else { return true };
             match (new, &self.previous(*k)) {
                 (Value::Number(a), Value::Number(b)) => {
                     let d = (a - b).abs();
@@ -746,7 +901,7 @@ impl Host for PassHost<'_> {
     }
     fn spill_range(&mut self, sheet: usize, anchor: CellRef) -> Option<RangeRef> {
         let k = (sheet, anchor);
-        if !self.exprs.contains_key(&k) {
+        if self.trees.slot(k).is_none() {
             return self.wb.sheet(sheet)?.spill_ranges.get(&anchor).copied();
         }
         // Recalculated in this pass: its new array, unless something blocks it (#SPILL!).
@@ -766,15 +921,20 @@ impl Host for PassHost<'_> {
     }
     fn cell_value(&mut self, sheet: usize, c: CellRef) -> Value {
         let k = (sheet, c);
-        if self.exprs.contains_key(&k) {
-            return self.compute(k);
+        if let Some(slot) = self.trees.slot(k) {
+            return self.compute_at(k, slot);
         }
         // A cell covered by a spill computed in this pass. Where several overlap, the first in
-        // `spills`' iteration order counts, as it always has.
-        let covering = match self.spill_index.covering(sheet, c) {
-            Cover::None => None,
-            Cover::One(a) => self.spills.get_key_value(&(sheet, a)),
-            Cover::Many => self.spills.iter().find(|(a, arr)| a.0 == sheet && spill_covers(a.1, arr, c)),
+        // `spills`' iteration order counts, as it always has. A pass that has laid no array out (the
+        // common one) skips the index: no cell can be covered.
+        let covering = if self.spills.is_empty() {
+            None
+        } else {
+            match self.spill_index.covering(sheet, c) {
+                Cover::None => None,
+                Cover::One(a) => self.spills.get_key_value(&(sheet, a)),
+                Cover::Many => self.spills.iter().find(|(a, arr)| a.0 == sheet && spill_covers(a.1, arr, c)),
+            }
         };
         if let Some((anchor, arr)) = covering {
             let (dr, dc) = ((c.row - anchor.1.row) as usize, (c.col - anchor.1.col) as usize);
@@ -827,9 +987,9 @@ impl Host for PassHost<'_> {
         // A formula cell is settled when this pass has already worked it out, or when the pass is
         // not working it out at all (it keeps the value the file or the last calculation gave it).
         let stable = !self.iterate
-            && sh.cells.formula_cells(range).all(|c| {
-                let k = (sheet, c);
-                self.results.get(&k).is_some_and(|s| s.value.is_some()) || !self.exprs.contains_key(&k)
+            && sh.cells.formula_cells(range).all(|c| match self.trees.slot((sheet, c)) {
+                Some(slot) => self.slot_value(slot).is_some(),
+                None => true,
             });
         if !stable {
             return None;
