@@ -46,6 +46,10 @@ pub struct Calc {
     /// Cells whose formulas have errors from cycles.
     pub circular: Vec<Key>,
     pub last_recalc_cells: usize,
+    /// Formula cells the last [`Calc::restore`] re-inserted into the graph, or `None` when it
+    /// could not and rebuilt instead. Diagnostics, like `last_recalc_cells`: what Undo and Redo
+    /// cost on a sheet with a million formulas.
+    pub last_restore_cells: Option<usize>,
     /// A parallel pass produced a spill or a cycle and was rolled back: keep passes sequential
     /// until a formula changes, rather than paying for the same failed attempt every recalculation.
     parallel_fallback: bool,
@@ -83,6 +87,7 @@ impl Default for Calc {
             fixed_now: None,
             circular: vec![],
             last_recalc_cells: 0,
+            last_restore_cells: None,
             parallel_fallback: false,
             names: crate::eval::NameCache::default(),
             unshared: vec![],
@@ -552,6 +557,71 @@ impl Calc {
             }
         }
         self.graph.settle();
+    }
+
+    /// Puts the graph right after the workbook was replaced with a snapshot of an earlier version
+    /// of itself — what Undo and Redo do: `from` is the workbook being replaced, `to` the snapshot
+    /// taking its place.
+    ///
+    /// **Nothing is evaluated**, on purpose. The snapshot holds the values the undone edit
+    /// replaced, so the workbook is already right; the only thing that can be out of date is the
+    /// graph. And only the formulas the two versions disagree on are re-inserted: the cells the
+    /// edit wrote, not the sheet (`CellStore::formula_changes_against` walks the bands the two
+    /// versions do not share). Undoing one edit on a million formulas then costs one cell instead
+    /// of a rebuild of the million.
+    ///
+    /// Returns whether it could do that; false means it fell back to [`rebuild`](Self::rebuild)
+    /// because the two versions cannot be compared cell by cell — a different set or order of
+    /// sheets, rows or columns inserted or deleted, a paged store, or defined names, tables or
+    /// report definitions that moved under the formulas, since those decide what a reference means
+    /// and so what a formula's precedents are.
+    pub fn restore(&mut self, from: &Workbook, to: &Workbook) -> bool {
+        // Whatever happens below, this call evaluates nothing: the snapshot it restores was
+        // calculated when it was made.
+        self.last_recalc_cells = 0;
+        let Some(changes) = Self::formula_changes(from, to) else {
+            self.last_restore_cells = None;
+            self.rebuild(to);
+            return false;
+        };
+        self.last_restore_cells = Some(changes.len());
+        self.parallel_fallback = false;
+        for (si, at, formula) in changes {
+            // A formula whose text does not parse has no node at all, as in `rebuild`.
+            match formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array))) {
+                Some((e, legacy)) => {
+                    let (areas, dynamic, trim) = precedents(&mut self.names, to, si, &e);
+                    let may_spill = may_return_array(&mut self.names, to, si, &e);
+                    self.graph.insert((si, at), Node { areas, dynamic, expr: Some(e), legacy, may_spill, trim });
+                }
+                None => self.graph.remove((si, at)),
+            }
+        }
+        self.graph.settle();
+        true
+    }
+
+    /// The formula cells two versions of a workbook disagree on, with the sheet each is on, or
+    /// `None` when they cannot be found cheaply (see [`Calc::restore`]).
+    fn formula_changes(from: &Workbook, to: &Workbook) -> Option<Vec<(usize, CellRef, Option<std::sync::Arc<gridcraft_model::Formula>>)>> {
+        if from.sheets.len() != to.sheets.len() || from.names != to.names {
+            return None;
+        }
+        let mut out = Vec::new();
+        for (si, (a, b)) in from.sheets.iter().zip(&to.sheets).enumerate() {
+            // What a reference resolves to lives beside the cells: the sheet's name, its tables,
+            // and the reports a GETPIVOTDATA reads. A formula's precedents depend on all of them.
+            if a.name != b.name || a.tables != b.tables || a.pivots != b.pivots {
+                return None;
+            }
+            if std::sync::Arc::ptr_eq(a, b) {
+                continue;
+            }
+            for (at, formula) in b.cells.formula_changes_against(&a.cells)? {
+                out.push((si, at, formula));
+            }
+        }
+        Some(out)
     }
 
     /// Recalculates every formula (F9 / Ctrl+Alt+F9, and after loading).

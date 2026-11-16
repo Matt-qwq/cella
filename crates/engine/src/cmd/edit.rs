@@ -741,7 +741,9 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
         d.history_dropped += crate::push_history(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection) as u64;
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
-    d.calc.rebuild(&d.wb);
+    // The snapshot carries the values the undone edit replaced, so nothing is recalculated: only
+    // the graph the edit changed is put back (see `Calc::restore`).
+    d.calc.restore(&now, &d.wb);
     d.revision += 1;
     Ok(json!({"undone": label}))
 }
@@ -761,7 +763,7 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
         d.history_dropped += crate::push_history(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection) as u64;
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
-    d.calc.rebuild(&d.wb);
+    d.calc.restore(&now, &d.wb);
     d.revision += 1;
     Ok(json!({"redone": label}))
 }

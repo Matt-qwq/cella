@@ -409,6 +409,16 @@ impl BandRow {
         self.extras.as_ref().map_or(&[], |e| e.arrays.as_slice())
     }
 
+    /// Whether two versions of a row share its formula side table, which an edit that did not
+    /// write the row leaves in place.
+    fn same_extras(a: &BandRow, b: &BandRow) -> bool {
+        match (&a.extras, &b.extras) {
+            (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     fn drop_unused_extras(&mut self) {
         if self.extras.as_ref().is_some_and(|e| e.formulas.is_empty() && e.arrays.is_empty() && e.wide.is_empty()) {
             self.extras = None;
@@ -563,6 +573,13 @@ struct Band {
     text_index: Vec<(usize, u32)>,
     /// The distinct styles of this band; the `styles` stripe holds indexes into it.
     style_ids: Vec<StyleId>,
+}
+
+/// Whether two versions of one formula are the same formula: its text, its array range and the
+/// file's dynamic-array mark. The parsed tree is a cache of the text (parsing is deterministic),
+/// so a copy that was re-parsed is the same formula and comparing the trees is not needed.
+fn same_formula(a: &Arc<Formula>, b: &Arc<Formula>) -> bool {
+    Arc::ptr_eq(a, b) || (a.text == b.text && a.array == b.array && a.dynamic == b.dynamic)
 }
 
 /// Mixes the bits of a double into a slot index.
@@ -1361,6 +1378,12 @@ impl RowMap {
         self.identity
     }
 
+    /// Whether both maps put every cell at the same logical position (two versions of one store,
+    /// one of them an undo snapshot: a value edit leaves the mapping alone).
+    fn same_as(&self, other: &RowMap) -> bool {
+        self.identity == other.identity && self.segments == other.segments
+    }
+
     fn map(&self, logical: u32) -> Option<u32> {
         if logical >= gridcraft_core::MAX_ROWS {
             return None;
@@ -1577,6 +1600,11 @@ impl Default for ColMap {
 impl ColMap {
     fn is_identity(&self) -> bool {
         self.identity
+    }
+
+    /// The column sibling of [`RowMap::same_as`].
+    fn same_as(&self, other: &ColMap) -> bool {
+        self.identity == other.identity && self.segments == other.segments
     }
 
     /// Materializes the initial identity run for the columns the sheet actually holds. Unlike
@@ -3554,6 +3582,122 @@ impl CellStore {
         out.into_iter()
     }
 
+    /// The cells whose formula differs between this store and an older version of it, which an
+    /// undo restores: `Some(formula)` for a cell that holds one here and held none (or a
+    /// different one) there, `None` for a cell that held one there and holds none here.
+    ///
+    /// Only the bands and rows the two versions do not share are looked at — an undo snapshot
+    /// shares every band and row the edit did not touch — so a one-cell edit costs one band, not
+    /// one sheet. `None` when they cannot be compared that way: a row or column insert moved the
+    /// cells to other logical positions, or part of either store is paged out to disk. Then finding
+    /// the cells that differ costs a walk of the whole store, and the caller is better off
+    /// rebuilding what it wanted to update than paying for that.
+    ///
+    /// Two formulas are the same when their text is: the parsed tree is a cache of the text, so a
+    /// formula copied and re-parsed is not a change.
+    pub fn formula_changes_against(&self, older: &CellStore) -> Option<Vec<(CellRef, Option<Arc<Formula>>)>> {
+        if !self.pages.is_empty() || !older.pages.is_empty() {
+            return None;
+        }
+        if !self.row_map.same_as(&older.row_map) || !self.col_map.same_as(&older.col_map) {
+            return None;
+        }
+        let mut out: Vec<(CellRef, Option<Arc<Formula>>)> = Vec::new();
+        let mut keys: Vec<u32> = self.bands.keys().copied().chain(older.bands.keys().copied()).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        for key in keys {
+            let (here, there) = (self.bands.get(&key), older.bands.get(&key));
+            if let (Some(a), Some(b)) = (here, there)
+                && Arc::ptr_eq(a, b)
+            {
+                continue;
+            }
+            let empty: &[BandRow] = &[];
+            let rows_here = here.map_or(empty, |b| b.rows.as_slice());
+            let rows_there = there.map_or(empty, |b| b.rows.as_slice());
+            let (mut i, mut j) = (0usize, 0usize);
+            loop {
+                let (a, b) = (rows_here.get(i), rows_there.get(j));
+                match (a, b) {
+                    (None, None) => break,
+                    // The same row on both sides: only the rows whose side table was replaced
+                    // (the ones the edit wrote) can hold a formula that changed.
+                    (Some(a), Some(b)) if a.key == b.key => {
+                        i += 1;
+                        j += 1;
+                        if !BandRow::same_extras(a, b) {
+                            self.push_row_changes(key, Some(a), Some(b), &mut out);
+                        }
+                    }
+                    (Some(a), Some(b)) if a.key < b.key => {
+                        i += 1;
+                        self.push_row_changes(key, Some(a), None, &mut out);
+                    }
+                    (Some(_), Some(_)) => {
+                        j += 1;
+                        self.push_row_changes(key, None, b, &mut out);
+                    }
+                    (Some(a), None) => {
+                        i += 1;
+                        self.push_row_changes(key, Some(a), None, &mut out);
+                    }
+                    (None, Some(b)) => {
+                        j += 1;
+                        self.push_row_changes(key, None, Some(b), &mut out);
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// `formula_changes_against` for one row of a band: merge its two formula lists (both sorted
+    /// by column) and record the cells they disagree on.
+    fn push_row_changes(&self, band_key: u32, here: Option<&BandRow>, there: Option<&BandRow>, out: &mut Vec<(CellRef, Option<Arc<Formula>>)>) {
+        let newer = here.map_or(&[][..], |r| r.formulas());
+        let older = there.map_or(&[][..], |r| r.formulas());
+        if newer.is_empty() && older.is_empty() {
+            return;
+        }
+        let Some(row_key) = here.or(there).map(|r| r.key) else { return };
+        let Some(logical_row) = self.row_map.inverse(band_key.saturating_mul(BAND).saturating_add(row_key)) else { return };
+        let at = |col: u32, f: Option<Arc<Formula>>, out: &mut Vec<(CellRef, Option<Arc<Formula>>)>| {
+            if let Some(logical_col) = self.col_map.inverse(col) {
+                out.push((CellRef::new(logical_row, logical_col), f));
+            }
+        };
+        let (mut i, mut j) = (0usize, 0usize);
+        loop {
+            match (newer.get(i), older.get(j)) {
+                (None, None) => break,
+                (Some((ca, fa)), Some((cb, fb))) if ca == cb => {
+                    if !same_formula(fa, fb) {
+                        at(*ca, Some(Arc::clone(fa)), out);
+                    }
+                    i += 1;
+                    j += 1;
+                }
+                (Some((ca, fa)), Some((cb, _))) if ca < cb => {
+                    at(*ca, Some(Arc::clone(fa)), out);
+                    i += 1;
+                }
+                (Some(_), Some((cb, _))) => {
+                    at(*cb, None, out);
+                    j += 1;
+                }
+                (Some((ca, fa)), None) => {
+                    at(*ca, Some(Arc::clone(fa)), out);
+                    i += 1;
+                }
+                (None, Some((cb, _))) => {
+                    at(*cb, None, out);
+                    j += 1;
+                }
+            }
+        }
+    }
+
     /// A stored cell with a value or a formula (a style alone does not count).
     pub fn has(&self, c: CellRef) -> bool {
         let (Some(physical), Some(col)) = (self.physical_row(c.row), self.physical_col(c.col)) else { return false };
@@ -5399,6 +5543,48 @@ mod tests {
 
     fn plain(n: u32) -> Cell {
         Cell::value(Value::Number(f64::from(n)))
+    }
+
+    #[test]
+    fn formula_changes_against_reports_the_edited_formulas() {
+        let mut older = CellStore::new();
+        for row in 0..1000u32 {
+            let mut cell = plain(row);
+            cell.formula = Some(Arc::new(Formula::new(format!("=A{}+1", row + 1).as_str())));
+            older.set(c(row, 1), cell);
+        }
+        // A value edit elsewhere in the sheet: nothing a graph would have to update.
+        let mut newer = older.clone();
+        newer.set(c(7, 3), plain(7));
+        assert_eq!(newer.formula_changes_against(&older).map(|v| v.len()), Some(0));
+
+        // One formula rewritten, one cleared, one new — and a copy of a formula that was
+        // re-parsed (same text) is not a change.
+        newer.set(c(10, 1), {
+            let mut cell = plain(10);
+            cell.formula = Some(Arc::new(Formula::new("=A11*2")));
+            cell
+        });
+        newer.set(c(11, 1), plain(11));
+        newer.set(c(12, 2), {
+            let mut cell = plain(12);
+            cell.formula = Some(Arc::new(Formula::new("=B13+1")));
+            cell
+        });
+        let mut reparsed = newer.get(c(13, 1)).unwrap_or_default();
+        reparsed.formula = Some(Arc::new(Formula::new("=A14+1")));
+        newer.set(c(13, 1), reparsed);
+        let changes = newer.formula_changes_against(&older).expect("comparable");
+        assert_eq!(changes.len(), 3, "{changes:?}");
+        assert_eq!(changes.iter().map(|(at, _)| *at).collect::<Vec<_>>(), vec![c(10, 1), c(11, 1), c(12, 2)]);
+        assert_eq!(changes.first().and_then(|(_, f)| f.as_ref()).map(|f| f.text.as_str()), Some("A11*2"));
+        assert!(changes.get(1).is_some_and(|(_, f)| f.is_none()));
+        assert_eq!(changes.get(2).and_then(|(_, f)| f.as_ref()).map(|f| f.text.as_str()), Some("B13+1"));
+
+        // A row insert moved the cells to other logical positions: not comparable band by band.
+        let mut moved = older.clone();
+        moved.shift_rows(4, 1);
+        assert!(moved.formula_changes_against(&older).is_none());
     }
 
     #[test]

@@ -345,6 +345,53 @@ fn undo_redo() {
     assert!(s.doc().unwrap().is_dirty());
 }
 
+/// Undo restores a snapshot of the workbook — values included — so it must not recalculate, and
+/// what it does to the dependency graph must be the same graph a rebuild would have made: the
+/// edit that follows the undo has to see exactly the dependants the restored formulas have.
+#[test]
+fn undo_puts_back_the_graph_the_restored_workbook_describes() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=A1*2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=B1+1"})).unwrap();
+    let nodes = s.doc().unwrap().calc.graph.len();
+    // A formula edit: B1 keeps its node, what it reads changes.
+    s.execute("cell.set", json!({"cell": "B1", "input": "=A1*3"})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::Number(7.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    let d = s.doc().unwrap();
+    assert_eq!((v(&s, "B1"), v(&s, "C1")), (Value::Number(4.0), Value::Number(5.0)), "the snapshot's values are back");
+    assert_eq!(d.calc.graph.len(), nodes);
+    assert_eq!(d.calc.last_restore_cells, Some(1), "one formula to re-insert, not a graph to rebuild");
+    assert_eq!(d.calc.last_recalc_cells, 0, "an undo evaluates nothing");
+    // The graph still knows what reads A1: one edit recalculates B1 and C1 only.
+    s.execute("cell.set", json!({"cell": "A1", "input": "5"})).unwrap();
+    assert_eq!((v(&s, "B1"), v(&s, "C1")), (Value::Number(10.0), Value::Number(11.0)));
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 2, "exactly the dependants of A1");
+}
+
+/// Redo is the same path, and undoing a formula the edit *added* has to take it out of the graph
+/// too: it may not linger as a dependant of a cell it no longer has a formula for.
+#[test]
+fn undo_and_redo_of_an_added_formula_keep_the_graph_in_step() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=A1*2"})).unwrap();
+    let nodes = s.doc().unwrap().calc.graph.len();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=A1+1"})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::Number(3.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.graph.len(), nodes, "the undone formula left the graph with its cell");
+    assert_eq!(v(&s, "C1"), Value::Empty);
+    // Redo brings the formula, its value and its node back.
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.graph.len(), nodes + 1);
+    assert_eq!(v(&s, "C1"), Value::Number(3.0));
+    s.execute("cell.set", json!({"cell": "A1", "input": "9"})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 2, "both formulas read A1 again");
+    assert_eq!((v(&s, "B1"), v(&s, "C1")), (Value::Number(18.0), Value::Number(10.0)));
+}
+
 #[test]
 fn redo_selects_the_redone_cell() {
     // #1855: type into A1..A3, click A1, undo, redo: the selection follows the edit to A3.

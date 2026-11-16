@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** new (the performance gate: `cargo xtask perf`, `xtask/perf-budgets.txt`, the scenario harness, this page) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** `edit.undo` is cheap again: Undo restores the snapshot and re-inserts only the formulas the edit rewrote, instead of rebuilding the dependency graph (§ Measured on the dev machine) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 GridCraft is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
@@ -23,7 +23,7 @@ Each reports one number: its own wall-clock time in ms.
 | `fill.chained` | fills a running sum `H = H(n-1)+G(n)` — every row depends on the row above | the worst case for the dependency graph: one chain a million deep |
 | `aggregate` | `SUM(G1:G{n})`, `SUMIFS(B:B,C:C,">50")`, `XLOOKUP(...)` | whole-column aggregates and lookups, the queries analysts actually run |
 | `edit.recalc` | edits `B1` (every `G`, hence every `H`, depends on it) | incremental recalculation after one keystroke — the number a user feels |
-| `edit.undo` | undoes that edit | undo must not be a snapshot of the world |
+| `edit.undo` | undoes that edit | undo restores a snapshot, so it must not recalculate or rebuild anything |
 | `sort.desc` | `data.sortDescending` over `A1:F{n}` by one column | sort is the slowest interactive operation we have (see below) |
 | `save.xlsx` | `file.saveBytes` as xlsx | the write path: pack, compress, stream |
 | `open.xlsx` | opens those bytes again | the read path plus the full recalculation of every formula |
@@ -123,7 +123,7 @@ recorded from, and the reason a budget is a threshold and not a target):
 | `fill.chained` | 484 ms | 5.13 s |
 | `aggregate` | 88 ms | 914 ms |
 | `edit.recalc` | 205 ms | 2.29 s |
-| `edit.undo` | 303 ms | 4.03 s |
+| `edit.undo` | 2 ms | 32 ms |
 | `sort.desc` | 715 ms | 9.48 s |
 | `save.xlsx` | 341 ms | 4.00 s |
 | `open.xlsx` | 684 ms | 8.60 s |
@@ -132,8 +132,15 @@ Reading it:
 
 - **Sort and open+recalc are the two slow scenarios** and the two that matter most to a user with a
   big sheet. Everything else is already in the "do it again without thinking" range.
-- Undo of a *formula* edit is not free (it recalculates what depends on the cell on the way back),
-  so `edit.undo` is measured right after `edit.recalc` rather than at the end of a run.
+- **Undo is the cheapest row on the page, and that is the point.** A history entry is a snapshot of
+  the workbook, values included, so an undo restores values rather than recomputing them: it
+  evaluates nothing (`last_recalc_cells` is 0 afterwards). It used to *rebuild* the dependency graph
+  from the restored workbook — a million rows of formulas re-parsed to change one cell — which cost
+  4.03 s at 1M rows; it now re-inserts only the formulas the undone edit rewrote (`Calc::restore`,
+  `CellStore::formula_changes_against`), and what is left of the undo is the history entry's byte
+  accounting instead. If this row goes back up, the graph is being rebuilt again.
+- `edit.undo` is measured right after `edit.recalc` rather than at the end of a run, because the
+  redo stack and the byte budget are then in the state a user's edit leaves them in.
 - The 100k column is there because the two sizes can move in different directions: a change that
   helps at 1M by making an allocation cheaper can still cost at 100k, where the whole workbook fits
   in cache.
