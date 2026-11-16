@@ -670,7 +670,9 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     let phonetics: HashMap<&str, &PhoneticString> = wb.phonetics.iter().map(|p| (p.text.as_str(), p)).collect();
     let mut sst = format!("{XML_DECL}<sst xmlns=\"{NS_MAIN}\" count=\"{}\" uniqueCount=\"{}\">", out.sst.count, out.sst.list.len());
     for t in &out.sst.list {
-        let _ = write!(sst, "<si>{}</si>", crate::xml::si_body(t, phonetics.get(t.as_str()).copied()));
+        sst.push_str("<si>");
+        crate::xml::push_si_body(&mut sst, t, phonetics.get(t.as_str()).copied());
+        sst.push_str("</si>");
     }
     sst.push_str("</sst>");
     out.part("xl/sharedStrings.xml", Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"), sst.into_bytes());

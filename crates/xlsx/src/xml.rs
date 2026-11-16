@@ -437,17 +437,45 @@ pub fn parse_streaming(xml: &[u8], split: &[&str], cb: &mut dyn FnMut(&mut El) -
 /// Escapes text content.
 pub fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => o.push_str("&amp;"),
-            '<' => o.push_str("&lt;"),
-            '>' => o.push_str("&gt;"),
-            '\r' => o.push_str("&#13;"),
-            c if is_xml_char(c) => o.push(c),
-            _ => {}
+    push_esc(&mut o, s);
+    o
+}
+
+/// [`esc`] appended to a buffer: the writer calls this once per cell, and the `String` `esc` builds
+/// is a copy plus an allocation each time.
+pub fn push_esc(out: &mut String, s: &str) {
+    // The common case is a run that needs nothing: copy it whole and touch only what must change.
+    let bytes = s.as_bytes();
+    let mut plain = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let Some(&b) = bytes.get(i) else { break };
+        // A control character XML cannot carry is dropped, as `esc` drops it.
+        let dropped = (b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r'))
+            // U+FFFE / U+FFFF, the two non-characters XML excludes (EF BF BE / EF BF BF).
+            || (b == 0xEF && bytes.get(i + 1) == Some(&0xBF) && matches!(bytes.get(i + 2), Some(&0xBE) | Some(&0xBF)));
+        if dropped {
+            out.push_str(s.get(plain..i).unwrap_or(""));
+            let width = if b == 0xEF { 3 } else { 1 };
+            plain = i + width;
+            i += width;
+        } else if matches!(b, b'&' | b'<' | b'>' | b'\r') {
+            out.push_str(s.get(plain..i).unwrap_or(""));
+            out.push_str(match b {
+                b'&' => "&amp;",
+                b'<' => "&lt;",
+                b'>' => "&gt;",
+                _ => "&#13;",
+            });
+            plain = i + 1;
+            i += 1;
+        } else {
+            i += 1;
         }
     }
-    o
+    if plain < s.len() {
+        out.push_str(s.get(plain..).unwrap_or(""));
+    }
 }
 
 /// Escapes an attribute value (double-quoted).
@@ -540,12 +568,21 @@ pub fn decode_xstring(s: &str) -> String {
 
 /// `<t>` element with `xml:space="preserve"` when needed.
 pub fn t_el(s: &str) -> String {
-    let enc = esc(&encode_xstring(s));
+    let mut o = String::with_capacity(s.len() + 8);
+    push_t_el(&mut o, s);
+    o
+}
+
+/// [`t_el`] appended to a buffer: the writer builds one of these per shared string, and the
+/// `String`s `t_el` builds (encoded, escaped, formatted) are three copies of the same text.
+pub fn push_t_el(out: &mut String, s: &str) {
     if s.starts_with([' ', '\t', '\n', '\r']) || s.ends_with([' ', '\t', '\n', '\r']) || s.contains('\n') {
-        format!("<t xml:space=\"preserve\">{enc}</t>")
+        out.push_str("<t xml:space=\"preserve\">");
     } else {
-        format!("<t>{enc}</t>")
+        out.push_str("<t>");
     }
+    push_esc(out, &encode_xstring(s));
+    out.push_str("</t>");
 }
 
 /// The contents of a shared string item (`<si>`): the base text, then — when the string has
@@ -556,9 +593,17 @@ pub fn t_el(s: &str) -> String {
 /// The runs and the properties are independent: `<phoneticPr>` is a valid child of `<si>` on its
 /// own (§18.4.8's `CT_SharedStringItem` allows it without any `rPh`), so a string whose runs were
 /// all dropped still keeps its settings.
+#[cfg(test)]
 pub fn si_body(text: &str, phonetic: Option<&PhoneticString>) -> String {
-    let mut s = t_el(text);
-    let Some(p) = phonetic else { return s };
+    let mut s = String::with_capacity(text.len() + 8);
+    push_si_body(&mut s, text, phonetic);
+    s
+}
+
+/// [`si_body`] appended to a buffer: the writer builds one per shared string.
+pub fn push_si_body(s: &mut String, text: &str, phonetic: Option<&PhoneticString>) {
+    push_t_el(s, text);
+    let Some(p) = phonetic else { return };
     // The model is public and restored from GridCraft JSON too, so the reader's checks are not the
     // only way data gets here: validate again and write only what the schema allows (§18.4.6: an
     // `sb` before `eb`, both inside the base text, a non-empty reading; §18.18.56/57: a known enum
@@ -582,7 +627,6 @@ pub fn si_body(text: &str, phonetic: Option<&PhoneticString>) -> String {
         }
         s.push_str("/>");
     }
-    s
 }
 
 /// Formats a number for an XML attribute/value (shortest round-trip form).
@@ -649,6 +693,39 @@ mod tests {
             props: Some(PhoneticProps { font_id: 1, kind: Some("Hiragana".into()), alignment: None }),
         };
         assert_eq!(si_body(text, Some(&known)), "<t>課きく</t><rPh sb=\"0\" eb=\"1\"><t>カ</t></rPh><phoneticPr fontId=\"1\" type=\"Hiragana\"/>");
+    }
+
+    /// `push_esc` writes into a buffer what `esc` writes into a new one: the writer uses it for
+    /// every cell's text, so a difference here would change saved files.
+    #[test]
+    fn push_esc_writes_what_esc_returns() {
+        let cases = [
+            "",
+            "plain",
+            "a & <b>",
+            "line\nbreak",
+            "carriage\rreturn",
+            "  leading and trailing  ",
+            "日本語とenglish",
+            "\u{1}control\u{2}chars\tkept\n",
+            "x\u{FFFE}y\u{FFFF}z",
+            "\u{FFFD}\u{10FFFF}",
+            "quotes \"and\" 'apostrophes'",
+            "_x0041_ and _x005F_",
+            "\r\n\r",
+        ];
+        for s in cases {
+            let mut pushed = String::from("prefix");
+            push_esc(&mut pushed, s);
+            pushed.push_str("suffix");
+            assert_eq!(pushed, format!("prefix{}suffix", esc(s)), "{s:?}");
+            // `t_el` through the buffer is the element `t_el` returns.
+            assert_eq!(t_el(s), {
+                let mut o = String::new();
+                push_t_el(&mut o, s);
+                o
+            });
+        }
     }
 
     #[test]

@@ -1319,21 +1319,21 @@ fn read_formula_text(
     known: crate::KnownFunctions,
     unwrapped: &mut bool,
 ) -> Option<(Formula, Option<RangeRef>)> {
-    let mut model = from_file(f.text.trim());
+    // One parse for the whole conversion (`formula_from_file`): the file's text, in the model's
+    // spelling, with the tree already parsed.
+    let mut fm = crate::fmla::formula_from_file(f.text.trim());
     if let Some(known) = known.given()
-        && let Some(u) = crate::fmla::unwrap_google_sheets(&model, known)
+        && let Some(u) = crate::fmla::unwrap_google_sheets(&fm.text, known)
     {
-        model = u;
+        fm = Formula::new(&u);
         *unwrapped = true;
     }
-    let text = model.as_str();
     match f.kind.unwrap_or("normal") {
         "shared" => {
             let si = f.si.and_then(|v| v.trim().parse::<u32>().ok())?;
-            if !text.is_empty() {
-                let expr = gridcraft_formula::parse(text).ok();
-                st.shared.insert(si, Shared { anchor: pos, expr, text: text.to_string(), unwrapped: *unwrapped });
-                Some((Formula::new(text), None))
+            if !fm.text.is_empty() {
+                st.shared.insert(si, Shared { anchor: pos, expr: fm.expr.as_deref().cloned(), text: fm.text.clone(), unwrapped: *unwrapped });
+                Some((fm, None))
             } else {
                 let Some(sh) = st.shared.get(&si) else {
                     warn.push("a shared formula refers to a missing master cell; kept the cached value".into());
@@ -1354,10 +1354,9 @@ fn read_formula_text(
             }
         }
         "array" => {
-            if text.is_empty() {
+            if fm.text.is_empty() {
                 return None;
             }
-            let mut fm = Formula::new(text);
             let range = f.range.and_then(RangeRef::parse).unwrap_or(RangeRef::cell(pos));
             if dynamic {
                 // The file names the range the result occupies; its inner cells are cached values
@@ -1375,10 +1374,10 @@ fn read_formula_text(
             None
         }
         _ => {
-            if text.is_empty() {
+            if fm.text.is_empty() {
                 None
             } else {
-                Some((Formula::new(text), None))
+                Some((fm, None))
             }
         }
     }

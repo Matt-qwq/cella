@@ -11,12 +11,20 @@ use gridcraft_model::Formula;
 /// check is one allocation-free walk; the rewrite after it clones and rebuilds the tree twice,
 /// which on a million-row sheet is the difference between a save that is half tree-building and
 /// one that is not.
-pub fn to_file(f: &Formula) -> String {
+pub fn file_text(f: &Formula) -> std::borrow::Cow<'_, str> {
     match f.expr_arc() {
-        Some(e) if needs_file_rewrite(&e) => expr_to_file((*e).clone()),
-        Some(e) => gridcraft_formula::print(&e),
-        None => f.text.clone(),
+        Some(e) if needs_file_rewrite(&e) => std::borrow::Cow::Owned(expr_to_file((*e).clone())),
+        // The model's text is the canonical print of the tree (both constructors print), so it is
+        // exactly what printing it again would produce — and borrowing it saves the copy and the
+        // allocation a save of a million-formula sheet made a million times.
+        _ => std::borrow::Cow::Borrowed(f.text.as_str()),
     }
+}
+
+/// [`file_text`] as a `String`, for the callers that need one.
+#[cfg(test)]
+pub(crate) fn to_file(f: &Formula) -> String {
+    file_text(f).into_owned()
 }
 
 /// The rewrite itself, for the test that holds the fast path to it.
@@ -153,6 +161,21 @@ fn strip_param_prefix(n: String) -> String {
     match (n.get(..PARAM_PREFIX.len()), n.get(PARAM_PREFIX.len()..)) {
         (Some(p), Some(rest)) if p.eq_ignore_ascii_case(PARAM_PREFIX) => rest.to_string(),
         _ => n,
+    }
+}
+
+/// The model formula for text read from a file: the model's spelling of it, parsed once.
+///
+/// [`from_file`] and [`Formula::new`] each parse and print the text, so converting a cell this way
+/// used to parse every formula twice — on a sheet with a million formulas that was most of the
+/// read. This builds the same `Formula` (the same text, the same tree already parsed) from one
+/// parse: `print` is stable, so printing the stripped tree is the text `Formula::new` would have
+/// parsed again.
+pub fn formula_from_file(text: &str) -> Formula {
+    let body = text.strip_prefix('=').unwrap_or(text);
+    match gridcraft_formula::parse(body) {
+        Ok(e) => Formula::from_expr(strip_param_prefixes(e)),
+        Err(_) => Formula { text: body.to_string(), expr: None, expr_bytes: 0, array: None, dynamic: false },
     }
 }
 
@@ -316,6 +339,30 @@ mod tests {
         let deleted = Formula::from_expr(Expr::Unary(gridcraft_formula::UnOp::Spill, Box::new(Expr::Error(gridcraft_core::CellError::Ref))));
         assert_eq!(deleted.text, "#REF!");
         assert_eq!(to_file(&deleted), "#REF!");
+    }
+
+    /// `formula_from_file` builds what `from_file` → `Formula::new` built, from one parse: the
+    /// same text, the tree already there (the read path relies on both).
+    #[test]
+    fn formula_from_file_matches_the_two_step_conversion() {
+        for text in [
+            "B1*C1+D1",
+            "SUM(A1:A9)",
+            "=SUM( A1 : A9 )",
+            "_xlfn.XLOOKUP(1,A:A,B:B)",
+            "_xlfn.LET(_xlpm.x,1,_xlpm.x+1)",
+            "_xlfn.SINGLE(A1:A3)*2",
+            "SUM(_xlfn.ANCHORARRAY(A1))+2",
+            "NOT A FORMULA(",
+            "",
+        ] {
+            let one = formula_from_file(text);
+            let two = Formula::new(&from_file(text));
+            assert_eq!(one.text, two.text, "{text:?}");
+            assert_eq!(one.expr.is_some(), two.expr.is_some(), "{text:?}");
+            // The model's text is what a save writes, so it must not have changed either.
+            assert_eq!(file_text(&one).as_ref(), file_text(&two).as_ref(), "{text:?}");
+        }
     }
 
     #[test]

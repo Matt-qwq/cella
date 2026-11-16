@@ -1006,7 +1006,9 @@ fn write_cell(
     }
     if let Some(picture) = picture {
         let vm = out.cell_pictures.index(picture);
-        let _ = write!(s, " t=\"e\" vm=\"{vm}\"><v>#VALUE!</v></c>");
+        s.push_str(" t=\"e\" vm=\"");
+        push_u32(s, vm);
+        s.push_str("\"><v>#VALUE!</v></c>");
         return;
     }
     let formula = if ov.is_some() { None } else { cell.and_then(|x| x.formula.as_ref()) };
@@ -1044,18 +1046,22 @@ fn write_cell(
         };
         s.push_str(t);
         s.push('>');
-        let text = esc(&crate::fmla::to_file(f));
         match (f.array, dynamic) {
+            // An array formula names the range its result occupies.
             (Some(r), _) => {
-                let _ = write!(s, "<f t=\"array\" ref=\"{}\">{text}</f>", r.a1());
+                s.push_str("<f t=\"array\" ref=\"");
+                s.push_str(&r.a1());
+                s.push_str("\">");
             }
             (None, Some(r)) => {
-                let _ = write!(s, "<f t=\"array\" ref=\"{}\">{text}</f>", r.a1());
+                s.push_str("<f t=\"array\" ref=\"");
+                s.push_str(&r.a1());
+                s.push_str("\">");
             }
-            _ => {
-                let _ = write!(s, "<f>{text}</f>");
-            }
+            _ => s.push_str("<f>"),
         }
+        crate::xml::push_esc(s, &crate::fmla::file_text(f));
+        s.push_str("</f>");
         match &value {
             Value::Number(n) => {
                 s.push_str("<v>");
@@ -1063,13 +1069,17 @@ fn write_cell(
                 s.push_str("</v>");
             }
             Value::Text(t) => {
-                let _ = write!(s, "<v>{}</v>", esc(&encode_xstring(t)));
+                s.push_str("<v>");
+                crate::xml::push_esc(s, &encode_xstring(t));
+                s.push_str("</v>");
             }
             Value::Bool(b) => {
-                let _ = write!(s, "<v>{}</v>", *b as u8);
+                s.push_str(if *b { "<v>1</v>" } else { "<v>0</v>" });
             }
             Value::Error(e) => {
-                let _ = write!(s, "<v>{}</v>", e.as_str());
+                s.push_str("<v>");
+                s.push_str(e.as_str());
+                s.push_str("</v>");
             }
             _ => out.needs_calc = true,
         }
@@ -1085,13 +1095,17 @@ fn write_cell(
         }
         Value::Text(t) => {
             let i = out.sst.index(t);
-            let _ = write!(s, " t=\"s\"><v>{i}</v></c>");
+            s.push_str(" t=\"s\"><v>");
+            push_u32(s, i);
+            s.push_str("</v></c>");
         }
         Value::Bool(b) => {
-            let _ = write!(s, " t=\"b\"><v>{}</v></c>", *b as u8);
+            s.push_str(if *b { " t=\"b\"><v>1</v></c>" } else { " t=\"b\"><v>0</v></c>" });
         }
         Value::Error(e) => {
-            let _ = write!(s, " t=\"e\"><v>{}</v></c>", e.as_str());
+            s.push_str(" t=\"e\"><v>");
+            s.push_str(e.as_str());
+            s.push_str("</v></c>");
         }
     }
 }
