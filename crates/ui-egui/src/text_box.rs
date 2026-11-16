@@ -32,7 +32,8 @@ impl SheetApp {
         }
         let Some(d) = self.session.active() else { return false };
         let Some(sh) = d.wb.active() else { return false };
-        let Some(shape) = sh.shapes.iter().find(|s| s.id == id && s.kind == ShapeKind::TextBox) else {
+        // A WordArt edits its text through this box too (its text stays short: the style's own limit).
+        let Some(shape) = sh.shapes.iter().find(|s| s.id == id && matches!(s.kind, ShapeKind::TextBox | ShapeKind::WordArt)) else {
             return false;
         };
         // shape.setText refuses edits on a protected sheet; don't open an editor that can't commit.
@@ -116,10 +117,12 @@ pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &gridcr
         app.text_box_editor = Some(ed);
         return;
     }
-    let Some(shape) = sh.shapes.iter().find(|s| s.id == ed.id && s.kind == ShapeKind::TextBox) else {
+    let Some(shape) = sh.shapes.iter().find(|s| s.id == ed.id && matches!(s.kind, ShapeKind::TextBox | ShapeKind::WordArt)) else {
         app.session.mode = Mode::Ready;
         return;
     };
+    // shape.setText's limit per kind: a cell's for a text box, a WordArt's own for decorative text.
+    let char_limit = if shape.kind == ShapeKind::WordArt { gridcraft_engine::cmd::wordart::MAX_CHARS } else { 32_767 };
     let save = ui.input_mut(|i| {
         if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::S) {
             Some("file.saveAs")
@@ -156,8 +159,7 @@ pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &gridcr
                 .margin(egui::Margin::ZERO)
                 .desired_width(rect.width())
                 .desired_rows(1)
-                // shape.setText's limit (a cell's).
-                .char_limit(32_767)
+                .char_limit(char_limit)
                 .min_size(rect.size())
                 .lock_focus(true),
         );

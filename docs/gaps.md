@@ -1026,8 +1026,13 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   the command is **command/control-channel only** until there is an equation editor to type into.
   Equations do not yet follow row/column inserts, are not in the z-order/Align/Arrange commands,
   are not in the accessibility check or the PDF export.
-- SmartArt, WordArt, signature line, objects, 3-D models, screenshot; 8 shape kinds vs
-  ~170; pictures in cells (#61, PR #105). **Estimate:** 25–40 h (equations are no longer part of it).
+- **WordArt landed:** `insert.wordArt` / `wordArt.set` make decorative text as a transparent
+  shape (`ShapeKind::WordArt`) whose text body carries the no-warp marker
+  (`a:prstTxWarp prst="textNoShape"`), so it reads back as WordArt and is never flattened into a
+  text box; the Insert › Text gallery paints its ten presets in code, and the text is edited
+  through the text-box path. The PDF export prints its text but not the outline and shadow yet.
+- SmartArt, signature line, objects, 3-D models, screenshot; 8 shape kinds vs ~170; pictures in
+  cells (#61, PR #105). **Estimate:** 25–40 h (equations and WordArt are no longer part of it).
 
 ### 18. Accessibility (U)
 - **Landed 11-02 (alt text + checker):** charts and shapes carry alternative text now — the model

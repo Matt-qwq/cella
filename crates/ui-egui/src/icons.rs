@@ -102,6 +102,8 @@ pub enum Icon {
     Comment,
     Note,
     TextBox,
+    /// Decorative text (Insert › Text › WordArt): a big outlined A.
+    WordArt,
     Symbol,
     Sparkline,
     Checkbox,
@@ -582,6 +584,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, c: Color32) {
             g.rect(2.0, 3.0, 12.0, 10.0, None, Some(c));
             g.text(8.0, 8.0, "A", 8.0, c, false, false);
         }
+        Icon::WordArt => {
+            // The drop shadow first, then the glyph, as a WordArt draws its text.
+            g.text(8.6, 8.6, "A", 12.0, light, true, false);
+            g.text(8.0, 8.0, "A", 12.0, c, true, false);
+        }
         Icon::Symbol => g.text(8.0, 8.0, "Ω", 12.0, c, false, false),
         Icon::Function => g.text(8.0, 8.0, "fx", 11.0, c, false, true),
         Icon::Name => {
@@ -892,6 +899,7 @@ const ALL: &[Icon] = &[
     Icon::Comment,
     Icon::Note,
     Icon::TextBox,
+    Icon::WordArt,
     Icon::Symbol,
     Icon::Sparkline,
     Icon::Checkbox,
