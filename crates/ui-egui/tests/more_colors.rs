@@ -21,6 +21,14 @@ fn harness() -> Harness {
     h
 }
 
+/// Clicks a control of the open palette. The ribbon's icons and the formula bar's carry names of
+/// their own now ("Cancel" is the formula bar's too), so the palette's own control is the lowest one.
+fn click_in_palette(h: &mut Harness, label: &str) {
+    let node = h.get_all_by_label(label).max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y));
+    node.expect("a control of the open palette").click();
+    h.run_steps(3);
+}
+
 fn press(h: &mut Harness, key: Key, modifiers: Modifiers) {
     let ev = |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
     h.input_mut().events.extend([ev(true), ev(false)]);
@@ -73,8 +81,7 @@ fn a_colour_that_is_not_hex_does_not_apply_and_cancel_applies_nothing() {
     press(&mut h, Key::Enter, Modifiers::NONE);
     assert!(h.state().session.journal.iter().all(|(id, _)| id != "home.fillColor"));
     h.get_by_label("Hex");
-    h.get_by_label("Cancel").click();
-    h.run_steps(3);
+    click_in_palette(&mut h, "Cancel");
     assert!(h.state().session.journal.iter().all(|(id, _)| id != "home.fillColor"));
     assert!(h.query_by_label("Hex").is_none());
     assert!(h.query_by_label("Recent Colors").is_none(), "Cancel remembers nothing");
