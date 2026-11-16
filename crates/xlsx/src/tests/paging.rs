@@ -38,7 +38,8 @@ fn a_paged_read_puts_the_spill_beside_the_document_and_leaves_nothing() {
     let path = dir.join("report.xlsx");
     std::fs::write(&path, minimal(&body(200), &[], "", "")).expect("the fixture");
     let (live, _) = read_xlsx_file(&path).expect("a live read");
-    let options = ReadOptions { paging: true, spill_dir: Some(dir.clone()), spill_name: Some("report".into()), spill_temp: None };
+    let options =
+        ReadOptions { paging: true, spill_dir: Some(dir.clone()), spill_name: Some("report".into()), spill_temp: None, ..ReadOptions::default() };
     let (paged, report) = read_xlsx_file_with(&path, options).expect("a paged read");
     assert!(!report.warnings.iter().any(|w| w.contains("without paging")), "{:?}", report.warnings);
     {
@@ -64,7 +65,13 @@ fn a_paged_read_with_nowhere_to_spill_warns_once_and_keeps_the_cells() {
     let (live, _) = read_xlsx_file(&path).expect("a live read");
     // Both candidates are missing, so no page file can be created anywhere.
     let missing = dir.join("missing");
-    let options = ReadOptions { paging: true, spill_dir: Some(missing.clone()), spill_name: Some("report".into()), spill_temp: Some(missing) };
+    let options = ReadOptions {
+        paging: true,
+        spill_dir: Some(missing.clone()),
+        spill_name: Some("report".into()),
+        spill_temp: Some(missing),
+        ..ReadOptions::default()
+    };
     let (paged, report) = read_xlsx_file_with(&path, options).expect("the workbook still opens");
     let spill_warnings: Vec<&String> = report.warnings.iter().filter(|w| w.contains("opened without paging")).collect();
     assert_eq!(spill_warnings.len(), 1, "{:?}", report.warnings);

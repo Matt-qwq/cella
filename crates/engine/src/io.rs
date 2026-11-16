@@ -228,6 +228,12 @@ fn spill_place(_path: &str) -> (Option<std::path::PathBuf>, Option<String>) {
     (None, None)
 }
 
+/// The worksheet functions this engine can calculate: the reader unwraps Google Sheets' export
+/// wrapper around a formula only when it can evaluate every function the formula holds (#2871).
+fn known_functions() -> gridcraft_xlsx::KnownFunctions {
+    gridcraft_xlsx::KnownFunctions::new(&gridcraft_calc::is_known_function)
+}
+
 /// Opens a workbook straight from a file, when its parts can be decompressed on demand instead of
 /// the whole file arriving as one buffer. `Ok(None)` means this file has to be read whole: an
 /// encrypted workbook (the decryption wants every byte), an old binary, ODS or XLSB package (their
@@ -252,7 +258,8 @@ pub fn open_from_path(name: &str, path: &str, password: Option<&str>) -> Result<
         return Err(EngineError::Other("files larger than 2 GB aren't supported".into()));
     }
     let (spill_dir, spill_name) = spill_place(path);
-    let options = gridcraft_xlsx::ReadOptions { paging: should_page(size), spill_dir, spill_name, spill_temp: None };
+    let options =
+        gridcraft_xlsx::ReadOptions { paging: should_page(size), spill_dir, spill_name, spill_temp: None, known_function: known_functions() };
     let (mut wb, report) = match gridcraft_xlsx::read_xlsx_file_with(std::path::Path::new(path), options) {
         Ok(read) => read,
         // A size complaint is the answer, not a reason to load the file to hear it again.
@@ -302,7 +309,8 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
         // and the model keeps only the pages. The 100M-cell export is 551 MB. A workbook opened
         // from bytes has no folder, so the temp directory is all a spill can use.
         let paging = should_page(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-        let (wb, report) = gridcraft_xlsx::read_xlsx_paged(bytes, paging).map_err(|e| {
+        let options = gridcraft_xlsx::ReadOptions { paging, known_function: known_functions(), ..Default::default() };
+        let (wb, report) = gridcraft_xlsx::read_xlsx_with(bytes, options).map_err(|e| {
             EngineError::Other(match (&e, gridcraft_xlsx::oversized_part(bytes)) {
                 (gridcraft_xlsx::IoError::TooLarge(_), Some((part, size))) => part_too_large_message(name, &part, size),
                 _ => format!("We can't open '{name}': {e}"),

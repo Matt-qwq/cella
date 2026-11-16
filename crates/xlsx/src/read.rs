@@ -144,9 +144,9 @@ pub fn read_xlsx_paged(bytes: &[u8], paging: bool) -> Result<(Workbook, ReadRepo
 
 /// [`read_xlsx_with`]'s plan builder for a public [`ReadOptions`].
 impl ReadPlan {
-    fn from_options(options: ReadOptions) -> ReadPlan {
+    pub(crate) fn from_options(options: ReadOptions) -> ReadPlan {
         let spill = options.paging.then_some(SpillTarget { dir: options.spill_dir, name: options.spill_name, temp: options.spill_temp });
-        ReadPlan { paging: options.paging, spill, ..ReadPlan::default() }
+        ReadPlan { paging: options.paging, spill, known_function: options.known_function, ..ReadPlan::default() }
     }
 }
 
@@ -347,6 +347,8 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
 
     // Sheets. `file_to_model[i]` maps the i-th <sheet> to a model sheet index.
     let mut file_to_model: Vec<Option<usize>> = vec![];
+    // Legacy formula cells per model sheet, rewritten once names and tables are known.
+    let mut legacy_formulas: Vec<(usize, Vec<gridcraft_core::CellRef>)> = vec![];
     let mut pivot_caches = crate::pivot::CachesIn::new(&wb_xml, &wb_rels);
     let sheet_els: Vec<El> = wb_xml.child("sheets").map(|s| s.kids("sheet").cloned().collect()).unwrap_or_default();
     for (i, se) in sheet_els.iter().enumerate() {
@@ -393,12 +395,12 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
         }
         let name = unique_name(&wb, &name, i);
         cx.sheet_ext = false;
-        let mut sheet = match crate::sheet_read::read_sheet_with(&mut cx, &rel.target, &name, &plan) {
+        let (mut sheet, legacy) = match crate::sheet_read::read_sheet_with(&mut cx, &rel.target, &name, &plan) {
             Ok(s) => s,
             Err(IoError::TooLarge(m)) => return Err(IoError::TooLarge(m)),
             Err(e) => {
                 cx.warn(format!("sheet \"{name}\" could not be read: {e}"));
-                Sheet::new(name.clone())
+                (Sheet::new(name.clone()), Vec::new())
             }
         };
         match crate::pivot::read_pivots(&mut cx, &mut pivot_caches, &rel.target, &name) {
@@ -412,6 +414,9 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
             Some("veryHidden") => Visibility::VeryHidden,
             _ => Visibility::Visible,
         };
+        if !legacy.is_empty() {
+            legacy_formulas.push((wb.sheets.len(), legacy));
+        }
         file_to_model.push(Some(wb.sheets.len()));
         wb.sheets.push(Arc::new(sheet));
     }
@@ -528,6 +533,9 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
     crate::model_pivots::read(&mut cx, &mut wb);
     // Calls of LAMBDA names are spelled like the names (the parser upper-cases them).
     wb.apply_name_call_case();
+    // Legacy formulas read as dynamic-array formulas with Excel's implicit `@`. Names and tables
+    // are loaded by now, which is what the analysis reads.
+    crate::array_formula::apply_legacy(&mut wb, legacy_formulas);
     wb.styles = cx.styles;
     wb.phonetics = cx.phonetics;
     Ok((wb, cx.report))
