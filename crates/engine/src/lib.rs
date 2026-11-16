@@ -67,6 +67,37 @@ pub struct HistoryEntry {
     pub retained_bytes: usize,
 }
 
+/// An undo group opened with [`Session::group_begin`]. Hand it back to [`Session::group_end`]
+/// (keep the changes as one undo step) or [`Session::group_rollback`] (undo them all).
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "an undo group stays open until it is ended or rolled back"]
+pub struct GroupToken {
+    id: u64,
+    doc: u64,
+}
+
+impl GroupToken {
+    /// The uid of the document the group belongs to.
+    pub fn doc(&self) -> u64 {
+        self.doc
+    }
+}
+
+/// An open undo group: what runs on `doc` until it ends becomes one undo step.
+#[derive(Clone, Debug)]
+struct OpenGroup {
+    id: u64,
+    doc: u64,
+    label: String,
+    /// Undo depth when the group began; the group's steps are cut back to it.
+    start: usize,
+    /// The workbook as it was when the group began: what the step (or a rollback) restores.
+    wb: Arc<Workbook>,
+    selection: Selection,
+    /// The redo stack when the group began (a rollback puts it back).
+    redo: Vec<HistoryEntry>,
+}
+
 /// The clipboard: a block of cells (with formulas and styles) or marching-ants reference.
 #[derive(Clone, Debug)]
 pub struct Clipboard {
@@ -384,6 +415,12 @@ pub struct Session {
     /// inserts rows and sets cells) is one user action: only the outermost one takes an undo
     /// snapshot, which is also what keeps a 24-group Subtotal from filling the history.
     command_depth: u32,
+    /// Undo groups open on their documents ([`Session::group_begin`]). While one is open the
+    /// commands running there add no undo steps of their own: the group makes one when it ends.
+    groups: Vec<OpenGroup>,
+    /// The next group id. A token carries it, so an ended group's token is refused instead of
+    /// ending someone else's group.
+    next_group: u64,
 }
 
 impl Session {
@@ -420,6 +457,11 @@ impl Session {
     }
     pub fn close_document(&mut self, i: usize) {
         if i < self.docs.len() {
+            // An undo group belongs to its document: it goes with it, so no token outlives its
+            // workbook and no group keeps a closed document's snapshot alive.
+            if let Some(gone) = self.docs.get(i).map(|d| d.uid) {
+                self.groups.retain(|g| g.doc != gone);
+            }
             self.docs.remove(i);
             if self.active >= self.docs.len() {
                 self.active = self.docs.len().saturating_sub(1);
@@ -594,6 +636,7 @@ impl Session {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
+        let first_group = self.next_group;
         let outer = self.command_depth == 0;
         self.command_depth = self.command_depth.saturating_add(1);
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
@@ -604,6 +647,9 @@ impl Session {
             Err(p) => {
                 let msg =
                     p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into());
+                // A command that panicked leaves none of the undo groups it opened behind: the
+                // restore below takes back what it changed.
+                self.groups.retain(|g| g.id < first_group);
                 // Restore the workbook as it was.
                 if let Some((uid, wb, sel)) = &before
                     && let Some(d) = self.docs.iter_mut().find(|d| d.uid == *uid)
@@ -615,20 +661,152 @@ impl Session {
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
+        // A command that fails leaves none of its own undo groups open (a `?` between
+        // `group_begin` and `group_end`): each is rolled back as `group_rollback` does.
+        if result.is_err() {
+            self.rollback_groups_from(first_group);
+        }
         if outer && spec.journal && result.is_ok() {
             self.push_journal(id, cmd::journal_params(&params));
         }
+        // Inside an undo group the group owns the step: the commands running there add none of
+        // their own (the group makes one when it ends), and the redo history waits for it too.
+        let grouped = before.as_ref().is_some_and(|(uid, ..)| self.in_group(*uid));
         if outer
             && spec.undoable
             && let Some((uid, wb, sel)) = before
             && let Some(d) = self.docs.iter_mut().find(|d| d.uid == uid)
             && !Arc::ptr_eq(&d.wb, &wb)
         {
-            d.history_dropped += push_history(&mut d.undo, spec.label.trim_end_matches('…').to_string(), wb, &d.wb, sel) as u64;
+            if grouped {
+                d.revision += 1;
+            } else {
+                d.history_dropped += push_history(&mut d.undo, spec.label.trim_end_matches('…').to_string(), wb, &d.wb, sel) as u64;
+                d.redo.clear();
+                d.revision += 1;
+            }
+        }
+        result
+    }
+
+    /// Runs `f` as one undo step labelled `label` on the active document: whatever commands `f`
+    /// runs, one Undo brings back the workbook and selection as they were before. If `f` fails or
+    /// panics, every change it made is rolled back and its error (or the panic) is passed on.
+    /// Groups nest; the outermost one makes the step.
+    pub fn grouped<R>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+        let token = self.group_begin(label)?;
+        let doc = token.doc();
+        // A panic in `f` rolls the group back before it goes on, so a caller that catches it
+        // (outside `execute`, which drops the groups a panicking command opened) finds no group
+        // left open.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self))) {
+            Ok(Ok(r)) => match self.group_end(token) {
+                Ok(_) => Ok(r),
+                // `f` closed the group's document (`file.close`), and the group went with it:
+                // there is nothing left to undo and nothing left open.
+                Err(_) if !self.docs.iter().any(|d| d.uid == doc) => Ok(r),
+                Err(e) => Err(e),
+            },
+            Ok(Err(e)) => {
+                // The error from `f` is the one to report. A rollback fails only when the group
+                // has already ended, and then there is nothing left to undo.
+                let _ = self.group_rollback(token);
+                Err(e)
+            }
+            Err(panic) => {
+                let _ = self.group_rollback(token);
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+
+    /// Opens an undo group on the active document that can span several calls (a macro, a script,
+    /// a debugger that runs one step per call). Until [`Session::group_end`] or
+    /// [`Session::group_rollback`], undoable commands on that document add no undo steps of their
+    /// own and Undo and Redo are unavailable there; the group becomes one step.
+    pub fn group_begin(&mut self, label: &str) -> Result<GroupToken> {
+        let d = self.doc()?;
+        let g = OpenGroup {
+            id: self.next_group,
+            doc: d.uid,
+            label: label.trim_end_matches('…').to_string(),
+            start: d.undo.len(),
+            wb: d.wb.clone(),
+            selection: d.selection.clone(),
+            redo: d.redo.clone(),
+        };
+        let token = GroupToken { id: g.id, doc: g.doc };
+        self.next_group = self.next_group.saturating_add(1);
+        self.groups.push(g);
+        Ok(token)
+    }
+
+    /// Ends an undo group. If the workbook changed, the group becomes one undo step (costed the
+    /// way any step is, from the snapshot it began with to the workbook it leaves), unless it is
+    /// nested in another open group on the same document, which then owns the step. Groups on
+    /// that document opened inside it and still open end with it. Returns whether the workbook
+    /// changed.
+    pub fn group_end(&mut self, token: GroupToken) -> Result<bool> {
+        let g = self.take_group(&token)?;
+        let outer = self.in_group(g.doc);
+        let Some(d) = self.docs.iter_mut().find(|d| d.uid == g.doc) else { return Ok(false) };
+        // Steps pushed directly while the group was open fold into the group's step.
+        d.undo.truncate(g.start);
+        let changed = !Arc::ptr_eq(&d.wb, &g.wb);
+        if changed && !outer {
+            d.history_dropped += push_history(&mut d.undo, g.label, g.wb, &d.wb, g.selection) as u64;
             d.redo.clear();
             d.revision += 1;
         }
-        result
+        Ok(changed)
+    }
+
+    /// Ends an undo group by putting back the workbook, selection, undo and redo history as they
+    /// were when it began. A group inside one rolled back before it is already gone.
+    pub fn group_rollback(&mut self, token: GroupToken) -> Result<()> {
+        let g = self.take_group(&token)?;
+        let Some(d) = self.docs.iter_mut().find(|d| d.uid == g.doc) else { return Ok(()) };
+        if !Arc::ptr_eq(&d.wb, &g.wb) {
+            d.wb = g.wb;
+            d.calc.rebuild(&d.wb);
+        }
+        d.selection = g.selection;
+        d.undo.truncate(g.start);
+        d.redo = g.redo;
+        d.revision += 1;
+        Ok(())
+    }
+
+    /// Whether the token's undo group is still open (nothing has ended or rolled it back).
+    pub fn group_is_open(&self, token: &GroupToken) -> bool {
+        self.groups.iter().any(|g| g.id == token.id)
+    }
+
+    /// Whether an undo group is open on the document with this uid.
+    pub fn in_group(&self, doc: u64) -> bool {
+        self.groups.iter().any(|g| g.doc == doc)
+    }
+
+    /// Removes the token's group and any group on the same document opened after it.
+    fn take_group(&mut self, token: &GroupToken) -> Result<OpenGroup> {
+        let ended = || EngineError::Other("that undo group has already ended".into());
+        let at = self.groups.iter().position(|g| g.id == token.id).ok_or_else(ended)?;
+        let mut later = self.groups.split_off(at).into_iter();
+        let g = later.next().ok_or_else(ended)?;
+        self.groups.extend(later.filter(|o| o.doc != g.doc));
+        Ok(g)
+    }
+
+    /// Rolls back every open undo group numbered `first` or later (the groups a failed command
+    /// opened), outermost first on each document.
+    fn rollback_groups_from(&mut self, first: u64) {
+        let opened: Vec<(u64, u64)> = self.groups.iter().filter(|g| g.id >= first).map(|g| (g.id, g.doc)).collect();
+        for (id, doc) in opened {
+            // A group inside one rolled back before it is already gone.
+            if self.groups.iter().any(|g| g.id == id) {
+                let _ = self.group_rollback(GroupToken { id, doc });
+            }
+        }
     }
 
     pub fn run(&mut self, id: &str, params: Json) -> std::result::Result<Json, String> {

@@ -101,11 +101,18 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 }
 pub fn can_undo(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
+    not_grouping(s)?;
     if s.active().is_some_and(|d| !d.undo.is_empty()) { Ok(()) } else { Err("nothing to undo".into()) }
 }
 pub fn can_redo(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
+    not_grouping(s)?;
     if s.active().is_some_and(|d| !d.redo.is_empty()) { Ok(()) } else { Err("nothing to redo".into()) }
+}
+/// Undo and Redo wait while an undo group is open on the active document: the group is one step
+/// until it ends or is rolled back, so undoing the steps it is made of would leave half of it.
+fn not_grouping(s: &Session) -> std::result::Result<(), String> {
+    if s.active().is_some_and(|d| s.in_group(d.uid)) { Err("finish or roll back the open undo group first".into()) } else { Ok(()) }
 }
 pub fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
