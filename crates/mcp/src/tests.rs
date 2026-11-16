@@ -568,7 +568,7 @@ fn run_script_replays_a_script_and_lists_it() {
     assert_eq!(ok(&mut s, "get_cell", json!({"cell": "B1"}))["value"], Value::Null);
     assert_eq!(ok(&mut s, "run_script", json!({"name": "Fill"}))["ran"].as_u64(), Some(2));
     assert_eq!(ok(&mut s, "get_cell", json!({"cell": "B2"}))["value"], json!(3.0));
-    assert!(fails(&mut s, "run_script", json!({"name": "nope"})).contains("no such script"));
+    assert!(fails(&mut s, "run_script", json!({"name": "nope"})).contains("no script named \"nope\""));
     // A workbook downloaded with scripts in it is untrusted: `trusted: true` runs one once, and the
     // trust is not remembered for the next call.
     let path = tmp("scripts.xlsx");

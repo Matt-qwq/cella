@@ -56,7 +56,9 @@ fn an_extension_cannot_call_another_extension_or_a_script() {
     let mut s = session();
     run(&mut s, "ext.add", json!({"name": "Recursive", "commands": [{"command": "ext.run", "params": {"name": "Recursive"}}]}));
     let err = s.execute("ext.run", json!({"name": "Recursive"})).expect_err("one level only");
-    assert!(err.to_string().contains("cannot run"), "{err}");
+    // The refusal comes from the macro policy, which speaks for scripts and extensions alike.
+    let why = err.to_string();
+    assert!(why.contains("ext.run") && why.contains("don't run extensions"), "{why}");
 }
 
 #[test]
