@@ -27,7 +27,7 @@ fn zoom(h: &egui_kittest::Harness<'static, SheetApp>) -> u16 {
 
 fn control(h: &mut egui_kittest::Harness<'static, SheetApp>, method: &str, params: Json) -> Json {
     let ctx = h.ctx.clone();
-    match handle(h.state_mut(), &ctx, method, &params) {
+    match handle(h.state_mut(), &ctx, method, params) {
         Outcome::Done(v) => v,
         Outcome::Screenshot { .. } => json!(null),
     }

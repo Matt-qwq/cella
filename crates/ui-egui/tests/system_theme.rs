@@ -35,7 +35,7 @@ fn system_theme(h: &mut egui_kittest::Harness<'static, SheetApp>, theme: Option<
 fn set_mode(h: &mut egui_kittest::Harness<'static, SheetApp>, mode: &str) {
     let ctx = h.ctx.clone();
     let control::Outcome::Done(response) =
-        control::handle(h.state_mut(), &ctx, "engine.execute", &json!({"command": "view.theme", "params": {"mode": mode}}))
+        control::handle(h.state_mut(), &ctx, "engine.execute", json!({"command": "view.theme", "params": {"mode": mode}}))
     else {
         panic!("engine.execute should return a response");
     };
@@ -152,7 +152,7 @@ fn invalid_mode_preserves_preferences_and_legacy_overrides_leave_system_mode() {
     set_mode(&mut h, "system");
     system_theme(&mut h, Some(Theme::Dark));
     let ctx = h.ctx.clone();
-    let control::Outcome::Done(response) = control::handle(h.state_mut(), &ctx, "ui.set", &json!({"dark": false})) else {
+    let control::Outcome::Done(response) = control::handle(h.state_mut(), &ctx, "ui.set", json!({"dark": false})) else {
         panic!("ui.set should return a response");
     };
     assert_eq!(response["ok"], true);

@@ -109,7 +109,7 @@ fn ctrl_shift_home_and_end_scroll_the_moving_end_into_view() {
 
 fn control(h: &mut Harness, method: &str, params: Json) -> Json {
     let ctx = h.ctx.clone();
-    let out = match handle(h.state_mut(), &ctx, method, &params) {
+    let out = match handle(h.state_mut(), &ctx, method, params) {
         Outcome::Done(v) => v,
         Outcome::Screenshot { .. } => json!(null),
     };

@@ -83,17 +83,17 @@ fn parse_line(bytes: &[u8]) -> Line {
         Ok(v) => v,
         Err(e) => return Line::Reject(format!("invalid JSON ({e}); expected one JSON request object per line; closing the connection")),
     };
-    let Some(obj) = msg.as_object() else {
+    let Json::Object(mut obj) = msg else {
         return Line::Reject("not a control request (expected a JSON object); closing the connection".into());
     };
-    let Some(method) = obj.get("method").and_then(Json::as_str) else {
+    // The fields are moved out of the parsed request, not copied. A `range.setValues` of a whole
+    // sheet carries tens of megabytes of params, and building that tree and then copying it here,
+    // again in the app's control handler and a third time for the command raised the peak working
+    // set of one 6M-cell write by hundreds of megabytes over the same write in 20 chunks.
+    let Some(Json::String(method)) = obj.remove("method") else {
         return Line::Reject("not a control request (missing string `method`); closing the connection".into());
     };
-    Line::Request {
-        id: obj.get("id").cloned().unwrap_or(Json::Null),
-        method: method.to_string(),
-        params: obj.get("params").cloned().unwrap_or(json!({})),
-    }
+    Line::Request { id: obj.remove("id").unwrap_or(Json::Null), method, params: obj.remove("params").unwrap_or(json!({})) }
 }
 
 /// An HTTP/1 request line (`POST / HTTP/1.1`) or the HTTP/2 preface (`PRI * HTTP/2.0`).

@@ -188,28 +188,43 @@ pub struct Stats {
 
 pub fn stats(sheet: &Sheet, ranges: &[RangeRef]) -> Stats {
     let mut s = Stats { min: f64::INFINITY, max: f64::NEG_INFINITY, ..Default::default() };
-    let mut seen = std::collections::HashSet::new();
-    for r in ranges {
-        let r = match sheet.used_range().and_then(|u| r.intersection(&u)) {
-            Some(x) => x,
-            None => continue,
+    let used = sheet.used_range();
+    let clipped: Vec<RangeRef> = ranges.iter().filter_map(|r| used.and_then(|u| r.intersection(&u))).collect();
+    // Areas only need the `seen` set when they can overlap: a cell in two areas is counted once.
+    // The areas of a selection are pairwise disjoint (Ctrl-clicking a second one takes its cells
+    // out of the first), and inserting every visited cell into a `HashSet` was most of the walk's
+    // cost on a big selection.
+    let overlapping = clipped.iter().enumerate().any(|(i, a)| clipped[i + 1..].iter().any(|b| a.intersects(b)));
+    let mut seen: Option<std::collections::HashSet<CellRef>> = if overlapping { Some(Default::default()) } else { None };
+    // Hidden rows are a property of the row, so the check runs once per row of the walk instead of
+    // once per cell, and not at all on a sheet with no filter and no custom-height row.
+    let row_meta = !sheet.filter_hidden.is_empty() || !sheet.rows.is_empty();
+    let mut last_row: Option<(u32, bool)> = None;
+    let mut visit = |c: CellRef, v: &Value| {
+        if seen.as_mut().is_some_and(|set| !set.insert(c)) {
+            return;
+        }
+        let hidden = match last_row {
+            Some((row, hidden)) if row == c.row => hidden,
+            _ => {
+                let hidden = row_meta && sheet.is_row_hidden(c.row);
+                last_row = Some((c.row, hidden));
+                hidden
+            }
         };
-        let mut visit = |c: CellRef, v: &Value| {
-            if !seen.insert(c) || sheet.is_row_hidden(c.row) {
-                return;
-            }
-            if v.is_empty() {
-                return;
-            }
-            s.count += 1;
-            if let Value::Number(n) = v {
-                s.numeric += 1;
-                s.sum += n;
-                s.min = s.min.min(*n);
-                s.max = s.max.max(*n);
-            }
-        };
-        for (c, cell) in sheet.cells.iter_range(r) {
+        if hidden || v.is_empty() {
+            return;
+        }
+        s.count += 1;
+        if let Value::Number(n) = v {
+            s.numeric += 1;
+            s.sum += n;
+            s.min = s.min.min(*n);
+            s.max = s.max.max(*n);
+        }
+    };
+    for r in &clipped {
+        for (c, cell) in sheet.cells.iter_range(*r) {
             visit(c, &cell.value);
         }
         for (c, v) in sheet.spill.range(r.start..=r.end) {
@@ -225,4 +240,53 @@ pub fn stats(sheet: &Sheet, ranges: &[RangeRef]) -> Stats {
         s.max = 0.0;
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stats;
+    use gridcraft_core::RangeRef;
+    use serde_json::json;
+
+    fn session(cells: &[(&str, &str)]) -> crate::Session {
+        let mut s = crate::Session::default();
+        s.new_workbook();
+        for (cell, input) in cells {
+            s.execute("cell.set", json!({"cell": cell, "input": input})).expect("cell.set");
+        }
+        s
+    }
+
+    fn r(a: &str) -> RangeRef {
+        RangeRef::parse(a).expect("a range")
+    }
+
+    #[test]
+    fn overlapping_areas_count_a_shared_cell_once() {
+        // Two areas that overlap still need the `seen` set; disjoint ones skip it (the fast path).
+        let s = session(&[("A1", "1"), ("A2", "2"), ("A3", "4")]);
+        let d = s.doc().expect("a document");
+        let sh = d.wb.sheet(0).expect("a sheet");
+        let st = stats(sh, &[r("A1:A2"), r("A2:A3")]);
+        assert_eq!(st.count, 3, "A2 lies in both areas and counts once");
+        assert_eq!(st.sum, 7.0);
+        let st = stats(sh, &[r("A1:A1"), r("A3:A3")]);
+        assert_eq!(st.count, 2);
+        assert_eq!(st.sum, 5.0);
+        assert_eq!(st.min, 1.0);
+        assert_eq!(st.max, 4.0);
+        assert_eq!(st.average, Some(2.5));
+    }
+
+    #[test]
+    fn a_hidden_row_is_left_out_of_the_statistics() {
+        let mut s = session(&[("A1", "1"), ("A2", "2"), ("B1", "10")]);
+        s.execute("home.hideRows", json!({"rows": "2"})).expect("hide row 2");
+        let d = s.doc().expect("a document");
+        let sh = d.wb.sheet(0).expect("a sheet");
+        let st = stats(sh, &[r("A1:B2")]);
+        assert_eq!(st.count, 2, "row 2 is hidden on both columns");
+        assert_eq!(st.sum, 11.0);
+        assert_eq!(st.min, 1.0);
+    }
 }
