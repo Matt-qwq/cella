@@ -6,7 +6,8 @@ use std::fmt::Write as _;
 
 use gridcraft_model::style::{DxfStated, Protection};
 use gridcraft_model::{
-    Alignment, BorderLine, BorderStyle, Borders, Color, Fill, Font, HAlign, NumFmt, PatternType, Style, Underline, VAlign, VertAlign, Workbook,
+    Alignment, BorderLine, BorderStyle, Borders, Color, Fill, Font, HAlign, NumFmt, PatternType, ReadingOrder, Style, Underline, VAlign, VertAlign,
+    Workbook,
 };
 
 use crate::tables::{INDEXED, builtin_format, builtin_id};
@@ -260,6 +261,14 @@ fn read_alignment(a: &El) -> Alignment {
         shrink: a.flag("shrinkToFit", false),
         indent: a.attr_u32("indent").unwrap_or(0).min(250) as u8,
         rotation: 0,
+        // ST_ReadingOrder: 0 context, 1 left to right, 2 right to left. Anything else says
+        // nothing, which is the same as the attribute being absent.
+        reading_order: match a.attr_u32("readingOrder") {
+            Some(0) => Some(ReadingOrder::Context),
+            Some(1) => Some(ReadingOrder::LeftToRight),
+            Some(2) => Some(ReadingOrder::RightToLeft),
+            _ => None,
+        },
     };
     if let Some(r) = a.attr_i64("textRotation") {
         al.rotation = match r {
@@ -566,6 +575,12 @@ fn alignment_xml(a: &Alignment) -> Option<String> {
     }
     if a.indent > 0 {
         let _ = write!(s, " indent=\"{}\"", a.indent);
+    }
+    match a.reading_order {
+        None => {}
+        Some(ReadingOrder::Context) => s.push_str(" readingOrder=\"0\""),
+        Some(ReadingOrder::LeftToRight) => s.push_str(" readingOrder=\"1\""),
+        Some(ReadingOrder::RightToLeft) => s.push_str(" readingOrder=\"2\""),
     }
     if a.shrink {
         s.push_str(" shrinkToFit=\"1\"");

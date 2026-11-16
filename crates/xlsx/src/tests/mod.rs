@@ -36,6 +36,7 @@ mod slicer_tests;
 mod smooth_roundtrip;
 mod streaming;
 mod trendline_roundtrip;
+mod view_settings;
 mod xls_chart_tests;
 mod xls_features_tests;
 mod xls_shape_tests;

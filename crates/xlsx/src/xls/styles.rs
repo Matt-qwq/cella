@@ -219,6 +219,8 @@ pub(super) fn read_xf(c: &mut Cursor<'_, '_>) -> Result<XfIn, IoError> {
             255 => 255,
             _ => 0,
         },
+        // BIFF8 keeps no reading order in the XF record.
+        reading_order: None,
     };
     Ok(XfIn {
         ifnt,

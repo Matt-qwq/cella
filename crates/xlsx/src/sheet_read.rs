@@ -170,6 +170,11 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
                 if let Some(t) = e.child("tabColor") {
                     sheet.tab_color = Some(read_color(t, &cx.palette));
                 }
+                // Data ▸ Outline ▸ Settings: where the summary line of a group sits.
+                if let Some(o) = e.child("outlinePr") {
+                    sheet.summary_below = o.flag("summaryBelow", true);
+                    sheet.summary_right = o.flag("summaryRight", true);
+                }
                 fit_to_page = e.child("pageSetUpPr").is_some_and(|p| p.flag("fitToPage", false));
             }
             "sheetViews" => read_views(e, &mut sheet),
@@ -401,6 +406,7 @@ fn read_views(e: &El, sheet: &mut Sheet) {
     sheet.show_formulas = v.flag("showFormulas", false);
     sheet.show_zeros = v.flag("showZeros", true);
     sheet.right_to_left = v.flag("rightToLeft", false);
+    sheet.show_outline_symbols = v.flag("showOutlineSymbols", true);
     sheet.view = v.attr("view").and_then(gridcraft_model::SheetViewMode::parse).unwrap_or_default();
     if let Some(z) = v.attr_u32("zoomScale") {
         sheet.zoom = z.clamp(10, 400) as u16;

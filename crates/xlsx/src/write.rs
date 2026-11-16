@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use gridcraft_core::RangeRef;
 use gridcraft_formula::quote_sheet;
-use gridcraft_model::{CalcMode, CalcSettings, PhoneticString, ShowObjects, Style, Visibility, Workbook};
+use gridcraft_model::{CalcMode, CalcSettings, PhoneticString, ShowObjects, Style, Visibility, Workbook, WorkbookView};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::package::Packed;
@@ -355,6 +355,27 @@ fn check_sheet_names(wb: &Workbook) -> Result<(), IoError> {
 /// Workbook name written in a PivotChart's link when the file name isn't known.
 const DEFAULT_BOOK_NAME: &str = "Workbook.xlsx";
 
+/// The `<workbookView>` attributes beyond `activeTab`: the window's display settings, written
+/// only where they differ from the format's defaults. An ordinary workbook gets none, so its file
+/// is unchanged; one Excel saved with the sheet tabs or scroll bars hidden keeps them that way.
+fn workbook_view_attrs(wb: &Workbook) -> String {
+    let mut attrs = String::new();
+    if !wb.view.show_sheet_tabs {
+        attrs.push_str(" showSheetTabs=\"0\"");
+    }
+    if !wb.view.show_horizontal_scroll {
+        attrs.push_str(" showHorizontalScroll=\"0\"");
+    }
+    if !wb.view.show_vertical_scroll {
+        attrs.push_str(" showVerticalScroll=\"0\"");
+    }
+    let tab_ratio = wb.view.tab_ratio.min(WorkbookView::MAX_TAB_RATIO);
+    if tab_ratio != 600 {
+        let _ = write!(attrs, " tabRatio=\"{tab_ratio}\"");
+    }
+    attrs
+}
+
 pub fn write_xlsx(wb: &Workbook, kind: XlsxKind) -> Result<Vec<u8>, IoError> {
     write_xlsx_named(wb, kind, None)
 }
@@ -560,12 +581,17 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     if wb.date_system == gridcraft_core::DateSystem::D1904 {
         w.push_str(" date1904=\"1\"");
     }
+    if wb.remove_personal_info {
+        w.push_str(" filterPrivacy=\"1\"");
+    }
     w.push_str("/>");
     if wb.protected_structure {
         let pw = wb.structure_password.as_ref().map(|h| crate::sheet_write::password_attrs(h, "workbook")).unwrap_or_default();
         let _ = write!(w, "<workbookProtection{pw} lockStructure=\"1\"/>");
     }
-    let _ = write!(w, "<bookViews><workbookView activeTab=\"{}\"/></bookViews><sheets>{sheets_xml}</sheets>", kept.file_index(active));
+    let _ = write!(w, "<bookViews><workbookView activeTab=\"{}\"", kept.file_index(active));
+    w.push_str(&workbook_view_attrs(wb));
+    let _ = write!(w, "/></bookViews><sheets>{sheets_xml}</sheets>");
     w.push_str(&kept.elements);
     if !names.is_empty() {
         let _ = write!(w, "<definedNames>{names}</definedNames>");
@@ -590,6 +616,9 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     }
     if wb.calc.precision_as_displayed {
         w.push_str(" fullPrecision=\"0\"");
+    }
+    if wb.calc.r1c1 {
+        w.push_str(" refMode=\"R1C1\"");
     }
     if out.needs_calc || wb.calc.full_calc_on_load {
         w.push_str(" fullCalcOnLoad=\"1\"");

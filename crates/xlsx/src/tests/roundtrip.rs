@@ -27,6 +27,7 @@ fn sample() -> Workbook {
         max_change: 0.5,
         precision_as_displayed: true,
         full_calc_on_load: true,
+        r1c1: false,
     };
     wb.protected_structure = true;
     wb.structure_password = Some(gridcraft_model::PasswordHash::new_sha512("s3cret", b"0123456789abcdef"));
@@ -47,7 +48,7 @@ fn sample() -> Workbook {
         s.fill = Fill::solid(Color::Rgb(0xFFEE00));
         s.borders.bottom = BorderLine { style: BorderStyle::Double, color: Color::Rgb(0xFF0000) };
         s.borders.diag_down = BorderLine::thin();
-        s.align = Alignment { h: HAlign::Center, v: VAlign::Top, wrap: true, shrink: false, indent: 1, rotation: -30 };
+        s.align = Alignment { h: HAlign::Center, v: VAlign::Top, wrap: true, shrink: false, indent: 1, rotation: -30, reading_order: None };
         s.protection.locked = false;
     });
     let money = wb.styles.derive(StyleId::DEFAULT, |s| s.num_fmt = NumFmt::new("#,##0.00 \"€\""));
