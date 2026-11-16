@@ -454,6 +454,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Rename Macro" => "重命名宏",
         "Step Into" => "单步执行",
         "Reset All" => "全部重置",
+        "Controls" => "控件",
         "Load Model" => "装入模型",
         "Excel Workbook (*.xlsx)" => "Excel 工作簿 (*.xlsx)",
         "CSV UTF-8 (Comma delimited) (*.csv)" => "CSV UTF-8(逗号分隔) (*.csv)",
