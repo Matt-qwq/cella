@@ -1,10 +1,11 @@
 //! CSV import and export (RFC 4180 with the usual real-world leniency).
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use gridcraft_core::parse::parse_input;
 use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, Value};
-use gridcraft_model::{Cell, NumFmt, Sheet, StyleId, Workbook};
+use gridcraft_model::{Cell, NumFmt, Sheet, StyleId, StyleTable, Workbook};
 
 use crate::{CsvOptions, IoError};
 
@@ -118,36 +119,40 @@ fn is_cp1256_arabic(b: u8) -> bool {
 /// Decodes CSV bytes with BOM-aware UTF-8 and UTF-16 handling. Without a BOM, valid UTF-8 is kept.
 /// Other bytes decode as Windows-1256 when they read as Arabic (see [`Cp1256Evidence`]), else as
 /// Windows-1252.
-pub fn decode_text(bytes: &[u8]) -> String {
+///
+/// The result borrows the input when it is already UTF-8 (the common case), so a
+/// hundred-megabyte file is not copied once more before it is read.
+pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8_lossy(rest).into_owned();
+        return String::from_utf8_lossy(rest);
     }
     let utf16 = |b: &[u8], le: bool| -> String {
         let units = b.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) });
         char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect()
     };
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return utf16(rest, true);
+        return Cow::Owned(utf16(rest, true));
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return utf16(rest, false);
+        return Cow::Owned(utf16(rest, false));
     }
     match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            let use_windows_1256 = Cp1256Evidence::of(bytes).is_arabic();
-            bytes
-                .iter()
-                .map(|&b| match b {
-                    0x80..=0xFF if use_windows_1256 => {
-                        char::from_u32(CP1256.get((b - 0x80) as usize).copied().unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}')
-                    }
-                    0x80..=0x9F => char::from_u32(CP1252.get((b - 0x80) as usize).copied().unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'),
-                    _ => b as char,
-                })
-                .collect()
-        }
+        Ok(s) => Cow::Borrowed(s),
+        Err(_) => Cow::Owned(decode_legacy(bytes)),
     }
+}
+
+/// The single-byte code pages: Windows-1252, or Windows-1256 when the bytes read as Arabic.
+fn decode_legacy(bytes: &[u8]) -> String {
+    let use_windows_1256 = Cp1256Evidence::of(bytes).is_arabic();
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0x80..=0xFF if use_windows_1256 => char::from_u32(CP1256.get((b - 0x80) as usize).copied().unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'),
+            0x80..=0x9F => char::from_u32(CP1252.get((b - 0x80) as usize).copied().unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'),
+            _ => b as char,
+        })
+        .collect()
 }
 
 /// Picks comma, semicolon or tab: the candidate with the most consistent count per line
@@ -248,6 +253,234 @@ pub(crate) fn parse_records(text: &str, delim: char, quote: char, mut on_record:
     }
 }
 
+/// One field of a parsed record: a run of the text, or of the parser's unescape scratch.
+#[derive(Clone, Copy)]
+struct FieldSpan {
+    start: usize,
+    end: usize,
+    /// The run lives in the scratch: a quoted field holding a doubled quote, or text after the
+    /// closing quote.
+    scratch: bool,
+}
+
+/// One parsed record, as [`parse_records_bytes`] hands it to the reader: field `i` is
+/// [`Record::get`]`(i)`. Every field but an unescaped one is a slice of the text, so a record
+/// costs one reused buffer and no string per field.
+pub(crate) struct Record<'a> {
+    text: &'a str,
+    scratch: &'a str,
+    spans: &'a [FieldSpan],
+}
+
+impl Record<'_> {
+    /// The fields kept for this record (a record holds at most [`MAX_COLS`] fields).
+    pub(crate) fn len(&self) -> usize {
+        self.spans.len()
+    }
+    /// Field `i`'s content; empty when the record has no such field.
+    pub(crate) fn get(&self, i: usize) -> &str {
+        match self.spans.get(i) {
+            Some(span) if span.scratch => self.scratch.get(span.start..span.end).unwrap_or_default(),
+            Some(span) => self.text.get(span.start..span.end).unwrap_or_default(),
+            None => "",
+        }
+    }
+}
+
+/// Ends the field whose content is `text[run..run_end]` and, when it had to be unescaped,
+/// `scratch[at..]` in front of it. The field joins the record when there is still room for it.
+/// Returns whether the field was empty, which is what decides whether a text that ends without a
+/// line end holds a record at all.
+fn end_field(scratch: &mut String, spans: &mut Vec<FieldSpan>, text: &str, run: usize, run_end: usize, at: Option<usize>) -> bool {
+    let span = match at {
+        Some(start) => {
+            scratch.push_str(text.get(run..run_end).unwrap_or_default());
+            FieldSpan { start, end: scratch.len(), scratch: true }
+        }
+        None => FieldSpan { start: run, end: run_end, scratch: false },
+    };
+    let empty = span.start == span.end;
+    if spans.len() < MAX_COLS as usize {
+        spans.push(span);
+    }
+    empty
+}
+
+/// Splits CSV bytes into records of fields, scanning bytes: with an ASCII delimiter and quote (the
+/// common case) both are one byte that no character contains as part of itself, so a byte walk sees
+/// exactly what a character walk would and nothing has to be decoded first. Every boundary falls on
+/// an ASCII byte, so the fields are the text's own [`str`] slices: no copy, and no UTF-8 check of
+/// text that was already known to be UTF-8.
+///
+/// A record keeps at most [`MAX_COLS`] fields; the fields past that are still scanned (a delimiter
+/// inside them is not content) but dropped, so a row of endless delimiters cannot allocate a string
+/// per field. A quoted field with a doubled quote is unescaped once, into one scratch buffer that
+/// every record reuses.
+pub(crate) fn parse_records_bytes(text: &str, delim: u8, quote: u8, mut on_record: impl FnMut(&Record<'_>) -> bool) {
+    let bytes = text.as_bytes();
+    let mut scratch = String::new();
+    let mut spans: Vec<FieldSpan> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        scratch.clear();
+        spans.clear();
+        let mut in_q = false;
+        let mut started_quoted = false;
+        // The field being read: its content is `text[run..run_end]`, and `scratch[at..]` in
+        // front of that once unescaping has made it more than one run.
+        let mut run = i;
+        let mut run_end = i;
+        let mut at: Option<usize> = None;
+        loop {
+            let Some(&b) = bytes.get(i) else {
+                // The end of the text ends the last record, unless that field is empty and the
+                // record is still empty: a file ending in a line end has already ended both.
+                let empty = end_field(&mut scratch, &mut spans, text, run, run_end, at);
+                if (!empty || !spans.is_empty() || started_quoted) && !on_record(&Record { text, scratch: &scratch, spans: &spans }) {
+                    return;
+                }
+                return;
+            };
+            if in_q {
+                if b != quote {
+                    run_end = i + 1;
+                    i += 1;
+                } else if bytes.get(i + 1) == Some(&quote) {
+                    // A doubled quote is one literal quote: the content is no longer one run of the
+                    // text, so what it holds so far moves to the scratch.
+                    if at.is_none() {
+                        at = Some(scratch.len());
+                    }
+                    scratch.push_str(text.get(run..run_end).unwrap_or_default());
+                    scratch.push(char::from(quote));
+                    run = i + 2;
+                    run_end = run;
+                    i += 2;
+                } else {
+                    // The closing quote: the content stops before it. Anything after it that is not
+                    // a delimiter or a line end continues the field, as text appended to a quoted
+                    // field (`"a"b` is `ab`).
+                    in_q = false;
+                    i += 1;
+                    if bytes.get(i).is_some_and(|&next| next != delim && next != b'\r' && next != b'\n') {
+                        if at.is_none() {
+                            at = Some(scratch.len());
+                        }
+                        scratch.push_str(text.get(run..run_end).unwrap_or_default());
+                        run = i;
+                        run_end = i;
+                    }
+                }
+                continue;
+            }
+            if b == quote && run_end == run && at.is_none() && !started_quoted {
+                // A quote opens a field only where the field has no content yet; anywhere else it is
+                // a character.
+                in_q = true;
+                started_quoted = true;
+                i += 1;
+                run = i;
+                run_end = i;
+            } else if b == delim {
+                end_field(&mut scratch, &mut spans, text, run, run_end, at);
+                i += 1;
+                run = i;
+                run_end = i;
+                at = None;
+                started_quoted = false;
+            } else if b == b'\r' || b == b'\n' {
+                end_field(&mut scratch, &mut spans, text, run, run_end, at);
+                i += if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+                if !on_record(&Record { text, scratch: &scratch, spans: &spans }) {
+                    return;
+                }
+                break;
+            } else {
+                run_end = i + 1;
+                i += 1;
+            }
+        }
+    }
+}
+
+/// Writes parsed records into the sheet as rows: one store write per row (the reader's row path)
+/// instead of one write per cell, which is what a million-row import spends its time on.
+struct RowWriter<'a> {
+    opts: &'a CsvOptions,
+    styles: &'a mut StyleTable,
+    /// The number formats already derived, so a million dates share one style.
+    fmt_cache: Vec<(&'static str, StyleId)>,
+    /// The row being built, reused for every record.
+    row_cells: Vec<(u32, Cell)>,
+    row: u32,
+    sheet: Sheet,
+}
+
+impl<'a> RowWriter<'a> {
+    fn new(opts: &'a CsvOptions, styles: &'a mut StyleTable) -> Self {
+        RowWriter { opts, styles, fmt_cache: Vec::new(), row_cells: Vec::new(), row: 0, sheet: Sheet::new("Sheet1") }
+    }
+
+    /// One record from the byte scanner.
+    fn record(&mut self, rec: &Record<'_>) -> bool {
+        for col in 0..rec.len() {
+            self.field(col as u32, rec.get(col));
+        }
+        self.end_row()
+    }
+
+    /// One record from the character scanner, which is used for a delimiter or a quote outside
+    /// ASCII.
+    fn record_chars(&mut self, fields: Vec<String>) -> bool {
+        for (col, text) in fields.iter().enumerate() {
+            self.field(col as u32, text);
+        }
+        self.end_row()
+    }
+
+    /// Writes one field: sniffed (a number, a date, a boolean, an error or text, with the number
+    /// format the sniffing chose) or kept as the text it is.
+    fn field(&mut self, col: u32, text: &str) {
+        if text.is_empty() || col >= MAX_COLS {
+            return;
+        }
+        let cell = if self.opts.parse_values {
+            let p = parse_input(text, self.opts.date_system);
+            let style = match p.format {
+                Some(code) => match self.fmt_cache.iter().find(|(c, _)| *c == code) {
+                    Some((_, id)) => *id,
+                    None => {
+                        let id = self.styles.derive(StyleId::DEFAULT, |s| s.num_fmt = NumFmt::new(code));
+                        self.fmt_cache.push((code, id));
+                        id
+                    }
+                },
+                None => StyleId::DEFAULT,
+            };
+            Cell { value: p.value, formula: None, style }
+        } else {
+            Cell::value(Value::Text(Arc::from(text)))
+        };
+        self.row_cells.push((col, cell));
+    }
+
+    /// Ends the row with one store write, then says whether to go on: a file with more rows than the
+    /// grid holds stops here. A row of empty fields is a blank row and writes nothing.
+    fn end_row(&mut self) -> bool {
+        if !self.row_cells.is_empty() {
+            self.sheet.set_row_cells(self.row, &mut self.row_cells);
+        }
+        // The row write drains the batch; a row it dropped has to be emptied here.
+        self.row_cells.clear();
+        self.row = self.row.saturating_add(1);
+        self.row < MAX_ROWS
+    }
+
+    fn into_sheet(self) -> Sheet {
+        self.sheet
+    }
+}
+
 pub fn read_csv(bytes: &[u8], opts: &CsvOptions) -> Result<Workbook, IoError> {
     let text = decode_text(bytes);
     let quote = if opts.quote == 0 { '"' } else { opts.quote as char };
@@ -258,45 +491,16 @@ pub fn read_csv(bytes: &[u8], opts: &CsvOptions) -> Result<Workbook, IoError> {
     let mut wb = Workbook::new();
     wb.date_system = opts.date_system;
     wb.csv_delimiter = u8::try_from(delim).ok();
-    let mut sheet = Sheet::new("Sheet1");
     let mut styles = std::mem::take(&mut wb.styles);
-    let mut fmt_cache: Vec<(&'static str, StyleId)> = vec![];
-    let mut row: u32 = 0;
-    parse_records(&text, delim, quote, |rec| {
-        if row >= MAX_ROWS {
-            return false;
-        }
-        // A blank line is an empty row.
-        for (col, f) in rec.into_iter().enumerate() {
-            if col as u32 >= MAX_COLS {
-                break;
-            }
-            if f.is_empty() {
-                continue;
-            }
-            let pos = CellRef::new(row, col as u32);
-            let cell = if opts.parse_values {
-                let p = parse_input(&f, opts.date_system);
-                let style = match p.format {
-                    Some(code) => match fmt_cache.iter().find(|(c, _)| *c == code) {
-                        Some((_, id)) => *id,
-                        None => {
-                            let id = styles.derive(StyleId::DEFAULT, |s| s.num_fmt = NumFmt::new(code));
-                            fmt_cache.push((code, id));
-                            id
-                        }
-                    },
-                    None => StyleId::DEFAULT,
-                };
-                Cell { value: p.value, formula: None, style }
-            } else {
-                Cell::value(Value::Text(Arc::from(f)))
-            };
-            sheet.cells.set(pos, cell);
-        }
-        row += 1;
-        true
-    });
+    let mut writer = RowWriter::new(opts, &mut styles);
+    if delim.is_ascii() && quote.is_ascii() {
+        parse_records_bytes(&text, delim as u8, quote as u8, |rec| writer.record(rec));
+    } else {
+        // A delimiter or a quote outside ASCII (a § separator, say) is a character, not a byte:
+        // those files take the character scanner, which reads only correct multi-byte text.
+        parse_records(&text, delim, quote, |rec| writer.record_chars(rec));
+    }
+    let sheet = writer.into_sheet();
     wb.styles = styles;
     wb.sheets = vec![Arc::new(sheet)];
     Ok(wb)

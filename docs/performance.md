@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** `rebuild.graph` is a scenario of its own: the dependency-graph build now costs a quarter of what an open's rebuild did, and the harness measures it (§ Scenarios) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** `open.csv` is a scenario: the CSV reader now scans bytes into row batches instead of building a string per field and writing cells one at a time (§ Scenarios) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 GridCraft is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
@@ -12,7 +12,7 @@ real export, not a synthetic grid.
 
 ## Scenarios
 
-`crates/engine/examples/perf.rs` runs one session through ten named scenarios, in this order,
+`crates/engine/examples/perf.rs` runs one session through eleven named scenarios, in this order,
 because that is how a real session looks (values, formulas over them, edits, sort, save, open).
 Each reports one number: its own wall-clock time in ms.
 
@@ -28,6 +28,7 @@ Each reports one number: its own wall-clock time in ms.
 | `save.xlsx` | `file.saveBytes` as xlsx | the write path: pack, compress, stream |
 | `open.xlsx` | opens those bytes again | the read path, the dependency-graph build, and whatever recalculation the file asks for (a package with `calcId` and no `fullCalcOnLoad` asks for none, which is the normal case) |
 | `rebuild.graph` | `Calc::rebuild` over every formula of the workbook, and nothing evaluated | the dependency-graph build on its own: an open and a structural edit both pay it, and it used to be the larger half of an open |
+| `open.csv` | `file.exportCsv` to a temp path, then `file.open` of that file | the CSV import path — the daily action for a data or e-commerce user, so decode plus insertion is a feature of its own. It opens a workbook of its own (a CSV has no formulas), which is why it runs last |
 
 Run it yourself:
 
@@ -129,6 +130,7 @@ recorded from, and the reason a budget is a threshold and not a target):
 | `save.xlsx` | 341 ms | 4.00 s |
 | `open.xlsx` | 684 ms | 8.60 s |
 | `rebuild.graph` | 292 ms | 1.50 s |
+| `open.csv` | 153 ms | 1.11 s |
 
 Reading it:
 
@@ -146,6 +148,7 @@ Reading it:
 - The 100k column is there because the two sizes can move in different directions: a change that
   helps at 1M by making an allocation cheaper can still cost at 100k, where the whole workbook fits
   in cache.
+- **CSV import is the cheap open now.** `open.csv` reads 2.8 MB in 153 ms and 30 MB in 1.11 s (1M rows × 6 cells), against 1.97 s for the same file before the reader scanned bytes into row batches. It was measured on its own, after the byte scanner landed, so it is not from the parallel-build session the rest of that table was recorded on.
 - The two tables are separate sources. Best-of-three reports the pass the machine was quietest for,
   which is why `open.xlsx` (the longest scenario, so the one a loaded pass distorts most) comes out
   at 8.6 s here against the 15.3 s of the single-pass ad-hoc example. The budgets are keyed to the
