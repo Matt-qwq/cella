@@ -201,15 +201,7 @@ pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &E
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(
-    names: &mut NameCache,
-    wb: &Workbook,
-    sheet: usize,
-    e: &Expr,
-    depth: usize,
-    left: &mut usize,
-    out: &mut Vec<Area>,
-) -> Precedents {
+fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize, out: &mut Vec<Area>) -> Precedents {
     let mut dynamic = false;
     let mut trim = false;
     let mut hidden_rows = false;

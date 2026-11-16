@@ -589,9 +589,8 @@ impl Calc {
                     let reads = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, to, si, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node = Node::new(Some(e), reads.dynamic, may_spill, reads.trim)
-                        .with_volatile(reads.volatile)
-                        .with_visibility(reads.hidden_rows);
+                    let node =
+                        Node::new(Some(e), reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows);
                     self.graph.insert((si, at), &areas, legacy, node);
                     self.scratch_areas = areas;
                 }
@@ -736,9 +735,8 @@ impl Calc {
                     let reads = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, k.0, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node = Node::new(Some(e), reads.dynamic, may_spill, reads.trim)
-                        .with_volatile(reads.volatile)
-                        .with_visibility(reads.hidden_rows);
+                    let node =
+                        Node::new(Some(e), reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows);
                     self.graph.insert(k, &areas, legacy, node);
                     self.scratch_areas = areas;
                 }

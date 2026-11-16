@@ -371,8 +371,15 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     #[allow(clippy::disallowed_methods)]
     let t0 = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("GRIDCRAFT_PROFILE").map(|_| std::time::Instant::now()) };
     let mut sel = d.selection.clone();
-    let mut ctx =
-        Ctx { wb: (*d.wb).clone(), changed: Vec::new(), structural: false, visibility: false, sel: &mut sel, fit_rows: Vec::new(), protection_checked: false };
+    let mut ctx = Ctx {
+        wb: (*d.wb).clone(),
+        changed: Vec::new(),
+        structural: false,
+        visibility: false,
+        sel: &mut sel,
+        fit_rows: Vec::new(),
+        protection_checked: false,
+    };
     let r = f(&mut ctx)?;
     let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, .. } = ctx;
     if !protection_checked {
