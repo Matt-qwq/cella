@@ -139,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| set_view(s, p, SheetViewMode::PageBreakPreview)
         ),
-        // Saving or deleting a view writes it into the workbook's hidden names (`_sc_custom_views`),
+        // Saving or deleting a view writes it into the workbook's hidden names (`_gc_custom_views_<n>`),
         // which is workbook state like any other edit, so the command records a history step (a
         // `show` changes the sheet's zoom and panes, which are saved with the file too). Without
         // the step, undoing every later action left the view behind and the workbook no longer
@@ -795,22 +795,22 @@ fn ruler(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"on": on}))
 }
 
-const VIEWS_NAME: &str = "_sc_custom_views";
-const SCRIPTS_NAME: &str = "_sc_scripts";
-const WATCH_NAME: &str = "_sc_watch";
+/// The stash keys of the workbook-level JSON GridCraft keeps in hidden defined names: the custom
+/// views, the scripts and the Watch Window list. Each is stored as `_gc_<key>_<n>` (see
+/// [`super::stash`] for the chunking, the limits and the escape); a workbook written before that
+/// keeps it in one `_sc_<key>` name, which is still read.
+const VIEWS_KEY: &str = "custom_views";
+const SCRIPTS_KEY: &str = "scripts";
+const WATCH_KEY: &str = "watch";
 
-/// Workbook-level JSON stored in a hidden defined name (round-trips through XLSX).
+/// Workbook-level JSON stored in hidden defined names (round-trips through XLSX).
 pub(crate) fn stash_get_shared(wb: &Workbook, key: &str) -> Json {
     stash_get(wb, key)
 }
 
+/// The JSON stored under stash `key`: `{}` when there is none, or when what is there is not JSON.
 fn stash_get(wb: &Workbook, key: &str) -> Json {
-    wb.names
-        .iter()
-        .find(|n| n.name == key)
-        .and_then(|n| n.formula.strip_prefix('"').and_then(|t| t.strip_suffix('"')).map(|t| t.replace("\"\"", "\"")))
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(json!({}))
+    super::stash::get_json(wb, key).unwrap_or_else(|| json!({}))
 }
 
 /// Like `stash_get`, for the name-keyed lists (views, scripts): a stored value that is not a JSON object is treated as empty.
@@ -819,39 +819,47 @@ fn stash_map(wb: &Workbook, key: &str) -> Json {
     if v.is_object() { v } else { json!({}) }
 }
 
-pub(crate) fn stash_set_shared(wb: &mut Workbook, key: &str, v: &Json) {
+pub(crate) fn stash_set_shared(wb: &mut Workbook, key: &str, v: &Json) -> Result<()> {
     stash_set(wb, key, v)
 }
 
-fn stash_set(wb: &mut Workbook, key: &str, v: &Json) {
-    let text = v.to_string();
-    let formula = format!("\"{}\"", text.replace('"', "\"\""));
-    wb.names.retain(|n| n.name != key);
-    wb.names.push(DefinedName { name: key.into(), scope: None, formula, comment: String::new(), hidden: true });
+fn stash_set(wb: &mut Workbook, key: &str, v: &Json) -> Result<()> {
+    super::stash::set_json(wb, key, v)
+}
+
+/// Whether `name` is one of the workbook's own names holding stash item `key`. A visible name of
+/// that shape is someone else's, so it is not touched.
+fn is_item_name(wb: &Workbook, key: &str, name: &str) -> bool {
+    super::stash::item_key(name).as_deref() == Some(key) && super::stash::holds_item(wb, name)
+}
+
+/// Copies of the workbook's names holding stash item `key`.
+fn item_names(wb: &Workbook, key: &str) -> Vec<DefinedName> {
+    wb.names.iter().filter(|n| is_item_name(wb, key, &n.name)).cloned().collect()
 }
 
 /// The Watch Window list isn't an edit (Excel doesn't undo it): undo and redo keep the current
 /// list when they swap in another snapshot of the workbook.
 pub(crate) fn keep_watch_list(from: &Workbook, to: &mut std::sync::Arc<Workbook>) {
-    let find = |wb: &Workbook| wb.names.iter().find(|n| n.name == WATCH_NAME).cloned();
-    let keep = find(from);
-    if keep == find(to) {
+    let keep = item_names(from, WATCH_KEY);
+    if keep == item_names(to, WATCH_KEY) {
         return;
     }
     let wb = std::sync::Arc::make_mut(to);
-    wb.names.retain(|n| n.name != WATCH_NAME);
+    let gone: Vec<String> = item_names(wb, WATCH_KEY).into_iter().map(|n| n.name).collect();
+    wb.names.retain(|n| !gone.iter().any(|g| g.eq_ignore_ascii_case(&n.name)));
     wb.names.extend(keep);
 }
 
 fn custom_views(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc()?;
-    let mut views = stash_map(&d.wb, VIEWS_NAME);
+    let mut views = stash_map(&d.wb, VIEWS_KEY);
     if let Some(name) = str_param(p, "save") {
         let sh = d.wb.active().ok_or(EngineError::NoDocument)?;
         views[name] = json!({"sheet": d.wb.active_sheet, "selection": d.selection.a1(), "zoom": sh.zoom, "freeze": sh.freeze});
         let v = views.clone();
         edit(s, |cx| {
-            stash_set(&mut cx.wb, VIEWS_NAME, &v);
+            stash_set(&mut cx.wb, VIEWS_KEY, &v)?;
             Ok(())
         })?;
     } else if let Some(name) = str_param(p, "show") {
@@ -882,11 +890,11 @@ fn custom_views(s: &mut Session, p: &Json) -> Result<Json> {
         }
         let v = views.clone();
         edit(s, |cx| {
-            stash_set(&mut cx.wb, VIEWS_NAME, &v);
+            stash_set(&mut cx.wb, VIEWS_KEY, &v)?;
             Ok(())
         })?;
     }
-    Ok(stash_get(&s.doc()?.wb, VIEWS_NAME))
+    Ok(stash_get(&s.doc()?.wb, VIEWS_KEY))
 }
 
 fn split(s: &mut Session, _: &Json) -> Result<Json> {
@@ -1149,9 +1157,9 @@ fn new_script(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(bad("automate.newScript", "`commands` must be an array"));
     }
     edit(s, |cx| {
-        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        let mut all = stash_map(&cx.wb, SCRIPTS_KEY);
         all[name.as_str()] = cmds.clone();
-        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        stash_set(&mut cx.wb, SCRIPTS_KEY, &all)?;
         Ok(json!({"name": name}))
     })
 }
@@ -1159,7 +1167,7 @@ fn new_script(s: &mut Session, p: &Json) -> Result<Json> {
 fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
     let d = s.doc()?;
     let (wb, trusted) = (&d.wb, d.scripts_trusted);
-    let all = stash_get(wb, SCRIPTS_NAME);
+    let all = stash_get(wb, SCRIPTS_KEY);
     let mut list: Vec<Json> = all
         .as_object()
         .map(|o| o.iter().map(|(k, v)| json!({"name": k, "steps": v.as_array().map_or(0, Vec::len), "trusted": trusted})).collect())
@@ -1174,7 +1182,7 @@ fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
 
 /// Whether `wb` carries GridCraft scripts (a workbook opened with them starts untrusted).
 pub(crate) fn has_scripts(wb: &Workbook) -> bool {
-    stash_map(wb, SCRIPTS_NAME).as_object().is_some_and(|o| !o.is_empty())
+    stash_map(wb, SCRIPTS_KEY).as_object().is_some_and(|o| !o.is_empty())
 }
 
 /// Why a script step is refused, whatever the workbook's trust: scripts stay inside the
@@ -1215,7 +1223,7 @@ fn trust_scripts(s: &mut Session, p: &Json) -> Result<Json> {
 fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("automate.runScript", "missing `name`"))?;
     let d = s.doc()?;
-    let all = stash_get(&d.wb, SCRIPTS_NAME);
+    let all = stash_get(&d.wb, SCRIPTS_KEY);
     let steps = all.get(name).and_then(Json::as_array).cloned().ok_or_else(|| bad("automate.runScript", "no such script"))?;
     if !d.scripts_trusted && !bool_param(p, "trusted").unwrap_or(false) {
         return Err(bad(
@@ -1257,11 +1265,11 @@ fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
 fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("automate.deleteScript", "missing `name`"))?.to_string();
     edit(s, |cx| {
-        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        let mut all = stash_map(&cx.wb, SCRIPTS_KEY);
         if let Some(o) = all.as_object_mut() {
             o.remove(&name);
         }
-        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        stash_set(&mut cx.wb, SCRIPTS_KEY, &all)?;
         Ok(Json::Null)
     })
 }
@@ -1278,7 +1286,7 @@ const MAX_SCRIPT_STEPS_BYTES: usize = 1024 * 1024;
 /// The steps script `name` holds, in order. `None` when the workbook has no script of that name;
 /// a stored value that isn't an array holds no steps (as `automate.allScripts` counts it).
 fn script_steps_of(wb: &Workbook, name: &str) -> Option<Vec<Json>> {
-    stash_map(wb, SCRIPTS_NAME).get(name).map(|v| v.as_array().cloned().unwrap_or_default())
+    stash_map(wb, SCRIPTS_KEY).get(name).map(|v| v.as_array().cloned().unwrap_or_default())
 }
 
 fn no_such_script(cmd: &'static str, name: &str) -> EngineError {
@@ -1324,9 +1332,9 @@ fn save_script_steps(s: &mut Session, name: &str, steps: Vec<Json>, cmd: &'stati
         return Err(bad(cmd, format!("the steps of \"{name}\" are {size} bytes of JSON; a script may hold {MAX_SCRIPT_STEPS_BYTES}")));
     }
     edit(s, |cx| {
-        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        let mut all = stash_map(&cx.wb, SCRIPTS_KEY);
         all[name] = list.clone();
-        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        stash_set(&mut cx.wb, SCRIPTS_KEY, &all)?;
         Ok(())
     })
 }
@@ -1407,7 +1415,7 @@ fn rename_script(s: &mut Session, p: &Json) -> Result<Json> {
     if to == name {
         return Ok(json!({"name": name}));
     }
-    let all = stash_map(&s.doc()?.wb, SCRIPTS_NAME);
+    let all = stash_map(&s.doc()?.wb, SCRIPTS_KEY);
     if all.get(name.as_str()).is_none() {
         return Err(no_such_script("automate.renameScript", &name));
     }
@@ -1415,13 +1423,13 @@ fn rename_script(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(bad("automate.renameScript", format!("\"{to}\" is already the name of a script")));
     }
     edit(s, |cx| {
-        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        let mut all = stash_map(&cx.wb, SCRIPTS_KEY);
         if let Some(map) = all.as_object_mut()
             && let Some(steps) = map.remove(name.as_str())
         {
             map.insert(to.clone(), steps);
         }
-        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        stash_set(&mut cx.wb, SCRIPTS_KEY, &all)?;
         Ok(json!({"name": to}))
     })
 }
@@ -1583,7 +1591,7 @@ fn use_in_formula(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn watch_window(s: &mut Session, p: &Json) -> Result<Json> {
     let mut list: Vec<String> =
-        stash_get(&s.doc()?.wb, WATCH_NAME).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        stash_get(&s.doc()?.wb, WATCH_KEY).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
     let mut changed = false;
     if let Some(a) = str_param(p, "add") {
         if !list.iter().any(|x| x == a) {
@@ -1600,7 +1608,7 @@ fn watch_window(s: &mut Session, p: &Json) -> Result<Json> {
         let d = s.doc_mut()?;
         // The watch list is view state: don't add an undo step.
         let wb = std::sync::Arc::make_mut(&mut d.wb);
-        stash_set(wb, WATCH_NAME, &v);
+        stash_set(wb, WATCH_KEY, &v)?;
     }
     let d = s.doc()?;
     let rows: Vec<Json> = list
@@ -1651,12 +1659,12 @@ fn script_from_journal(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let n = cmds.len();
     edit(s, |cx| {
-        let mut all = stash_map(&cx.wb, SCRIPTS_NAME);
+        let mut all = stash_map(&cx.wb, SCRIPTS_KEY);
         if all.get(name.as_str()).is_some() {
             return Err(EngineError::Other(format!("There is already a script named \"{name}\".")));
         }
         all[name.as_str()] = Json::Array(cmds.clone());
-        stash_set(&mut cx.wb, SCRIPTS_NAME, &all);
+        stash_set(&mut cx.wb, SCRIPTS_KEY, &all)?;
         Ok(Json::Null)
     })?;
     Ok(json!({"name": name, "steps": n}))
@@ -1693,9 +1701,13 @@ mod tests {
         let err = s.execute("automate.scriptSteps", json!({"name": "Nope"})).unwrap_err().to_string();
         assert!(err.contains("no script named"), "{err}");
         assert!(s.execute("automate.scriptSteps", json!({})).is_err());
-        // A stored script whose value isn't an array lists no steps instead of failing.
-        s.execute("formulas.defineName", json!({"name": "_sc_scripts", "refersTo": "\"{\"\"Odd\"\":7}\""})).unwrap();
-        assert_eq!(listed(&mut s, "Odd"), json!([]));
+        // A stored script whose value isn't an array lists no steps instead of failing. The
+        // fixture is a workbook of the older shape, where the scripts are one `_sc_scripts` name:
+        // a workbook with the chunked store reads that one, not a legacy name beside it.
+        let mut old = Session::new();
+        old.new_workbook();
+        old.execute("formulas.defineName", json!({"name": "_sc_scripts", "refersTo": "\"{\"\"Odd\"\":7}\""})).unwrap();
+        assert_eq!(listed(&mut old, "Odd"), json!([]));
     }
 
     #[test]

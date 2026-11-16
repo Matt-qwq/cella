@@ -1151,7 +1151,7 @@ fn protection_passwords_stay_out_of_the_journal_and_recorded_scripts() {
     // The recorded script is stored in the workbook, so it is saved with the file.
     let bytes = crate::io::save_bytes(&s.doc().unwrap().wb, "book.xlsx").unwrap();
     let (reopened, _) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
-    let script = reopened.names.iter().find(|n| n.name == "_sc_scripts").map(|n| n.formula.clone()).unwrap();
+    let script = crate::cmd::stash::get(&reopened, "scripts").unwrap();
     assert!(script.contains("review.protectSheet"), "{script}");
     assert!(!script.contains(PW), "{script}");
 
@@ -5137,7 +5137,7 @@ fn recording_keeps_its_steps_when_the_journal_is_trimmed() {
     }
     let r = s.execute("automate.recordActions", json!({"stop": true, "name": "Steps"})).unwrap();
     assert_eq!(r["steps"], 20, "{r}");
-    let script = s.doc().unwrap().wb.names.iter().find(|n| n.name == "_sc_scripts").map(|n| n.formula.clone()).unwrap();
+    let script = crate::cmd::stash::get(&s.doc().unwrap().wb, "scripts").unwrap();
     assert!(script.contains("step0") && script.contains("step19") && !script.contains("selection.set"), "{script}");
 }
 
@@ -5224,19 +5224,28 @@ fn a_column_count_that_reads_its_own_cells_is_circular() {
 
 #[test]
 fn a_formula_never_reads_the_watch_list() {
-    // The Watch Window list is view state kept in a hidden `_sc_watch` name. It survives undo
+    // The Watch Window list is view state kept in the workbook's private names: the chunked
+    // `_gc_watch_<n>` store now, and `_sc_watch` in a file written before it. It survives undo
     // (deleting it is not an edit), so a formula that read it would keep a stale value when the
     // name came or went (found by the command-sequence fuzzer). Private names are invisible to
     // formulas: the reference is `#NAME?` before and after, and a full recalc agrees.
-    let mut s = s();
-    s.execute("formulas.watchWindow", json!({"add": "C12:E15"})).unwrap();
-    s.execute("cell.set", json!({"cell": "C3", "input": "=SUM(_sc_watch)"})).unwrap();
-    assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name));
-    s.execute("formulas.deleteName", json!({"name": "_sc_watch"})).unwrap();
-    s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name));
-    s.execute("formulas.calculateNow", json!({})).unwrap();
-    assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name));
+    for name in ["_gc_watch_0", "_sc_watch"] {
+        let mut s = s();
+        s.execute("formulas.watchWindow", json!({"add": "C12:E15"})).unwrap();
+        if name == "_sc_watch" {
+            // An older file holds the same list in one `_sc_` name.
+            s.execute("formulas.defineName", json!({"name": name, "refersTo": "\"[\"\"C12:E15\"\"]\""})).unwrap();
+        } else {
+            assert!(s.doc().unwrap().wb.names.iter().any(|n| n.name == name), "{name} is the store");
+        }
+        s.execute("cell.set", json!({"cell": "C3", "input": format!("=SUM({name})")})).unwrap();
+        assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name), "{name}");
+        s.execute("formulas.deleteName", json!({"name": name})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name), "{name} after undo");
+        s.execute("formulas.calculateNow", json!({})).unwrap();
+        assert_eq!(v(&s, "C3"), Value::Error(gridcraft_core::CellError::Name), "{name} after recalc");
+    }
 }
 
 #[test]

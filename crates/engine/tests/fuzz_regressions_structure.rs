@@ -163,7 +163,7 @@ fn undoing_a_recorded_script_gives_back_the_starting_workbook() {
     s.execute("automate.recordActions", json!({})).expect("record");
     s.execute("automate.recordActions", json!({"stop": true, "name": "Recorded"})).expect("save script");
     // The script exists before the first undoable step, so undoing everything has to take it away.
-    assert!(s.doc().expect("document").wb.names.iter().any(|n| n.name == "_sc_scripts"));
+    assert!(s.doc().expect("document").wb.names.iter().any(|n| n.name == "_gc_scripts_0"));
     s.execute("cell.set", json!({"cell": "A1", "input": "1"})).expect("edit");
     s.execute("home.deleteColumns", json!({"cols": "F:F"})).expect("delete columns");
     undo_and_redo_all(&mut s, &base);
@@ -177,7 +177,7 @@ fn undoing_a_saved_custom_view_gives_back_the_starting_workbook() {
     s.execute("file.new", json!({"sample": "budget"})).expect("sample");
     let base = s.doc().expect("document").wb.clone();
     s.execute("view.customViews", json!({"save": "Frozen"})).expect("save view");
-    assert!(s.doc().expect("document").wb.names.iter().any(|n| n.name == "_sc_custom_views"));
+    assert!(s.doc().expect("document").wb.names.iter().any(|n| n.name == "_gc_custom_views_0"));
     s.execute("home.deleteColumns", json!({"cols": "F:F"})).expect("delete columns");
     undo_and_redo_all(&mut s, &base);
 }
