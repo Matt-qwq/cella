@@ -14,6 +14,7 @@ pub mod format;
 pub mod formulas;
 pub mod insert;
 pub mod inspect;
+pub mod macros;
 pub mod model;
 pub mod pivot;
 pub mod print;
@@ -148,6 +149,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(view::specs());
         v.extend(inspect::specs());
         v.extend(extra::specs());
+        v.extend(self::macros::specs());
         v.extend(ext::specs());
         v.extend(query::specs());
         v.extend(model::specs());

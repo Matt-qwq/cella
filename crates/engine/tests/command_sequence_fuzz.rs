@@ -118,6 +118,7 @@ const EXCLUDED: &[(&str, &str)] = &[
     ("insert.picture", "reads files"),
     ("pageLayout.background", "reads files"),
     ("formulas.calculationOptions", "manual and iterative calculation differ from a full recalc by design"),
+    ("macro.debug", "holds an undo group open across calls, so undo cannot empty the history"),
 ];
 
 // ---------------------------------------------------------------- deterministic randomness
