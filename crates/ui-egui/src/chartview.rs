@@ -253,7 +253,7 @@ fn area_mesh(v: &[Pos2], col: Color32) -> egui::Mesh {
 /// alignment and vertical anchor. Shapes other than text boxes default to white text centred in
 /// the shape; text boxes to black text at the top left.
 fn paint_shape_text(p: &Painter, wb: &Workbook, sp: &gridcraft_engine::model::Shape, r: Rect, z: f32, text: Option<&crate::text::GridText>) {
-    paint_box_text(p, wb, &sp.text, sp.kind == ShapeKind::TextBox, &sp.format, r, z, text);
+    paint_box_text(p, wb, &sp.text, matches!(sp.kind, ShapeKind::TextBox | ShapeKind::WordArt), &sp.format, r, z, text);
 }
 
 /// The text of a box — a shape's or an equation's — as [`paint_shape_text`] draws it.
@@ -283,7 +283,13 @@ fn paint_box_text(
     // The outline is the text drawn in the outline colour, offset in eight directions by the
     // outline width, under the filled text (egui has no stroked text).
     let halo = f.text_outline.and_then(|(c, w)| c.resolve(&wb.theme).map(|oc| (theme::color32(oc), w)));
+    // A drop shadow is the text again, offset, in the shadow colour, under everything else.
+    let shadow = f.text_shadow.and_then(|c| c.resolve(&wb.theme).map(theme::color32));
+    let shadow_d = 2.0 * z;
     let paint_line = |line: &crate::text::Line, x: f32, y: f32| {
+        if let Some(sc) = shadow {
+            clip.galley_with_override_text_color(pos2(x + shadow_d, y + shadow_d), line.galley.clone(), sc);
+        }
         if let Some((oc, w)) = halo {
             let d = (w * 96.0 / 72.0 * z / 2.0).clamp(0.5, 20.0);
             for (dx, dy) in [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)] {
@@ -334,6 +340,9 @@ fn paint_box_text(
         ShapeTextAnchor::Bottom => r.bottom() - inset - g.size().y,
     };
     let pos = pos2(x, y);
+    if let Some(sc) = shadow {
+        clip.galley_with_override_text_color(pos + vec2(shadow_d, shadow_d), g.clone(), sc);
+    }
     if let Some((oc, w)) = halo {
         let d = (w * 96.0 / 72.0 * z / 2.0).clamp(0.5, 20.0);
         for (dx, dy) in [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)] {
@@ -579,6 +588,8 @@ pub(crate) fn paint_objects(
         let line =
             if sp.format.no_line { Color32::TRANSPARENT } else { sp.line.resolve(&wb.theme).map(theme::color32).unwrap_or(Color32::DARK_GRAY) };
         match sp.kind {
+            // A WordArt is its text: no box of its own, whatever the anchor's size.
+            ShapeKind::WordArt => {}
             ShapeKind::Rectangle | ShapeKind::TextBox => {
                 p.rect_filled(r, 0.0, fill);
                 p.rect_stroke(r, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
@@ -628,7 +639,7 @@ pub(crate) fn paint_objects(
         if label && !sp.text.is_empty() && !app.editing_text_box(sp.id) {
             paint_shape_text(p, wb, sp, r, geo.z, Some(&app.text));
         }
-        if label && sp.kind == ShapeKind::TextBox && app.selected_chart == Some(sp.id) {
+        if label && matches!(sp.kind, ShapeKind::TextBox | ShapeKind::WordArt) && app.selected_chart == Some(sp.id) {
             selection_frame(p, r);
         }
         done(start, r);

@@ -1732,6 +1732,10 @@ fn insert(app: &mut SheetApp, ui: &mut Ui) {
     if __k.clicked() {
         act(app, "insert.textBox", json!({}));
     }
+    // WordArt: the style gallery, drawn in code from the engine's own presets.
+    let __k = big_button(ui, Icon::WordArt, "Word\nArt", "WordArt", true);
+    control_keytip(app, ui, &__k, "insert.wordArt");
+    egui::Popup::menu(&__k).show(|ui| crate::wordart::gallery(app, ui));
     let __k = big_button(ui, Icon::PageLayout, "Header &\nFooter", "Header & Footer", false);
     control_keytip(app, ui, &__k, "dialog:headerFooter");
     if __k.clicked() {

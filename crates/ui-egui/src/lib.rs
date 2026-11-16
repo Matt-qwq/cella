@@ -38,6 +38,7 @@ pub mod text;
 pub mod text_box;
 pub mod theme;
 pub mod widgets;
+pub mod wordart;
 
 use std::collections::HashMap;
 

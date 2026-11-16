@@ -504,7 +504,7 @@ fn vertical_alignment_keytips_run_their_commands() {
 fn pending_sequences_are_silent_no_ops() {
     let mut h = harness(blank());
     let journal = h.state().session.journal.len();
-    sequence(&mut h, &[Key::N, Key::W], false); // NW -> insert.wordArt (missing)
+    sequence(&mut h, &[Key::N, Key::J], false); // NJ -> insert.object (missing)
     assert!(h.state().dialog.is_none(), "no dialog for a pending sequence");
     assert!(h.state().message.is_none(), "no message box for a pending sequence");
     assert!(h.state().toast.is_none(), "no toast for a pending sequence");
@@ -529,10 +529,16 @@ fn pending_sequences_go_live_when_the_command_lands() {
     );
     assert!(h.state().session.journal.len() > before);
     assert_eq!(h.state().keytips.prefix(), None);
-    // And a sequence that is still reserved stays a silent no-op (NW -> insert.wordArt).
+    // WordArt landed the same way (W9): NW inserts one, where it used to be reserved.
     let mut h = harness(blank());
     sequence(&mut h, &[Key::N, Key::W], false);
-    assert!(h.state().session.active().expect("a document").wb.active().expect("a sheet").equations.is_empty());
+    let shapes = &h.state().session.active().expect("a document").wb.active().expect("a sheet").shapes;
+    assert_eq!(shapes.len(), 1, "NW inserts a WordArt now that the command exists");
+    assert_eq!(shapes[0].kind, gridcraft_engine::model::ShapeKind::WordArt);
+    // And a sequence that is still reserved stays a silent no-op (NJ -> insert.object).
+    let mut h = harness(blank());
+    sequence(&mut h, &[Key::N, Key::J], false);
+    assert!(h.state().session.active().expect("a document").wb.active().expect("a sheet").shapes.is_empty());
 }
 
 #[test]
