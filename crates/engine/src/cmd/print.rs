@@ -1343,6 +1343,10 @@ fn draw_text(
     pg.restore();
 }
 
+/// The eight directions a text outline is offset in (a stroked glyph, on a painter that has no
+/// text stroke): the same set the grid paints.
+const OUTLINE_OFFSETS: [(f32, f32); 8] = [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)];
+
 /// Sheet pixel rectangle of an anchor.
 fn anchor_rect(sh: &Sheet, a: &Anchor) -> (f64, f64, f64, f64) {
     (sh.col_left(a.cell.col) + a.dx as f64, sh.row_top(a.cell.row) + a.dy as f64, a.width.max(0.0) as f64, a.height.max(0.0) as f64)
@@ -1441,6 +1445,13 @@ fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, 
             let align = fm.align.unwrap_or(if text_box { ShapeTextAlign::Left } else { ShapeTextAlign::Center });
             let anchor = fm.anchor.unwrap_or(if text_box { ShapeTextAnchor::Top } else { ShapeTextAnchor::Middle });
             let lines = wrap_lines(&shp.text, font, size, (w - 4.0 * b.k).max(size), m);
+            // A WordArt's decoration, drawn the way the grid draws it (`chartview::paint_box_text`):
+            // the drop shadow as the line again 2 px further in the shadow colour, the outline as
+            // the line in the outline colour offset in eight directions by half the outline width,
+            // both under the filled text.
+            let shadow = fm.text_shadow.and_then(|c| rgb_of(c, wb));
+            let outline = fm.text_outline.and_then(|(c, ow)| rgb_of(c, wb).map(|c| (c, ow)));
+            let shadow_d = (2.0 * b.k).max(0.5);
             let block_h = lines.len().min(500) as f32 * size * 1.2;
             let mut yy = match anchor {
                 ShapeTextAnchor::Top => y + 2.0 * b.k,
@@ -1454,6 +1465,15 @@ fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, 
                     ShapeTextAlign::Center => x + (w - lw) / 2.0,
                     ShapeTextAlign::Right => x + w - 2.0 * b.k - lw,
                 };
+                if let Some(sc) = shadow {
+                    pg.text(lx + shadow_d, yy + shadow_d, size, font, sc, l);
+                }
+                if let Some((oc, ow)) = outline {
+                    let d = (ow * b.scale / 2.0).clamp(0.25, 20.0);
+                    for (dx, dy) in OUTLINE_OFFSETS {
+                        pg.text(lx + dx * d, yy + dy * d, size, font, oc, l);
+                    }
+                }
                 pg.text(lx, yy, size, font, color, l);
                 yy += size * 1.2;
             }
@@ -2020,6 +2040,96 @@ mod tests {
     /// Whether any text on the page is sheared (a synthesised italic).
     fn shears(pdf: &[u8]) -> bool {
         matrices(pdf).iter().any(|m| m[2].abs() > 0.1)
+    }
+    /// Every text run on a page: the fill colour it is drawn in and the position (its text matrix's
+    /// e and f) it lands at. A decorated line of shape text is one run per copy — the fill, its
+    /// outline's eight offsets and its drop shadow.
+    fn text_runs(pdf: &[u8]) -> Vec<([f32; 3], [f32; 2])> {
+        let mut out = Vec::new();
+        let mut colour: Option<[f32; 3]> = None;
+        for line in String::from_utf8_lossy(pdf).lines() {
+            let line = line.trim_end();
+            if let Some(head) = line.strip_suffix(" rg") {
+                let v: Vec<f32> = head.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                colour = <[f32; 3]>::try_from(v).ok();
+            } else if let Some(head) = line.strip_suffix(" Tm")
+                && let Some(c) = colour
+                && let Ok(m) = <[f32; 6]>::try_from(head.split_whitespace().filter_map(|x| x.parse::<f32>().ok()).collect::<Vec<_>>())
+            {
+                out.push((c, [m[4], m[5]]));
+            }
+        }
+        out
+    }
+    /// The fill colour each text run is drawn in, with how many runs use it.
+    fn runs_by_colour(pdf: &[u8]) -> Vec<([f32; 3], usize)> {
+        let mut out: Vec<([f32; 3], usize)> = Vec::new();
+        for (c, _) in text_runs(pdf) {
+            match out.iter_mut().find(|(k, _)| near(*k, c)) {
+                Some(entry) => entry.1 += 1,
+                None => out.push((c, 1)),
+            }
+        }
+        out
+    }
+    /// Two colours equal to within the content stream's rounding.
+    fn near(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(b.iter()).all(|(a, b)| (*a - *b).abs() < 0.002)
+    }
+    /// A hex colour's channels over 255: what `r g b rg` writes for it.
+    fn rgb(hex: u32) -> [f32; 3] {
+        [(hex >> 16) as u8 as f32 / 255.0, (hex >> 8) as u8 as f32 / 255.0, (hex & 0xFF) as u8 as f32 / 255.0]
+    }
+
+    /// A WordArt prints the way the grid draws it: the drop shadow (the line again, offset, in the
+    /// shadow colour) and the outline (the line in the outline colour, offset in eight directions)
+    /// under the filled text. Only the filled run was drawn before.
+    #[test]
+    fn a_word_art_prints_its_drop_shadow_and_its_outline() {
+        let mut s = s();
+        // Plain text: one run, nothing offsets it.
+        let r = s.execute("insert.wordArt", json!({"text": "Sale", "at": "B2"})).unwrap();
+        let id = r["shape"].as_u64().unwrap();
+        let (pdf, _) = pdf_of(&mut s, json!({"range": "B2:F8"}));
+        let runs = runs_by_colour(&pdf);
+        assert_eq!(runs.iter().map(|(_, n)| n).sum::<usize>(), 1, "the range holds no cell text, so every run is the WordArt's: {runs:?}");
+
+        // A shadow and an outline: the offset copies are separate text runs, in their own colours.
+        s.execute("wordArt.set", json!({"id": id, "fill": "#F2A33A", "outline": "#B5451B", "outlineWidth": 1.5, "shadow": "#5A1A0E"})).unwrap();
+        let (pdf, _) = pdf_of(&mut s, json!({"range": "B2:F8"}));
+        let runs = runs_by_colour(&pdf);
+        let count = |c: [f32; 3]| runs.iter().find(|(k, _)| near(*k, c)).map(|(_, n)| *n);
+        assert_eq!(count(rgb(0xF2A33A)), Some(1), "the filled text: {runs:?}");
+        assert_eq!(count(rgb(0x5A1A0E)), Some(1), "the drop shadow: {runs:?}");
+        assert_eq!(count(rgb(0xB5451B)), Some(8), "eight outline offsets: {runs:?}");
+        assert_eq!(runs.len(), 3, "no other colour is drawn: {runs:?}");
+
+        // The copies are offsets, not repeats in the same place: the shadow down and to the right,
+        // the outline in eight directions around the filled text.
+        let drawn = text_runs(&pdf);
+        let at = |c: [f32; 3]| drawn.iter().filter(|(k, _)| near(*k, c)).map(|(_, p)| *p).collect::<Vec<_>>();
+        let fill_at = at(rgb(0xF2A33A)).first().copied().unwrap_or_default();
+        let shadow_at = at(rgb(0x5A1A0E)).first().copied().unwrap_or_default();
+        assert!(shadow_at[0] > fill_at[0], "the shadow is right of the text: {fill_at:?} {shadow_at:?}");
+        assert!(shadow_at[1] < fill_at[1], "and below it, where PDF's y grows upward: {fill_at:?} {shadow_at:?}");
+        let dir = |v: f32| {
+            if v > 0.5 {
+                1i8
+            } else if v < -0.5 {
+                -1
+            } else {
+                0
+            }
+        };
+        let mut dirs: Vec<(i8, i8)> = at(rgb(0xB5451B)).iter().map(|p| (dir(p[0] - fill_at[0]), dir(p[1] - fill_at[1]))).collect();
+        dirs.sort_unstable();
+        dirs.dedup();
+        assert_eq!(dirs, [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)], "eight directions");
+
+        // Turning both off takes the page back to the single filled run.
+        s.execute("wordArt.set", json!({"id": id, "outline": false, "shadow": false})).unwrap();
+        let (pdf, _) = pdf_of(&mut s, json!({"range": "B2:F8"}));
+        assert_eq!(runs_by_colour(&pdf).iter().map(|(_, n)| n).sum::<usize>(), 1);
     }
 
     #[test]

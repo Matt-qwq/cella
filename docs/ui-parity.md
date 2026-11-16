@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (a timeline's selected range handles drag on the sheet: resize either end or slide the band, one undo step, the field's date axis cached per revision) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (the accessibility check lists every object without alternative text — WordArt and equations included — with the reason and the accessible name a screen reader reads; a WordArt now prints its outline and drop shadow. Earlier: a timeline’s selected range handles drag on the sheet, one undo step)
 
 Interaction, controls and feel, against Excel. Part of [target-app-parity.md](target-app-parity.md).
 **UI/UX fidelity: ~55% ready, 50–80 h** (estimated). Ribbon command coverage is measured
@@ -299,10 +299,14 @@ title bar, keeping its place while it is open (#1250).
 ## Accessibility
 
 AccessKit is enabled; the ribbon, dialogs and panes carry labels, checked states and key tips, and
-**Review ▸ Check Accessibility** lists objects without alternative text (charts, pictures, shapes
-with no text of their own, pictures in cells), tables without a header row, merged cells and
-default sheet names — each row goes to its sheet/object/range and takes alt text inline through
-`object.setAltText` (written to `xdr:cNvPr/@descr`). With a screen reader attached the **sheet is
+**Review ▸ Check Accessibility** lists **every object without
+alternative text** — charts, pictures, shapes, WordArt, equations, pictures in cells — with the
+reason it is there and the name a screen reader would announce: an object that carries text is
+named by it (a shape's label, a WordArt's words, an equation's source), so the list says
+"Text used as alternative text" for those and "Missing alternative text" for the nameless ones.
+It also reports tables without a header row, merged cells and default sheet names — each row goes
+to its sheet/object/range and takes alt text inline through `object.setAltText` (written to
+`xdr:cNvPr/@descr`). With a screen reader attached the **sheet is
 walkable**: the visible cells become an AccessKit grid — a `GridCell` per cell with its value, its
 address and formula in the description, row/column indexes, the active cell selected and named as
 the grid's active descendant, and the grid labelled with the sheet, the active cell and the
@@ -338,6 +342,7 @@ scrollbar bugs 2–4 · pixel/feel pass against observed Excel 7–12.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-16 | major | **Upstream-adoption round**: **WordArt** (`insert.wordArt`, `wordArt.set`, ten presets painted in code, `NW` keytip, in-place text edit through the shape text editor, `ShapeFormat::text_shadow`); **form controls** (buttons, sliders, spin buttons painted above every object, a click runs the button's action through the macro policy, a drag follows the slider, the arrows step a spin button; `control.{assign,format,list,press,setValue}` and `insert.{button,slider,spinButton}`); the ribbon's painted icon, toggle and split buttons now carry an accessible name and a pressed state (`WidgetInfo::selected`) instead of an anonymous click rectangle, which also makes them addressable by UI tests; clicking the horizontal alignment a cell already has no longer falls back to General (Excel leaves it). Undo gained grouping, so a script run of N steps is one undo |
+| 2026-11-16 | minor | The accessibility check's object list covers **WordArt and equations** and names every object that carries text by that text (`accessibleName`): a WordArt is "WordArt 5" with its words as its name, an equation is named by its linear source, and each entry carries the reason it is listed and gets a line in the dialog. Test: a WordArt, a shape and an equation without alt text, then with it |
 | 2026-11-02 | minor | Word-wrapped cells shape line by line (`GridText::wrap`: per-paragraph cluster measure, breaks at spaces/hyphens/CJK, then each line shaped; per-line alignment and the RTL General flip) and chart labels are shaped with the shaped measure driving the layout. Printable ASCII wrapped text keeps epaint's wrap bit for bit. Text boxes and rotated wrap jobs remain |
 | 2026-11-02 | minor | Shift+F10 on a selected chart, picture, shape or slicer opens its own context menu at the object's frame (the right-click menu: delete, Select Data, Format Chart Area, slicer actions), and the cell menu otherwise; the test drives `keymap::dispatch` with a real `Geo`. `grid::selected_object` is the model side (kind, id, anchor) and has its own test |
 | 2026-11-02 | minor | The status bar carries an **Accessibility** entry: the `review.checkAccessibility` issue count (cached per document revision, since the check walks every sheet), a focusable button that opens the same Check Accessibility dialog as the Review tab. Two tests (the count and its caching, and a status-bar frame that runs the command) |
