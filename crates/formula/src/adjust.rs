@@ -16,6 +16,51 @@ pub fn shift_relative(e: Expr, dr: i64, dc: i64) -> Expr {
     })
 }
 
+/// Copy/fill from a tree that must stay where it is: the same result as
+/// `shift_relative(e.clone(), dr, dc)` in one walk, so a fill of a million formulas copies each
+/// tree once instead of twice. Follows the left spine in a loop like `Expr::map`, so an operator
+/// chain as long as Excel allows does not recurse.
+pub fn shift_relative_copy(e: &Expr, dr: i64, dc: i64) -> Expr {
+    copy_and_shift(e, dr, dc)
+}
+
+fn copy_and_shift(e: &Expr, dr: i64, dc: i64) -> Expr {
+    let mut spine: Vec<(crate::ast::BinOp, &Expr)> = Vec::new();
+    let mut node = e;
+    while let Expr::Binary(op, a, b) = node {
+        spine.push((*op, b));
+        node = a;
+    }
+    let mut acc = copy_node(node, dr, dc);
+    while let Some((op, b)) = spine.pop() {
+        acc = Expr::Binary(op, Box::new(acc), Box::new(copy_and_shift(b, dr, dc)));
+    }
+    acc
+}
+
+fn copy_node(e: &Expr, dr: i64, dc: i64) -> Expr {
+    let child = |x: &Expr| Box::new(copy_and_shift(x, dr, dc));
+    match e {
+        Expr::Number(n) => Expr::Number(*n),
+        Expr::Text(t) => Expr::Text(std::sync::Arc::clone(t)),
+        Expr::Bool(b) => Expr::Bool(*b),
+        Expr::Error(x) => Expr::Error(*x),
+        Expr::Array(rows) => Expr::Array(rows.iter().map(|r| r.iter().map(|x| copy_and_shift(x, dr, dc)).collect()).collect()),
+        Expr::Ref(r) => match shift_ref(r.clone(), dr, dc) {
+            Some(r) => Expr::Ref(r),
+            None => Expr::Error(CellError::Ref),
+        },
+        Expr::Name(n) => Expr::Name(n.clone()),
+        Expr::Struct(s) => Expr::Struct(s.clone()),
+        Expr::Unary(op, x) => Expr::Unary(*op, child(x)),
+        Expr::Binary(op, a, b) => Expr::Binary(*op, child(a), child(b)),
+        Expr::Call(n, args) => Expr::Call(n.clone(), args.iter().map(|x| copy_and_shift(x, dr, dc)).collect()),
+        Expr::Invoke(c, args) => Expr::Invoke(child(c), args.iter().map(|x| copy_and_shift(x, dr, dc)).collect()),
+        Expr::Missing => Expr::Missing,
+        Expr::Paren(x) => Expr::Paren(child(x)),
+    }
+}
+
 /// Defined names: relative parts move by `(dr, dc)`, wrapping around the sheet's edges. Files
 /// store a name's relative references as seen from A1 (a name for "the cell to the left" defined
 /// in B1 is `Sheet1!XFD1`), and a use in another cell moves them by that cell's offset from A1.

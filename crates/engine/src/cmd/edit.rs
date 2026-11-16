@@ -346,40 +346,56 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     // becoming a serial number, and "=A1" stays that text instead of becoming a formula.
     let raw = bool_param(p, "raw").unwrap_or(false);
     let mut count = 0;
+    // A data import is mostly rows: the store builds a whole row in one pass (set_row_cells),
+    // while a cell at a time pays a row lookup, a band lookup and a growth step each. A sheet
+    // holding a cell picture keeps the per-cell way, because set_cell owns that rule.
+    let row_batches = cells >= 64;
     edit(s, |cx| {
+        let mut batch: Vec<(u32, Cell)> = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
-            let cols: Vec<&Json> = match row.as_array() {
-                Some(a) => a.iter().collect(),
-                None => vec![row],
+            let cols: &[Json] = match row.as_array() {
+                Some(a) => a,
+                None => std::slice::from_ref(row),
             };
+            batch.clear();
+            let mut bulk = row_batches && cx.wb.sheet(sheet).is_some_and(|sh| sh.cell_pictures.is_empty());
             for (ci, v) in cols.iter().enumerate() {
                 let Some(at) = start.offset(ri as i64, ci as i64) else { continue };
-                let input = json_to_input(v);
                 let cell = match v {
-                    Json::Number(n) => Some(Cell {
-                        value: Value::number(n.as_f64().unwrap_or(0.0)),
-                        formula: None,
-                        style: cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default(),
-                    }),
-                    Json::Bool(b) => {
-                        Some(Cell { value: Value::Bool(*b), formula: None, style: cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default() })
+                    Json::Number(n) => {
+                        let style = cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
+                        Some(Cell { value: Value::number(n.as_f64().unwrap_or(0.0)), formula: None, style })
                     }
-                    Json::String(t) if raw => Some(Cell {
-                        value: Value::text(t.clone()),
-                        formula: None,
-                        style: cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default(),
-                    }),
-                    _ => input_to_cell(&input, sheet, at, &mut cx.wb)?,
+                    Json::Bool(b) => {
+                        let style = cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
+                        Some(Cell { value: Value::Bool(*b), formula: None, style })
+                    }
+                    Json::String(t) if raw => {
+                        let style = cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
+                        Some(Cell { value: Value::text(t.as_str()), formula: None, style })
+                    }
+                    // Only a typed input can be blank (an empty string) or a formula, and only a
+                    // typed input needs its text built: a number's own spelling is never used.
+                    _ => input_to_cell(&json_to_input(v), sheet, at, &mut cx.wb)?,
                 };
-                let sh = cx.sheet_mut(sheet)?;
                 match cell {
-                    Some(c) => sh.set_cell(at, c),
+                    Some(c) if bulk => batch.push((at.col, c)),
+                    Some(c) => cx.sheet_mut(sheet)?.set_cell(at, c),
                     None => {
-                        sh.remove_cell(at);
+                        // A blank input clears the cell, which the row batch would keep: from
+                        // here the row takes the cell at a time.
+                        bulk = false;
+                        cx.sheet_mut(sheet)?.remove_cell(at);
                     }
                 }
                 cx.touch(sheet, at);
                 count += 1;
+            }
+            if bulk && !batch.is_empty() {
+                let mut batch = std::mem::take(&mut batch);
+                if let Some(r) = start.row.checked_add(ri as u32) {
+                    cx.sheet_mut(sheet)?.set_row_cells(r, &mut batch);
+                }
             }
         }
         Ok(())
