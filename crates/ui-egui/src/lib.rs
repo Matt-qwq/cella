@@ -39,7 +39,10 @@ pub mod text;
 pub mod text_box;
 pub mod theme;
 pub mod widgets;
+mod window_ui;
 pub mod wordart;
+
+pub use window_ui::WindowUi;
 
 use std::collections::HashMap;
 
@@ -315,6 +318,12 @@ pub struct SheetApp {
     /// Every unsaved workbook has been answered for quitting (or `app.quit` asked): the next
     /// window close goes through.
     pub allow_close: bool,
+    /// The interface state of every window other than the one the per-window fields hold (see
+    /// [`window_ui`]).
+    parked: HashMap<WindowId, WindowUi>,
+    /// The window whose interface state the per-window fields hold: the draft, the dialog and the
+    /// Backstage view in them are that window's.
+    ui_window: Option<WindowId>,
     /// The window the app's own viewport shows. Bound to a visible window on the first frame and
     /// when that one is hidden or closed; the control channel's `ui.screenshot` and pointer
     /// methods are that viewport, so this is what they see.
@@ -385,6 +394,8 @@ impl SheetApp {
             tab_run: None,
             started: now_ms(),
             allow_close: false,
+            parked: HashMap::new(),
+            ui_window: None,
             window_root: None,
             painted_window: None,
             window_requested: None,
@@ -478,9 +489,14 @@ impl SheetApp {
             self.commit_text_box_edit()?;
         }
         if let Some(r) = self.run_ui_command(id, &params) {
+            // A UI command can make another window current too (View ▸ New Window).
+            self.follow_active_window();
             return r;
         }
         let r = self.session.run(id, params);
+        // The interface state belongs to the window the command left current: Switch Windows,
+        // New Window, Unhide and Close hand it over to the next window's parked state.
+        self.follow_active_window();
         self.after_engine();
         // The new chart is selected, as after inserting any object, so Delete removes it, not its data.
         if id == "insert.chart"
@@ -1454,7 +1470,7 @@ impl SheetApp {
         self.show_extra_windows(&ctx);
         let root = self.window_root;
         self.window_ui(ui, root, true);
-        self.follow_active_window(&ctx, focused);
+        self.follow_focused_window(&ctx, focused);
         let now = now_ms();
         self.perf.frame_ms = now - t0;
         if self.perf.last > 0.0 {
@@ -1489,9 +1505,10 @@ impl SheetApp {
         let ctx = ui.ctx().clone();
         self.painted_window = window;
         // The window being painted is the one the grid draws: its own active sheet and selection
-        // become the document's for this pass, since one workbook shows one view at a time.
+        // become the document's for this pass, since one workbook shows one view at a time — and
+        // with them the interface state the window keeps (its draft, its dialog, its File view).
         if let Some(w) = window {
-            self.session.focus_window(w);
+            self.show_window(w);
         }
         // Focus follows the window the user works in: the window list, Switch Windows and the
         // commands that follow (Hide, Close) then name the window they mean.
@@ -1594,9 +1611,10 @@ impl SheetApp {
         if self.window_root.is_none_or(|w| !visible.contains(&w)) {
             self.window_root = self.session.active_window().filter(|w| visible.contains(w)).or_else(|| visible.first().copied());
         }
-        // The scroll positions of windows that closed go with them.
+        // The scroll positions and parked interface state of windows that closed go with them.
         let live: Vec<WindowId> = windows.iter().map(|(_, w)| w.id).collect();
         self.views.retain(|k, _| live.contains(&k.0));
+        self.parked.retain(|w, _| live.contains(w));
         self.window_close_handled.retain(|w| live.contains(w));
         let Some(root) = self.window_root else { return };
         for id in visible.into_iter().filter(|w| *w != root) {
@@ -1639,21 +1657,24 @@ impl SheetApp {
     /// focus to the window it activated, as Excel does: the window the list calls active is the
     /// one the next keystroke reaches. The session ends the frame on the focused window's
     /// document, so the commands an agent runs next apply where the user is working.
-    fn follow_active_window(&mut self, ctx: &egui::Context, focused: Option<WindowId>) {
+    fn follow_focused_window(&mut self, ctx: &egui::Context, focused: Option<WindowId>) {
         // The frame ended on the last window painted; the window the user works in has to be the
         // one the next command, script or shortcut acts in. A window a command named wins, then the
         // window the user focused, then whatever the session still has.
         let active = self.window_requested.or(focused).filter(|w| self.session.window_doc(*w).is_some()).or_else(|| self.session.active_window());
-        let Some(w) = active else { return };
-        self.session.focus_window(w);
-        if self.window_focused != Some(w) {
-            if Some(w) == self.window_root {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            } else if self.window_root.is_some() {
-                ctx.send_viewport_cmd_to(window_viewport(w), egui::ViewportCommand::Focus);
+        if let Some(w) = active {
+            self.session.focus_window(w);
+            if self.window_focused != Some(w) {
+                if Some(w) == self.window_root {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                } else if self.window_root.is_some() {
+                    ctx.send_viewport_cmd_to(window_viewport(w), egui::ViewportCommand::Focus);
+                }
+                self.window_focused = Some(w);
             }
-            self.window_focused = Some(w);
         }
+        // The frame ends on the window the user works in, and on the interface state it keeps.
+        self.follow_active_window();
     }
 
     /// A close button of one of the app's extra windows, or a `view.closeWindow`: closes that
