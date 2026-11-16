@@ -1259,11 +1259,40 @@ fn hide(s: &mut Session, p: &Json, rows: bool, on: bool) -> Result<Json> {
     let (si, lines) = line_targets(s, p, rows)?;
     edit(s, |cx| {
         let sh = cx.sheet_mut(si)?;
+        // A row a filter covers is the filter's, not the line map's: a file stores a hidden row
+        // one way only and the reader gives the ones inside a filter's range back to its bitmap,
+        // so a line-info entry here would differ from the sheet the same file reopens as.
+        // (Found by the command-sequence fuzz: a filter over a selection, then `home.hideRows` on
+        // rows inside it, and the save/reload comparison saw the rows differ.)
+        let by_filter = if on && rows { rows_a_filter_covers(sh, &lines) } else { Vec::new() };
+        if !by_filter.is_empty() {
+            let mut hidden: Vec<u32> = sh.filter_hidden.rows().collect();
+            let mut saved = sh.filter_hidden.take_saved();
+            for i in &by_filter {
+                if let Some(info) = sh.rows.remove(i) {
+                    saved.insert(*i, info);
+                }
+                hidden.push(*i);
+            }
+            hidden.sort_unstable();
+            hidden.dedup();
+            sh.filter_hidden = FilterHidden::build(hidden, saved);
+        }
+        // Unhiding also gives back the rows the filter's bitmap holds: a row inside a filter's
+        // range is hidden there (above), and without this `home.hideRows` off would do nothing to
+        // it while Clear Filter still would.
+        let mut shown: Vec<(u32, u32)> = Vec::new();
         for (a, b) in lines {
             // Unhiding a single selected line also reveals hidden neighbours (Excel needs the
             // lines on both sides selected; we're forgiving).
             let (a, b) = if !on && a == b { (a.saturating_sub(1), b + 1) } else { (a, b) };
+            if !on && rows {
+                shown.push((a, b.min(a.saturating_add(1_048_575))));
+            }
             for i in a..=b.min(a.saturating_add(1_048_575)) {
+                if by_filter.binary_search(&i).is_ok() {
+                    continue;
+                }
                 let map = if rows { &mut sh.rows } else { &mut sh.cols };
                 if on {
                     map.entry(i).or_default().hidden = true;
@@ -1275,9 +1304,44 @@ fn hide(s: &mut Session, p: &Json, rows: bool, on: bool) -> Result<Json> {
                 }
             }
         }
+        if !shown.is_empty() {
+            let released: std::collections::BTreeSet<u32> =
+                sh.filter_hidden.rows().filter(|row| shown.iter().any(|(a, b)| row >= a && row <= b)).collect();
+            if !released.is_empty() {
+                let saved = sh.filter_hidden.take_saved();
+                sh.filter_hidden.retain(|row| !released.contains(&row));
+                for (row, info) in saved {
+                    if released.contains(&row) {
+                        sh.rows.insert(row, info);
+                    } else {
+                        sh.filter_hidden.save(row, info);
+                    }
+                }
+            }
+        }
         cx.structural = true; // SUBTOTAL(10x) depends on hidden rows
         Ok(Json::Null)
     })
+}
+
+/// The rows in `lines` an applied filter covers — the ones it counts as its own (ascending).
+fn rows_a_filter_covers(sh: &Sheet, lines: &[(u32, u32)]) -> Vec<u32> {
+    let ranges = sh.filter_row_ranges();
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<u32> = Vec::new();
+    for (a, b) in lines {
+        let (a, b) = (*a, *b);
+        for i in a..=b.min(a.saturating_add(1_048_575)) {
+            if ranges.iter().any(|(x, y)| i >= *x && i <= *y) {
+                out.push(i);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 #[cfg(test)]

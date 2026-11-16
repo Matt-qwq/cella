@@ -495,10 +495,16 @@ fn table_flag(s: &mut Session, p: &Json, which: &str) -> Result<Json> {
             "bandedCols" => t.banded_cols = on.unwrap_or(!t.banded_cols),
             "firstCol" => t.first_col = on.unwrap_or(!t.first_col),
             "lastCol" => t.last_col = on.unwrap_or(!t.last_col),
+            // The header row's filter buttons. Without them the table carries no filter, so the
+            // one over its range goes too: a table without a filter has nowhere in the file to
+            // keep criteria, and the rows it hid would come back hand-hidden.
             "header" => {
-                t.filter_button = on.unwrap_or(!t.filter_button);
-                if !t.filter_button {
+                let v = on.unwrap_or(!t.filter_button);
+                t.filter_button = v;
+                if !v {
                     t.filter.clear();
+                    let range = t.range;
+                    super::data::drop_filter_over(sh, range);
                 }
             }
             _ => {}

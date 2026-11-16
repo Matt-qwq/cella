@@ -21,8 +21,8 @@ use std::sync::Arc;
 mod parts;
 mod rules;
 
+pub(crate) use parts::{promote_table_filter, read_comments, read_hyperlinks, read_note_shapes, read_threaded};
 pub use parts::{read_autofilter, read_table};
-pub(crate) use parts::{read_comments, read_hyperlinks, read_note_shapes, read_threaded};
 pub(crate) use rules::{read_cf, read_validation};
 
 struct Shared {
@@ -363,6 +363,7 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
     let read = crate::controls::read(cx, controls_el, legacy_rid.as_deref(), &rels, &mut sheet);
     cx.controls_modelled = read.modelled;
     cx.vml_only_unmodelled = read.vml_only_unmodelled;
+    promote_table_filter(&mut sheet);
     heal_filter_hidden(&mut sheet);
     Ok((sheet, legacy))
 }
