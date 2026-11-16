@@ -1,5 +1,5 @@
 use gridcraft_core::{CellError, CellRef, Value};
-use gridcraft_model::{Cell, Formula, Workbook};
+use gridcraft_model::{Cell, DefinedName, Formula, Workbook};
 
 use crate::Calc;
 
@@ -43,6 +43,66 @@ impl T {
     fn num(&self, at: &str) -> f64 {
         self.get(at).as_f64().unwrap_or_else(|| panic!("{at} = {:?}", self.get(at)))
     }
+}
+
+/// Undo and Redo put back a workbook snapshot: the graph has to follow it, and nothing may be
+/// evaluated — the snapshot holds the values the undone edit replaced.
+#[test]
+fn restore_follows_a_snapshot_without_evaluating() {
+    let mut t = T::new();
+    t.set("A1", "2");
+    t.set("B1", "=A1*2");
+    t.set("C1", "=B1+1");
+    let snapshot = t.wb.clone();
+    let nodes = t.calc.graph.len();
+    // A formula edit: the cell keeps its node, its precedents change.
+    t.set("B1", "=A1*3");
+    assert_eq!(t.num("C1"), 7.0);
+    let edited = std::mem::replace(&mut t.wb, snapshot);
+    let cell_by_cell = t.calc.restore(&edited, &t.wb);
+    assert!(cell_by_cell, "an edit is restored from the cell it changed, not from the whole sheet");
+    assert_eq!(t.calc.last_restore_cells, Some(1));
+    assert_eq!(t.calc.last_recalc_cells, 0, "the snapshot holds the values, so nothing is evaluated");
+    assert_eq!(t.calc.graph.len(), nodes);
+    assert_eq!(t.num("C1"), 5.0);
+    // The graph is the restored workbook's, so the next edit recalculates what depends on A1.
+    t.set("A1", "5");
+    assert_eq!(t.num("B1"), 10.0);
+    assert_eq!(t.num("C1"), 11.0);
+}
+
+/// The same for a formula the undone edit added: a restored snapshot is also a formula that goes
+/// away, and the graph must stop recalculating it.
+#[test]
+fn restore_takes_an_added_formula_out_of_the_graph() {
+    let mut t = T::new();
+    t.set("A1", "2");
+    t.set("B1", "=A1*2");
+    let snapshot = t.wb.clone();
+    let nodes = t.calc.graph.len();
+    t.set("C1", "=A1+1");
+    assert_eq!(t.num("C1"), 3.0);
+    let edited = std::mem::replace(&mut t.wb, snapshot);
+    assert!(t.calc.restore(&edited, &t.wb));
+    assert_eq!(t.calc.graph.len(), nodes);
+    t.set("A1", "9");
+    assert_eq!(t.num("B1"), 18.0);
+    assert_eq!(t.get("C1"), Value::Empty, "the restored snapshot has no C1 formula to recalculate");
+}
+
+/// A snapshot whose defined names moved is not a cell-by-cell change: what a reference means (and
+/// so what a formula reads) is decided beside the cells, so the graph is rebuilt instead.
+#[test]
+fn restore_rebuilds_when_a_name_moved_under_the_formulas() {
+    let mut t = T::new();
+    t.set("A1", "2");
+    t.set("B1", "=A1*2");
+    let mut edited = t.wb.clone();
+    edited.names.push(DefinedName { name: "rate".into(), scope: None, formula: "0.5".into(), comment: String::new(), hidden: false });
+    let cell_by_cell = t.calc.restore(&edited, &t.wb);
+    assert!(!cell_by_cell, "a name that moved is not a cell-by-cell change");
+    assert_eq!(t.calc.last_restore_cells, None);
+    assert_eq!(t.num("B1"), 4.0);
 }
 
 #[test]

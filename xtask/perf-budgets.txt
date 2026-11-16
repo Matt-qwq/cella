@@ -8,7 +8,7 @@
 # Format: <scenario> <rows> <budget ms>
 aggregate       100000  180
 edit.recalc     100000  410
-edit.undo       100000  610
+edit.undo       100000  30
 fill.chained    100000  970
 fill.formulas   100000  860
 fill.values     100000  710
@@ -17,7 +17,7 @@ save.xlsx       100000  690
 sort.desc       100000  1450
 aggregate      1000000  1850
 edit.recalc    1000000  4600
-edit.undo      1000000  8100
+edit.undo      1000000  200
 fill.chained   1000000  10500
 fill.formulas  1000000  8750
 fill.values    1000000  8050

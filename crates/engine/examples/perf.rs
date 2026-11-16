@@ -312,7 +312,13 @@ fn edit_recalc(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
 
 fn edit_undo(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
     let ((), ms) = timed(|| b.exec("edit.undo", json!({})).map(|_| ()))?;
-    Ok(("undo of the B1 edit".to_string(), ms))
+    // An undo restores the snapshot the edit replaced, so it evaluates nothing and re-inserts only
+    // the formulas the edit rewrote: `None` here means it fell back to rebuilding the graph.
+    let detail = match b.session.doc().ok().and_then(|d| d.calc.last_restore_cells) {
+        Some(n) => format!("undo of the B1 edit: {n} formulas re-inserted, none recalculated"),
+        None => format!("undo of the B1 edit: graph rebuilt, {} cells recalculated", b.recalc_cells()),
+    };
+    Ok((detail, ms))
 }
 
 fn sort_desc(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
