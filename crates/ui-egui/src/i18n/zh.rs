@@ -1605,6 +1605,10 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Minimum:" => "最小值：",
         "Missing alternative text" => "缺少替代文字",
         "Missing table header" => "缺少表格标题行",
+        // zh-a11y - what the accessibility checker says about an object with no alternative text (P19).
+        "No alternative text and no text a screen reader could read" => "既无替代文字，也无屏幕阅读器可读取的文字",
+        "No alternative text written; a screen reader reads the object's text" => "未填写替代文字；屏幕阅读器改为读取对象自身的文字",
+        "Text used as alternative text" => "以对象文字作为替代文字",
         "monochrome" => "单色",
         "Months" => "月",
         "More Table Styles" => "其他表格样式",

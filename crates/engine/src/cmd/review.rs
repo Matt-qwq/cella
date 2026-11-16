@@ -2,7 +2,7 @@
 //! Comments pane, Show All Notes and Convert to Comments.
 
 use gridcraft_core::CellRef;
-use gridcraft_model::{EditRange, PasswordHash, SheetProtection, Visibility, password_hash};
+use gridcraft_model::{EditRange, PasswordHash, ShapeKind, SheetProtection, Visibility, password_hash};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -337,38 +337,84 @@ fn stats(s: &mut Session, _: &Json) -> Result<Json> {
     }))
 }
 
-/// Review › Check Accessibility: what a screen reader would struggle with, per sheet — objects
-/// without alternative text (charts, pictures, shapes with no text of their own, pictures in
-/// cells), merged cells, a table without a header row and a sheet still on its default name.
-/// Each issue carries where it is (`sheet`, `sheetIndex` and either `kind` + `id` or `range`), so
-/// the UI can go to it and fix it.
+/// Longest accessible name reported (characters): a text box can hold much more text than the
+/// checker's list needs to show.
+const MAX_ACCESSIBLE_NAME: usize = 200;
+
+/// The text an object carries, as the name a screen reader announces for it: runs of whitespace
+/// flattened to single spaces (a line break is not part of a name), `None` for an object with no
+/// text of its own.
+fn accessible_name(text: &str) -> Option<String> {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    let mut name: String = flat.chars().take(MAX_ACCESSIBLE_NAME).collect();
+    if flat.chars().count() > MAX_ACCESSIBLE_NAME {
+        name.push('…');
+    }
+    Some(name)
+}
+
+/// Review › Check Accessibility: what a screen reader would struggle with, per sheet — every
+/// object without alternative text, merged cells, a table without a header row and a sheet still
+/// on its default name.
+///
+/// An object that carries text is named by it when it has no alternative text of its own: a
+/// shape's label, a WordArt's words, an equation's source (the text a screen reader would fall
+/// back to). Such an object is still listed — every object without alternative text is — with the
+/// reason it is there and the `accessibleName` the reader would announce; an object with neither
+/// alt text nor text cannot be named at all and is listed for that. Each issue carries where it is
+/// (`sheet`, `sheetIndex` and either `kind` + `id` or `range`), so the UI can go to it and fix it.
 fn accessibility(s: &mut Session, _: &Json) -> Result<Json> {
     let d = s.doc()?;
     let mut issues = Vec::new();
     for (si, sh) in d.wb.sheets.iter().enumerate() {
-        let mut missing = |kind: &str, id: u32, what: String| {
-            issues.push(json!({"sheet": sh.name, "sheetIndex": si, "issue": "Missing alternative text", "kind": kind, "id": id, "object": what}));
+        let mut report = |kind: &str, id: u32, what: String, alt: Option<&str>, text: &str| {
+            if !alt.unwrap_or("").trim().is_empty() {
+                return;
+            }
+            let name = accessible_name(text);
+            let (issue, reason) = if name.is_some() {
+                ("Text used as alternative text", "No alternative text written; a screen reader reads the object's text")
+            } else {
+                ("Missing alternative text", "No alternative text and no text a screen reader could read")
+            };
+            let mut entry = json!({"sheet": sh.name, "sheetIndex": si, "issue": issue, "reason": reason, "kind": kind, "id": id, "object": what});
+            if let Some(n) = name {
+                entry["accessibleName"] = json!(n);
+            }
+            issues.push(entry);
         };
         for ch in &sh.charts {
-            if ch.alt.as_deref().unwrap_or("").trim().is_empty() {
-                missing("chart", ch.id, format!("Chart {}", ch.id));
-            }
+            report("chart", ch.id, format!("Chart {}", ch.id), ch.alt.as_deref(), "");
         }
         for im in &sh.images {
-            if im.alt.trim().is_empty() {
-                missing("image", im.id, format!("Picture {}", im.id));
-            }
+            report("image", im.id, format!("Picture {}", im.id), Some(&im.alt), "");
         }
         for sp in &sh.shapes {
-            // A shape whose text is the content (a label, a callout) is already readable; one with
-            // no text at all is what a screen reader cannot describe.
-            if sp.alt.as_deref().unwrap_or("").trim().is_empty() && sp.text.trim().is_empty() && sp.kind != gridcraft_model::ShapeKind::Ink {
-                missing("shape", sp.id, format!("Shape {}", sp.id));
-            }
+            // Ink holds its points and an icon its icon name as `text`: neither is readable.
+            let text = match sp.kind {
+                ShapeKind::Ink | ShapeKind::Icon => "",
+                _ => sp.text.as_str(),
+            };
+            let what = if sp.kind == ShapeKind::WordArt { format!("WordArt {}", sp.id) } else { format!("Shape {}", sp.id) };
+            report("shape", sp.id, what, sp.alt.as_deref(), text);
+        }
+        for eq in &sh.equations {
+            report("equation", eq.id, format!("Equation {}", eq.id), eq.alt.as_deref(), &eq.source);
         }
         for (cell, pic) in &sh.cell_pictures {
             if pic.alt.trim().is_empty() {
-                issues.push(json!({"sheet": sh.name, "sheetIndex": si, "issue": "Missing alternative text", "kind": "cellPicture", "cell": cell.a1(), "object": format!("Picture in {}", cell.a1())}));
+                issues.push(json!({
+                    "sheet": sh.name,
+                    "sheetIndex": si,
+                    "issue": "Missing alternative text",
+                    "reason": "No alternative text and no text a screen reader could read",
+                    "kind": "cellPicture",
+                    "cell": cell.a1(),
+                    "object": format!("Picture in {}", cell.a1())
+                }));
             }
         }
         for table in sh.tables.iter().filter(|t| !t.header_row) {
@@ -462,6 +508,44 @@ mod tests {
         assert!(sh.charts.iter().any(|c| c.alt.as_deref() == Some("Sales by region")), "the chart keeps its alt text");
         assert!(sh.shapes.iter().any(|c| c.alt.as_deref() == Some("Quarterly summary")), "the shape keeps its alt text");
         assert!(sh.images.iter().any(|im| im.alt == "Logo"), "the picture keeps its alt text");
+    }
+
+    /// Every object without alternative text is in the list, with the reason it is there and the
+    /// name a screen reader would announce: the text it carries, when it carries one.
+    #[test]
+    fn every_object_without_alternative_text_is_listed_with_a_reason() {
+        let mut s = Session::new();
+        s.new_workbook();
+        let wa = s.execute("insert.wordArt", json!({"text": "Sale\n  now", "at": "B2"})).unwrap()["shape"].as_u64().unwrap();
+        let blank = s.execute("insert.shape", json!({"kind": "rectangle", "at": "B6"})).unwrap()["shape"].as_u64().unwrap();
+        let eq = s.execute("insert.equation", json!({"text": "x^2", "at": "B10"})).unwrap()["equation"].as_u64().unwrap();
+        let issues = s.execute("review.checkAccessibility", json!({})).unwrap();
+        let list = issues.as_array().cloned().unwrap_or_default();
+        let find = |kind: &str, id: u64| list.iter().find(|i| i["kind"] == json!(kind) && i["id"] == json!(id)).cloned();
+        // A WordArt is named by its words (a line break is not part of a name) and is still listed:
+        // it has no alternative text of its own.
+        let w = find("shape", wa).expect("the WordArt is listed");
+        assert_eq!(w["object"], json!(format!("WordArt {wa}")));
+        assert_eq!(w["issue"], json!("Text used as alternative text"), "{w:?}");
+        assert_eq!(w["accessibleName"], json!("Sale now"), "{w:?}");
+        assert!(w["reason"].as_str().is_some_and(|r| r.contains("alternative text")), "{w:?}");
+        // A shape with no text at all can not be named: it is listed for that, with no name.
+        let b = find("shape", blank).expect("the shape is listed");
+        assert_eq!(b["object"], json!(format!("Shape {blank}")));
+        assert_eq!(b["issue"], json!("Missing alternative text"), "{b:?}");
+        assert!(b.get("accessibleName").is_none(), "{b:?}");
+        // An equation's linear source is the text it carries, so that is its name.
+        let e = find("equation", eq).expect("the equation is listed");
+        assert_eq!(e["object"], json!(format!("Equation {eq}")));
+        assert_eq!(e["accessibleName"], json!("x^2"), "{e:?}");
+
+        // Alternative text of its own wins, and takes the object off the list.
+        s.execute("object.setAltText", json!({"kind": "shape", "id": wa, "text": "Sale this quarter"})).unwrap();
+        s.execute("object.setAltText", json!({"kind": "equation", "id": eq, "text": "x squared"})).unwrap();
+        let list = s.execute("review.checkAccessibility", json!({})).unwrap().as_array().cloned().unwrap_or_default();
+        assert!(!list.iter().any(|i| i["kind"] == json!("shape") && i["id"] == json!(wa)), "{list:?}");
+        assert!(!list.iter().any(|i| i["kind"] == json!("equation")), "{list:?}");
+        assert!(list.iter().any(|i| i["kind"] == json!("shape") && i["id"] == json!(blank)), "{list:?}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (11-16: §18's accessibility check names every object without alternative text — WordArt and equations included — by the text it carries, and §17's PDF export draws a WordArt's outline and drop shadow. 11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -1025,12 +1025,13 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   field docs say). GridCraft paints the **linear** text: full 2-D math layout is out of scope, and
   the command is **command/control-channel only** until there is an equation editor to type into.
   Equations do not yet follow row/column inserts, are not in the z-order/Align/Arrange commands,
-  are not in the accessibility check or the PDF export.
+  and are not in the PDF export; the accessibility check lists one (it is named by its source).
 - **WordArt landed:** `insert.wordArt` / `wordArt.set` make decorative text as a transparent
   shape (`ShapeKind::WordArt`) whose text body carries the no-warp marker
   (`a:prstTxWarp prst="textNoShape"`), so it reads back as WordArt and is never flattened into a
   text box; the Insert › Text gallery paints its ten presets in code, and the text is edited
-  through the text-box path. The PDF export prints its text but not the outline and shadow yet.
+  through the text-box path. The PDF export draws its text the way the grid paints it: the drop
+  shadow as one offset copy and the outline as eight, under the filled text.
 - SmartArt, signature line, objects, 3-D models, screenshot; 8 shape kinds vs ~170; pictures in
   cells (#61, PR #105). **Estimate:** 25–40 h (equations and WordArt are no longer part of it).
 
@@ -1038,10 +1039,13 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - **Landed 11-02 (alt text + checker):** charts and shapes carry alternative text now — the model
   (`Chart::alt`, `Shape::alt`), the file (`xdr:cNvPr/@descr`, escaped, read back on charts, kept
   charts, pictures and shapes), the command `object.setAltText` and a check that notices when it
-  is missing. Review ▸ Check Accessibility reports charts, pictures, shapes with no text of their
-  own and pictures in cells without alt text, tables without a header row, merged cells and sheets
-  still on their default name, each with its sheet and object/range, and the dialog **goes to**
-  each one and takes the alt text inline.
+  is missing. Review ▸ Check Accessibility reports **every object without alternative text** —
+  charts, pictures, shapes, WordArt, equations and pictures in cells — with the reason it is listed
+  and the name a screen reader would announce (`accessibleName`: an object that carries text is
+  named by it — a shape's label, a WordArt's words, an equation's source — so the list marks those
+  "Text used as alternative text" and the nameless ones "Missing alternative text"), plus tables
+  without a header row, merged cells and sheets still on their default name, each with its sheet
+  and object/range; the dialog **goes to** each one and takes the alt text inline.
 - **Landed 11-02 (the grid is walkable):** while a screen reader is attached the visible cells are
   an **AccessKit grid** — one `GridCell` node per visible cell, with the displayed value as its
   value, its address (and formula) as its description, its row and column indexes, and the active
@@ -1175,6 +1179,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | §18/§17: the accessibility check lists every object without alternative text — **WordArt and equations included** — with the reason it is there and the name a screen reader reads (the object's own text when it carries one); the PDF export draws a WordArt's text outline (eight offset copies) and drop shadow (one) the way the grid paints them. Two tests, one per half |
 | 2026-11-03 | minor | §1: a local real-world corpus (9.6 GB, 3,199 workbooks) was run: 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches (digest now covers formula text, merges, comments, links, CF/DV, tables, names, charts, shapes, pictures), and Excel 16 found GridCraft's copies identical on 16 `.xlsx` files plus all 37 readable `.xls`. #1 is met for beta; 4 invalid files (openpyxl also refuses), 111 encrypted and 449 cloud placeholders were out of reach, and the pinned corpus remains for CI (0–1 h) |
 | 2026-11-03 | minor | §7: `.xls` autoshapes and text boxes are read — Excel 2007+'s DrawingML fragment when present (geometry, fill, line, text, formatting), otherwise the OfficeArt type and anchor — and verified in Excel 16 with five shapes (same text/fill/line/positions; a block arrow becomes the model's arrowheaded line). The reader now tolerates drawings split across records and a trailing shape stored in a text box's Continue records. #7 is met for beta; OLE objects and chart sheets are full scope |
 | 2026-11-03 | minor | §7: `.xls` charts are read (the chart substream: kind and variants, series `BRAI` ranges, cached names, title, legend, and the anchor from the `msosptChart` shape) and verified in Excel 16 — a five-kind workbook converts and reopens with the same kinds, titles and anchors. Shapes, OLE objects and chart sheets remain, so #7 falls to 1–3 h. RC4 is re-scoped: Excel refuses a hand-made RC4 `.xlsx` (ECMA-376 Standard requires AES), so encrypted `.xls` output waits for a `.xls` writer |

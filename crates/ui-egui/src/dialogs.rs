@@ -1899,6 +1899,15 @@ fn accessibility(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     go = Some(issue.clone());
                 }
             });
+            // Why the object is listed, and — for one that carries text — the name a screen reader
+            // reads for it when it has no alternative text of its own.
+            if let Some(reason) = issue["reason"].as_str() {
+                let reason = crate::widgets::tr(ui, reason);
+                match issue["accessibleName"].as_str().filter(|n| !n.is_empty()) {
+                    Some(name) => ui.weak(format!("{reason} — `{name}`")),
+                    None => ui.weak(reason),
+                };
+            }
             let kind = issue["kind"].as_str().unwrap_or("");
             if kind.is_empty() || kind == "cellPicture" {
                 continue;
