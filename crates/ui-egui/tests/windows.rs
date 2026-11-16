@@ -1,5 +1,7 @@
 //! View ▸ New Window is a second *window* on one workbook, never a second copy of it: both
-//! windows show the same document, share its undo history, and closing one leaves it open.
+//! windows show the same document, share its undo history, and closing one leaves it open. What
+//! each window shows of it — its active sheet, its selection — is the window's own, and switching
+//! windows brings that view back.
 
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Services, SheetApp};
@@ -113,4 +115,71 @@ fn the_control_channel_names_the_window_it_drives() {
     assert_eq!(windows[1]["title"], json!("Book1:2"), "{inspected}");
     // The frame still belongs to the app's own window: its grid is what `ui.cell.click` maps onto.
     assert_eq!(h.state().painted_window(), Some(main));
+}
+
+/// What the app shows: the active sheet and the selection of the window it is on.
+fn view(app: &SheetApp) -> (usize, String) {
+    let d = app.session.doc().expect("a document");
+    (d.wb.active_sheet, d.selection.a1())
+}
+
+/// Switching windows is switching views: each window keeps its own active sheet and selection, and
+/// the one a command reads is the view of the window the user is on.
+#[test]
+fn switching_windows_restores_that_windows_sheet_and_selection() {
+    let mut app = app();
+    app.run("home.insertSheet", json!({})).expect("a second sheet");
+    app.run("sheet.activate", json!({"sheet": 0})).expect("Sheet1");
+    app.run("selection.set", json!({"range": "B2:C3"})).expect("a selection");
+    let first = app.session.active_window().expect("a window");
+    app.run("view.newWindow", json!({})).expect("a second window");
+    let second = app.session.active_window().expect("the new window");
+    assert_eq!((view(&app), app.session.windows().len()), ((0, "B2:C3".to_string()), 2), "the new window opens on what the document shows");
+    app.run("sheet.activate", json!({"sheet": 1})).expect("Sheet2");
+    app.run("selection.set", json!({"range": "D4"})).expect("and a selection of its own");
+    assert_eq!(view(&app), (1, "D4".to_string()), "the second window is on Sheet2, D4");
+
+    // Switch Windows: the view of the window switched to is the one the grid draws and commands act
+    // in, and it is the view that window had, not the one it was left at.
+    app.run("window.activate", json!({"index": 0})).expect("switch to the first window");
+    assert_eq!((app.session.active_window(), view(&app)), (Some(first), (0, "B2:C3".to_string())));
+    app.run("cell.set", json!({"input": "one"})).expect("typed in the first window");
+    app.run("window.activate", json!({"window": second.0})).expect("switch to the second window");
+    assert_eq!((app.session.active_window(), view(&app)), (Some(second), (1, "D4".to_string())));
+    app.run("cell.set", json!({"input": "two"})).expect("typed in the second window");
+    assert_eq!(shown(&app, "D4"), "two");
+
+    // A painted frame paints every window and leaves the session on the window the user works in:
+    // its own sheet and selection are what the next command sees, not the last window drawn.
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+        |ui, app: &mut SheetApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert_eq!(
+        (h.state().session.active_window(), view(h.state())),
+        (Some(second), (1, "D4".to_string())),
+        "the frame ends on the window the user is in"
+    );
+    // The harness is a shell with one viewport: the app draws one window at a time in it. Bind it to
+    // the first window, as the shell does, and paint again: it draws — and ends on — that window's
+    // own view, with the other window's view kept for when it is drawn next.
+    let mut h = h;
+    h.state_mut().window_root = Some(first);
+    h.run_steps(3);
+    assert_eq!(
+        (h.state().session.active_window(), view(h.state())),
+        (Some(first), (0, "B2:C3".to_string())),
+        "painting a window brings its own view back"
+    );
+    assert_eq!(
+        h.state().session.window_view(second).map(|v| (v.sheet, v.selection.a1())),
+        Some((1, "D4".to_string())),
+        "the window that is not being drawn keeps its own view"
+    );
+    assert_eq!(h.state().session.documents().len(), 1, "one document, one workbook, two views");
 }

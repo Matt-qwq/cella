@@ -321,6 +321,10 @@ pub struct SheetApp {
     /// The window whose content the current pass paints, so scroll positions and geometry belong
     /// to the window being drawn (the app's own one after a frame ends).
     painted_window: Option<WindowId>,
+    /// The window a frame has to end on, when something during its passes named one: a command
+    /// that switched windows (Switch Windows, New Window, Unhide, a close) or the window the
+    /// operating system reports as focused.
+    window_requested: Option<WindowId>,
     /// The window the app last moved the OS focus to, so a window switch made by a command moves
     /// it once instead of every frame.
     window_focused: Option<WindowId>,
@@ -382,6 +386,7 @@ impl SheetApp {
             allow_close: false,
             window_root: None,
             painted_window: None,
+            window_requested: None,
             window_focused: None,
             window_close_handled: std::collections::HashSet::new(),
             frame_asked: false,
@@ -989,10 +994,10 @@ impl SheetApp {
         self.session.active().map(|d| (d.uid, d.wb.active_sheet))
     }
 
-    /// The window whose scroll position this frame uses: the one being painted, or the app's own
-    /// window (and, before the first frame, the focused window).
+    /// The window whose scroll position this frame uses: the one being painted, or — between
+    /// frames — the window the session is on (the one the user works in), else the app's own.
     pub fn painted_window(&self) -> Option<WindowId> {
-        self.painted_window.or(self.window_root).or_else(|| self.session.active_window())
+        self.painted_window.or_else(|| self.session.active_window()).or(self.window_root)
     }
 
     fn scroll_key(&self) -> Option<(WindowId, usize)> {
@@ -1026,10 +1031,9 @@ impl SheetApp {
     /// cell to the engine so a save writes them (`sheetView topLeftCell`). Normal view only:
     /// Page Layout view scrolls over pages, not cells.
     pub fn store_view_state(&mut self) {
-        // A document is saved with one first visible cell per sheet: the app's own window when it
-        // shows this document, otherwise the window that does.
-        let window =
-            self.window_root.filter(|w| self.session.window_doc(*w) == Some(self.session.active_index())).or_else(|| self.session.active_window());
+        // A document is saved with one first visible cell per sheet, and with the view the window
+        // the user works in shows: its sheet and selection are the ones in the document.
+        let window = self.session.active_window();
         let mut tops = Vec::new();
         if let Some(d) = self.session.active() {
             for (&(window_of, si), v) in &self.views {
@@ -1441,11 +1445,15 @@ impl SheetApp {
         let t0 = now_ms();
         // The extra windows first, the app's own last: a window is painted in a pass of its own,
         // and the state the frame leaves behind (the grid geometry the control channel reads, the
-        // focused window's document) belongs to the app's own window.
+        // focused window's document) belongs to the app's own window. Painting a window makes its
+        // view the one its document shows, so the frame remembers the window the user works in and
+        // ends on it again.
+        let focused = self.session.active_window();
+        self.window_requested = None;
         self.show_extra_windows(&ctx);
         let root = self.window_root;
         self.window_ui(ui, root, true);
-        self.follow_active_window(&ctx);
+        self.follow_active_window(&ctx, focused);
         let now = now_ms();
         self.perf.frame_ms = now - t0;
         if self.perf.last > 0.0 {
@@ -1479,8 +1487,10 @@ impl SheetApp {
     fn window_ui(&mut self, ui: &mut egui::Ui, window: Option<WindowId>, own: bool) {
         let ctx = ui.ctx().clone();
         self.painted_window = window;
-        if let Some(doc) = window.and_then(|w| self.session.window_doc(w)) {
-            self.session.set_active(doc);
+        // The window being painted is the one the grid draws: its own active sheet and selection
+        // become the document's for this pass, since one workbook shows one view at a time.
+        if let Some(w) = window {
+            self.session.focus_window(w);
         }
         // Focus follows the window the user works in: the window list, Switch Windows and the
         // commands that follow (Hide, Close) then name the window they mean.
@@ -1488,8 +1498,8 @@ impl SheetApp {
             && ctx.input(|i| i.focused)
             && self.window_focused != Some(w)
         {
-            self.session.focus_window(w);
             self.window_focused = Some(w);
+            self.window_requested = Some(w);
         }
         if own {
             text_box::before_ui(self, &ctx);
@@ -1543,6 +1553,13 @@ impl SheetApp {
         if self.chrome.title_bar {
             let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
             chrome::resize_grips(ui, maximized);
+        }
+        // A command in this window's pass named another window (Switch Windows, a close, File ▸
+        // New): the frame ends there, the way clicking it would have.
+        if let Some(w) = window
+            && self.session.active_window() != Some(w)
+        {
+            self.window_requested = self.session.active_window();
         }
         if !own {
             return;
@@ -1621,20 +1638,20 @@ impl SheetApp {
     /// focus to the window it activated, as Excel does: the window the list calls active is the
     /// one the next keystroke reaches. The session ends the frame on the focused window's
     /// document, so the commands an agent runs next apply where the user is working.
-    fn follow_active_window(&mut self, ctx: &egui::Context) {
-        let active = self.session.active_window();
-        if let Some(w) = active
-            && self.window_focused != Some(w)
-        {
+    fn follow_active_window(&mut self, ctx: &egui::Context, focused: Option<WindowId>) {
+        // The frame ended on the last window painted; the window the user works in has to be the
+        // one the next command, script or shortcut acts in. A window a command named wins, then the
+        // window the user focused, then whatever the session still has.
+        let active = self.window_requested.or(focused).filter(|w| self.session.window_doc(*w).is_some()).or_else(|| self.session.active_window());
+        let Some(w) = active else { return };
+        self.session.focus_window(w);
+        if self.window_focused != Some(w) {
             if Some(w) == self.window_root {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             } else if self.window_root.is_some() {
                 ctx.send_viewport_cmd_to(window_viewport(w), egui::ViewportCommand::Focus);
             }
             self.window_focused = Some(w);
-        }
-        if let Some(doc) = active.and_then(|w| self.session.window_doc(w)) {
-            self.session.set_active(doc);
         }
     }
 

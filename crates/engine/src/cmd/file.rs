@@ -34,13 +34,21 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             options
         ),
-        cmd!(noundo "window.activate", "Switch Window", ["Window"], None, "{index}", has_doc, activate_window),
+        cmd!(
+            noundo "window.activate",
+            "Switch Window",
+            ["Window"],
+            None,
+            "{index | window}: makes one window of the open document the active one — its own active sheet and selection become the ones commands see — and brings it to the front. Without either parameter it goes to the next window in the list, wrapping around (Excel’s Ctrl+F6)",
+            has_doc,
+            activate_window
+        ),
         cmd!(
             query "window.list",
             "Windows",
             ["Window"],
             None,
-            "{} → [{index, window, title, active, hidden}] the open document’s windows, in Switch Windows order (`index` is what `window.activate` takes; `window` is the id `view.closeWindow` and the other window commands take)",
+            "{} → [{index, window, title, sheet, selection, active, hidden}] the open document’s windows, in Switch Windows order (`index` is what `window.activate` takes; `window` is the id `view.closeWindow` and the other window commands take; `sheet` and `selection` are what each window shows, not what the active one shows)",
             has_doc,
             list_windows
         ),
@@ -329,10 +337,14 @@ fn list_windows(s: &mut Session, _: &Json) -> Result<Json> {
         .enumerate()
         .filter(|(_, (doc, _))| docs.get(*doc).is_some_and(|d| d.uid == uid))
         .map(|(index, (doc, w))| {
+            // What this window shows of the shared workbook, not what the active window shows.
+            let view = s.window_view(w.id);
             json!({
                 "index": index,
                 "window": w.id.0,
                 "title": docs.get(*doc).map(|d| d.display_title()).unwrap_or_default(),
+                "sheet": view.as_ref().map(|v| v.sheet),
+                "selection": view.as_ref().map(|v| v.selection.a1()),
                 "active": active == Some(w.id),
                 "hidden": w.hidden,
             })
@@ -342,12 +354,38 @@ fn list_windows(s: &mut Session, _: &Json) -> Result<Json> {
 }
 
 /// Switch to a window by its place in the window list (`view.switchWindows`), which for a session
-/// with one window per document is the document order it has always been.
+/// with one window per document is the document order it has always been. A `window` id names one
+/// too, and with neither parameter the next window in the list comes forward, as Ctrl+F6 does: the
+/// command always has something to do.
+///
+/// Activating a window swaps its view into the shared workbook, so the active sheet and selection
+/// commands act on from here on are that window's.
 fn activate_window(s: &mut Session, p: &Json) -> Result<Json> {
-    let i = u32_param(p, "index").ok_or_else(|| bad("window.activate", "missing `index`"))? as usize;
-    let window = s.windows().get(i).map(|(_, w)| w.id).ok_or_else(|| bad("window.activate", "no such window"))?;
+    let windows = s.windows();
+    let i = match p.get("window").and_then(Json::as_u64) {
+        Some(id) => {
+            let id = crate::WindowId(id);
+            windows.iter().position(|(_, w)| w.id == id).ok_or_else(|| bad("window.activate", "no such window"))?
+        }
+        None => match u32_param(p, "index") {
+            Some(i) => usize::try_from(i).map_err(|_| bad("window.activate", "no such window"))?,
+            // Next window (Ctrl+F6), wrapping around.
+            None => {
+                let at = s.active_window().and_then(|w| windows.iter().position(|(_, x)| x.id == w)).unwrap_or(0);
+                at.saturating_add(1) % windows.len().max(1)
+            }
+        },
+    };
+    let window = windows.get(i).map(|(_, w)| w.id).ok_or_else(|| bad("window.activate", "no such window"))?;
     if !s.focus_window(window) {
         return Err(bad("window.activate", "no such window"));
     }
-    Ok(json!({"index": i, "window": window.0, "title": s.doc()?.display_title()}))
+    let view = s.window_view(window);
+    Ok(json!({
+        "index": i,
+        "window": window.0,
+        "title": s.doc()?.display_title(),
+        "sheet": view.as_ref().map(|v| v.sheet),
+        "selection": view.as_ref().map(|v| v.selection.a1()),
+    }))
 }

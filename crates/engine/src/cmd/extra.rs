@@ -159,14 +159,22 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Window",
             ["View", "Window"],
             None,
-            "{} → {window, index, windows}: another window on the active document — the same workbook, its undo history and its save, in a window of its own (each window scrolls on its own; the active cell and the active sheet are the document's, so both windows show them). Disabled, with that reason in `enabled`, in the browser build: it has one window, the page",
+            "{} → {window, index, windows, sheet, selection}: another window on the active document — the same workbook, its undo history and its save, in a window of its own. Both windows start on the sheet and selection the document shows; from then on each keeps its own (selection, active sheet, scroll position). Disabled, with that reason in `enabled`, in the browser build: it has one window, the page",
             can_open_window,
             new_window
         ),
         cmd!(noundo "view.arrangeAll", "Arrange All", ["View", "Window"], None, "{}", has_doc, |_, _| ok()),
         cmd!(noundo "view.hideWindow", "Hide", ["View", "Window"], None, "{window?, index?} hides a window (the active one without them) and focuses the next visible one; the last visible window stays", has_doc, hide_window),
         cmd!(noundo "view.unhideWindow", "Unhide…", ["View", "Window"], None, "{window? | index?} shows a hidden window again and focuses it (the first hidden one without them)", has_doc, unhide_window),
-        cmd!(query "view.switchWindows", "Switch Windows", ["View", "Window"], None, "{} → [{index, window, title, document, active, hidden}] every open window, in window-list order", always, switch_windows),
+        cmd!(
+            query "view.switchWindows",
+            "Switch Windows",
+            ["View", "Window"],
+            None,
+            "{} → [{index, window, title, document, sheet, selection, active, hidden}] every open window, in window-list order (sheet and selection are what that window shows, not what the active one shows)",
+            always,
+            switch_windows
+        ),
         cmd!(
             noundo "view.closeWindow",
             "Close Window",
@@ -961,11 +969,19 @@ fn window_index(s: &Session, window: crate::WindowId) -> Option<usize> {
 }
 
 /// View ▸ New Window: another window on the *same* document. The document is not copied — the
-/// windows share its workbook, its undo history and its save, and closing one leaves it open.
+/// windows share its workbook, its undo history and its save, and closing one leaves it open; what
+/// each window shows of it (selection, active sheet) is the window's own.
 fn new_window(s: &mut Session, _: &Json) -> Result<Json> {
     can_open_window(s).map_err(|e| bad("view.newWindow", e))?;
     let window = s.add_window()?;
-    Ok(json!({"window": window.0, "index": window_index(s, window), "windows": s.window_count()}))
+    let view = s.window_view(window);
+    Ok(json!({
+        "window": window.0,
+        "index": window_index(s, window),
+        "windows": s.window_count(),
+        "sheet": view.as_ref().map(|v| v.sheet),
+        "selection": view.as_ref().map(|v| v.selection.a1()),
+    }))
 }
 
 fn hide_window(s: &mut Session, p: &Json) -> Result<Json> {
@@ -999,11 +1015,15 @@ fn switch_windows(s: &mut Session, _: &Json) -> Result<Json> {
             .iter()
             .enumerate()
             .map(|(i, (doc, w))| {
+                // Each window's own view of the workbook it shows, not the active window's.
+                let view = s.window_view(w.id);
                 json!({
                     "index": i,
                     "window": w.id.0,
                     "title": s.documents().get(*doc).map(|d| d.display_title()).unwrap_or_default(),
                     "document": doc,
+                    "sheet": view.as_ref().map(|v| v.sheet),
+                    "selection": view.as_ref().map(|v| v.selection.a1()),
                     "active": active == Some(w.id),
                     "hidden": w.hidden,
                 })
