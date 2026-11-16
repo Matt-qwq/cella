@@ -895,7 +895,7 @@ fn advanced_filter(s: &mut Session, p: &Json) -> Result<Json> {
                 shm.rows.entry(*row).or_default().hidden = true;
             }
         }
-        cx.structural = true;
+        cx.visibility = true; // the rows the filter list matched are hidden, no cell changed
         Ok(())
     })?;
     Ok(json!({"matched": matched, "hiddenRows": hidden}))

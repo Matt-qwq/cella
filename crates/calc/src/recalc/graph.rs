@@ -141,7 +141,7 @@ pub(super) struct Node {
     /// The parsed formula, shared with the cell: a pass reads it from here instead of rebuilding
     /// the cell (which copies its value and both side tables) once per formula.
     pub(super) expr: Option<std::sync::Arc<Expr>>,
-    /// The `DYNAMIC`..`LEGACY` bits below.
+    /// The `DYNAMIC`..`VISIBILITY` bits below.
     flags: u8,
 }
 
@@ -156,6 +156,10 @@ const LEGACY: u8 = 8;
 /// The formula calls a function that answers differently every time (`NOW`, `RAND`, `TODAY`…), so
 /// its cached value is out of date on open and it is recalculated then.
 const VOLATILE: u8 = 16;
+/// The value depends on which rows are hidden (`SUBTOTAL` and `AGGREGATE` leave out the rows a
+/// filter, a collapsed group or a row height of zero hides): a command that only changes
+/// visibility evaluates these instead of the whole workbook.
+const VISIBILITY: u8 = 32;
 
 impl Node {
     pub(super) fn new(expr: Option<std::sync::Arc<Expr>>, dynamic: bool, may_spill: bool, trim: bool) -> Self {
@@ -170,6 +174,14 @@ impl Node {
             flags |= TRIM;
         }
         Node { start: 0, len: 0, expr, flags }
+    }
+
+    /// The same node, marked as reading which rows are hidden (see [`VISIBILITY`]).
+    pub(super) fn with_visibility(mut self, hidden_rows: bool) -> Self {
+        if hidden_rows {
+            self.flags |= VISIBILITY;
+        }
+        self
     }
 
     /// The same node, marked volatile (see [`VOLATILE`]).
@@ -349,6 +361,10 @@ pub struct Graph {
     /// Formulas with a reference read through the used range. An edit that moves the used range
     /// (or a spill that does) has to evaluate them again: they read cells it didn't name.
     pub(super) trim: HashSet<Key>,
+    /// Formulas whose value depends on which rows are hidden (`SUBTOTAL`, `AGGREGATE`). A filter,
+    /// a group collapsed or shown and a row height of zero change no cell's content, only what
+    /// they display, so they evaluate this set — and its dependents — instead of the workbook.
+    pub(super) visibility: HashSet<Key>,
     /// Range indexes changed since the last [`Graph::settle`].
     pub(super) unsettled_cols: HashSet<(usize, u32)>,
     pub(super) unsettled_wide: HashSet<usize>,
@@ -468,6 +484,9 @@ impl Graph {
         if flags & TRIM != 0 {
             self.trim.insert(k);
         }
+        if flags & VISIBILITY != 0 {
+            self.visibility.insert(k);
+        }
         if let Some(r) = legacy {
             self.legacy.insert(k);
             self.legacy_range.insert(k, r);
@@ -510,6 +529,9 @@ impl Graph {
         }
         if old.flags & TRIM != 0 {
             self.trim.remove(&k);
+        }
+        if old.flags & VISIBILITY != 0 {
+            self.visibility.remove(&k);
         }
         if old.flags & LEGACY != 0 {
             self.legacy.remove(&k);

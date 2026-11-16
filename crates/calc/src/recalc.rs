@@ -656,10 +656,12 @@ impl Calc {
             self.graph.reserve(formulas.len());
             for (c, f, _) in formulas {
                 if let Some(e) = f.expr_arc() {
-                    let (dynamic, trim, volatile) = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
+                    let reads = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, si, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node = Node::new(Some(e.clone()), dynamic, may_spill, trim).with_volatile(volatile);
+                    let node = Node::new(Some(e.clone()), reads.dynamic, may_spill, reads.trim)
+                        .with_volatile(reads.volatile)
+                        .with_visibility(reads.hidden_rows);
                     self.graph.insert((si, c), &areas, f.array, node);
                     self.scratch_areas = areas;
                     // The tree had to be parsed anyway; keeping it for the cell saves parsing it
@@ -704,10 +706,11 @@ impl Calc {
             // A formula whose text does not parse has no node at all, as in `rebuild`.
             match formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array))) {
                 Some((e, legacy)) => {
-                    let (dynamic, trim, volatile) = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
+                    let reads = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, to, si, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node = Node::new(Some(e), dynamic, may_spill, trim).with_volatile(volatile);
+                    let node =
+                        Node::new(Some(e), reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows);
                     self.graph.insert((si, at), &areas, legacy, node);
                     self.scratch_areas = areas;
                 }
@@ -813,6 +816,21 @@ impl Calc {
         self.graph.trim.iter().any(|k| k.0 == sheet)
     }
 
+    /// Recalculates the formulas whose value depends on which rows are hidden, and their
+    /// dependents.
+    ///
+    /// A filter, a group collapsed or shown and a row height of zero change no cell's content:
+    /// they only change what the sheet shows. `SUBTOTAL` and `AGGREGATE` read that state, so
+    /// they are the formulas such an edit has to evaluate again — not the workbook.
+    pub fn visibility_changed(&mut self, wb: &mut Workbook) {
+        if self.graph.visibility.is_empty() || wb.calc.mode == CalcMode::Manual {
+            return;
+        }
+        let seeds: Vec<Key> = self.graph.visibility.iter().copied().collect();
+        let dirty = self.dirty_closure(wb, &seeds);
+        self.run(wb, dirty, false, &HashSet::default());
+    }
+
     /// Updates the graph for cells whose content changed and recalculates what depends on them.
     pub fn cells_changed(&mut self, wb: &mut Workbook, changed: &[Key]) {
         self.cells_changed_with_used(wb, changed, &[]);
@@ -834,10 +852,11 @@ impl Calc {
             let parsed = formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array)));
             match parsed {
                 Some((e, legacy)) => {
-                    let (dynamic, trim, volatile) = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
+                    let reads = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, k.0, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node = Node::new(Some(e), dynamic, may_spill, trim).with_volatile(volatile);
+                    let node =
+                        Node::new(Some(e), reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows);
                     self.graph.insert(k, &areas, legacy, node);
                     self.scratch_areas = areas;
                 }

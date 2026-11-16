@@ -156,26 +156,40 @@ fn is_lambda_definition(e: &Expr) -> bool {
     matches!(e, Expr::Call(n, _) if n.eq_ignore_ascii_case("LAMBDA"))
 }
 
-/// Collects the static references of an expression with their sheets resolved; `dynamic` is
-/// set when the formula uses INDIRECT/OFFSET, a volatile function, or a name or table whose
-/// target can move, `trim` when one of its references is read through the used range (see
-/// [`trimmed`]), and `volatile` when it calls a function whose answer changes on its own
-/// (`NOW`, `RAND`, `TODAY`… see [`FnSpec::volatile`](gridcraft_functions::FnSpec)).
+/// What a formula reads besides its areas: the reasons it has to be evaluated again although no
+/// cell it names changed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Precedents {
+    /// It uses INDIRECT/OFFSET, a volatile function, or a name or table whose target can move.
+    pub dynamic: bool,
+    /// One of its references is read through the used range (see [`trimmed`]).
+    pub trim: bool,
+    /// It calls a function whose answer changes on its own (`NOW`, `RAND`, `TODAY`… see
+    /// [`FnSpec::volatile`](gridcraft_functions::FnSpec)).
+    pub volatile: bool,
+    /// It reads `SUBTOTAL` or `AGGREGATE`, whose value leaves out the rows a filter, a collapsed
+    /// group or a row height of zero hides: showing or hiding rows changes it with no cell it names
+    /// changing.
+    pub hidden_rows: bool,
+}
+
+/// Collects the static references of an expression with their sheets resolved, and the
+/// [`Precedents`] flags of what it reads.
 ///
 /// A name that stands for cells is a precedent like a written reference: `Rate` defined as
 /// `Sheet1!$B$1` makes `=Rate*A1` read A1 and B1, so an edit elsewhere does not recalculate it
 /// and an edit of B1 does. `names` keeps the resolved definitions between calls.
-pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, bool, bool, bool) {
+pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, Precedents) {
     let mut out = Vec::new();
-    let (dynamic, trim, volatile) = precedents_into(names, wb, sheet, e, &mut out);
-    (out, dynamic, trim, volatile)
+    let reads = precedents_into(names, wb, sheet, e, &mut out);
+    (out, reads)
 }
 
 /// [`precedents`] appending to a buffer the caller reuses and emptying it first.
 ///
 /// Building the graph asks a million formulas for their precedents; one `Vec` per formula is a
 /// million allocations that say nothing the graph does not already know.
-pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, out: &mut Vec<Area>) -> (bool, bool, bool) {
+pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, out: &mut Vec<Area>) -> Precedents {
     out.clear();
     // One budget for the whole walk, shared by the definitions it follows: past
     // `MAX_PRECEDENT_NODES` the result is conservative (the formula is marked `dynamic`, so it
@@ -187,17 +201,10 @@ pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &E
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(
-    names: &mut NameCache,
-    wb: &Workbook,
-    sheet: usize,
-    e: &Expr,
-    depth: usize,
-    left: &mut usize,
-    out: &mut Vec<Area>,
-) -> (bool, bool, bool) {
+fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize, out: &mut Vec<Area>) -> Precedents {
     let mut dynamic = false;
     let mut trim = false;
+    let mut hidden_rows = false;
     // Whether the formula calls a function that answers differently every time it is evaluated.
     // Recorded here because this walk visits every node anyway — the graph keeps the flag, so a
     // workbook's formulas never have to be walked again to find out (see `recalc_on_open`).
@@ -258,6 +265,10 @@ fn precedents_at(
                 (_, Some(Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Array(_) | Expr::Missing)) => {}
                 _ => dynamic = true,
             },
+            // SUBTOTAL and AGGREGATE leave out the rows a filter hides (and, from 101 up, the ones
+            // hidden by hand or by a collapsed group): the sheet's visibility is one of their
+            // inputs without being a cell they name.
+            Expr::Call(n, _) if n.eq_ignore_ascii_case("SUBTOTAL") || n.eq_ignore_ascii_case("AGGREGATE") => hidden_rows = true,
             Expr::Call(n, args) if n.eq_ignore_ascii_case("GETPIVOTDATA") => {
                 // The answer is one cell of the report, but the report's shape changes when it is
                 // refreshed: the whole written area is the dependency (and the lookup is dynamic
@@ -289,11 +300,12 @@ fn precedents_at(
             }
             Expr::Name(n) => match names.target(wb, sheet, n) {
                 NameTarget::Definition(def, scope) if depth < MAX_NAME_DEPTH && *left > 0 && !is_lambda_definition(&def) => {
-                    let (d, t, v) = precedents_at(names, wb, scope, &def, depth + 1, left, out);
-                    dynamic |= d;
-                    trim |= t;
+                    let inner = precedents_at(names, wb, scope, &def, depth + 1, left, out);
+                    dynamic |= inner.dynamic;
+                    trim |= inner.trim;
                     // `Rate` defined as `NOW()` is as volatile as the call it stands for.
-                    volatile |= v;
+                    volatile |= inner.volatile;
+                    hidden_rows |= inner.hidden_rows;
                 }
                 NameTarget::Table { area, .. } => out.push(area),
                 _ => dynamic = true,
@@ -328,7 +340,7 @@ fn precedents_at(
             _ => {}
         }
     });
-    (dynamic, trim, volatile)
+    Precedents { dynamic, trim, volatile, hidden_rows }
 }
 
 fn is_special(n: &str) -> bool {

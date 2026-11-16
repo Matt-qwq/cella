@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** `rebuild.graph` is a scenario of its own: the dependency-graph build now costs a quarter of what an open's rebuild did, and the harness measures it (§ Scenarios) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** grouping, filtering and row visibility no longer rebuild the graph: the commands that only change what a sheet shows evaluate the formulas that read that state (`SUBTOTAL`, `AGGREGATE`) and nothing else (§ The performance round of 2026-11-16) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 GridCraft is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
@@ -193,6 +193,16 @@ What each batch did, in one line each:
 - **Sorting** — one flat key buffer, custom-list position resolved once per cell, borrowed comparisons,
   whole-row write-back, and a sort no longer treated as a structural edit
   (`crates/engine/src/cmd/data.rs`).
+- **Presentational edits** — grouping, filtering and hiding or showing rows were marked structural: each
+  rebuilt the graph and evaluated every formula (3.2–3.5 s on the reference workbook). They change no
+  cell's content, so they now go through `Calc::visibility_changed`, which evaluates only the formulas
+  whose value reads which rows are hidden — `SUBTOTAL(101–111)` and `AGGREGATE`, recorded as the graph's
+  `VISIBILITY` flag while the graph is built — and their dependents
+  (`crates/engine/src/cmd/mod.rs`, `crates/calc/src/recalc.rs`, `crates/calc/src/recalc/graph.rs`).
+  Measured on the reference workbook: `data.filter` (off), `data.filterBy`, `data.clearFilter`,
+  `data.group` and `data.ungroup` went from 2.9–3.5 s each (2,000,000 formulas evaluated) to
+  0.6 ms–0.5 s with 0–2 formulas evaluated; the 0.4 s left is one `SUBTOTAL(109)` over a million
+  filtered rows, against ~0.3–0.5 s for a single `SUM` over the same range.
 
 The budgets in `xtask/perf-budgets.txt` are recorded at roughly twice these numbers (the file's
 convention) so a real regression fails the gate and ordinary machine noise does not.
@@ -213,6 +223,10 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-16:** grouping, filtering and row visibility are no longer structural edits: 3.2–3.5 s →
+  0.6 ms–5 ms on the reference workbook with no `SUBTOTAL` in it, and ~0.4 s with a `SUBTOTAL(109)`
+  over the filtered million rows (the formula itself, measured against a `SUM` over the same range at
+  ~0.3–0.5 s). 16 commands moved off `structural` (§ The performance round of 2026-11-16).
 - **2026-11-16:** `rebuild.graph` added: the graph build is measured on its own (2M formulas of the
   reference workbook, 1.50 s at 1M rows, from 3.87 s). The graph now keeps its precedent areas in
   one arena, its dependents inline per cell (`Deps`), and walks a formula without allocating
