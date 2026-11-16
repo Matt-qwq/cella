@@ -47,6 +47,9 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("save.xlsx", "save the workbook as xlsx", save_xlsx),
     ("open.xlsx", "open those bytes again (full recalc)", open_xlsx),
     ("rebuild.graph", "rebuild the dependency graph from the workbook (no recalculation)", rebuild_graph),
+    // Last, because it opens a workbook of its own: a CSV has no formulas, and the scenarios above
+    // measure the formulas the others built.
+    ("open.csv", "write the sheet as a CSV file, then read that file back", open_csv),
 ];
 
 struct Bench {
@@ -345,6 +348,19 @@ fn open_xlsx(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
         Ok(bytes)
     })?;
     Ok((format!("opened those {bytes} bytes again"), ms))
+}
+
+fn open_csv(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    // Importing a million-row export is a daily action for the people this app is for, so the
+    // reader is measured on a real file of that size: the export is the setup, the open is the
+    // number.
+    let path = std::env::temp_dir().join(format!("gridcraft-perf-open-{rows}.csv"));
+    let path = path.to_string_lossy().into_owned();
+    let exported = b.exec("file.exportCsv", json!({"path": path}))?;
+    let bytes = exported.get("bytes").and_then(Value::as_u64).ok_or("exportCsv returned no byte count")?;
+    let ((), ms) = timed(|| b.exec("file.open", json!({"path": path})).map(|_| ()))?;
+    let _ = std::fs::remove_file(&path);
+    Ok((format!("opened {bytes} bytes of csv"), ms))
 }
 
 fn rebuild_graph(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
