@@ -220,7 +220,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Record Actions",
             ["Automate", "Scripting Tools"],
             None,
-            "{stop?: bool, name?: script name when stopping}",
+            "{stop?: bool, cancel?: bool (ends the recording without saving it), name?: script name when stopping}",
             has_doc,
             record
         ),
@@ -248,7 +248,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Run Script",
             [],
             None,
-            "{name, trusted?: bool (runs a script from an untrusted workbook this once)} — refuses scripts in a workbook opened from a file until it is trusted, and steps that reach outside the workbook (file.*, link.*, any `path` param)",
+            "{name, trusted?: bool (runs a script from an untrusted workbook this once)} — one undo step: the first failing step stops the run, names it and rolls the whole run back; a workbook opened from a file runs nothing until it is trusted, a step that reads a file needs that trust, and file.*, link.*, undo/redo and another script are refused",
             has_doc,
             run_script
         ),
@@ -1137,17 +1137,65 @@ fn queries(s: &mut Session, _: &Json) -> Result<Json> {
     ))
 }
 
-fn record(s: &mut Session, p: &Json) -> Result<Json> {
-    if bool_param(p, "stop").unwrap_or(false) || s.recording.is_some() {
-        let Some(start) = s.recording.take() else { return Ok(json!({"recording": false})) };
-        let cmds: Vec<Json> =
-            s.journal.iter().skip(start).filter(|(id, _)| !id.starts_with("automate.")).map(|(id, p)| json!({"command": id, "params": p})).collect();
-        let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| format!("Script {}", start));
-        s.execute("automate.newScript", json!({"name": name, "commands": cmds}))?;
-        return Ok(json!({"recording": false, "saved": name, "steps": cmds.len()}));
+/// Record Actions / `macro.record`: starts collecting the commands that run into a script, or
+/// stops and saves what was collected as a script in the workbook (an ordinary undoable edit).
+/// The recorder itself (its filter, its sheet and selection steps and its caps) is
+/// [`crate::macros::recorder`]; what it refuses is counted in `skipped` and what it cut at its cap
+/// in `dropped`.
+pub(crate) fn record(s: &mut Session, p: &Json) -> Result<Json> {
+    for k in ["stop", "cancel"] {
+        if p.get(k).is_some_and(|v| !v.is_null() && !v.is_boolean()) {
+            return Err(bad("automate.recordActions", format!("`{k}` must be true or false")));
+        }
     }
-    s.recording = Some(s.journal.len());
+    // `cancel` ends a recording without saving it: the way out of a recording that cannot be saved
+    // (its workbook closed, the script list full).
+    if bool_param(p, "cancel").unwrap_or(false) {
+        let was = s.stop_recording().is_some();
+        return Ok(json!({"recording": false, "cancelled": was}));
+    }
+    if bool_param(p, "stop").unwrap_or(false) || s.is_recording() {
+        let Some(rec) = s.stop_recording() else { return Ok(json!({"recording": false})) };
+        let (skipped, dropped) = (rec.skipped(), rec.dropped());
+        // What the step list could not hold (a recording longer than a script) is counted with
+        // what the buffer dropped.
+        let (steps, cut) = rec.to_steps();
+        let dropped = dropped.saturating_add(cut);
+        let n = steps.len();
+        let name = match str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => n.to_string(),
+            None => {
+                let d = s.doc()?;
+                next_script_name(&d.wb)
+            }
+        };
+        // Saved into the workbook the recording started in, whichever one is in front now.
+        let at = s.documents().iter().position(|d| d.uid == rec.doc());
+        let Some(at) = at else {
+            return Err(EngineError::Other("The workbook where the recording started was closed, so it was not saved.".into()));
+        };
+        s.set_active(at);
+        let active = s.active_index();
+        let saved = s.execute("automate.newScript", json!({"name": name, "commands": steps}));
+        s.set_active(active);
+        saved?;
+        return Ok(json!({"recording": false, "saved": name, "steps": n, "skipped": skipped, "dropped": dropped}));
+    }
+    if !s.start_recording() {
+        return Err(EngineError::NoDocument);
+    }
     Ok(json!({"recording": true}))
+}
+
+/// The first free `Script N`, so a recording without a name never replaces a script.
+fn next_script_name(wb: &Workbook) -> String {
+    for n in 1..=10_000u32 {
+        let candidate = format!("Script {n}");
+        if script_steps_of(wb, &candidate).is_none() {
+            return candidate;
+        }
+    }
+    "Script".to_string()
 }
 
 fn new_script(s: &mut Session, p: &Json) -> Result<Json> {
@@ -1164,7 +1212,7 @@ fn new_script(s: &mut Session, p: &Json) -> Result<Json> {
     })
 }
 
-fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
+pub(crate) fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
     let d = s.doc()?;
     let (wb, trusted) = (&d.wb, d.scripts_trusted);
     let all = stash_get(wb, SCRIPTS_KEY);
@@ -1185,27 +1233,6 @@ pub(crate) fn has_scripts(wb: &Workbook) -> bool {
     stash_map(wb, SCRIPTS_KEY).as_object().is_some_and(|o| !o.is_empty())
 }
 
-/// Why a script step is refused, whatever the workbook's trust: scripts stay inside the
-/// workbook. Anything that reads or writes files (`file.*`, or any `path` parameter: Get Data,
-/// From Text/CSV, Insert Picture) or leaves the app (`link.*` opens URLs) is the caller's to run
-/// directly, not a stored script's. (Nested `automate.*` steps are skipped.) This check goes by
-/// command id and parameter name, so it is only the up-front refusal: the steps also run inside
-/// an [`crate::io::ScriptSandbox`] (file access refused whatever the parameter is called) and
-/// [`run_script`] drops any `OpenUrl` request a step raises.
-pub(crate) fn denied_script_step_shared(id: &str, params: &Json) -> Option<String> {
-    denied_script_step(id, params)
-}
-
-fn denied_script_step(id: &str, params: &Json) -> Option<String> {
-    if id.starts_with("file.") || id.starts_with("link.") {
-        return Some(format!("scripts can't run `{id}`: it reaches outside the workbook"));
-    }
-    if params.get("path").is_some() {
-        return Some(format!("scripts can't pass a file `path` to `{id}`"));
-    }
-    None
-}
-
 fn trust_scripts(s: &mut Session, p: &Json) -> Result<Json> {
     // Only a missing `trusted` means "trust"; `"false"`, `0` or `null` are mistakes, not consent.
     let trusted = match p.get("trusted") {
@@ -1217,52 +1244,20 @@ fn trust_scripts(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"trusted": trusted}))
 }
 
-/// Runs a stored script. Scripts in a workbook opened from a file run only once the workbook is
-/// trusted for this session (`automate.trustScripts`, or `trusted: true` on this call); steps that
-/// reach outside the workbook ([`denied_script_step`]) are refused before any step runs.
-fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
-    let name = str_param(p, "name").ok_or_else(|| bad("automate.runScript", "missing `name`"))?;
-    let d = s.doc()?;
-    let all = stash_get(&d.wb, SCRIPTS_KEY);
-    let steps = all.get(name).and_then(Json::as_array).cloned().ok_or_else(|| bad("automate.runScript", "no such script"))?;
-    if !d.scripts_trusted && !bool_param(p, "trusted").unwrap_or(false) {
-        return Err(bad(
-            "automate.runScript",
-            "scripts in this workbook came from a file and are disabled; trust the workbook first (Trust Scripts in View › Macros, Alt+F8; `automate.trustScripts`; or `trusted: true`)",
-        ));
-    }
-    let steps: Vec<Json> = steps.into_iter().take(100_000).collect();
-    for st in &steps {
-        let id = st["command"].as_str().unwrap_or("");
-        if let Some(why) = denied_script_step(id, &st["params"]) {
-            return Err(bad("automate.runScript", why));
-        }
-    }
-    let _sandbox = crate::io::ScriptSandbox::enter();
-    let mut n = 0;
-    for st in &steps {
-        let id = st["command"].as_str().unwrap_or("");
-        if id.starts_with("automate.") {
-            continue;
-        }
-        let before = s.ui_requests.len();
-        let ran = s.execute(id, st["params"].clone());
-        // A step that asks the host to open a URL leaves the app: drop the request and stop.
-        if s.ui_requests.get(before..).is_some_and(|new| new.iter().any(|r| matches!(r, crate::UiRequest::OpenUrl(_)))) {
-            let mut i = 0;
-            s.ui_requests.retain(|r| {
-                i += 1;
-                i <= before || !matches!(r, crate::UiRequest::OpenUrl(_))
-            });
-            return Err(bad("automate.runScript", format!("scripts can't open links (`{id}`)")));
-        }
-        ran?;
-        n += 1;
-    }
-    Ok(json!({"ran": n}))
+/// Why a step is refused whatever the workbook's trust: [`crate::macros::policy`]'s deny and
+/// file rules, so an extension (which shares them) can't hand a step a file either.
+pub(crate) fn denied_script_step_shared(id: &str, params: &Json) -> Option<String> {
+    crate::macros::policy::refused_step(id, params)
 }
 
-fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
+/// Runs a stored script: `automate.runScript`, and `macro.run` on the same runner. The policy, the
+/// undo group, the step budget and the sandbox are [`crate::macros::run`]'s; this is the id the
+/// ribbon, the dialogs and MCP have always called.
+fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
+    crate::macros::run::run(s, p)
+}
+
+pub(crate) fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("automate.deleteScript", "missing `name`"))?.to_string();
     edit(s, |cx| {
         let mut all = stash_map(&cx.wb, SCRIPTS_KEY);
@@ -1277,15 +1272,15 @@ fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
 /// The most steps one script may hold, and the most `automate.scriptSteps` lists: a script from
 /// a file (or a long recording) is input like any other, and an editor showing 10 000 rows is not
 /// one anyone can use.
-const MAX_SCRIPT_STEPS: usize = 1_000;
+pub(crate) const MAX_SCRIPT_STEPS: usize = 1_000;
 /// The largest JSON one step's `params` may serialize to, and the largest a single script's steps
 /// may be. The stash is one defined name inside the workbook, not a place for a megabyte blob.
-const MAX_STEP_PARAMS_BYTES: usize = 64 * 1024;
-const MAX_SCRIPT_STEPS_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_STEP_PARAMS_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_SCRIPT_STEPS_BYTES: usize = 1024 * 1024;
 
 /// The steps script `name` holds, in order. `None` when the workbook has no script of that name;
 /// a stored value that isn't an array holds no steps (as `automate.allScripts` counts it).
-fn script_steps_of(wb: &Workbook, name: &str) -> Option<Vec<Json>> {
+pub(crate) fn script_steps_of(wb: &Workbook, name: &str) -> Option<Vec<Json>> {
     stash_map(wb, SCRIPTS_KEY).get(name).map(|v| v.as_array().cloned().unwrap_or_default())
 }
 
@@ -1402,7 +1397,7 @@ fn append_step(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"name": name, "index": n - 1, "steps": n}))
 }
 
-fn rename_script(s: &mut Session, p: &Json) -> Result<Json> {
+pub(crate) fn rename_script(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("automate.renameScript", "missing `name`"))?.to_string();
     let to = str_param(p, "to").ok_or_else(|| bad("automate.renameScript", "missing `to`"))?.trim().to_string();
     if to.is_empty() {

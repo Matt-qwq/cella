@@ -16,6 +16,7 @@ pub mod display;
 pub mod fill;
 pub mod io;
 pub mod links;
+pub mod macros;
 pub mod outline;
 pub mod paper;
 pub mod pivot;
@@ -396,8 +397,19 @@ pub struct Session {
     pub last_find: Option<Json>,
     /// View › Show › Ruler is off (rulers in Page Layout view; an application option).
     pub hide_ruler: bool,
-    /// Journal position where action recording started.
-    pub recording: Option<usize>,
+    /// The steps a recording is collecting ([`macros::recorder`]). While it is set, every journaled
+    /// command that runs at the top level is offered to it, with the document, sheet and selection
+    /// it ran in.
+    recorder: Option<macros::recorder::Recorder>,
+    /// How many undo groups have ended or been rolled back, ever: a command that closed one of
+    /// its own ([`Session::grouped`]) already made the step (or put the workbook back), so
+    /// it doesn't get a second one.
+    groups_closed: u64,
+    /// How many scripts are running ([`macros::run`]): a script that runs another script is
+    /// refused instead of recursing.
+    script_depth: u32,
+    /// The script a `macro.debug` session is stepping through, while one is open.
+    debug: Option<macros::debug::Debugger>,
     /// The window the user last worked in (see DocWindow); `None` before the first document and
     /// after the document it belonged to closed. Read it through Session::active_window, which
     /// falls back to the active document's first window instead of trusting a stale id.
@@ -623,12 +635,78 @@ impl Session {
             self.journal.drain(..n);
             self.journal_sizes.drain(..n);
             self.journal_bytes = kept;
-            self.recording = self.recording.map(|r| r.saturating_sub(n));
         }
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {
         command_specs().iter().map(|c| c.info(self)).collect()
+    }
+
+    /// Whether a recording is collecting the commands that run.
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Starts collecting the commands that run into a recording of the active document; false
+    /// when no workbook is open.
+    pub fn start_recording(&mut self) -> bool {
+        self.recorder = self.active().map(macros::recorder::Recorder::new);
+        self.recorder.is_some()
+    }
+
+    /// Ends the recording and hands back what it collected (nothing when none was on).
+    pub fn stop_recording(&mut self) -> Option<macros::recorder::Recorder> {
+        self.recorder.take()
+    }
+
+    /// Offers a command that just ran to the recorder, with the document, sheet and selection it
+    /// ran in — the state before it ran, which is what a replay has to reproduce.
+    fn collect_recording(&mut self, before: &Option<(u64, Arc<Workbook>, Selection)>, id: &str, params: &Json) {
+        let Some(rec) = self.recorder.as_mut() else { return };
+        let Some((uid, wb, selection)) = before else { return };
+        rec.record(macros::recorder::RecordedStep {
+            doc: *uid,
+            sheet: wb.active_sheet,
+            sheet_name: wb.active().map(|sh| sh.name.clone()).unwrap_or_default(),
+            selection: selection.clone(),
+            id: id.to_string(),
+            params: cmd::journal_params(params),
+        });
+    }
+
+    /// Marks the start of a script run; false when one is already running, which is how a script
+    /// that runs a script is refused instead of recursed.
+    pub fn enter_script(&mut self) -> bool {
+        if self.script_depth > 0 {
+            return false;
+        }
+        self.script_depth = self.script_depth.saturating_add(1);
+        true
+    }
+
+    /// Ends a script run ([Session::enter_script]).
+    pub fn leave_script(&mut self) {
+        self.script_depth = self.script_depth.saturating_sub(1);
+    }
+
+    /// How many scripts are running (1 while one runs, 0 otherwise).
+    pub fn script_depth(&self) -> u32 {
+        self.script_depth
+    }
+
+    /// The script a `macro.debug` session is stepping through, while one is open.
+    pub fn debug(&self) -> Option<&macros::debug::Debugger> {
+        self.debug.as_ref()
+    }
+
+    /// Puts a `macro.debug` session in place.
+    pub fn set_debug(&mut self, d: macros::debug::Debugger) {
+        self.debug = Some(d);
+    }
+
+    /// Takes the `macro.debug` session out (ending or continuing it is the caller's to do).
+    pub fn take_debug(&mut self) -> Option<macros::debug::Debugger> {
+        self.debug.take()
     }
 
     /// Runs a command by id. Undoable commands record a history step when the workbook changed.
@@ -640,6 +718,7 @@ impl Session {
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
         let first_group = self.next_group;
+        let closed_before = self.groups_closed;
         let outer = self.command_depth == 0;
         self.command_depth = self.command_depth.saturating_add(1);
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
@@ -653,6 +732,9 @@ impl Session {
                 // A command that panicked leaves none of the undo groups it opened behind: the
                 // restore below takes back what it changed.
                 self.groups.retain(|g| g.id < first_group);
+                // A script that panicked is no longer running: the depth would refuse every later
+                // run if it stayed.
+                self.script_depth = 0;
                 // Restore the workbook as it was.
                 if let Some((uid, wb, sel)) = &before
                     && let Some(d) = self.docs.iter_mut().find(|d| d.uid == *uid)
@@ -671,10 +753,14 @@ impl Session {
         }
         if outer && spec.journal && result.is_ok() {
             self.push_journal(id, cmd::journal_params(&params));
+            self.collect_recording(&before, id, &params);
         }
         // Inside an undo group the group owns the step: the commands running there add none of
         // their own (the group makes one when it ends), and the redo history waits for it too.
-        let grouped = before.as_ref().is_some_and(|(uid, ..)| self.in_group(*uid));
+        // A command that opened and closed a group of its own (`Session::grouped`, a script run,
+        // a step of a debug session) already made the step, or put the workbook back: it doesn't
+        // get a second one here.
+        let grouped = before.as_ref().is_some_and(|(uid, ..)| self.in_group(*uid)) || self.groups_closed != closed_before;
         if outer
             && spec.undoable
             && let Some((uid, wb, sel)) = before
@@ -761,6 +847,7 @@ impl Session {
             d.redo.clear();
             d.revision += 1;
         }
+        self.groups_closed = self.groups_closed.saturating_add(1);
         Ok(changed)
     }
 
@@ -777,6 +864,7 @@ impl Session {
         d.undo.truncate(g.start);
         d.redo = g.redo;
         d.revision += 1;
+        self.groups_closed = self.groups_closed.saturating_add(1);
         Ok(())
     }
 
