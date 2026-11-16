@@ -15,6 +15,7 @@ pub mod connect;
 pub mod display;
 pub mod fill;
 pub mod io;
+pub mod json_format;
 pub mod links;
 pub mod macros;
 pub mod outline;

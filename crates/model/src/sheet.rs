@@ -197,6 +197,11 @@ pub struct Sheet {
     /// its anchor is unused. Older JSON without the field is a worksheet.
     #[serde(default)]
     pub kind: SheetKind,
+    /// Fields of this sheet's object in a JSON file that this version does not model (a newer
+    /// GridCraft's, or one a later build dropped). Serde collects them on a read and writes them
+    /// back on a save, so an older build never destroys a newer file's data. Not in XLSX.
+    #[serde(flatten)]
+    pub json_kept: crate::JsonKept,
 }
 
 /// Default width of a column and height of a row (pixels at 96 dpi) for the default font.
@@ -265,6 +270,7 @@ impl Sheet {
             view: SheetViewMode::Normal,
             preserved: None,
             kind: SheetKind::Worksheet,
+            json_kept: crate::JsonKept::default(),
         }
     }
 

@@ -243,6 +243,17 @@ fn known_functions() -> gridcraft_xlsx::KnownFunctions {
 /// [`should_page`] and [`spill_place`]); a workbook opened from bytes has no folder, so its pages
 /// go to the temp directory.
 pub fn open_from_path(name: &str, path: &str, password: Option<&str>) -> Result<Option<(Workbook, Vec<String>)>> {
+    // A JSON workbook is read into memory whole, so one over the read cap is refused from its size
+    // rather than after the read (a malicious 8 GB `.json` must not cost 8 GB of memory first).
+    if password.is_none() && matches!(FileKind::from_path(name), Some(FileKind::Json)) {
+        let max = crate::json_format::Limits::default().max_bytes;
+        // A size the file system will not give is not a refusal: the read itself caps it.
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if size > max {
+            return Err(crate::json_format::too_large(size, max));
+        }
+        return Ok(None);
+    }
     if password.is_some() || !matches!(FileKind::from_path(name), Some(FileKind::Xlsx)) {
         return Ok(None);
     }
@@ -320,15 +331,21 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
     }
     match kind {
         Some(FileKind::Json) => {
-            let mut wb: Workbook = serde_json::from_slice(bytes).map_err(|e| EngineError::Other(format!("not a GridCraft JSON workbook: {e}")))?;
+            // The envelope (version, kept fields) is `crate::json_format`'s business; what follows
+            // is the model clean-up every open of a JSON workbook needs.
+            let (mut wb, mut warnings) = crate::json_format::read(bytes)?;
             wb.styles.rebuild_index();
             if wb.sheets.is_empty() {
-                wb = Workbook::new();
+                // A file with no sheets is a broken workbook, but its unknown fields are still the
+                // only copy of whatever a newer build wrote there.
+                let mut fresh = Workbook::new();
+                fresh.json_kept = std::mem::take(&mut wb.json_kept);
+                fresh.json_envelope = std::mem::take(&mut wb.json_envelope);
+                wb = fresh;
             }
             // The file's band placement and cell count are derived state: rebuild them from the
             // cells themselves, dropping what is outside the sheet grid (#1008).
             let dropped: usize = wb.sheets.iter_mut().map(|sh| std::sync::Arc::make_mut(sh).cells.rebuild()).sum();
-            let mut warnings = Vec::new();
             if dropped > 0 {
                 warnings.push(format!("{name}: {dropped} cells outside the 1,048,576 × 16,384 grid were dropped"));
             }
@@ -452,7 +469,7 @@ fn encode(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8>> {
         // A workbook read from CSV keeps the separator it was read with (a `;` file stays `;`).
         FileKind::Csv => wb.sheet(sheet).map(|sh| csv(wb, sh, wb.csv_delimiter.unwrap_or(b','))).transpose().map(Option::unwrap_or_default),
         FileKind::Tsv => wb.sheet(sheet).map(|sh| csv(wb, sh, b'\t')).transpose().map(Option::unwrap_or_default),
-        FileKind::Json => serde_json::to_vec_pretty(wb).map_err(|e| EngineError::Other(e.to_string())),
+        FileKind::Json => crate::json_format::write(wb),
         FileKind::Html => to_html(wb, sheet).map(String::into_bytes),
         FileKind::Parquet => match wb.sheet(sheet) {
             Some(sh) => gridcraft_parquet::export_sheet(sh, gridcraft_parquet::Options::default())
