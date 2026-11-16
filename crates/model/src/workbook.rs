@@ -313,16 +313,18 @@ impl Workbook {
         }
         Ok(())
     }
-    /// The prefix of GridCraft's own hidden names, which store view state (the Watch Window
-    /// list, custom views, scripts, scenarios) rather than workbook data.
-    const PRIVATE_NAME_PREFIX: &str = "_sc_";
+    /// The prefixes of GridCraft's own hidden names, which store view state (the Watch Window
+    /// list, custom views, scripts, scenarios, extensions) rather than workbook data: `_gc_` for
+    /// the chunked store (`_gc_<key>_<n>`, see the engine's `cmd::stash`) and `_sc_` for the one
+    /// name older files keep the same data in.
+    const PRIVATE_NAME_PREFIXES: [&str; 2] = ["_gc_", "_sc_"];
 
     /// Whether `name` is one of GridCraft's private state names. Formulas never see them: that
     /// state is not cell content and survives undo (the Watch Window list isn't an edit), so a
     /// formula reading it could keep a stale value when the name came or went (found by the
-    /// command-sequence fuzzer). The prefix is reserved for the app's own names.
+    /// command-sequence fuzzer). The prefixes are reserved for the app's own names.
     pub fn is_private_name(name: &str) -> bool {
-        name.get(..Self::PRIVATE_NAME_PREFIX.len()).is_some_and(|p| p.eq_ignore_ascii_case(Self::PRIVATE_NAME_PREFIX))
+        Self::PRIVATE_NAME_PREFIXES.iter().any(|p| name.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)))
     }
 
     /// Finds a defined name visible from `sheet`: sheet scope first, then workbook scope.
@@ -465,13 +467,21 @@ mod tests {
         let defined = |name: &str| DefinedName { name: name.into(), scope: None, formula: "\"[]\"".into(), comment: String::new(), hidden: true };
         wb.names.push(defined("_sc_watch"));
         wb.names.push(defined("_SC_SCRIPTS"));
+        wb.names.push(defined("_gc_scripts_0"));
+        wb.names.push(defined("_GC_WATCH_3"));
         assert!(wb.name("_sc_watch", 0).is_none());
         assert!(wb.name("_SC_WATCH", 0).is_none());
         assert!(wb.name("_sc_scripts", 0).is_none());
+        // The chunked store's names are private too: a formula must never read a chunk.
+        assert!(wb.name("_gc_scripts_0", 0).is_none());
+        assert!(wb.name("_GC_SCRIPTS_0", 0).is_none());
+        assert!(wb.name("_gc_watch_3", 0).is_none());
         wb.names.push(DefinedName { name: "Rate".into(), scope: None, formula: "0.2".into(), comment: String::new(), hidden: false });
         assert!(wb.name("rate", 0).is_some());
         assert!(Workbook::is_private_name("_sc_"));
+        assert!(Workbook::is_private_name("_gc_"));
         assert!(!Workbook::is_private_name("_sc"));
+        assert!(!Workbook::is_private_name("_gc"));
         assert!(!Workbook::is_private_name("Score"));
     }
 

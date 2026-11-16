@@ -63,7 +63,7 @@ fn content(s: &Session) -> Vec<String> {
             out.push(format!("{} table {} {}", sh.name, t.name, t.range.a1()));
         }
     }
-    for n in wb.names.iter().filter(|n| !n.name.starts_with("_sc_")) {
+    for n in wb.names.iter().filter(|n| gridcraft_engine::cmd::stash::item_key(&n.name).is_none()) {
         out.push(format!("name {} {}", n.name, n.formula));
     }
     out

@@ -16,9 +16,6 @@ use std::sync::Arc;
 use gridcraft_core::CellRef;
 use gridcraft_engine::model::{Sheet, Workbook};
 
-/// The hidden defined name `formulas.watchWindow` keeps its list in.
-pub const WATCH_NAME: &str = "_sc_watch";
-
 pub fn has_content(c: &gridcraft_engine::model::Cell) -> bool {
     c.formula.is_some() || !c.value.is_empty()
 }
@@ -51,8 +48,8 @@ pub fn content_diff(a: &Workbook, b: &Workbook) -> Option<String> {
 }
 
 /// The Watch Window list, which is workbook state but not an edit (undo keeps it).
-pub fn watch_list(wb: &Workbook) -> Option<&str> {
-    wb.names.iter().find(|n| n.name == WATCH_NAME).map(|n| n.formula.as_str())
+pub fn watch_list(wb: &Workbook) -> Option<String> {
+    gridcraft_engine::cmd::stash::get(wb, "watch")
 }
 
 /// The workbook with view state (active sheet, scroll, active cell) and the Watch Window list
@@ -60,7 +57,7 @@ pub fn watch_list(wb: &Workbook) -> Option<&str> {
 pub fn canonical(wb: &Workbook) -> Workbook {
     let mut wb = wb.clone();
     wb.active_sheet = 0;
-    wb.names.retain(|n| n.name != WATCH_NAME);
+    gridcraft_engine::cmd::stash::remove(&mut wb, "watch");
     for sh in wb.sheets.iter_mut() {
         let sh = Arc::make_mut(sh);
         sh.view_active = CellRef::default();

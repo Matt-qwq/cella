@@ -14,8 +14,10 @@ use serde_json::{Value as Json, json};
 
 use super::*;
 
-/// Where a workbook's extensions live: a hidden name holding JSON, like scripts and custom views.
-const EXTENSIONS_NAME: &str = "_sc_extensions";
+/// Where a workbook's extensions live: the stash key of the hidden names holding their JSON, like
+/// scripts and custom views (`_gc_extensions_<n>`, or `_sc_extensions` in an older file; see
+/// [`super::stash`]).
+const EXTENSIONS_KEY: &str = "extensions";
 
 /// Steps one extension may hold: a menu entry is a shortcut, not a program.
 const MAX_STEPS: usize = 200;
@@ -58,12 +60,12 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
 }
 
 fn extensions(wb: &gridcraft_model::Workbook) -> Json {
-    let v = super::extra::stash_get_shared(wb, EXTENSIONS_NAME);
+    let v = super::extra::stash_get_shared(wb, EXTENSIONS_KEY);
     if v.is_object() { v } else { json!({}) }
 }
 
-fn set_extensions(cx: &mut Ctx<'_>, v: &Json) {
-    super::extra::stash_set_shared(&mut cx.wb, EXTENSIONS_NAME, v);
+fn set_extensions(cx: &mut Ctx<'_>, v: &Json) -> Result<()> {
+    super::extra::stash_set_shared(&mut cx.wb, EXTENSIONS_KEY, v)
 }
 
 /// Whether a workbook carries any extension: part of the trust default for a file that arrived
@@ -100,7 +102,7 @@ fn add(s: &mut Session, p: &Json) -> Result<Json> {
             o.insert(name.clone(), json!({"description": description, "commands": commands}));
         }
         let v = all.clone();
-        set_extensions(cx, &v);
+        set_extensions(cx, &v)?;
         Ok(Json::Null)
     })?;
     Ok(json!({"name": name}))
@@ -115,7 +117,7 @@ fn remove(s: &mut Session, p: &Json) -> Result<Json> {
             return Err(bad("ext.remove", format!("there is no extension named \"{name}\"")));
         }
         let v = all.clone();
-        set_extensions(cx, &v);
+        set_extensions(cx, &v)?;
         Ok(Json::Null)
     })?;
     Ok(json!({"removed": name}))
