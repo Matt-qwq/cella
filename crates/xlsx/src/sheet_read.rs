@@ -15,7 +15,7 @@ use gridcraft_model::{
     LineInfo, NoteBox, NoteCorner, Orientation, PageOrder, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn,
     TotalsFn, Validation, ValidationKind, XmlColumnPr,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 mod parts;
@@ -367,21 +367,47 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
     heal_filter_hidden(&mut sheet);
     Ok((sheet, legacy))
 }
-/// A file stores a row its filter hides as `hidden="1"` on the row. Read that way, a million-row
-/// filter becomes a million line infos, which every scroll and every frame then walks; the sheet
-/// keeps them in its filter bitmap instead and gives them back when the filter is cleared.
+/// A file stores a row its filter hides as `hidden="1"` on the row, and the row carries its other
+/// attributes (a height, a whole-row style, an outline level) in the same element — the format has
+/// one place for all of them. The sheet keeps the hidden bit somewhere else: in its filter
+/// bitmap, which answers "hidden?" and `row_top` in constant time and gives the rows back when the
+/// filter is cleared. Read the way the file is written, a million-row filter becomes a million line
+/// infos, which every scroll and every frame then walked (see `FilterHidden`).
+///
+/// So the hidden bit of every row inside a filter's range moves to the bitmap and everything else
+/// about that row stays in the line map — a row carrying the same meaning in both places is what
+/// made a filtered row with a height come back from a file as a hand-hidden one that Clear Filter
+/// could not show (found by the command-sequence fuzzer: `data.filterBy` over a sheet whose header
+/// row is tall, then a sort). A row hidden by hand *outside* every filter range is nobody's but the
+/// line map's, and stays there.
 fn heal_filter_hidden(sheet: &mut Sheet) {
     let ranges = sheet.filter_row_ranges();
-    let by_a_filter = |row: u32| ranges.iter().any(|(a, b)| row >= *a && row <= *b);
-    let only_hidden = LineInfo { hidden: true, ..Default::default() };
-    let moved: Vec<u32> = sheet.rows.iter().filter(|(r, i)| **i == only_hidden && by_a_filter(*r)).map(|(r, _)| r).collect();
-    if moved.is_empty() {
+    if ranges.is_empty() {
         return;
     }
-    for row in &moved {
-        sheet.rows.remove(row);
+    let by_a_filter = |row: u32| ranges.iter().any(|(a, b)| row >= *a && row <= *b);
+    let hidden: Vec<u32> = sheet.rows.iter().filter(|(row, info)| info.hidden && by_a_filter(*row)).map(|(row, _)| row).collect();
+    if hidden.is_empty() {
+        return;
     }
-    sheet.filter_hidden = FilterHidden::build(moved, BTreeMap::new());
+    for row in &hidden {
+        // Only the bit moves: the height, style and outline level stay where the writer looks for
+        // them. An entry with nothing left but the hidden bit is the bitmap's alone, as before.
+        let emptied = match sheet.rows.get_mut(row) {
+            Some(info) => {
+                info.hidden = false;
+                *info == LineInfo::default()
+            }
+            None => false,
+        };
+        if emptied {
+            sheet.rows.remove(row);
+        }
+    }
+    let mut rows: Vec<u32> = sheet.filter_hidden.rows().collect();
+    rows.extend(hidden);
+    let saved = sheet.filter_hidden.take_saved();
+    sheet.filter_hidden = FilterHidden::build(rows, saved);
 }
 /// A protection password hash: the iterated attributes (`algorithmName`, `hashValue`,
 /// `saltValue`, `spinCount`) or the legacy 16-bit `password`, each name preceded by `prefix`

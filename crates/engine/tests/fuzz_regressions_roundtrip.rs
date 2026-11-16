@@ -1,5 +1,5 @@
-//! Regressions from the 400-seed command-sequence soak's `[xlsx roundtrip]` failures: two
-//! save-and-reload defects found at `c9be5800` (seeds 6, 34 and 60).
+//! Regressions from the 400-seed command-sequence soak's `[xlsx roundtrip]` failures: three
+//! save-and-reload defects (seeds 6, 30, 34 and 60).
 //!
 //! Each test builds the state by hand, drives it through `io::save_bytes` and `io::open_bytes`
 //! (recalculating like opening a file does, as the fuzz harness's `roundtrip_diff` does) and
@@ -9,7 +9,10 @@
 //! - a cell under a legacy (Ctrl+Shift+Enter) array whose range is too big for the evaluator to
 //!   lay out: the array still covers it, so reading the file back drops its cached value;
 //! - a column width past the format's maximum or a sheet default width of zero, both of which the
-//!   writer clamps or the reader ignores, so the column map came back different.
+//!   writer clamps or the reader ignores, so the column map came back different;
+//! - a row a filter hides that also carries a height: the file has one place for both, the sheet
+//!   two (the filter bitmap and the line map), and the reader moved the hidden bit into the bitmap
+//!   only when the row had nothing else — so the reloaded sheet hid that row by hand.
 
 use gridcraft_core::CellRef;
 use gridcraft_engine::Session;
@@ -140,4 +143,46 @@ fn a_sheet_default_width_of_zero_keeps_its_columns_through_a_save() {
     // The styled line still has no width of its own, and the hidden one is still hidden.
     assert_eq!(sheet.cols.get(&0).map(|i| i.size), Some(None), "A has no width");
     assert_eq!(sheet.cols.get(&4).map(|i| (i.size, i.hidden)), Some((None, true)), "E is hidden, not sized");
+}
+
+/// The row properties a save and reload must give back, styles by content (the file renumbers
+/// them), the way kept_cols does for columns.
+#[allow(clippy::type_complexity)]
+fn kept_rows(sheet: &Sheet, styles: &gridcraft_engine::model::StyleTable) -> Vec<(u32, bool, u8, bool, bool, Option<Style>, Option<i64>)> {
+    sheet
+        .rows
+        .iter()
+        .map(|(r, info)| {
+            let style = info.style.filter(|s| *s != StyleId::DEFAULT).map(|s| styles.get(s).clone());
+            (r, info.hidden, info.outline.min(7), info.collapsed, info.custom, style, info.size.map(|px| px.round() as i64))
+        })
+        .collect()
+}
+
+#[test]
+fn a_filter_hidden_row_that_also_has_a_height_comes_back_as_the_filters() {
+    // Seed 30, reduced: the sales sample, a bigger font, a top-1 filter on Total — which hides rows
+    // 4..9 — and a sort of I1:M7. Row 6 is the sample's tall header, so one of the rows the filter
+    // hides also carries a height. The file stores that row as a single hidden="1" element with the
+    // height on it; the reader moved a row into the filter bitmap only when its line info was
+    // nothing but hidden, so row 6 came back as a hand-hidden line-map row and the bitmap lost it:
+    // six rows hidden before the save, five after, and Clear Filter would have left row 6 hidden
+    // for good.
+    let mut s = session();
+    s.execute("file.new", json!({"sample": "sales"})).expect("the sales sample");
+    s.execute("home.increaseFontSize", json!({})).expect("a bigger font");
+    s.execute("data.filterBy", json!({"column": "I", "top": {"count": 1}})).expect("a top-1 filter on Total");
+    s.execute("data.sort", json!({"header": false, "keys": [{"column": "B", "order": "desc"}], "orientation": "rows", "range": "I1:M7"}))
+        .expect("a sort inside the range");
+
+    let before = workbook(&s);
+    let sheet = before.active().expect("sheet");
+    assert_eq!(sheet.filter_hidden.rows().collect::<Vec<u32>>(), (4..=9).collect::<Vec<u32>>(), "the filter hides rows 4..9");
+    assert_eq!(sheet.rows.get(&6).map(|i| (i.hidden, i.size)), Some((false, Some(22.0))), "and row 6 is the tall header row too");
+
+    let after = reload(&before);
+    let sheet = after.active().expect("sheet");
+    assert_eq!(sheet.filter_hidden.rows().collect::<Vec<u32>>(), (4..=9).collect::<Vec<u32>>(), "the same rows are the filter's after the reload");
+    assert!(sheet.rows.iter().all(|(r, info)| !info.hidden || !(4..=9).contains(&r)), "no filtered row came back as a hand-hidden one");
+    assert_eq!(kept_rows(before.active().expect("sheet"), &before.styles), kept_rows(sheet, &after.styles), "rows differ after reload");
 }

@@ -682,6 +682,10 @@ pub(crate) fn default_rows() -> LineMap {
 /// A row the filter hides keeps no line info of its own: whatever it had (a height, a whole-row
 /// style, a hand-hidden flag) is parked in saved and put back when the filter lets it go. That
 /// keeps row_top exact — a hidden row contributes nothing but the default height it loses.
+///
+/// The bit is the only thing a filter owns, though: a row read from a file that carries both
+/// `hidden="1"` and a height on one element keeps the height in the line map with the bit here
+/// (the reader moves the hidden bit and nothing else, since the format has one place for both).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "FilterHiddenRepr", into = "FilterHiddenRepr")]
 pub struct FilterHidden {

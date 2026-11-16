@@ -115,7 +115,11 @@ fn sample() -> Workbook {
     s.cols.insert(3, LineInfo { hidden: true, outline: 1, ..Default::default() });
     s.cols.insert(5, LineInfo { style: Some(money), ..Default::default() });
     s.rows.insert(0, LineInfo { size: Some(30.0), ..Default::default() });
-    s.rows.insert(9, LineInfo { hidden: true, outline: 2, collapsed: true, ..Default::default() });
+    // Row 10 sits inside the AutoFilter's range (K1:N20), so a filter hides it: the hidden bit
+    // lives in the filter bitmap and the outline level stays on the row, which is how the file
+    // writes it (one `hidden="1"` element) and how the sheet reads it back.
+    s.rows.insert(9, LineInfo { outline: 2, collapsed: true, ..Default::default() });
+    s.filter_hidden = FilterHidden::build([9u32], BTreeMap::new());
     s.rows.insert(10, LineInfo { style: Some(bold), ..Default::default() });
     s.default_row_height = 24.0;
     s.default_col_width = 72.0;
@@ -553,6 +557,7 @@ fn full_roundtrip() {
     assert_eq!(b.hyperlinks, a.hyperlinks);
     assert_eq!(b.comments, a.comments);
     assert_eq!(b.autofilter, a.autofilter);
+    assert_eq!(b.filter_hidden, a.filter_hidden, "the rows the filter hides come back in its bitmap");
     assert_eq!(b.protection, a.protection);
     assert_eq!(b.edit_ranges, a.edit_ranges);
     assert_eq!(b.print, a.print);
@@ -1571,6 +1576,95 @@ fn every_sheet_filter_criterion_kind_survives_a_round_trip() {
     assert_eq!(af.criteria, criteria, "every criterion kind came back as it went in");
     assert!(b.filter_hidden.contains(2) && b.filter_hidden.contains(4), "the rows the filter hid stay in the filter bitmap");
     assert!(b.rows.iter().all(|(_, i)| !i.hidden), "and not as hand-hidden rows a Clear Filter cannot bring back");
+}
+
+/// A file stores a row its filter hides as `hidden="1"` on the row element, in the same place as
+/// everything else the row carries: a custom height, a whole-row style, an outline level. The sheet
+/// keeps the hidden bit in its filter bitmap instead (a filter hides a value column, and a line
+/// info per row made every scroll walk them — see `FilterHidden`), so reading a file has to move
+/// that bit and nothing else.
+///
+/// It used to move only the rows whose line info was *exactly* hidden: a filtered row with a height
+/// stayed in the line map as a hand-hidden row and never reached the bitmap, so the sheet after a
+/// reload hid five rows where the sheet before it hid six, and Clear Filter could not show it
+/// (found by the command-sequence fuzzer: `data.filterBy` over the sales sample, then a sort).
+#[test]
+fn a_filtered_row_with_a_height_stays_the_filters() {
+    let mut wb = Workbook::new();
+    let bold = wb.styles.derive(StyleId::DEFAULT, |s| s.font.bold = true);
+    {
+        let s = wb.sheet_mut(0).expect("the workbook has a sheet");
+        for (c, h) in ["Region", "Qty"].iter().enumerate() {
+            s.set_value(CellRef::new(0, c as u32), Value::text(*h));
+        }
+        for r in 1..=6u32 {
+            s.set_value(CellRef::new(r, 0), Value::text(if r == 1 { "East" } else { "West" }));
+            s.set_value(CellRef::new(r, 1), Value::Number(f64::from(r)));
+        }
+        s.autofilter =
+            Some(AutoFilter { range: rr("A1:B7"), criteria: vec![(0, FilterCriterion::Values { values: vec!["East".into()], blanks: false })] });
+        // The shapes the writer puts `hidden="1"` on: a filtered row with a custom height, one with
+        // a whole-row style, one with an outline level, and one with nothing else.
+        s.rows.insert(2, LineInfo { size: Some(30.0), custom: true, hidden: true, ..Default::default() });
+        s.rows.insert(3, LineInfo { hidden: true, style: Some(bold), ..Default::default() });
+        s.rows.insert(4, LineInfo { hidden: true, outline: 1, ..Default::default() });
+        s.rows.insert(5, LineInfo { hidden: true, ..Default::default() });
+        // And a row hidden by hand, outside every filter range: not the filter's to take.
+        s.rows.insert(20, LineInfo { hidden: true, ..Default::default() });
+    }
+    let bytes = write_xlsx(&wb).unwrap();
+    let (back, rep) = read_xlsx(&bytes).unwrap();
+    assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+    let b = back.sheet(0).expect("the sheet came back");
+    assert_eq!(b.filter_hidden.rows().collect::<Vec<_>>(), vec![2, 3, 4, 5], "the filter's bitmap holds exactly the filtered rows");
+    let inside = |r: u32| (1..=6).contains(&r);
+    assert!(
+        b.rows.iter().all(|(r, info)| !info.hidden || !inside(r)),
+        "and no filtered row came back as a hand-hidden one: {:?}",
+        b.rows.iter().collect::<Vec<_>>()
+    );
+    // The attributes the row also carries stay in the line map, where the writer finds them again.
+    let row = |r: u32| b.rows.get(&r).copied();
+    assert_eq!(row(2).map(|i| (i.size, i.custom)), Some((Some(30.0), true)), "the height and its custom flag stay with the row");
+    assert_eq!(row(3).and_then(|i| i.style).map(|id| back.styles.get(id)), Some(wb.styles.get(bold)), "so does a whole-row style");
+    assert_eq!(row(4).map(|i| (i.hidden, i.outline)), Some((false, 1)), "and an outline level, without the hidden bit");
+    assert_eq!(row(5), None, "a filtered row with nothing else is the bitmap's alone");
+    assert_eq!(row(20).map(|i| i.hidden), Some(true), "a hand-hidden row outside every filter range stays in the line map");
+    // The bytes are unchanged: the writer still says `hidden="1"` on the row, whichever place the
+    // model keeps the bit in.
+    assert_eq!(write_xlsx(&back).unwrap(), bytes, "a filtered row with a height still writes the row it was read from");
+}
+
+/// The other direction of the same rule: a row hidden in the line map inside a filter's range is
+/// the filter's, because the file has one place for a hidden row and `home.hideRows` parks the
+/// rows a filter covers in the bitmap. Reading one back as a hand-hidden row made the sheet differ
+/// from the one that saved it — the bitmap lost it, and Clear Filter left it hidden for good.
+#[test]
+fn a_row_hidden_inside_a_filter_range_comes_back_as_the_filters() {
+    let mut wb = Workbook::new();
+    {
+        let s = wb.sheet_mut(0).expect("the workbook has a sheet");
+        s.set_value(CellRef::new(0, 0), Value::text("Region"));
+        for r in 1..=6u32 {
+            s.set_value(CellRef::new(r, 0), Value::text(if r == 1 { "East" } else { "West" }));
+        }
+        s.autofilter =
+            Some(AutoFilter { range: rr("A1:A7"), criteria: vec![(0, FilterCriterion::Values { values: vec!["East".into()], blanks: false })] });
+        // Hidden in the line map, inside the range, with nothing else: what a hand-hidden row a
+        // filter covers looks like before the sheet puts it in the bitmap.
+        s.rows.insert(4, LineInfo { hidden: true, ..Default::default() });
+        // A row outside the range is nobody's but the line map's.
+        s.rows.insert(9, LineInfo { hidden: true, ..Default::default() });
+    }
+    let bytes = write_xlsx(&wb).unwrap();
+    let (back, rep) = read_xlsx(&bytes).unwrap();
+    assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+    let b = back.sheet(0).expect("the sheet came back");
+    assert_eq!(b.filter_hidden.rows().collect::<Vec<_>>(), vec![4], "a hidden row inside the filter's range is the filter's");
+    assert_eq!(b.rows.get(&4), None, "it is not a line-map row as well");
+    assert_eq!(b.rows.get(&9).map(|i| i.hidden), Some(true), "a hidden row outside the range stays hidden in the line map");
+    assert!(b.rows.get(&9).is_some_and(|_| !b.filter_hidden.contains(9)));
+    assert_eq!(write_xlsx(&back).unwrap(), bytes, "and the file it came from is the file it writes");
 }
 
 /// A paged sheet saves to the same bytes as the live one: the writer's scan decodes pages without
