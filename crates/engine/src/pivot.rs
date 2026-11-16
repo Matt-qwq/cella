@@ -2364,6 +2364,9 @@ pub fn details_with_cap(wb: &Workbook, pt: &PivotTable, sheet: usize, cell: Cell
         return Err(format!("{} is outside the PivotTable report {}.", cell.a1(), area.a1()));
     }
     let (out, src) = compute_with_source(wb, pt, sheet)?;
+    // Checked before the cell is read: in a report edited after its refresh the cell may show
+    // another cell's value, and its records would be that other cell's.
+    check_current(wb, pt, sheet, &out)?;
     let (r, c, j) = out.grid_pos(area.start, cell).ok_or(NOT_A_VALUE_CELL)?;
     let kind = out.grid.get(r).and_then(|row| row.get(c)).map(|x| x.kind);
     if !matches!(kind, Some(CellKind::Data | CellKind::Subtotal | CellKind::GrandTotal)) {
@@ -2431,6 +2434,32 @@ pub fn details_with_cap(wb: &Workbook, pt: &PivotTable, sheet: usize, cell: Cell
         return Err("Show Details isn't available for a calculated item.".into());
     }
     Ok(Detail { title, headers: src.headers.clone(), formats: src.formats.clone(), rows: kept, skipped })
+}
+
+/// An error when the report written on the sheet is no longer what its definition computes:
+/// its size, or the value of any of its cells, differs from the computed report — a report cell
+/// was edited by hand, or the source changed, after the last refresh. Excel reads its PivotTable
+/// cache; without one, the report the last refresh wrote must still be what the source gives, or
+/// Show Details would hand back another cell's records.
+fn check_current(wb: &Workbook, pt: &PivotTable, sheet: usize, out: &Output) -> Result<(), String> {
+    let sh = wb.sheet(sheet).ok_or("There's no such sheet.")?;
+    let current = pt.last_range.is_some_and(|r| {
+        r.height() == out.height().max(1)
+            && r.width() == out.width.max(1)
+            && (0..out.height().max(1)).all(|ri| {
+                (0..out.width.max(1)).all(|ci| {
+                    let at = CellRef::new(r.start.row.saturating_add(ri), r.start.col.saturating_add(ci));
+                    sh.value(at) == out.value(ri as usize, ci as usize)
+                })
+            })
+    });
+    if !current {
+        return Err(
+            "The PivotTable report no longer matches its source (a cell of the report was changed by hand, or the source's data was, after the last refresh), so the records behind a cell might be another cell's. Refresh the PivotTable and try again."
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// A text argument of a formula.
