@@ -77,6 +77,11 @@ const PENDING: usize = 32;
 /// whatever order they come in, with bounded stack.
 const MAX_NESTED: usize = 64;
 
+/// Most spill areas a range read expands one by one before it walks every spill of the pass
+/// instead (see `PassHost::range_values`). Both give the same cells; past this many the walk is
+/// cheaper than picking the areas out first, and it can't be talked into comparing them all.
+const MAX_UNORDERED_HITS: usize = 16;
+
 /// Formula evaluations iterative calculation may spend on one recalculation (passes × formulas
 /// evaluated again), however high Maximum Iterations is.
 const MAX_ITERATION_WORK: usize = 10_000_000;
@@ -581,6 +586,10 @@ struct PassHost<'a> {
     tainted: HashSet<Key>,
     /// Whether the formula being evaluated has read a previous value.
     taint: bool,
+    /// [`crate::eval::stack_position`] where the outermost formula being calculated started.
+    stack_top: usize,
+    /// Whether an evaluation ran past the stack budget since the innermost formula started.
+    out_of_stack: bool,
 }
 
 impl<'a> PassHost<'a> {
@@ -643,8 +652,18 @@ impl<'a> PassHost<'a> {
             members: HashSet::default(),
             tainted: HashSet::default(),
             taint: false,
+            stack_top: 0,
+            out_of_stack: false,
         }
     }
+}
+
+/// The cells a spill at `anchor` covers.
+fn spill_cells((_, anchor): Key, arr: &Array) -> RangeRef {
+    RangeRef::new(
+        anchor,
+        CellRef::new(anchor.row.saturating_add((arr.rows as u32).saturating_sub(1)), anchor.col.saturating_add((arr.cols as u32).saturating_sub(1))),
+    )
 }
 
 /// Whether spilling `a` at `k` would write cells that `k`'s own formula reads. Reading a cell the
@@ -827,6 +846,9 @@ impl PassHost<'_> {
             self.suspend = Some(k);
             return Value::Error(CellError::Calc);
         }
+        if self.depth == 0 {
+            self.stack_top = crate::eval::stack_position();
+        }
         self.results.insert(k, Slot::default());
         self.in_flight += 1;
         self.depth += 1;
@@ -835,10 +857,25 @@ impl PassHost<'_> {
             self.stack.push(k);
         }
         let expr = std::sync::Arc::clone(expr);
+        let outer_out_of_stack = std::mem::replace(&mut self.out_of_stack, false);
         let v = {
             let mut ev = Evaluator::new(self, k.0, k.1);
             ev.value(&expr)
         };
+        let out_of_stack = std::mem::replace(&mut self.out_of_stack, outer_out_of_stack);
+        if out_of_stack && self.depth > 1 && self.suspend.is_none() {
+            // It ran out of the stack left below the formulas that read it: calculate it from the
+            // top instead, as a formula needed at `MAX_NESTED` levels deep is.
+            self.suspend = Some(k);
+            self.depth -= 1;
+            self.results.remove(&k);
+            self.in_flight = self.in_flight.saturating_sub(1);
+            if self.iterate {
+                self.stack.pop();
+            }
+            self.taint = outer_taint;
+            return Value::Error(CellError::Calc);
+        }
         if self.suspend.is_some() {
             // Abandoned: `calculate` evaluates this formula again once the one it needs is done.
             self.depth -= 1;
@@ -1018,6 +1055,12 @@ impl Host for PassHost<'_> {
     fn workbook(&self) -> &Workbook {
         self.wb
     }
+    fn stack_top(&self) -> Option<usize> {
+        (self.depth > 1).then_some(self.stack_top)
+    }
+    fn stack_exhausted(&mut self) {
+        self.out_of_stack = true;
+    }
     fn name_target(&mut self, sheet: usize, name: &str) -> crate::eval::NameTarget {
         self.names.target(self.wb, sheet, name)
     }
@@ -1147,26 +1190,47 @@ impl Host for PassHost<'_> {
             }
         }
         if !self.spills.is_empty() {
-            let new: Vec<(usize, Value)> = self
-                .spills
-                .iter()
-                .filter(|(a, _)| a.0 == sheet)
-                .flat_map(|(a, arr)| {
-                    let mut v = Vec::new();
-                    for r in 0..arr.rows {
-                        for cc in 0..arr.cols {
-                            let c = CellRef::new(a.1.row.saturating_add(r as u32), a.1.col.saturating_add(cc as u32));
-                            if c != a.1 && range.contains(c) {
-                                v.push((
-                                    (c.row - range.start.row) as usize * w + (c.col - range.start.col) as usize,
-                                    arr.get(r, cc).cloned().unwrap_or_default(),
-                                ));
-                            }
+            // The spills that reach into the range are picked out first, so a read only looks at the
+            // part of each that lands in it: a sheet may hold many arrays, and a whole-column read
+            // meets few of them. Past `MAX_UNORDERED_HITS` of them that is not worth it, and every
+            // spill of the sheet is walked as before (the cells, and which of two spills wins them,
+            // are the same either way).
+            let mut hits = 0usize;
+            let ordered = self.spills.iter().any(|(a, arr)| {
+                hits += usize::from(a.0 == sheet && spill_cells(*a, arr).intersects(&range));
+                hits > MAX_UNORDERED_HITS
+            });
+            let mut new: Vec<(usize, Value)> = Vec::new();
+            for (a, arr) in &self.spills {
+                if a.0 != sheet || arr.rows == 0 || arr.cols == 0 {
+                    continue;
+                }
+                let (r0, c0, r1, c1) = if ordered {
+                    (0, 0, (arr.rows as u32).saturating_sub(1), (arr.cols as u32).saturating_sub(1))
+                } else {
+                    let cells = spill_cells(*a, arr);
+                    if !cells.intersects(&range) {
+                        continue;
+                    }
+                    (
+                        range.start.row.max(a.1.row) - a.1.row,
+                        range.start.col.max(a.1.col) - a.1.col,
+                        range.end.row.min(cells.end.row) - a.1.row,
+                        range.end.col.min(cells.end.col) - a.1.col,
+                    )
+                };
+                for r in r0..=r1 {
+                    for cc in c0..=c1 {
+                        let c = CellRef::new(a.1.row.saturating_add(r), a.1.col.saturating_add(cc));
+                        if c != a.1 && range.contains(c) {
+                            new.push((
+                                (c.row - range.start.row) as usize * w + (c.col - range.start.col) as usize,
+                                arr.get(r as usize, cc as usize).cloned().unwrap_or_default(),
+                            ));
                         }
                     }
-                    v
-                })
-                .collect();
+                }
+            }
             // Iterating: an array spilled by a formula that read a previous value.
             if self.iterate
                 && self.spills.iter().any(|(a, arr)| {
@@ -2661,7 +2725,9 @@ pub(crate) mod tests {
         let mut calc = Calc::new();
         calc.recalc_all(&mut wb);
         assert_eq!(cell_value(&wb, 0, "A1").as_f64(), Some(20.0));
-        assert_eq!(cell_value(&wb, 0, "A2"), Value::Error(CellError::Calc));
+        // The ring runs into the evaluator's nesting limit: `#NUM!`, as a formula nested too deep
+        // shows (it used to be `#CALC!`).
+        assert_eq!(cell_value(&wb, 0, "A2"), Value::Error(CellError::Num));
     }
 
     /// An unknown name, and one whose definition doesn't parse, are #NAME? — the same error the

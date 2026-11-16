@@ -22,6 +22,38 @@ const FULL_SIZE_CELLS: u64 = 16_384;
 /// range, so that formulas over them stay fast.
 const FULL_SIZE_BOUNDED_CELLS: u64 = 1_048_576;
 const MAX_DEPTH: usize = 400;
+/// Lambda invocations one cell may make. A semantically bounded formula in Excel can invoke its
+/// lambda at most once per cell of an array (capped here by `MAX_CELLS`), so this covers every
+/// legitimate call; hostile work that grows past one dimension (a LAMBDA that recurses or nests
+/// `MAP` into `MAP`) then stops at the same bound instead of squaring.
+const LAMBDA_FUEL: u64 = MAX_CELLS;
+/// Work one cell's formula may do: one unit per expression evaluated, per cell read from a
+/// reference, per value handed to a function, per pair of areas intersected and per cell of a block
+/// an aggregate folds. Each limit on its own bounds one kind of step, but a compact formula could
+/// still repeat bounded steps exponentially often (defined names that each use the one before
+/// twice, a computed criterion whose database function reruns it, an aggregate over a large array
+/// inside every LAMBDA call). Past this the formula is `#CALC!`. It is far above what a formula
+/// that reads every cell of a full-size array a few times needs.
+const EVAL_WORK: u64 = 16 * MAX_CELLS;
+/// LAMBDA calls that one formula may have in progress at once, counted the same way on every build.
+/// The next call answers `#NUM!`. A countdown of `MAX_DEPTH` levels has far fewer calls in
+/// progress than this, so a formula that recursion alone limits still computes.
+pub(crate) const MAX_LAMBDA_CALLS: usize = 140;
+/// Native stack, in bytes, that one formula's evaluation may use below its first `eval`. Past it,
+/// `eval` answers `#NUM!`. It guards the stack and leaves 128 KiB of a 1 MiB thread (Windows' main
+/// stack, where commands and recalculation run) for the frames above the formula. A formula that
+/// another cell's formula computes on demand shares the budget of the outermost one
+/// ([`Host::stack_top`]).
+const STACK_BUDGET: usize = 896 * 1024;
+/// Most expression nodes [`precedents`] visits before it gives up and marks the formula dynamic.
+const MAX_PRECEDENT_NODES: usize = 1_000_000;
+
+/// The address of a local variable, which shows how far down the native stack this call is.
+#[inline(always)]
+pub(crate) fn stack_position() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(&marker) as *const u8 as usize
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Area {
@@ -102,6 +134,13 @@ pub trait Host {
     fn visit_aggregate(&mut self, _sheet: usize, _range: RangeRef, _kind: Agg, _acc: &mut Acc) -> Option<Result<(), CellError>> {
         None
     }
+    /// While a formula is calculated on demand inside another one: [`stack_position`] where the
+    /// outermost one started, which the stack budget is counted from.
+    fn stack_top(&self) -> Option<usize> {
+        None
+    }
+    /// Called when a formula's evaluation runs past the stack budget.
+    fn stack_exhausted(&mut self) {}
 }
 
 pub struct Evaluator<'h> {
@@ -110,6 +149,22 @@ pub struct Evaluator<'h> {
     pub at: CellRef,
     env: Vec<(String, Ev)>,
     depth: usize,
+    /// LAMBDA calls in progress.
+    calls: usize,
+    /// [`stack_position`] at the outermost `eval`.
+    stack_top: usize,
+    /// Lambda invocations this cell still has left. Every call spends one charge, so a compact
+    /// hostile formula (a LAMBDA that calls itself, nested `MAP`s over big arrays) runs out of work
+    /// after the same number of calls that a legitimately wide one could make, instead of an amount
+    /// of work that squares with array nesting.
+    fuel: u64,
+    /// Work this cell still has left (see [`EVAL_WORK`]), shared by every branch of the formula and
+    /// by the formulas it computes on the way (names, computed criteria).
+    work: u64,
+    /// A spend found too little work left. A spend that leaves exactly nothing is fine, so this
+    /// can't be told from `work` alone; a database function checks it after its computed criteria
+    /// ran, whose failures it can't otherwise see.
+    exhausted: bool,
 }
 
 struct FnCtx<'a, 'h> {
@@ -152,8 +207,24 @@ impl Ctx for FnCtx<'_, '_> {
                 _ => None,
             })
             .collect();
-        let mut ev = Evaluator { host: &mut *self.ev.host, sheet: area.sheet, at, env, depth: self.ev.depth };
-        Some(matches!(ev.value(&shifted).scalar().to_bool(), Ok(true)))
+        let mut ev = Evaluator {
+            host: &mut *self.ev.host,
+            sheet: area.sheet,
+            at,
+            env,
+            depth: self.ev.depth,
+            calls: self.ev.calls,
+            stack_top: self.ev.stack_top,
+            fuel: self.ev.fuel,
+            work: self.ev.work,
+            exhausted: false,
+        };
+        let v = matches!(ev.value(&shifted).scalar().to_bool(), Ok(true));
+        // The child's spend counts against this cell's budget.
+        self.ev.fuel = ev.fuel;
+        self.ev.work = ev.work;
+        self.ev.exhausted |= ev.exhausted;
+        Some(v)
     }
     fn has_lambda(&self) -> bool {
         self.lambda.is_some()
@@ -172,7 +243,30 @@ impl Ctx for FnCtx<'_, '_> {
 
 impl<'h> Evaluator<'h> {
     pub fn new(host: &'h mut dyn Host, sheet: usize, at: CellRef) -> Self {
-        Evaluator { host, sheet, at, env: Vec::new(), depth: 0 }
+        Evaluator { host, sheet, at, env: Vec::new(), depth: 0, calls: 0, stack_top: 0, fuel: LAMBDA_FUEL, work: EVAL_WORK, exhausted: false }
+    }
+
+    /// Spends `units` of this cell's work; `false` (and nothing left) when there isn't enough.
+    fn spend(&mut self, units: u64) -> bool {
+        match self.work.checked_sub(units) {
+            Some(w) => {
+                self.work = w;
+                true
+            }
+            None => {
+                self.work = 0;
+                self.exhausted = true;
+                false
+            }
+        }
+    }
+
+    /// Charges the values of an array (one unit per value; one for anything else).
+    fn spend_on(&mut self, v: &Value) -> bool {
+        match v {
+            Value::Array(a) => self.spend(a.data.len() as u64),
+            _ => self.spend(1),
+        }
     }
 
     /// Evaluates to a value (references are dereferenced; multi-cell → array).
@@ -247,6 +341,11 @@ impl<'h> Evaluator<'h> {
         if (h as u64) * (w as u64) > MAX_CELLS {
             return Value::Error(CellError::Num);
         }
+        // Reading the block is work (a formula that reads every cell of a full-size array a few
+        // times is fine; one that does it once per LAMBDA call is not).
+        if !self.spend((h as u64) * (w as u64)) {
+            return Value::Error(CellError::Calc);
+        }
         if let Some(shared) = self.host.range_array(a.sheet, range)
             && shared.rows == h
             && shared.cols == w
@@ -279,10 +378,25 @@ impl<'h> Evaluator<'h> {
     }
 
     pub fn eval(&mut self, e: &Expr) -> Ev {
+        // The native stack this evaluation has used below its first `eval`: past the budget, an
+        // error, because the alternative is an overflow, which aborts the process and cannot be
+        // caught (the user loses the workbook). A formula calculated on demand inside another
+        // one is counted from the outermost one's first `eval` (`Host::stack_top`).
+        let here = stack_position();
+        if self.depth == 0 {
+            self.stack_top = self.host.stack_top().unwrap_or(here);
+        }
+        if self.stack_top.abs_diff(here) > STACK_BUDGET {
+            self.host.stack_exhausted();
+            return err(CellError::Num);
+        }
+        if !self.spend(1) {
+            return err(CellError::Calc);
+        }
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
-            return err(CellError::Calc);
+            return err(CellError::Num);
         }
         let r = self.eval_inner(e);
         self.depth -= 1;
@@ -526,6 +640,10 @@ impl<'h> Evaluator<'h> {
                 let (x, y) = (self.eval(a), self.eval(b));
                 match (x, y) {
                     (Ev::R(mut xa), Ev::R(ya)) => {
+                        // A union reused through LET doubles at each step: its areas count.
+                        if !self.spend((xa.len() as u64).saturating_add(ya.len() as u64)) {
+                            return err(CellError::Calc);
+                        }
                         xa.extend(ya);
                         Ev::R(xa)
                     }
@@ -537,6 +655,11 @@ impl<'h> Evaluator<'h> {
                 let (x, y) = (self.eval(a), self.eval(b));
                 match (x, y) {
                     (Ev::R(xa), Ev::R(ya)) => {
+                        // Every pair is looked at, and each may be kept: charged before the loop,
+                        // so unions squared through LET can't build an enormous list.
+                        if !self.spend((xa.len() as u64).saturating_mul(ya.len() as u64)) {
+                            return err(CellError::Calc);
+                        }
                         let mut out = Vec::new();
                         for p in &xa {
                             for q in &ya {
@@ -938,8 +1061,21 @@ impl<'h> Evaluator<'h> {
             };
             evaluated.push(Arg { value, from_ref });
         }
+        // The function may go through every value it is given (a SUM inside each call of a LAMBDA
+        // over a large array): the values count against the cell's work.
+        let values = evaluated.iter().fold(0u64, |n, a| n.saturating_add(if let Value::Array(x) = &a.value { x.data.len() as u64 } else { 1 }));
+        if !self.spend(values) {
+            return err(CellError::Calc);
+        }
+        let database = criteria.is_some();
         let mut ctx = FnCtx { ev: self, criteria, lambda };
-        gridcraft_functions::call(spec, &evaluated, &mut ctx).pipe(Ev::V)
+        let v = gridcraft_functions::call(spec, &evaluated, &mut ctx);
+        // A computed criterion that ran out of work counted as not met: the result would leave
+        // records out, so the whole call is `#CALC!`.
+        if database && self.exhausted {
+            return err(CellError::Calc);
+        }
+        Ev::V(v)
     }
 
     /// Performs aggregation operations without copying its ranges: blocks are folded over the stored
@@ -968,6 +1104,12 @@ impl<'h> Evaluator<'h> {
     /// Adds one area to `acc`; `Err` is the result the function ends with.
     fn aggregate_area(&mut self, kind: Agg, a: &Area, acc: &mut Acc) -> Result<(), Ev> {
         if !a.range.is_single() {
+            // Folded without building an array, but still walked: the part inside the used range
+            // counts against the cell's work, so an aggregate inside every LAMBDA call runs out.
+            let range = if trimmed(a.range) { self.trim(a) } else { a.range };
+            if !self.spend(u64::from(range.height()) * u64::from(range.width())) {
+                return Err(err(CellError::Calc));
+            }
             match self.host.visit_aggregate(a.sheet, a.range, kind, acc) {
                 Some(Ok(())) => return Ok(()),
                 Some(Err(e)) => return Err(err(e)),
@@ -992,6 +1134,11 @@ impl<'h> Evaluator<'h> {
     /// Adds one argument's value by calling `SUM` and `COUNT` on it, so coercion and error rules
     /// stay in one place (`AVERAGE` of an argument is its `SUM` over its `COUNT`).
     fn aggregate_value(&mut self, kind: Agg, value: Value, from_ref: bool, acc: &mut Acc) -> Result<(), Ev> {
+        // A value computed inline (not read from a reference, which `aggregate_area` charged)
+        // counts against the cell's work, as it does when it is handed to any other function.
+        if !from_ref && !self.spend_on(&value) {
+            return Err(err(CellError::Calc));
+        }
         if matches!(kind, Agg::Max | Agg::Min) {
             // The function already knows how a direct argument coerces (`MAX("7")` is 7) and what
             // an array of them folds to, so a non-reference argument goes through it.
@@ -1048,10 +1195,22 @@ impl<'h> Evaluator<'h> {
     }
 
     fn call_lambda_values(&mut self, l: &Lambda, bound: Vec<(String, Ev)>) -> Ev {
+        if self.calls >= MAX_LAMBDA_CALLS {
+            return err(CellError::Num);
+        }
+        // One charge per invocation, so a cell's total work stays bounded however the lambdas
+        // nest. Charging here, at the one place a body runs, means every path into one (direct
+        // application, `MAP`/`REDUCE`/`BYROW` helpers, D-function criteria) is metered.
+        self.fuel = match self.fuel.checked_sub(1) {
+            Some(f) => f,
+            None => return err(CellError::Calc),
+        };
+        self.calls += 1;
         let saved = std::mem::replace(&mut self.env, l.env.clone());
         self.env.extend(bound);
         let r = self.eval(&l.body);
         self.env = saved;
+        self.calls -= 1;
         r
     }
 
@@ -2151,13 +2310,17 @@ fn is_lambda_definition(e: &Expr) -> bool {
 /// `Sheet1!$B$1` makes `=Rate*A1` read A1 and B1, so an edit elsewhere does not recalculate it
 /// and an edit of B1 does. `names` keeps the resolved definitions between calls.
 pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, bool, bool) {
-    precedents_at(names, wb, sheet, e, 0)
+    // One budget for the whole walk, shared by the definitions it follows: past
+    // `MAX_PRECEDENT_NODES` the result is conservative (the formula is marked `dynamic`, so it
+    // recalculates every time) rather than a walk that never ends.
+    let mut left = MAX_PRECEDENT_NODES;
+    precedents_at(names, wb, sheet, e, 0, &mut left)
 }
 
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize) -> (Vec<Area>, bool, bool) {
+fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize) -> (Vec<Area>, bool, bool) {
     let mut out = Vec::new();
     let mut dynamic = false;
     let mut trim = false;
@@ -2176,89 +2339,99 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             }
         }
     };
-    e.walk(&mut |x| match x {
-        Expr::Ref(r) => {
-            let range = r.range();
-            trim |= trimmed(range);
-            push(&mut out, r, range);
-        }
-        // The cells SUMIF/AVERAGEIF really read from the sum range (see `resized_sum_range`); when
-        // the criteria range's size isn't known statically, recalculate the formula every time.
-        Expr::Call(n, args) if resizes_sum_range(n, args.len()) => match (args.first(), args.get(2)) {
-            (Some(Expr::Ref(c)), Some(Expr::Ref(s))) => {
-                let (crit, sum) = (c.range(), s.range());
-                let resized = resized_sum_range(sum, crit.height(), crit.width());
-                trim |= trimmed(resized);
-                push(&mut out, s, resized);
-            }
-            (_, Some(Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Array(_) | Expr::Missing)) => {}
-            _ => dynamic = true,
-        },
-        Expr::Call(n, args) if n.eq_ignore_ascii_case("GETPIVOTDATA") => {
-            // The answer is one cell of the report, but the report's shape changes when it is
-            // refreshed: the whole written area is the dependency (and the lookup is dynamic
-            // because a refresh may move the report).
+    e.walk(&mut |x| {
+        // One node of the budget per node visited. Past it the answer is conservative: the formula
+        // is marked dynamic, so it recalculates every time rather than the walk never ending.
+        if *left == 0 {
             dynamic = true;
-            if let Some(Expr::Ref(r)) = args.get(1) {
-                let at = r.range().start;
-                let mut sheets: Vec<usize> = Vec::new();
-                match &r.sheet {
-                    SheetSel::Current => sheets.push(sheet),
-                    SheetSel::Named(n) => sheets.extend(wb.sheet_index(n)),
-                    SheetSel::Span(a, b) => {
-                        if let (Some(i), Some(j)) = (wb.sheet_index(a), wb.sheet_index(b)) {
-                            sheets.extend(i.min(j)..=i.max(j));
+            return;
+        }
+        *left -= 1;
+        match x {
+            Expr::Ref(r) => {
+                let range = r.range();
+                trim |= trimmed(range);
+                push(&mut out, r, range);
+            }
+            // The cells SUMIF/AVERAGEIF really read from the sum range (see `resized_sum_range`); when
+            // the criteria range's size isn't known statically, recalculate the formula every time.
+            Expr::Call(n, args) if resizes_sum_range(n, args.len()) => match (args.first(), args.get(2)) {
+                (Some(Expr::Ref(c)), Some(Expr::Ref(s))) => {
+                    let (crit, sum) = (c.range(), s.range());
+                    let resized = resized_sum_range(sum, crit.height(), crit.width());
+                    trim |= trimmed(resized);
+                    push(&mut out, s, resized);
+                }
+                (_, Some(Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Array(_) | Expr::Missing)) => {}
+                _ => dynamic = true,
+            },
+            Expr::Call(n, args) if n.eq_ignore_ascii_case("GETPIVOTDATA") => {
+                // The answer is one cell of the report, but the report's shape changes when it is
+                // refreshed: the whole written area is the dependency (and the lookup is dynamic
+                // because a refresh may move the report).
+                dynamic = true;
+                if let Some(Expr::Ref(r)) = args.get(1) {
+                    let at = r.range().start;
+                    let mut sheets: Vec<usize> = Vec::new();
+                    match &r.sheet {
+                        SheetSel::Current => sheets.push(sheet),
+                        SheetSel::Named(n) => sheets.extend(wb.sheet_index(n)),
+                        SheetSel::Span(a, b) => {
+                            if let (Some(i), Some(j)) = (wb.sheet_index(a), wb.sheet_index(b)) {
+                                sheets.extend(i.min(j)..=i.max(j));
+                            }
+                        }
+                    }
+                    for s in sheets {
+                        if let Some(area) = crate::pivot::pivot_at(wb, s, at).and_then(|p| p.last_range) {
+                            out.push(Area { sheet: s, range: area });
                         }
                     }
                 }
-                for s in sheets {
-                    if let Some(area) = crate::pivot::pivot_at(wb, s, at).and_then(|p| p.last_range) {
-                        out.push(Area { sheet: s, range: area });
+            }
+            Expr::Call(n, _)
+                if matches!(n.as_str(), "INDIRECT" | "OFFSET" | "NOW" | "TODAY" | "RAND" | "RANDBETWEEN" | "RANDARRAY" | "CELL" | "INFO") =>
+            {
+                dynamic = true
+            }
+            Expr::Name(n) => match names.target(wb, sheet, n) {
+                NameTarget::Definition(def, scope) if depth < MAX_NAME_DEPTH && *left > 0 && !is_lambda_definition(&def) => {
+                    let (inner, d, t) = precedents_at(names, wb, scope, &def, depth + 1, left);
+                    out.extend(inner);
+                    dynamic |= d;
+                    trim |= t;
+                }
+                NameTarget::Table { area, .. } => out.push(area),
+                _ => dynamic = true,
+            },
+            // A structured reference is a fixed area unless it depends on the cell it is written in
+            // (a bare `[Column]` binds to the table around it, `[@Column]` to this row) or the
+            // table can't be found. The table's whole range covers every part of it.
+            Expr::Struct(s) if !s.table.is_empty() && !s.specifiers.contains(&StructItem::ThisRow) => {
+                match wb.table(&s.table).and_then(|(si, ti)| wb.sheet(si).and_then(|sh| sh.tables.get(ti)).map(|t| (si, t.range))) {
+                    Some((si, range)) => out.push(Area { sheet: si, range }),
+                    None => dynamic = true,
+                }
+            }
+            Expr::Struct(_) => dynamic = true,
+            Expr::Call(n, _) if gridcraft_functions::lookup(n).is_none() && !is_special(n) => dynamic = true,
+
+            // A range ending in a function's result (`A1:INDEX(B1:B9,n)`) covers the cells between
+            // the references inside it, not only those references.
+            Expr::Binary(BinOp::Range, a, b) if !matches!((&**a, &**b), (Expr::Ref(_), Expr::Ref(_))) => {
+                let mut inner = precedents_at(names, wb, sheet, a, depth, left).0;
+                inner.extend(precedents_at(names, wb, sheet, b, depth, left).0);
+                let mut boxes: Vec<Area> = Vec::new();
+                for area in inner {
+                    match boxes.iter_mut().find(|x| x.sheet == area.sheet) {
+                        Some(x) => x.range = x.range.union(&area.range),
+                        None => boxes.push(area),
                     }
                 }
+                out.extend(boxes);
             }
+            _ => {}
         }
-        Expr::Call(n, _)
-            if matches!(n.as_str(), "INDIRECT" | "OFFSET" | "NOW" | "TODAY" | "RAND" | "RANDBETWEEN" | "RANDARRAY" | "CELL" | "INFO") =>
-        {
-            dynamic = true
-        }
-        Expr::Name(n) => match names.target(wb, sheet, n) {
-            NameTarget::Definition(def, scope) if depth < MAX_NAME_DEPTH && !is_lambda_definition(&def) => {
-                let (inner, d, t) = precedents_at(names, wb, scope, &def, depth + 1);
-                out.extend(inner);
-                dynamic |= d;
-                trim |= t;
-            }
-            NameTarget::Table { area, .. } => out.push(area),
-            _ => dynamic = true,
-        },
-        // A structured reference is a fixed area unless it depends on the cell it is written in
-        // (a bare `[Column]` binds to the table around it, `[@Column]` to this row) or the
-        // table can't be found. The table's whole range covers every part of it.
-        Expr::Struct(s) if !s.table.is_empty() && !s.specifiers.contains(&StructItem::ThisRow) => {
-            match wb.table(&s.table).and_then(|(si, ti)| wb.sheet(si).and_then(|sh| sh.tables.get(ti)).map(|t| (si, t.range))) {
-                Some((si, range)) => out.push(Area { sheet: si, range }),
-                None => dynamic = true,
-            }
-        }
-        Expr::Struct(_) => dynamic = true,
-        Expr::Call(n, _) if gridcraft_functions::lookup(n).is_none() && !is_special(n) => dynamic = true,
-        // A range ending in a function's result (`A1:INDEX(B1:B9,n)`) covers the cells between
-        // the references inside it, not only those references.
-        Expr::Binary(BinOp::Range, a, b) if !matches!((&**a, &**b), (Expr::Ref(_), Expr::Ref(_))) => {
-            let mut inner = precedents_at(names, wb, sheet, a, depth).0;
-            inner.extend(precedents_at(names, wb, sheet, b, depth).0);
-            let mut boxes: Vec<Area> = Vec::new();
-            for area in inner {
-                match boxes.iter_mut().find(|x| x.sheet == area.sheet) {
-                    Some(x) => x.range = x.range.union(&area.range),
-                    None => boxes.push(area),
-                }
-            }
-            out.extend(boxes);
-        }
-        _ => {}
     });
     (out, dynamic, trim)
 }
