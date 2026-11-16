@@ -128,6 +128,17 @@ pub struct Sheet {
     pub show_headings: bool,
     pub show_formulas: bool,
     pub show_zeros: bool,
+    /// The outline's level buttons and brackets (Excel's Show Outline Symbols, Ctrl+8); the
+    /// outline itself stays. Saved as `sheetView showOutlineSymbols`.
+    #[serde(default = "default_true")]
+    pub show_outline_symbols: bool,
+    /// Outline summary rows sit below their detail, and summary columns right of it (Data ▸
+    /// Outline ▸ Settings; off puts them above / left). Saved as `sheetPr outlinePr summaryBelow`
+    /// and `summaryRight`.
+    #[serde(default = "default_true")]
+    pub summary_below: bool,
+    #[serde(default = "default_true")]
+    pub summary_right: bool,
     pub right_to_left: bool,
     pub zoom: u16,
     pub cond_formats: Vec<CondFormat>,
@@ -198,6 +209,12 @@ pub fn points_to_chars(px: f64) -> f64 {
     if px <= 12.0 { (px / 12.0 * 100.0).round() / 100.0 } else { ((px - 5.0) / 7.0 * 100.0 + 0.5).trunc() / 100.0 }
 }
 
+/// `true` for a field whose absence means "on": the format's default for the view and outline
+/// flags, which older JSON does not carry.
+fn default_true() -> bool {
+    true
+}
+
 impl Sheet {
     pub fn new(name: impl Into<String>) -> Sheet {
         Sheet {
@@ -219,6 +236,9 @@ impl Sheet {
             show_headings: true,
             show_formulas: false,
             show_zeros: true,
+            show_outline_symbols: true,
+            summary_below: true,
+            summary_right: true,
             right_to_left: false,
             zoom: 100,
             cond_formats: vec![],

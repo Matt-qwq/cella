@@ -364,6 +364,16 @@ pub enum VAlign {
     Distributed,
 }
 
+/// `ST_ReadingOrder` (ECMA-376 §18.18.58): which way a cell's text runs inside its box, which
+/// Excel writes as `alignment readingOrder`. Kept with the file; `Context` is the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReadingOrder {
+    #[default]
+    Context,
+    LeftToRight,
+    RightToLeft,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Alignment {
     pub h: HAlign,
@@ -373,6 +383,9 @@ pub struct Alignment {
     pub indent: u8,
     /// Degrees -90..=90, or 255 for vertical stacked text.
     pub rotation: i16,
+    /// `readingOrder`: `None` when the file said nothing, which shows as `Context`.
+    #[serde(default)]
+    pub reading_order: Option<ReadingOrder>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
