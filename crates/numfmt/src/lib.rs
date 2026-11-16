@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod builtin;
+mod calendar;
 mod decimal;
 mod parse;
 mod render;
@@ -15,7 +16,7 @@ use gridcraft_core::{CellError, DateSystem, Value};
 pub use builtin::{builtin_format, builtin_id};
 pub use decimal::format_general_fit;
 
-use parse::{SecKind, Section, Tok};
+use parse::{DatePart, SecKind, Section, Tok};
 use render::Out;
 
 /// Width (in characters) of General output in a cell.
@@ -96,6 +97,9 @@ struct Inner {
     num_sections: usize,
     /// Index of the section that applies to text, if any.
     text_section: Option<usize>,
+    /// A code Excel rejects (a misplaced `B1`/`B2` calendar prefix): shown as General, and
+    /// `TEXT` returns `#VALUE!`, as for a code that is too long.
+    invalid: bool,
 }
 
 /// A parsed number format code. Cheap to clone.
@@ -145,14 +149,18 @@ impl NumberFormat {
         #[cfg(test)]
         parse_cache::count_parse();
         let trimmed = code.trim();
+        let general = |invalid: bool| NumberFormat {
+            inner: Arc::new(Inner { code: code.to_string(), general: true, sections: Vec::new(), num_sections: 0, text_section: None, invalid }),
+        };
         // `checkbox` marks a checkbox cell (Insert › Checkbox): TRUE/FALSE draw as a box, any other
         // value displays as General.
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("general") || trimmed == "checkbox" || (!uncapped && too_long(code)) {
-            return NumberFormat {
-                inner: Arc::new(Inner { code: code.to_string(), general: true, sections: Vec::new(), num_sections: 0, text_section: None }),
-            };
+            return general(false);
         }
         let sections = parse::parse_sections(code);
+        if sections.iter().any(|s| s.invalid) {
+            return general(true);
+        }
         let len = sections.len();
         let last_is_text = sections.last().is_some_and(|s| s.kind == SecKind::Text);
         let text_section = if len >= 4 {
@@ -169,7 +177,7 @@ impl NumberFormat {
         } else {
             len
         };
-        NumberFormat { inner: Arc::new(Inner { code: code.to_string(), general: false, sections, num_sections, text_section }) }
+        NumberFormat { inner: Arc::new(Inner { code: code.to_string(), general: false, sections, num_sections, text_section, invalid: false }) }
     }
 
     pub fn general() -> NumberFormat {
@@ -191,6 +199,18 @@ impl NumberFormat {
     /// True when the code contains date or time tokens.
     pub fn is_date(&self) -> bool {
         self.num_sections().iter().any(|s| s.kind == SecKind::Date)
+    }
+
+    /// For a date or time format, whether the section that formats `value` shows calendar parts (year, month,
+    /// day) and whether it shows time parts, as `(date, time)`. `None` for any other format and for
+    /// elapsed-time codes like `[h]:mm`, whose value is a duration, not a moment.
+    pub fn date_shape(&self, value: f64) -> Option<(bool, bool)> {
+        let s = self.select(value).map(|(s, _)| s).filter(|s| s.kind == SecKind::Date)?;
+        let parts = || s.toks.iter().filter_map(|t| if let Tok::Date(d) = t { Some(*d) } else { None });
+        if parts().any(DatePart::is_elapsed) {
+            return None;
+        }
+        Some((parts().any(DatePart::is_calendar), parts().any(|d| !d.is_calendar())))
     }
 
     pub fn is_percent(&self) -> bool {
@@ -475,6 +495,9 @@ pub fn text_function(v: &Value, code: &str, sys: DateSystem) -> Result<String, C
         return Err(CellError::Value);
     }
     let fmt = NumberFormat::parse_cached(code);
+    if fmt.inner.invalid {
+        return Err(CellError::Value);
+    }
     let n = match v.scalar() {
         Value::Error(e) => return Err(e),
         Value::Empty => 0.0,
