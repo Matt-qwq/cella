@@ -38,21 +38,136 @@ pub(super) type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<FxH
 
 pub type Key = (usize, CellRef);
 
-#[derive(Clone, Debug, Default)]
+/// The formulas that read one precedent cell.
+///
+/// A sheet of a million rows is mostly cells one formula reads (`B2` feeding `G2`) and then cells
+/// two do (`=$A$1` read by a whole column of formulas). Those live inline, so linking a formula
+/// into the index allocates nothing at all; the third dependent moves the list to a `Vec` that
+/// grows from there. The shape this replaced — a `HashSet` per precedent cell — allocated a table
+/// for every cell a fill touched, which was the largest cost of building a million-row graph.
+#[derive(Clone, Debug)]
+pub(super) enum Deps {
+    One(Key),
+    Two(Key, Key),
+    Many(Vec<Key>),
+}
+
+impl Deps {
+    /// The list with `k` added, unless it is already there.
+    ///
+    /// A formula's areas are deduplicated before they reach here, so the graph itself never adds a
+    /// dependent twice: the check is for short lists (a handful of compares) and is skipped for
+    /// long ones, since a cell a million formulas read has to stay O(1) to add to.
+    fn added(self, k: Key) -> Deps {
+        match self {
+            Deps::One(a) if a == k => Deps::One(a),
+            Deps::One(a) => Deps::Two(a, k),
+            Deps::Two(a, b) if a == k || b == k => Deps::Two(a, b),
+            Deps::Two(a, b) => Deps::Many(vec![a, b, k]),
+            Deps::Many(mut v) => {
+                if v.len() > 8 || !v.contains(&k) {
+                    v.push(k);
+                }
+                Deps::Many(v)
+            }
+        }
+    }
+
+    /// The list without `k`, or `None` when it held nothing else.
+    fn without(self, k: Key) -> Option<Deps> {
+        match self {
+            Deps::One(a) => (a != k).then_some(Deps::One(a)),
+            Deps::Two(a, b) => {
+                if a == k {
+                    Some(Deps::One(b))
+                } else if b == k {
+                    Some(Deps::One(a))
+                } else {
+                    Some(Deps::Two(a, b))
+                }
+            }
+            Deps::Many(mut v) => {
+                v.retain(|x| *x != k);
+                match v.len() {
+                    0 => None,
+                    1 => v.pop().map(Deps::One),
+                    _ => Some(Deps::Many(v)),
+                }
+            }
+        }
+    }
+
+    fn push_into(&self, out: &mut Vec<Key>) {
+        match self {
+            Deps::One(a) => out.push(*a),
+            Deps::Two(a, b) => {
+                out.push(*a);
+                out.push(*b);
+            }
+            Deps::Many(v) => out.extend(v.iter().copied()),
+        }
+    }
+}
+
+/// Adds the dependent `k` to what precedent cell `c` answers with.
+fn link(map: &mut HashMap<Key, Deps>, c: Key, k: Key) {
+    if let Some(deps) = map.get_mut(&c) {
+        let taken = std::mem::replace(deps, Deps::One(k));
+        *deps = taken.added(k);
+    } else {
+        map.insert(c, Deps::One(k));
+    }
+}
+
+/// Drops the dependent `k` from what precedent cell `c` answers with; a cell nothing reads any
+/// more leaves the map, so a query never walks an empty list.
+fn unlink(map: &mut HashMap<Key, Deps>, c: Key, k: Key) {
+    let Some(deps) = map.get_mut(&c) else { return };
+    let taken = std::mem::replace(deps, Deps::One(k));
+    match taken.without(k) {
+        Some(left) => *deps = left,
+        None => {
+            map.remove(&c);
+        }
+    }
+}
+
+/// One formula of the graph.
+#[derive(Clone, Debug)]
 pub(super) struct Node {
-    pub(super) areas: Vec<Area>,
-    pub(super) dynamic: bool,
+    /// The node's precedent areas, as a run of [`Graph::areas`]: `areas[start..start + len]`.
+    start: u32,
+    len: u32,
     /// The parsed formula, shared with the cell: a pass reads it from here instead of rebuilding
     /// the cell (which copies its value and both side tables) once per formula.
     pub(super) expr: Option<std::sync::Arc<Expr>>,
-    /// The range of a legacy (Ctrl+Shift+Enter) array formula, if this is its anchor.
-    pub(super) legacy: Option<RangeRef>,
-    /// The formula may return an array and therefore spill: it cannot be evaluated on a thread of
-    /// its own while other formulas are being laid out (the spill layout is a pass of its own).
-    pub(super) may_spill: bool,
-    /// A reference is read through the sheet's used range (see [`crate::eval::trimmed`]), so the
-    /// value changes when the used range moves even if no cell the formula names changed.
-    pub(super) trim: bool,
+    /// The `DYNAMIC`..`LEGACY` bits below.
+    flags: u8,
+}
+
+/// The formula is evaluated every time (INDIRECT/OFFSET, a volatile function, a moving name).
+const DYNAMIC: u8 = 1;
+/// The formula may return an array and so spill: the parallel pass leaves it to the sequential one.
+const MAY_SPILL: u8 = 2;
+/// A reference is read through the sheet's used range (see [`crate::eval::trimmed`]).
+const TRIM: u8 = 4;
+/// The anchor of a legacy (Ctrl+Shift+Enter) array formula; its range is in [`Graph::legacy_range`].
+const LEGACY: u8 = 8;
+
+impl Node {
+    pub(super) fn new(expr: Option<std::sync::Arc<Expr>>, dynamic: bool, may_spill: bool, trim: bool) -> Self {
+        let mut flags = 0;
+        if dynamic {
+            flags |= DYNAMIC;
+        }
+        if may_spill {
+            flags |= MAY_SPILL;
+        }
+        if trim {
+            flags |= TRIM;
+        }
+        Node { start: 0, len: 0, expr, flags }
+    }
 }
 
 /// Ranges wider than this many columns go to the per-sheet wide index instead of per-column ones.
@@ -60,6 +175,10 @@ const WIDE: u32 = 64;
 
 /// Insertions an [`Intervals`] keeps aside (scanned by every query) before merging them in.
 const PENDING: usize = 32;
+
+/// Freed areas an arena keeps before [`Graph::settle`] compacts it (and the live share it has to
+/// reach: a fifth of the arena).
+const AREA_GARBAGE: usize = 4096;
 
 /// Row intervals `[r0, r1]`, each with a payload, answering "which intervals overlap rows
 /// `a..=b`?" in O(log n + k).
@@ -183,15 +302,29 @@ impl<T: Copy + Ord> Intervals<T> {
     }
 }
 
+/// The formulas that read which cells.
+///
+/// Precedent areas live in one arena instead of a `Vec` per node: a rebuild of a million formulas
+/// then fills one vector rather than allocating a million, and a node is eight bytes smaller. A
+/// replaced node's run becomes garbage that [`Graph::settle`] drops once it is a large enough share
+/// of the arena.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
     pub(super) nodes: HashMap<Key, Node>,
-    /// single cell → dependents
-    pub(super) cell_deps: HashMap<Key, HashSet<Key>>,
+    /// Every node's precedent areas, packed: a node owns `areas[start..start + len]`.
+    areas: Vec<Area>,
+    /// Areas no node points at any more.
+    area_garbage: usize,
+    /// precedent cell → the formulas that read it
+    pub(super) cell_deps: HashMap<Key, Deps>,
     /// (sheet, col) → row intervals of the ranges (up to `WIDE` columns) that cover the column
     pub(super) col_deps: HashMap<(usize, u32), Intervals<Key>>,
     /// sheet → row intervals of wider ranges, with their columns: (first, last, dependent)
     pub(super) wide_deps: HashMap<usize, Intervals<(u32, u32, Key)>>,
+    /// The range of a legacy (Ctrl+Shift+Enter) array formula, for the anchor that holds it. A
+    /// side table because the range is 16 bytes a formula would have to carry to say "not an
+    /// array" — and almost no formula is one.
+    legacy_range: HashMap<Key, RangeRef>,
     pub(super) dynamic: HashSet<Key>,
     /// Formulas whose value may be an array (and so spill), and the anchors of legacy arrays.
     /// A pass checks these against its dirty set: a dirty one means the pass cannot be split.
@@ -203,6 +336,11 @@ pub struct Graph {
     /// Range indexes changed since the last [`Graph::settle`].
     pub(super) unsettled_cols: HashSet<(usize, u32)>,
     pub(super) unsettled_wide: HashSet<usize>,
+    /// Buffers `insert`/`remove` sort a node's index entries in, so linking a formula into the
+    /// graph allocates nothing once the graph is warm.
+    scratch_cells: Vec<Key>,
+    scratch_cols: Vec<(usize, u32, u32, u32)>,
+    scratch_wide: Vec<(usize, RangeRef)>,
 }
 
 impl Graph {
@@ -213,10 +351,39 @@ impl Graph {
         self.nodes.is_empty()
     }
 
+    /// The precedent areas of a node.
+    pub(super) fn areas_of(&self, node: &Node) -> &[Area] {
+        let start = node.start as usize;
+        self.areas.get(start..start.saturating_add(node.len as usize)).unwrap_or(&[])
+    }
+
+    /// The number of areas the arena holds (live ones plus the garbage `settle` has not packed
+    /// away yet) — tests check that a bulk replacement does not leave them behind.
+    #[cfg(test)]
+    pub(super) fn areas_len(&self) -> usize {
+        self.areas.len()
+    }
+
+    /// The range of the legacy array anchored at `k`, if it is one.
+    pub(super) fn legacy_of(&self, k: Key) -> Option<RangeRef> {
+        self.legacy_range.get(&k).copied()
+    }
+
+    /// Reserves room for `formulas` formulas, so a bulk build does not grow its tables a dozen
+    /// times (each growth rehashes every entry already in it).
+    pub(super) fn reserve(&mut self, formulas: usize) {
+        self.nodes.reserve(formulas);
+        let precedent_cells = formulas.saturating_mul(3).saturating_div(2);
+        self.cell_deps.reserve(precedent_cells);
+        self.areas.reserve(formulas.saturating_mul(2));
+    }
+
     /// Index entries of a formula's precedents, without duplicates: single cells, column
-    /// intervals and wide ranges.
-    fn entries(areas: &[Area]) -> (Vec<Key>, Vec<(usize, u32, u32, u32)>, Vec<(usize, RangeRef)>) {
-        let (mut cells, mut cols, mut wide) = (Vec::new(), Vec::new(), Vec::new());
+    /// intervals and wide ranges. The buffers are reused between calls, so this allocates nothing.
+    fn entries(areas: &[Area], cells: &mut Vec<Key>, cols: &mut Vec<(usize, u32, u32, u32)>, wide: &mut Vec<(usize, RangeRef)>) {
+        cells.clear();
+        cols.clear();
+        wide.clear();
         for a in areas {
             if a.range.is_single() {
                 cells.push((a.sheet, a.range.start));
@@ -234,69 +401,120 @@ impl Graph {
         cols.dedup();
         wide.sort_unstable_by_key(|(s, r)| (*s, r.start, r.end));
         wide.dedup();
-        (cells, cols, wide)
     }
 
-    pub(super) fn insert(&mut self, k: Key, node: Node) {
-        self.remove(k);
-        let (cells, cols, wide) = Self::entries(&node.areas);
-        for c in cells {
-            self.cell_deps.entry(c).or_default().insert(k);
+    /// Takes the buffers [`Graph::entries`] fills, so they are not borrowed while the indexes they
+    /// describe are updated.
+    fn take_scratch(&mut self) -> (Vec<Key>, Vec<(usize, u32, u32, u32)>, Vec<(usize, RangeRef)>) {
+        (std::mem::take(&mut self.scratch_cells), std::mem::take(&mut self.scratch_cols), std::mem::take(&mut self.scratch_wide))
+    }
+
+    fn put_scratch(&mut self, cells: Vec<Key>, cols: Vec<(usize, u32, u32, u32)>, wide: Vec<(usize, RangeRef)>) {
+        self.scratch_cells = cells;
+        self.scratch_cols = cols;
+        self.scratch_wide = wide;
+    }
+
+    /// Adds a formula to the graph, replacing whatever the cell held.
+    ///
+    /// `areas` are the formula's precedents, `legacy` the range of a legacy array it anchors.
+    pub(super) fn insert(&mut self, k: Key, areas: &[Area], legacy: Option<RangeRef>, node: Node) {
+        // The arena cannot hold more than `u32::MAX` areas (96 GB of them); a run that large is
+        // not a workbook, and capping keeps the arithmetic below total.
+        let start = u32::try_from(self.areas.len()).unwrap_or(u32::MAX);
+        let len = u32::try_from(areas.len()).unwrap_or(u32::MAX);
+        self.areas.extend_from_slice(areas);
+        let mut node = Node { start, len, ..node };
+
+        if legacy.is_some() {
+            node.flags |= LEGACY;
         }
-        for (s, c, r0, r1) in cols {
-            self.col_deps.entry((s, c)).or_default().insert(r0, r1, k);
-            self.unsettled_cols.insert((s, c));
+        let flags = node.flags;
+        // One table probe: the node this replaces (if any) is unlinked after the new one has taken
+        // its place, which is what a bulk build — a fill of a million formulas — pays per formula.
+        if let Some(old) = self.nodes.insert(k, node) {
+            self.unlink(k, &old);
         }
-        for (s, r) in wide {
-            self.wide_deps.entry(s).or_default().insert(r.start.row, r.end.row, (r.start.col, r.end.col, k));
-            self.unsettled_wide.insert(s);
-        }
-        if node.dynamic {
+        self.link_precedents(k, areas);
+        if flags & DYNAMIC != 0 {
             self.dynamic.insert(k);
         }
-        if node.may_spill {
+        if flags & MAY_SPILL != 0 {
             self.may_spill.insert(k);
         }
-        if node.legacy.is_some() {
-            self.legacy.insert(k);
-        }
-        if node.trim {
+        if flags & TRIM != 0 {
             self.trim.insert(k);
         }
-        self.nodes.insert(k, node);
+        if let Some(r) = legacy {
+            self.legacy.insert(k);
+            self.legacy_range.insert(k, r);
+        }
     }
 
     pub(super) fn remove(&mut self, k: Key) {
-        let Some(old) = self.nodes.remove(&k) else { return };
-        let (cells, cols, wide) = Self::entries(&old.areas);
-        for c in cells {
-            if let Some(v) = self.cell_deps.get_mut(&c) {
-                v.remove(&k);
-                if v.is_empty() {
-                    self.cell_deps.remove(&c);
-                }
-            }
+        if let Some(old) = self.nodes.remove(&k) {
+            self.unlink(k, &old);
         }
-        for (s, c, r0, r1) in cols {
+    }
+
+    /// Drops a replaced node's index entries and frees its areas.
+    fn unlink(&mut self, k: Key, old: &Node) {
+        let (mut cells, mut cols, mut wide) = self.take_scratch();
+        let start = old.start as usize;
+        let old_areas = self.areas.get(start..start.saturating_add(old.len as usize)).unwrap_or(&[]);
+        Self::entries(old_areas, &mut cells, &mut cols, &mut wide);
+        for &c in &cells {
+            unlink(&mut self.cell_deps, c, k);
+        }
+        for &(s, c, r0, r1) in &cols {
             if let Some(v) = self.col_deps.get_mut(&(s, c)) {
                 v.remove(r0, r1, k);
                 self.unsettled_cols.insert((s, c));
             }
         }
-        for (s, r) in wide {
+        for &(s, r) in &wide {
             if let Some(v) = self.wide_deps.get_mut(&s) {
                 v.remove(r.start.row, r.end.row, (r.start.col, r.end.col, k));
                 self.unsettled_wide.insert(s);
             }
         }
-        self.dynamic.remove(&k);
-        self.may_spill.remove(&k);
-        self.legacy.remove(&k);
-        self.trim.remove(&k);
+        self.put_scratch(cells, cols, wide);
+        if old.flags & DYNAMIC != 0 {
+            self.dynamic.remove(&k);
+        }
+        if old.flags & MAY_SPILL != 0 {
+            self.may_spill.remove(&k);
+        }
+        if old.flags & TRIM != 0 {
+            self.trim.remove(&k);
+        }
+        if old.flags & LEGACY != 0 {
+            self.legacy.remove(&k);
+            self.legacy_range.remove(&k);
+        }
+        self.area_garbage = self.area_garbage.saturating_add(old.len as usize);
+    }
+
+    /// Adds a formula to the index of everything it reads.
+    fn link_precedents(&mut self, k: Key, areas: &[Area]) {
+        let (mut cells, mut cols, mut wide) = self.take_scratch();
+        Self::entries(areas, &mut cells, &mut cols, &mut wide);
+        for &c in &cells {
+            link(&mut self.cell_deps, c, k);
+        }
+        for &(s, c, r0, r1) in &cols {
+            self.col_deps.entry((s, c)).or_default().insert(r0, r1, k);
+            self.unsettled_cols.insert((s, c));
+        }
+        for &(s, r) in &wide {
+            self.wide_deps.entry(s).or_default().insert(r.start.row, r.end.row, (r.start.col, r.end.col, k));
+            self.unsettled_wide.insert(s);
+        }
+        self.put_scratch(cells, cols, wide);
     }
 
     /// Tidies the range indexes changed by `insert`/`remove` (queries stay correct without it,
-    /// just slower).
+    /// just slower), and gives the arena's garbage back once it is a large enough share of it.
     pub(super) fn settle(&mut self) {
         for key in std::mem::take(&mut self.unsettled_cols) {
             if let Some(v) = self.col_deps.get_mut(&key) {
@@ -314,12 +532,32 @@ impl Graph {
                 }
             }
         }
+        if self.area_garbage > AREA_GARBAGE && self.area_garbage > self.areas.len() / 5 {
+            self.compact_areas();
+        }
+    }
+
+    /// Packes the live areas together, in one pass over the nodes. Runs once the garbage a
+    /// replaced formula left behind outweighs a fifth of the arena, so its cost — a walk of the
+    /// nodes — is paid for by the edits that filled it.
+    fn compact_areas(&mut self) {
+        let old = std::mem::take(&mut self.areas);
+        let live = old.len().saturating_sub(self.area_garbage);
+        let mut areas: Vec<Area> = Vec::with_capacity(live);
+        for node in self.nodes.values_mut() {
+            let start = node.start as usize;
+            let run = old.get(start..start.saturating_add(node.len as usize)).unwrap_or(&[]);
+            node.start = u32::try_from(areas.len()).unwrap_or(u32::MAX);
+            areas.extend_from_slice(run);
+        }
+        self.areas = areas;
+        self.area_garbage = 0;
     }
 
     /// Formulas that read cell `c` of `sheet`.
     pub fn dependents(&self, sheet: usize, c: CellRef, out: &mut Vec<Key>) {
         if let Some(v) = self.cell_deps.get(&(sheet, c)) {
-            out.extend(v.iter().copied());
+            v.push_into(out);
         }
         if let Some(v) = self.col_deps.get(&(sheet, c.col)) {
             v.query(c.row, c.row, &mut |k| out.push(*k));
@@ -338,13 +576,13 @@ impl Graph {
         if range.count() <= 4096 {
             for c in range.iter() {
                 if let Some(v) = self.cell_deps.get(&(sheet, c)) {
-                    out.extend(v.iter().copied());
+                    v.push_into(out);
                 }
             }
         } else {
             for ((s, c), v) in &self.cell_deps {
                 if *s == sheet && range.contains(*c) {
-                    out.extend(v.iter().copied());
+                    v.push_into(out);
                 }
             }
         }
@@ -373,6 +611,6 @@ impl Graph {
 
     /// Precedent areas of a formula cell (for Trace Precedents).
     pub fn precedents_of(&self, k: Key) -> Vec<Area> {
-        self.nodes.get(&k).map(|n| n.areas.clone()).unwrap_or_default()
+        self.nodes.get(&k).map(|n| self.areas_of(n).to_vec()).unwrap_or_default()
     }
 }

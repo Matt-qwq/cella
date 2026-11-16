@@ -23,7 +23,7 @@ use gridcraft_core::{CellError, CellRef, RangeRef, Value};
 use gridcraft_formula::{Expr, UnOp};
 use gridcraft_model::{CalcMode, Workbook};
 
-use crate::eval::{Evaluator, precedents};
+use crate::eval::{Area, Evaluator, precedents_into};
 use crate::spill_index::{SpillIndex, indexing_pays};
 
 /// Changed cells (in one `cells_changed`) from which a sheet's spill areas are indexed.
@@ -56,6 +56,9 @@ pub struct Calc {
     /// Definitions of the names formulas use, resolved once per sheet and name instead of once
     /// per formula that mentions it (see [`crate::eval::NameCache`]).
     names: crate::eval::NameCache,
+    /// Buffer [`precedents_into`] fills for the formula being inserted into the graph, so building
+    /// the graph of a million formulas does not allocate a `Vec` per formula.
+    scratch_areas: Vec<Area>,
     /// The formulas the last rebuild had to parse from their text, with the tree it parsed. A
     /// document read back from its own saved form keeps a formula's text alone (`Formula::expr` is
     /// not written to a file), so after a rebuild these are handed back to their cells: the writer,
@@ -90,6 +93,7 @@ impl Default for Calc {
             last_restore_cells: None,
             parallel_fallback: false,
             names: crate::eval::NameCache::default(),
+            scratch_areas: vec![],
             unshared: vec![],
             #[cfg(test)]
             parallel_runs: 0,
@@ -130,7 +134,7 @@ fn may_return_array(names: &mut crate::eval::NameCache, wb: &Workbook, sheet: us
 /// most `MAX_NAME_DEPTH` deep): the formula tree itself is walked with an explicit stack, as a
 /// long operator chain must not recurse once per operand.
 fn may_return_array_at(names: &mut crate::eval::NameCache, wb: &Workbook, sheet: usize, root: &Expr, depth: usize) -> bool {
-    let mut stack = vec![root];
+    let mut stack = crate::walk::Stack::new(root);
     while let Some(e) = stack.pop() {
         match e {
             Expr::Array(_) => return true,
@@ -147,7 +151,9 @@ fn may_return_array_at(names: &mut crate::eval::NameCache, wb: &Workbook, sheet:
                 if is_scalar_function(name) {
                     continue;
                 }
-                stack.extend(args.iter());
+                for a in args.iter().rev() {
+                    stack.push(a);
+                }
             }
             Expr::Binary(_, a, b) => {
                 stack.push(b);
@@ -408,7 +414,7 @@ impl Calc {
                     for &k in part {
                         let Some(node) = graph.nodes.get(&k) else { continue };
                         let mut leaf = true;
-                        for area in &node.areas {
+                        for area in graph.areas_of(node) {
                             if area.range.count() > PARALLEL_LEAF_CELLS {
                                 leaf = false;
                                 break;
@@ -437,7 +443,7 @@ impl Calc {
                             if let Some(e) = &node.expr {
                                 exprs.insert(k, std::sync::Arc::clone(e));
                             }
-                            if let Some(r) = node.legacy {
+                            if let Some(r) = graph.legacy_of(k) {
                                 legacy.insert(k, r);
                             }
                         }
@@ -543,11 +549,17 @@ impl Calc {
         self.graph = Graph::default();
         self.unshared.clear();
         for (si, sheet) in wb.sheets.iter().enumerate() {
-            for (c, f, _) in sheet.cells.formulas() {
+            // One pass to learn the size (moving, not cloning, what the store hands out): the
+            // graph's tables then grow once instead of rehashing every entry a dozen times.
+            let formulas: Vec<_> = sheet.cells.formulas().collect();
+            self.graph.reserve(formulas.len());
+            for (c, f, _) in formulas {
                 if let Some(e) = f.expr_arc() {
-                    let (areas, dynamic, trim) = precedents(&mut self.names, wb, si, &e);
+                    let (dynamic, trim) = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, si, &e);
-                    self.graph.insert((si, c), Node { areas, dynamic, expr: Some(e.clone()), legacy: f.array, may_spill, trim });
+                    let areas = std::mem::take(&mut self.scratch_areas);
+                    self.graph.insert((si, c), &areas, f.array, Node::new(Some(e.clone()), dynamic, may_spill, trim));
+                    self.scratch_areas = areas;
                     // The tree had to be parsed anyway; keeping it for the cell saves parsing it
                     // again for every later use.
                     if f.expr.is_none() {
@@ -590,9 +602,11 @@ impl Calc {
             // A formula whose text does not parse has no node at all, as in `rebuild`.
             match formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array))) {
                 Some((e, legacy)) => {
-                    let (areas, dynamic, trim) = precedents(&mut self.names, to, si, &e);
+                    let (dynamic, trim) = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, to, si, &e);
-                    self.graph.insert((si, at), Node { areas, dynamic, expr: Some(e), legacy, may_spill, trim });
+                    let areas = std::mem::take(&mut self.scratch_areas);
+                    self.graph.insert((si, at), &areas, legacy, Node::new(Some(e), dynamic, may_spill, trim));
+                    self.scratch_areas = areas;
                 }
                 None => self.graph.remove((si, at)),
             }
@@ -714,9 +728,11 @@ impl Calc {
             let parsed = formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array)));
             match parsed {
                 Some((e, legacy)) => {
-                    let (areas, dynamic, trim) = precedents(&mut self.names, wb, k.0, &e);
+                    let (dynamic, trim) = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, k.0, &e);
-                    self.graph.insert(k, Node { areas, dynamic, expr: Some(e), legacy, may_spill, trim });
+                    let areas = std::mem::take(&mut self.scratch_areas);
+                    self.graph.insert(k, &areas, legacy, Node::new(Some(e), dynamic, may_spill, trim));
+                    self.scratch_areas = areas;
                 }
                 None => {
                     self.graph.remove(k);
@@ -980,7 +996,7 @@ impl Calc {
                     if let Some(e) = &node.expr {
                         exprs.insert(*k, std::sync::Arc::clone(e));
                     }
-                    if let Some(r) = node.legacy {
+                    if let Some(r) = self.graph.legacy_of(*k) {
                         legacy.insert(*k, r);
                     }
                 }
@@ -1650,6 +1666,61 @@ pub(crate) mod tests {
         deps.clear();
         calc.graph.dependents(1, CellRef::parse("A2").unwrap(), &mut deps);
         assert_eq!(deps, vec![at("DA9"), at("DA9")]);
+    }
+
+    #[test]
+    fn compacting_the_area_arena_keeps_every_precedent() {
+        // A replaced formula's areas become garbage that `settle` packs away once it outweighs a
+        // fifth of the arena. Every formula's precedents have to survive the move.
+        let mut wb = Workbook::new();
+        let mut calc = Calc::new();
+        let rows = 5_000u32;
+        for r in 0..rows {
+            wb.sheet_mut(0).unwrap().cells.set(CellRef::new(r, 0), Cell::value(Value::Number(f64::from(r))));
+            wb.sheet_mut(0).unwrap().cells.set(CellRef::new(r, 1), Cell::formula(Formula::new(&format!("=SUM(A{0}:B{0})", r + 1))));
+        }
+        let all: Vec<Key> = (0..rows).map(|r| (0, CellRef::new(r, 1))).collect();
+        calc.cells_changed(&mut wb, &all);
+        // Every formula replaced by one that reads another cell: the old runs are now garbage.
+        for r in 0..rows {
+            wb.sheet_mut(0).unwrap().cells.set(CellRef::new(r, 1), Cell::formula(Formula::new(&format!("=A{0}*2", r + 1))));
+        }
+        calc.cells_changed(&mut wb, &all);
+        assert_eq!(calc.graph.len(), rows as usize);
+        // One area per formula: the runs of the replaced ones were given back, not kept.
+        assert_eq!(calc.graph.areas_len(), rows as usize, "the arena kept the replaced formulas' areas");
+        for r in 0..rows {
+            let k = (0, CellRef::new(r, 1));
+            let one = crate::eval::Area { sheet: 0, range: RangeRef::new(CellRef::new(r, 0), CellRef::new(r, 0)) };
+            assert_eq!(calc.graph.precedents_of(k), vec![one], "row {r} lost its precedent");
+        }
+        let mut deps = Vec::new();
+        calc.graph.dependents(0, CellRef::new(3, 0), &mut deps);
+        assert_eq!(deps, vec![(0, CellRef::new(3, 1))]);
+        assert_eq!(wb.sheet(0).unwrap().value(CellRef::new(3, 1)), Value::Number(6.0));
+        // The cell the replaced formula used to read is not a precedent any more.
+        deps.clear();
+        calc.graph.dependents(0, CellRef::new(3, 1), &mut deps);
+        assert!(deps.is_empty(), "{deps:?}");
+    }
+
+    #[test]
+    fn replacing_an_array_formula_drops_its_range() {
+        // A legacy (Ctrl+Shift+Enter) array's range is a side table of the graph, so replacing the
+        // formula has to take it out: left behind, the plain formula that replaced it was still
+        // read as an array anchor that wrote the cells below it.
+        let mut wb = Workbook::new();
+        let mut array = Formula::new("=1");
+        array.array = RangeRef::parse("A1:A2");
+        wb.sheet_mut(0).unwrap().cells.set(CellRef::new(0, 0), Cell::formula(array));
+        let mut calc = Calc::new();
+        calc.rebuild(&wb);
+        let at = (0, CellRef::new(0, 0));
+        assert_eq!(calc.graph.legacy_of(at), RangeRef::parse("A1:A2"));
+        wb.sheet_mut(0).unwrap().cells.set(CellRef::new(0, 0), Cell::formula(Formula::new("=2")));
+        calc.cells_changed(&mut wb, &[at]);
+        assert_eq!(calc.graph.legacy_of(at), None, "the graph still holds the array's range");
+        assert!(!calc.graph.legacy.contains(&at), "the graph still counts the cell as an array anchor");
     }
 
     /// `n` rows of `text` in column J, with A1 = 1 and B1 = 2 as inputs. Above the parallel

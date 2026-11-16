@@ -13,6 +13,7 @@ fill.chained    100000  970
 fill.formulas   100000  860
 fill.values     100000  710
 open.xlsx       100000  1400
+rebuild.graph   100000  600
 save.xlsx       100000  690
 sort.desc       100000  1450
 aggregate      1000000  1850
@@ -22,5 +23,6 @@ fill.chained   1000000  10500
 fill.formulas  1000000  8750
 fill.values    1000000  8050
 open.xlsx      1000000  17250
+rebuild.graph  1000000  4000
 save.xlsx      1000000  8000
 sort.desc      1000000  19000

@@ -165,18 +165,28 @@ fn is_lambda_definition(e: &Expr) -> bool {
 /// `Sheet1!$B$1` makes `=Rate*A1` read A1 and B1, so an edit elsewhere does not recalculate it
 /// and an edit of B1 does. `names` keeps the resolved definitions between calls.
 pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, bool, bool) {
+    let mut out = Vec::new();
+    let (dynamic, trim) = precedents_into(names, wb, sheet, e, &mut out);
+    (out, dynamic, trim)
+}
+
+/// [`precedents`] appending to a buffer the caller reuses and emptying it first.
+///
+/// Building the graph asks a million formulas for their precedents; one `Vec` per formula is a
+/// million allocations that say nothing the graph does not already know.
+pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, out: &mut Vec<Area>) -> (bool, bool) {
+    out.clear();
     // One budget for the whole walk, shared by the definitions it follows: past
     // `MAX_PRECEDENT_NODES` the result is conservative (the formula is marked `dynamic`, so it
     // recalculates every time) rather than a walk that never ends.
     let mut left = MAX_PRECEDENT_NODES;
-    precedents_at(names, wb, sheet, e, 0, &mut left)
+    precedents_at(names, wb, sheet, e, 0, &mut left, out)
 }
 
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize) -> (Vec<Area>, bool, bool) {
-    let mut out = Vec::new();
+fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize, out: &mut Vec<Area>) -> (bool, bool) {
     let mut dynamic = false;
     let mut trim = false;
     let push = |out: &mut Vec<Area>, r: &Reference, range: RangeRef| match &r.sheet {
@@ -194,7 +204,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             }
         }
     };
-    e.walk(&mut |x| {
+    crate::walk::walk(e, &mut |x| {
         // One node of the budget per node visited. Past it the answer is conservative: the formula
         // is marked dynamic, so it recalculates every time rather than the walk never ending.
         if *left == 0 {
@@ -206,7 +216,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             Expr::Ref(r) => {
                 let range = r.range();
                 trim |= trimmed(range);
-                push(&mut out, r, range);
+                push(&mut *out, r, range);
             }
             // The cells SUMIF/AVERAGEIF really read from the sum range (see `resized_sum_range`); when
             // the criteria range's size isn't known statically, recalculate the formula every time.
@@ -215,7 +225,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
                     let (crit, sum) = (c.range(), s.range());
                     let resized = resized_sum_range(sum, crit.height(), crit.width());
                     trim |= trimmed(resized);
-                    push(&mut out, s, resized);
+                    push(&mut *out, s, resized);
                 }
                 (_, Some(Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Array(_) | Expr::Missing)) => {}
                 _ => dynamic = true,
@@ -251,8 +261,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             }
             Expr::Name(n) => match names.target(wb, sheet, n) {
                 NameTarget::Definition(def, scope) if depth < MAX_NAME_DEPTH && *left > 0 && !is_lambda_definition(&def) => {
-                    let (inner, d, t) = precedents_at(names, wb, scope, &def, depth + 1, left);
-                    out.extend(inner);
+                    let (d, t) = precedents_at(names, wb, scope, &def, depth + 1, left, out);
                     dynamic |= d;
                     trim |= t;
                 }
@@ -274,8 +283,9 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             // A range ending in a function's result (`A1:INDEX(B1:B9,n)`) covers the cells between
             // the references inside it, not only those references.
             Expr::Binary(BinOp::Range, a, b) if !matches!((&**a, &**b), (Expr::Ref(_), Expr::Ref(_))) => {
-                let mut inner = precedents_at(names, wb, sheet, a, depth, left).0;
-                inner.extend(precedents_at(names, wb, sheet, b, depth, left).0);
+                let mut inner = Vec::new();
+                precedents_at(names, wb, sheet, a, depth, left, &mut inner);
+                precedents_at(names, wb, sheet, b, depth, left, &mut inner);
                 let mut boxes: Vec<Area> = Vec::new();
                 for area in inner {
                     match boxes.iter_mut().find(|x| x.sheet == area.sheet) {
@@ -288,7 +298,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             _ => {}
         }
     });
-    (out, dynamic, trim)
+    (dynamic, trim)
 }
 
 fn is_special(n: &str) -> bool {

@@ -21,7 +21,7 @@ use array::map_unary;
 pub use array::{Acc, Agg, binary_values, zip2};
 pub use format::r1c1_to_a1;
 pub(crate) use special::MAX_NAME_DEPTH;
-pub use special::{NameCache, NameTarget, SPECIAL_FUNCTIONS, is_known_function, precedents, resized_sum_range, trimmed};
+pub use special::{NameCache, NameTarget, SPECIAL_FUNCTIONS, is_known_function, precedents, precedents_into, resized_sum_range, trimmed};
 
 /// Largest array a reference may expand to.
 pub const MAX_CELLS: u64 = 16_000_000;
