@@ -423,7 +423,9 @@ fn recent_list(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Ou
 enum Modified {
     /// When it was last changed, in seconds since 1970.
     At(f64),
-    /// It can't be reached: moved, deleted, or on a drive that is away.
+    /// It can't be reached: moved, deleted, or on a drive that is away. Only the native path
+    /// asks the file system (the web build lists no recent files), so on wasm it is never built.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Unknown,
 }
 
