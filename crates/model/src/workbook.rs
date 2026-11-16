@@ -267,6 +267,16 @@ pub struct Workbook {
     /// the links in memory are still written for the old one. Not in JSON.
     #[serde(skip)]
     pub source_path: Option<std::path::PathBuf>,
+    /// Fields of the workbook object in a JSON file that this version does not model (a newer
+    /// GridCraft's, or one a later build dropped). Serde collects them on a read and writes them
+    /// back on a save, so an older build never destroys a newer file's data. Not in XLSX.
+    #[serde(flatten)]
+    pub json_kept: crate::JsonKept,
+    /// Fields of the JSON envelope around the workbook (`formatVersion` and `workbook`'s
+    /// siblings) that this version does not model. The JSON format code owns the envelope, so it
+    /// fills and writes this; nothing else sees it, and it is not in XLSX.
+    #[serde(skip)]
+    pub json_envelope: crate::JsonKept,
 }
 
 fn is_all(s: &ShowObjects) -> bool {
@@ -306,6 +316,8 @@ impl Workbook {
             preserved: None,
             source_dir: None,
             source_path: None,
+            json_kept: crate::JsonKept::default(),
+            json_envelope: crate::JsonKept::default(),
         }
     }
 
