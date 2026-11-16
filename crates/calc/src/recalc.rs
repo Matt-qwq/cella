@@ -290,25 +290,6 @@ fn is_scalar_function(name: &str) -> bool {
     )
 }
 
-/// True when evaluating the formula can change on its own: `NOW`, `TODAY`, `RAND`, `OFFSET`…
-/// Walking the parsed expression is cheap next to evaluating it, and a cell that reads one of these
-/// must be recalculated on open even though the file carries a value for it.
-fn is_volatile(e: &Expr) -> bool {
-    let mut found = false;
-    e.walk(&mut |node| {
-        if let Expr::Call(name, _) = node
-            && (gridcraft_functions::lookup(name).is_some_and(|f| f.volatile)
-                // A measure reads the data model, which is refreshed outside the cell graph (a
-                // query reload, a relationship or measure edit), so its cached value can be out of
-                // date the moment the file opens.
-                || name.eq_ignore_ascii_case("MEASURE"))
-        {
-            found = true;
-        }
-    });
-    found
-}
-
 /// Independent formulas a pass needs before splitting across threads: below this, starting
 /// threads and building one expression map per thread costs more than the pass.
 #[cfg(not(target_arch = "wasm32"))]
@@ -555,10 +536,11 @@ impl Calc {
             self.graph.reserve(formulas.len());
             for (c, f, _) in formulas {
                 if let Some(e) = f.expr_arc() {
-                    let (dynamic, trim) = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
+                    let (dynamic, trim, volatile) = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, si, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    self.graph.insert((si, c), &areas, f.array, Node::new(Some(e.clone()), dynamic, may_spill, trim));
+                    let node = Node::new(Some(e.clone()), dynamic, may_spill, trim).with_volatile(volatile);
+                    self.graph.insert((si, c), &areas, f.array, node);
                     self.scratch_areas = areas;
                     // The tree had to be parsed anyway; keeping it for the cell saves parsing it
                     // again for every later use.
@@ -602,10 +584,11 @@ impl Calc {
             // A formula whose text does not parse has no node at all, as in `rebuild`.
             match formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array))) {
                 Some((e, legacy)) => {
-                    let (dynamic, trim) = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
+                    let (dynamic, trim, volatile) = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, to, si, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    self.graph.insert((si, at), &areas, legacy, Node::new(Some(e), dynamic, may_spill, trim));
+                    let node = Node::new(Some(e), dynamic, may_spill, trim).with_volatile(volatile);
+                    self.graph.insert((si, at), &areas, legacy, node);
                     self.scratch_areas = areas;
                 }
                 None => self.graph.remove((si, at)),
@@ -683,7 +666,10 @@ impl Calc {
                 let derived = f.array.is_some()      // a legacy array fills its range
                     || f.dynamic                     // a dynamic array's spilled cells are derived
                     || !has_value; // the producer saved no value
-                if derived || f.expr_arc().is_some_and(|e| is_volatile(&e)) {
+                // Volatility is a flag the graph build recorded while it walked the formula for its
+                // precedents, so this scan reads a bit instead of walking every tree again — a
+                // tenth of a second of a large open, for an answer that was already known.
+                if derived || self.graph.is_volatile((si, c)) {
                     seeds.push((si, c));
                 }
             }
@@ -728,10 +714,11 @@ impl Calc {
             let parsed = formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array)));
             match parsed {
                 Some((e, legacy)) => {
-                    let (dynamic, trim) = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
+                    let (dynamic, trim, volatile) = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
                     let may_spill = may_return_array(&mut self.names, wb, k.0, &e);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    self.graph.insert(k, &areas, legacy, Node::new(Some(e), dynamic, may_spill, trim));
+                    let node = Node::new(Some(e), dynamic, may_spill, trim).with_volatile(volatile);
+                    self.graph.insert(k, &areas, legacy, node);
                     self.scratch_areas = areas;
                 }
                 None => {
