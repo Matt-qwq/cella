@@ -131,7 +131,7 @@ fn convert_notes(s: &mut Session, _: &Json) -> Result<Json> {
 }
 
 fn protect_sheet(s: &mut Session, p: &Json) -> Result<Json> {
-    let sheet = target_sheet(s, p)?;
+    let sheet = target_any_sheet(s, p)?;
     // Re-protecting a password-protected sheet would replace the password without knowing it:
     // unprotect it first, as in Excel. One without a password can take new options directly.
     let has_password = |pr: &SheetProtection| pr.password.is_some() || pr.legacy_password_hash.is_some();
@@ -168,7 +168,7 @@ fn protect_sheet(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn unprotect_sheet(s: &mut Session, p: &Json) -> Result<Json> {
-    let sheet = target_sheet(s, p)?;
+    let sheet = target_any_sheet(s, p)?;
     if let Some(pr) = s.doc()?.wb.sheet(sheet).and_then(|sh| sh.protection.as_ref()) {
         let pw = str_param(p, "password").unwrap_or("");
         let ok = match (&pr.password, pr.legacy_password_hash) {

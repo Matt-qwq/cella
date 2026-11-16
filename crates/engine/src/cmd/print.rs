@@ -1843,7 +1843,7 @@ fn print_preview(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn page_setup(s: &mut Session, p: &Json) -> Result<Json> {
     const CMD: &str = "pageLayout.pageSetup";
-    let si = target_sheet(s, p)?;
+    let si = target_any_sheet(s, p)?;
     let orientation = match str_param(p, "orientation") {
         None => None,
         Some("portrait") => Some(Orientation::Portrait),

@@ -814,7 +814,7 @@ fn rotate(s: &mut Session, p: &Json) -> Result<Json> {
 /// Switches a sheet's view. Like zoom, the view is saved with the file but is not an edit: it
 /// neither records an undo step nor marks a clean workbook as changed.
 fn set_view(s: &mut Session, p: &Json, mode: SheetViewMode) -> Result<Json> {
-    let si = target_sheet(s, p)?;
+    let si = target_any_sheet(s, p)?;
     let d = s.doc_mut()?;
     let dirty = d.is_dirty();
     let wb = std::sync::Arc::make_mut(&mut d.wb);

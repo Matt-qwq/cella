@@ -277,8 +277,10 @@ pub(crate) fn target_range(s: &Session, p: &Json) -> Result<RangeRef> {
     Ok(target_ranges(s, p)?.first().copied().unwrap_or_default())
 }
 
-/// The sheet a call names (`sheet` param or a `Sheet!` prefix on `range`), else the active one.
-pub(crate) fn target_sheet(s: &Session, p: &Json) -> Result<usize> {
+/// The sheet a call names (`sheet` param or a `Sheet!` prefix on `range`), else the active one,
+/// whatever kind it is. For the sheet-level commands — rename, move, hide, delete, tab colour,
+/// activate, print setup, protect — a chart sheet is an ordinary sheet.
+pub(crate) fn target_any_sheet(s: &Session, p: &Json) -> Result<usize> {
     let d = s.doc()?;
     if let Some(v) = p.get("sheet") {
         if let Some(i) = v.as_u64() {
@@ -294,6 +296,74 @@ pub(crate) fn target_sheet(s: &Session, p: &Json) -> Result<usize> {
         return d.wb.sheet_index(&sh).ok_or_else(|| bad("range", format!("no sheet named `{sh}`")));
     }
     Ok(d.wb.active_sheet)
+}
+
+/// The sheet a call names, for a command that reads or writes **cells**: a chart sheet is refused
+/// by name.
+///
+/// A chart sheet has no cells — its whole content is its one chart — and the file format gives it
+/// nowhere to keep them, so anything a command wrote into `A1` of one was invisible and gone on the
+/// next save. Found by the command-sequence fuzz (seed 30): `insert.table` on a chart sheet put its
+/// header cells there and the reload came back empty. Every command whose subject is cells ("a cell,
+/// a range, a row, a column, a table, a note, a rule, a name for cells") goes through here; the ones
+/// that address the sheet itself use [`target_any_sheet`].
+pub(crate) fn target_sheet(s: &Session, p: &Json) -> Result<usize> {
+    let i = target_any_sheet(s, p)?;
+    worksheet_only(s, i)
+}
+
+/// [`target_sheet`]'s rule for a sheet resolved some other way (the active sheet, a table's sheet,
+/// a chart's host): a chart sheet holds no cells, so a cell command refuses to work on one.
+pub(crate) fn worksheet_only(s: &Session, i: usize) -> Result<usize> {
+    let d = s.doc()?;
+    let sh = d.wb.sheet(i).ok_or(EngineError::NoDocument)?;
+    if sh.is_chart_sheet() {
+        return Err(EngineError::Other(format!("`{}` is a chart sheet; cells live on a worksheet.", sh.name)));
+    }
+    Ok(i)
+}
+
+/// What an edit put on a chart sheet, if anything: the file format has nowhere to keep cells or
+/// objects on one, so a save would drop it. `None` for a chart sheet that is just its chart.
+fn chart_sheet_content(sh: &gridcraft_model::Sheet) -> Option<&'static str> {
+    [
+        (!sh.cells.is_empty()).then_some("cells"),
+        (!sh.cell_pictures.is_empty()).then_some("a cell picture"),
+        (!sh.merges.is_empty()).then_some("merged cells"),
+        (!sh.tables.is_empty()).then_some("a table"),
+        (!sh.validations.is_empty() || !sh.cond_formats.is_empty()).then_some("a cell rule"),
+        (!sh.comments.is_empty() || !sh.hyperlinks.is_empty()).then_some("a note or a link"),
+        (!sh.sparklines.is_empty()).then_some("a sparkline"),
+        (!sh.pivots.is_empty()).then_some("a PivotTable"),
+        sh.autofilter.is_some().then_some("a filter"),
+        (!sh.images.is_empty() || !sh.shapes.is_empty() || !sh.equations.is_empty()).then_some("an object"),
+        (!sh.controls.is_empty()).then_some("a form control"),
+        (!sh.slicers.is_empty() || !sh.pivot_slicers.is_empty() || !sh.pivot_timelines.is_empty()).then_some("a slicer"),
+        (!sh.spill.is_empty() || !sh.spill_ranges.is_empty()).then_some("a spilled value"),
+        (!sh.edit_ranges.is_empty()).then_some("an edit range"),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+}
+
+/// Refuses an edit that leaves content on a chart sheet, naming the sheet.
+///
+/// [`target_sheet`] is the rule for the commands that name their sheet; this is the backstop for the
+/// paths that resolve one some other way — the active sheet a command reads for itself, or a table's
+/// header reconciler writing cells straight into the store (which is where the command-sequence
+/// fuzz, seed 30, found a chart sheet's `A4` holding a header). A chart sheet that already carried
+/// content in the file is left alone: refusing every edit would make such a workbook impossible to
+/// repair.
+fn check_chart_sheets(old: &Workbook, wb: &Workbook) -> Result<()> {
+    for sh in wb.sheets.iter().filter(|sh| sh.is_chart_sheet()) {
+        let Some(kind) = chart_sheet_content(sh) else { continue };
+        if old.sheet_index(&sh.name).and_then(|i| old.sheet(i)).and_then(chart_sheet_content).is_some() {
+            continue;
+        }
+        return Err(EngineError::Other(format!("`{}` is a chart sheet; cells live on a worksheet (it cannot hold {kind}).", sh.name)));
+    }
+    Ok(())
 }
 
 pub(crate) use gridcraft_core::split_sheet;
@@ -382,6 +452,7 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     };
     let r = f(&mut ctx)?;
     let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, .. } = ctx;
+    check_chart_sheets(&d.wb, &wb)?;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
     }

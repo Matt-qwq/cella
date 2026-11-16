@@ -91,7 +91,7 @@ fn inspect(s: &mut Session, _: &Json) -> Result<Json> {
 /// nothing and leaves the dirty bit as it was. `{}` compacts the whole workbook, `{sheet}` one
 /// sheet.
 fn compact(s: &mut Session, p: &Json) -> Result<Json> {
-    let only = if p.get("sheet").is_some() { Some(target_sheet(s, p)?) } else { None };
+    let only = if p.get("sheet").is_some() { Some(target_any_sheet(s, p)?) } else { None };
     let out = compact_document(s.doc_mut()?, only);
     Ok(json!({"cells": out.cells, "bands": out.bands, "pages": out.pages, "changed": out.changed}))
 }

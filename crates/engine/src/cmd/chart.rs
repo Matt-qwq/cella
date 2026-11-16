@@ -366,7 +366,7 @@ fn move_to_object(s: &mut Session, p: &Json) -> Result<Json> {
     // Where it lands: the sheet named, or the nearest worksheet before the chart sheet — a chart
     // sheet is never a place for an object.
     let target = match p.get("sheet") {
-        Some(_) => Some(super::target_sheet(s, p)?),
+        Some(_) => Some(super::target_any_sheet(s, p)?),
         None => (0..si).rev().find(|i| d.wb.sheet(*i).is_some_and(|s| !s.is_chart_sheet())),
     };
     let Some(target) = target else { return Err(bad(C, "there is no worksheet to put the chart on")) };
@@ -1283,7 +1283,7 @@ mod tests {
     fn a_chart_sheet_never_stores_cells() {
         let (mut s, _id) = session();
         s.execute("chart.moveToSheet", json!({})).unwrap();
-        let _ = s.execute("cell.set", json!({"cell": "A1", "input": "12"}));
+        assert!(s.execute("cell.set", json!({"cell": "A1", "input": "12"})).is_err(), "a cell command refuses a chart sheet");
         let d = s.doc().unwrap();
         let cs = d.wb.sheet(1).unwrap();
         assert!(cs.is_chart_sheet());
@@ -1381,5 +1381,92 @@ mod tests {
         assert_eq!(c.kind, ChartKind::Combo);
         assert_eq!(c.series[0].kind, None, "the first series keeps the combo default (a column)");
         assert_eq!(c.series[1].kind, None, "and the moved one the combo default (a line)");
+    }
+
+    /// A chart sheet has no cells in the file format, so a command that reads or writes cells refuses
+    /// it by name instead of writing where the next save would drop it. This is the shrink of the
+    /// command-sequence fuzz's seed 30, which found a table's header cells in a chart sheet's memory
+    /// (`x!A4` = `Column1`) and an empty `A4` after the save and reload.
+    #[test]
+    fn insert_table_on_a_chart_sheet_is_refused_and_leaves_it_alone() {
+        let (mut s, _id) = session();
+        s.execute("chart.moveToSheet", json!({"name": "x"})).unwrap();
+        // The chart sheet is the active sheet, so the range names no sheet: the implicit path.
+        let err = s.execute("insert.table", json!({"header": true, "name": "Data", "range": "A4:E7"})).unwrap_err().to_string();
+        assert!(err.contains("`x`") && err.contains("chart sheet"), "{err}");
+        // Naming the sheet is refused the same way, before anything is stored.
+        let err = s.execute("insert.table", json!({"header": true, "name": "Data", "range": "x!A4:E7"})).unwrap_err().to_string();
+        assert!(err.contains("chart sheet"), "{err}");
+        let d = s.doc().unwrap();
+        assert_eq!(d.wb.active_sheet, 1);
+        let cs = d.wb.sheet(1).unwrap();
+        assert!(cs.is_chart_sheet());
+        assert!(cs.cells.is_empty(), "the table's header row left no cells");
+        assert!(cs.tables.is_empty(), "and no table");
+        assert_eq!(cs.used_range(), None);
+        assert_eq!(cs.charts.len(), 1, "the chart sheet is still its one chart");
+        assert!(d.wb.table("Data").is_none());
+    }
+
+    /// Every command whose subject is cells refuses a chart sheet, on the explicit and on the
+    /// implicit (active sheet) path, with a message that names the sheet.
+    #[test]
+    fn cell_commands_are_refused_on_a_chart_sheet() {
+        let (mut s, _id) = session();
+        s.execute("chart.moveToSheet", json!({"name": "x"})).unwrap();
+        let attempts = [
+            ("cell.set", json!({"cell": "A1", "input": "12"})),
+            ("cell.set", json!({"sheet": "x", "cell": "A1", "input": "12"})),
+            ("range.setValues", json!({"range": "A1:B2", "values": [[1, 2], [3, 4]]})),
+            ("range.fill", json!({"range": "A1:B2"})),
+            ("home.bold", json!({"range": "A1"})),
+            ("sheet.read", json!({"sheet": "x"})),
+        ];
+        for (id, p) in attempts {
+            let err = s.execute(id, p).unwrap_err().to_string();
+            assert!(err.contains("chart sheet"), "{id}: {err}");
+        }
+        let d = s.doc().unwrap();
+        let cs = d.wb.sheet(1).unwrap();
+        assert!(cs.cells.is_empty());
+        assert_eq!(cs.used_range(), None);
+        assert_eq!(cs.charts.len(), 1);
+    }
+
+    /// A command that resolves its sheet itself (the active one) is caught at the edit's door: the
+    /// edit that would leave content on a chart sheet is refused, naming the sheet, so nothing is
+    /// stored where a save would lose it.
+    #[test]
+    fn an_edit_that_would_store_content_on_a_chart_sheet_is_refused() {
+        let (mut s, _id) = session();
+        s.execute("chart.moveToSheet", json!({"name": "x"})).unwrap();
+        // insert.sparkline reads the active sheet for itself, not through target_sheet.
+        let err = s.execute("insert.sparkline", json!({"range": "A1:B2", "location": "C1"})).unwrap_err().to_string();
+        assert!(err.contains("`x`") && err.contains("chart sheet"), "{err}");
+        assert!(s.doc().unwrap().wb.sheet(1).unwrap().sparklines.is_empty());
+    }
+
+    /// The commands that address the chart, or the sheet that holds it, keep working on a chart
+    /// sheet: the cells rule refuses only the ones whose subject is cells, and each keeps its own
+    /// message rather than the cells one.
+    #[test]
+    fn chart_and_sheet_commands_still_work_on_a_chart_sheet() {
+        let (mut s, id) = session();
+        s.execute("chart.moveToSheet", json!({})).unwrap();
+        // A chart sheet's tab is renamed like any other (Excel has no chart.rename).
+        s.execute("sheet.rename", json!({"sheet": 1, "name": "Revenue"})).unwrap();
+        s.execute("sheet.tabColor", json!({"sheet": 1, "color": "#FF0000"})).unwrap();
+        assert_eq!(s.doc().unwrap().wb.sheets[1].name, "Revenue");
+        // Deleting the chart is refused for its own reason (the sheet is the chart), not because a
+        // chart sheet holds no cells.
+        let err = s.execute("chart.delete", json!({})).unwrap_err().to_string();
+        assert!(err.contains("cannot be deleted on its own"), "{err}");
+        assert!(!err.contains("cells live on a worksheet"), "{err}");
+        // The way back to a worksheet still works, and the chart is on it.
+        let r = s.execute("chart.moveToObject", json!({"sheet": 0, "at": "F4"})).unwrap();
+        assert_eq!(r["sheet"], json!(0));
+        let d = s.doc().unwrap();
+        assert!(!d.wb.sheet(0).unwrap().is_chart_sheet());
+        assert!(d.wb.sheet(0).unwrap().charts.iter().any(|c| c.id == id));
     }
 }
