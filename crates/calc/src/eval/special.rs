@@ -164,6 +164,9 @@ pub struct Precedents {
     pub dynamic: bool,
     /// One of its references is read through the used range (see [`trimmed`]).
     pub trim: bool,
+    /// It calls a function whose answer changes on its own (`NOW`, `RAND`, `TODAY`… see
+    /// [`FnSpec::volatile`](gridcraft_functions::FnSpec)).
+    pub volatile: bool,
     /// It reads `SUBTOTAL` or `AGGREGATE`, whose value leaves out the rows a filter, a collapsed
     /// group or a row height of zero hides: showing or hiding rows changes it with no cell it names
     /// changing.
@@ -198,10 +201,22 @@ pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &E
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize, out: &mut Vec<Area>) -> Precedents {
+fn precedents_at(
+    names: &mut NameCache,
+    wb: &Workbook,
+    sheet: usize,
+    e: &Expr,
+    depth: usize,
+    left: &mut usize,
+    out: &mut Vec<Area>,
+) -> Precedents {
     let mut dynamic = false;
     let mut trim = false;
     let mut hidden_rows = false;
+    // Whether the formula calls a function that answers differently every time it is evaluated.
+    // Recorded here because this walk visits every node anyway — the graph keeps the flag, so a
+    // workbook's formulas never have to be walked again to find out (see `recalc_on_open`).
+    let mut volatile = false;
     let push = |out: &mut Vec<Area>, r: &Reference, range: RangeRef| match &r.sheet {
         SheetSel::Current => out.push(Area { sheet, range }),
         SheetSel::Named(n) => {
@@ -225,6 +240,21 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             return;
         }
         *left -= 1;
+        // The registry entry of a call's function, looked up once for the two questions below ask
+        // of it: is it volatile, and is it a function at all?
+        let call = match x {
+            Expr::Call(n, _) => Some((n, gridcraft_functions::lookup(n))),
+            _ => None,
+        };
+        // A volatile function's cached value is out of date by definition, so a formula calling one
+        // is recalculated on open even though the file carries a value for it. A measure reads the
+        // data model, which is refreshed outside the cell graph (a query reload, a relationship or
+        // measure edit), so its cached value can be out of date the moment the file opens.
+        if let Some((n, spec)) = call
+            && (spec.is_some_and(|f| f.volatile) || n.eq_ignore_ascii_case("MEASURE"))
+        {
+            volatile = true;
+        }
         match x {
             Expr::Ref(r) => {
                 let range = r.range();
@@ -281,6 +311,8 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
                     let inner = precedents_at(names, wb, scope, &def, depth + 1, left, out);
                     dynamic |= inner.dynamic;
                     trim |= inner.trim;
+                    // `Rate` defined as `NOW()` is as volatile as the call it stands for.
+                    volatile |= inner.volatile;
                     hidden_rows |= inner.hidden_rows;
                 }
                 NameTarget::Table { area, .. } => out.push(area),
@@ -296,7 +328,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
                 }
             }
             Expr::Struct(_) => dynamic = true,
-            Expr::Call(n, _) if gridcraft_functions::lookup(n).is_none() && !is_special(n) => dynamic = true,
+            Expr::Call(n, _) if call.is_some_and(|(_, spec)| spec.is_none()) && !is_special(n) => dynamic = true,
 
             // A range ending in a function's result (`A1:INDEX(B1:B9,n)`) covers the cells between
             // the references inside it, not only those references.
@@ -316,7 +348,7 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             _ => {}
         }
     });
-    Precedents { dynamic, trim, hidden_rows }
+    Precedents { dynamic, trim, volatile, hidden_rows }
 }
 
 fn is_special(n: &str) -> bool {

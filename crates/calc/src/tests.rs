@@ -2179,3 +2179,86 @@ fn an_odd_number_of_measure_arguments_is_a_value_error() {
     let wb = model_book();
     assert_eq!(crate::recalc::evaluate(&wb, 0, c("A1"), "=MEASURE(\"Total\", \"Region[Name]\")"), Value::Error(CellError::Value));
 }
+
+/// A workbook the way `file.open` hands it to the calculator: a value in A1 and every formula with
+/// the value the file carried for it — `-1`, which none of these formulas produces, so a cell the
+/// open recalculated can be told from one it left alone. Returns the workbook after
+/// [`Calc::recalc_on_open`], as `file.open` runs it.
+fn opened(formulas: &[(&str, &str)]) -> (Workbook, Calc) {
+    let mut wb = Workbook::new();
+    wb.sheet_mut(0).unwrap().cells.set(c("A1"), Cell::value(Value::Number(1.0)));
+    for (at, text) in formulas {
+        let cell = Cell { value: Value::Number(-1.0), formula: Some(std::sync::Arc::new(Formula::new(text))), style: Default::default() };
+        wb.sheet_mut(0).unwrap().cells.set(c(at), cell);
+    }
+    let mut calc = Calc::new();
+    calc.recalc_on_open(&mut wb);
+    (wb, calc)
+}
+
+/// The addresses among `formulas` whose value the open replaced.
+fn recalculated(wb: &Workbook, formulas: &[(&str, &str)]) -> Vec<String> {
+    formulas.iter().filter(|(at, _)| wb.sheet(0).unwrap().value(c(at)) != Value::Number(-1.0)).map(|(at, _)| (*at).to_string()).collect()
+}
+
+/// The values a file carries are what the open leaves in place: a formula that cannot change on its
+/// own is not evaluated again (that is seconds of a large open spent repeating what the file says).
+#[test]
+fn a_workbook_without_volatile_formulas_recalculates_nothing_on_open() {
+    let formulas = [("B1", "=A1+1"), ("C1", "=SUM(A1:B1)"), ("D1", "=B1*2"), ("E1", "=IF(A1>0,\"y\",\"n\")")];
+    let (wb, calc) = opened(&formulas);
+    assert!(recalculated(&wb, &formulas).is_empty(), "recalculated on open: {:?}", recalculated(&wb, &formulas));
+    assert_eq!(calc.last_recalc_cells, 0);
+    assert_eq!(wb.sheet(0).unwrap().value(c("B1")), Value::Number(-1.0), "the value the file carried stands");
+}
+
+/// A cached `NOW()`/`RAND()` is out of date by definition, so its cell — and what reads it — is
+/// recalculated on open, while a formula beside it is left as the file had it.
+#[test]
+fn a_volatile_formula_recalculates_on_open() {
+    for text in ["=NOW()", "=TODAY()", "=RAND()", "=RANDBETWEEN(1,6)", "=OFFSET(A1,0,0)", "=INDIRECT(\"A1\")", "=IF(A1>0,NOW(),0)"] {
+        let formulas = [("B1", text), ("C1", "=B1+1"), ("D1", "=A1*2")];
+        let (wb, calc) = opened(&formulas);
+        assert_eq!(recalculated(&wb, &formulas), ["B1", "C1"], "{text}");
+        assert_eq!(calc.last_recalc_cells, 2, "{text}");
+    }
+}
+
+/// The flag is recorded by the walk that builds the graph, from the registry's own `volatile`
+/// marker: a function that gains it there is volatile on open without a second list to update, and
+/// a formula that has no business recalculating on open does not.
+#[test]
+fn every_registry_volatile_function_marks_its_formula_volatile() {
+    let wb = Workbook::new();
+    let mut names = crate::eval::NameCache::default();
+    let mut seen = 0;
+    for spec in gridcraft_functions::all().iter().filter(|s| s.volatile) {
+        seen += 1;
+        let e = gridcraft_formula::parse(&format!("{}()", spec.name)).unwrap();
+        let (_, reads) = crate::eval::precedents(&mut names, &wb, 0, &e);
+        assert!(reads.volatile, "{} is marked volatile in the registry", spec.name);
+    }
+    assert!(seen >= 4, "only {seen} volatile functions in the registry");
+    for text in ["SUM(A1:A3)", "A1+1", "LAMBDA(x,x*2)(A1)", "IF(A1,NOW,0)"] {
+        let e = gridcraft_formula::parse(text).unwrap();
+        let (_, reads) = crate::eval::precedents(&mut names, &wb, 0, &e);
+        assert!(!reads.volatile, "{text} is not volatile");
+    }
+}
+
+/// A name defined as `NOW()` is as volatile as the call it stands for: the formulas reading it are
+/// recalculated on open, not left with the value the file carried.
+#[test]
+fn a_name_defined_as_a_volatile_call_recalculates_its_users_on_open() {
+    let mut wb = Workbook::new();
+    wb.names.push(DefinedName { name: "Stamp".into(), scope: None, formula: "NOW()".into(), comment: String::new(), hidden: false });
+    let formulas = [("B1", "=Stamp"), ("C1", "=B1+1"), ("D1", "=A1*2")];
+    for (at, text) in formulas {
+        let cell = Cell { value: Value::Number(-1.0), formula: Some(std::sync::Arc::new(Formula::new(text))), style: Default::default() };
+        wb.sheet_mut(0).unwrap().cells.set(c(at), cell);
+    }
+    assert_eq!(wb.sheet(0).unwrap().value(c("B1")), Value::Number(-1.0));
+    let mut calc = Calc::new();
+    calc.recalc_on_open(&mut wb);
+    assert_eq!(recalculated(&wb, &formulas), ["B1", "C1"]);
+}

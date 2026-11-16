@@ -26,7 +26,7 @@ Each reports one number: its own wall-clock time in ms.
 | `edit.undo` | undoes that edit | undo restores a snapshot, so it must not recalculate or rebuild anything |
 | `sort.desc` | `data.sortDescending` over `A1:F{n}` by one column | sort is the slowest interactive operation we have (see below) |
 | `save.xlsx` | `file.saveBytes` as xlsx | the write path: pack, compress, stream |
-| `open.xlsx` | opens those bytes again | the read path plus the full recalculation of every formula |
+| `open.xlsx` | opens those bytes again | the read path, the dependency-graph build, and whatever recalculation the file asks for (a package with `calcId` and no `fullCalcOnLoad` asks for none, which is the normal case) |
 | `rebuild.graph` | `Calc::rebuild` over every formula of the workbook, and nothing evaluated | the dependency-graph build on its own: an open and a structural edit both pay it, and it used to be the larger half of an open |
 
 Run it yourself:

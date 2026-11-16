@@ -141,7 +141,7 @@ pub(super) struct Node {
     /// The parsed formula, shared with the cell: a pass reads it from here instead of rebuilding
     /// the cell (which copies its value and both side tables) once per formula.
     pub(super) expr: Option<std::sync::Arc<Expr>>,
-    /// The `DYNAMIC`..`LEGACY` bits below.
+    /// The `DYNAMIC`..`VISIBILITY` bits below.
     flags: u8,
 }
 
@@ -153,13 +153,16 @@ const MAY_SPILL: u8 = 2;
 const TRIM: u8 = 4;
 /// The anchor of a legacy (Ctrl+Shift+Enter) array formula; its range is in [`Graph::legacy_range`].
 const LEGACY: u8 = 8;
+/// The formula calls a function that answers differently every time (`NOW`, `RAND`, `TODAY`…), so
+/// its cached value is out of date on open and it is recalculated then.
+const VOLATILE: u8 = 16;
 /// The value depends on which rows are hidden (`SUBTOTAL` and `AGGREGATE` leave out the rows a
 /// filter, a collapsed group or a row height of zero hides): a command that only changes
 /// visibility evaluates these instead of the whole workbook.
-const VISIBILITY: u8 = 16;
+const VISIBILITY: u8 = 32;
 
 impl Node {
-    pub(super) fn new(expr: Option<std::sync::Arc<Expr>>, dynamic: bool, may_spill: bool, trim: bool, visibility: bool) -> Self {
+    pub(super) fn new(expr: Option<std::sync::Arc<Expr>>, dynamic: bool, may_spill: bool, trim: bool) -> Self {
         let mut flags = 0;
         if dynamic {
             flags |= DYNAMIC;
@@ -170,10 +173,28 @@ impl Node {
         if trim {
             flags |= TRIM;
         }
-        if visibility {
-            flags |= VISIBILITY;
-        }
         Node { start: 0, len: 0, expr, flags }
+    }
+
+    /// The same node, marked as reading which rows are hidden (see [`VISIBILITY`]).
+    pub(super) fn with_visibility(mut self, hidden_rows: bool) -> Self {
+        if hidden_rows {
+            self.flags |= VISIBILITY;
+        }
+        self
+    }
+
+    /// The same node, marked volatile (see [`VOLATILE`]).
+    pub(super) fn with_volatile(mut self, volatile: bool) -> Self {
+        if volatile {
+            self.flags |= VOLATILE;
+        }
+        self
+    }
+
+    /// Whether the formula calls a volatile function.
+    pub(super) fn is_volatile(&self) -> bool {
+        self.flags & VOLATILE != 0
     }
 }
 
@@ -378,6 +399,13 @@ impl Graph {
     /// The range of the legacy array anchored at `k`, if it is one.
     pub(super) fn legacy_of(&self, k: Key) -> Option<RangeRef> {
         self.legacy_range.get(&k).copied()
+    }
+
+    /// Whether the formula at `k` calls a volatile function — the flag the precedents walk
+    /// recorded when it visited its last node, so opening a workbook never walks a formula tree to
+    /// find out. A cell without a node (no formula, or one that does not parse) is not volatile.
+    pub(super) fn is_volatile(&self, k: Key) -> bool {
+        self.nodes.get(&k).is_some_and(Node::is_volatile)
     }
 
     /// Reserves room for `formulas` formulas, so a bulk build does not grow its tables a dozen

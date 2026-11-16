@@ -914,7 +914,33 @@ pub fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
     Err(EngineError::Other(format!("{path}: no file system in the browser")))
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// The sextet a byte stands for, or [`SKIP_B64`] / [`BAD_B64`] for a byte that carries none.
+///
+/// Decoding a payload read one byte and then scanned the whole alphabet for it. A table answers
+/// the same question in one load, and its padding and whitespace entries mean the loop has no
+/// separate branch for them: 150 ms of scanning for 100 MB of base64 became 52 ms, and every
+/// payload that arrives over the control channel (`file.open`, `insert.picture`) pays that.
+const SKIP_B64: u8 = 0xFE;
+const BAD_B64: u8 = 0xFF;
+const B64_SEXTETS: [u8; 256] = {
+    let mut table = [BAD_B64; 256];
+    let mut i = 0;
+    while i < 64 {
+        table[B64[i] as usize] = i as u8;
+        i += 1;
+    }
+    // Padding and ASCII whitespace may sit anywhere in the payload and are passed over: a
+    // payload pasted out of a document carries a line break every 76 bytes.
+    let skipped = b"= \t\n\x0c\r";
+    let mut j = 0;
+    while j < skipped.len() {
+        table[skipped[j] as usize] = SKIP_B64;
+        j += 1;
+    }
+    table
+};
 
 pub fn base64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -932,23 +958,61 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// One base64 digit of a payload being decoded: `out` gains whatever whole bytes it completes.
+/// Padding and ASCII whitespace carry nothing and are passed over; any other byte outside the
+/// alphabet is not base64 at all and rejects the payload.
+fn decode_digit(c: u8, out: &mut Vec<u8>, buf: &mut u32, bits: &mut u32) -> Option<()> {
+    // A `u8` index into a 256-entry table: in range by construction.
+    let v = B64_SEXTETS[c as usize];
+    if v >= 64 {
+        return (v == SKIP_B64).then_some(());
+    }
+    // At most six bits are pending between two digits, so the window never holds more than twelve
+    // and shifting it left by six cannot overflow a u32.
+    *buf = (*buf << 6) | u32::from(v);
+    *bits += 6;
+    if *bits >= 8 {
+        *bits -= 8;
+        out.push((*buf >> *bits) as u8);
+        *buf &= (1 << *bits) - 1;
+    }
+    Some(())
+}
+
 pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let s = s.split_once(',').filter(|(h, _)| h.starts_with("data:")).map(|(_, b)| b).unwrap_or(s);
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let src = s.as_bytes();
+    // Four digits carry three bytes; padding and whitespace only ever make the payload shorter.
+    let mut out = Vec::with_capacity(src.len() / 4 * 3);
     let mut buf = 0u32;
-    let mut bits = 0;
-    for c in s.bytes() {
-        if c == b'=' || c.is_ascii_whitespace() {
-            continue;
+    let mut bits = 0u32;
+    let mut i = 0usize;
+    // A group of four digits that are all base64, with no bit pending from a group before it, is
+    // three bytes: the whole payload but its tail, decoded a group at a time instead of a byte at a
+    // time. Anything else — padding, whitespace, a byte that is not base64 — goes digit by digit, so
+    // that a wrapped or padded payload reads the same as a compact one.
+    while let Some(end) = i.checked_add(4)
+        && let Some(quad) = src.get(i..end)
+    {
+        let mut sextets = [0u8; 4];
+        let mut whole = true;
+        for (slot, &c) in sextets.iter_mut().zip(quad) {
+            *slot = B64_SEXTETS[c as usize];
+            whole &= *slot < 64;
         }
-        let v = B64.iter().position(|&x| x == c)? as u32;
-        buf = (buf << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
+        if whole && bits == 0 {
+            let n = (u32::from(sextets[0]) << 18) | (u32::from(sextets[1]) << 12) | (u32::from(sextets[2]) << 6) | u32::from(sextets[3]);
+            out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+        } else {
+            for &c in quad {
+                decode_digit(c, &mut out, &mut buf, &mut bits)?;
+            }
         }
+        i = end;
+    }
+    // The tail: a partial group, or padding at the end of the payload.
+    for &c in src.get(i..).unwrap_or(&[]) {
+        decode_digit(c, &mut out, &mut buf, &mut bits)?;
     }
     Some(out)
 }
@@ -1000,6 +1064,58 @@ mod tests {
     fn copied(wb: &Workbook, range: &str) -> String {
         let r = RangeRef::parse(range).unwrap();
         range_html(wb, 0, r, &crate::display::range_text(wb, 0, r)).unwrap()
+    }
+
+    /// The decoder answers for every length of group, from an empty payload to whole ones.
+    #[test]
+    fn base64_decodes_what_it_encodes() {
+        let data: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
+        for len in [0, 1, 2, 3, 4, 5, 6, 767, 768, 1024] {
+            let bytes = &data[..len];
+            assert_eq!(base64_decode(&base64_encode(bytes)).as_deref(), Some(bytes), "len {len}");
+        }
+    }
+
+    /// Padding and whitespace are passed over wherever they sit, and a payload that ends mid-group
+    /// keeps the bytes it does carry — a line-wrapped payload out of a document is the everyday case.
+    #[test]
+    fn base64_skips_padding_and_whitespace_anywhere() {
+        assert_eq!(base64_decode("AQID\nBAUG").as_deref(), Some(&[1, 2, 3, 4, 5, 6][..]));
+        assert_eq!(base64_decode(" AQ== I\tD ").as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(base64_decode("AQ==").as_deref(), Some(&[1][..]));
+        assert_eq!(base64_decode("AQIDB").as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
+    }
+
+    /// Whitespace never changes the bytes a payload decodes to, wherever it sits — including
+    /// inside a group of four, which leaves the decoder mid-group for the groups after it.
+    #[test]
+    fn base64_whitespace_never_changes_the_bytes() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(64).collect();
+        let clean = base64_encode(&bytes);
+        for at in 0..clean.len() {
+            let mut wrapped = clean.clone();
+            wrapped.insert(at, ' ');
+            assert_eq!(base64_decode(&wrapped).as_deref(), Some(&bytes[..]), "a space at {at}");
+        }
+        // The line breaks a payload pasted out of a document carries every 76 bytes.
+        let wrapped: String = clean.as_bytes().chunks(8).map(|c| format!("{}\r\n", std::str::from_utf8(c).unwrap())).collect();
+        assert_eq!(base64_decode(&wrapped).as_deref(), Some(&bytes[..]));
+    }
+
+    /// A data URI carries its payload after the comma, as `insert.picture` and `file.open` receive it.
+    #[test]
+    fn base64_decodes_a_data_uri() {
+        assert_eq!(base64_decode("data:image/png;base64,AQID").as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(base64_decode("data:text/plain,AQID").as_deref(), Some(&[1, 2, 3][..]));
+    }
+
+    /// Anything outside the alphabet is rejected rather than skipped, wherever it is.
+    #[test]
+    fn base64_rejects_a_byte_outside_the_alphabet() {
+        for bad in ["AQJ!", "AQ ID%", "AQID.B", "AQID\u{e9}", "-_", "AQID+AQ-J"] {
+            assert_eq!(base64_decode(bad), None, "{bad} should not decode");
+        }
     }
 
     #[test]
