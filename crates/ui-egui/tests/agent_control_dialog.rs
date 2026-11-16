@@ -63,6 +63,7 @@ fn the_agent_dialog_speaks_chinese() {
     {
         assert!(h.query_by_label(label).is_some(), "the agent dialog should show {label}");
     }
-    // The five copy buttons are the only repeated label in the dialog.
-    assert_eq!(h.query_all_by_label("复制").count(), 5, "every copy button reads Chinese");
+    // The dialog's five copy buttons read Chinese. The ribbon's Copy button is named from its
+    // tooltip now, so it is in the tree too and also reads 复制: count the dialog's own.
+    assert_eq!(h.query_all_by_label("复制").count(), 6, "the dialog's copy buttons and the ribbon's Copy read Chinese");
 }

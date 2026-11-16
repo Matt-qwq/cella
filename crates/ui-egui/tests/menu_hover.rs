@@ -45,7 +45,11 @@ fn hover_fill_under(h: &Harness, at: Pos2) -> bool {
 }
 
 fn check_item(h: &mut Harness, label: &str) {
-    let at = h.get_by_role_and_label(Role::Button, label).rect().center();
+    // The ribbon's buttons are named from their tooltips now, so a menu entry can share its label
+    // with one: take the lowest, which is the menu (the ribbon is the strip at the top).
+    let mut nodes: Vec<_> = h.query_all_by_role_and_label(Role::Button, label).collect();
+    nodes.sort_by(|a, b| a.rect().center().y.total_cmp(&b.rect().center().y));
+    let at = nodes.pop().unwrap_or_else(|| h.get_by_role_and_label(Role::Button, label)).rect().center();
     assert!(!hover_fill_under(h, at), "{label} has no background before the pointer is on it");
     h.input_mut().events.push(Event::PointerMoved(at));
     h.run_steps(2);

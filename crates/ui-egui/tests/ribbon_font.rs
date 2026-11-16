@@ -60,16 +60,24 @@ fn menu_item(h: &mut Harness, label: &str, item: &str) {
     panic!("the {label} menu never showed {item}");
 }
 
+/// The leftmost node with this label: a split button names both halves, and its main part is the
+/// left one.
+fn main_half(h: &Harness, label: &str) -> egui::Rect {
+    let mut nodes: Vec<_> = h.query_all_by_label(label).collect();
+    nodes.sort_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x));
+    nodes.first().map(|n| n.rect()).unwrap_or_else(|| h.get_by_label(label).rect())
+}
+
 /// Clicks the middle of the named widget.
 fn click(h: &mut Harness, label: &str) {
-    let rect = h.get_by_label(label).rect();
+    let rect = main_half(h, label);
     click_at(h, rect.center());
 }
 
 /// Clicks the dropdown half of a split button: its main part is the labelled 25pt-wide half and
 /// the arrow is the rest of the 38pt button.
 fn click_arrow(h: &mut Harness, label: &str) {
-    let main = h.get_by_label(label).rect();
+    let main = main_half(h, label);
     click_at(h, pos2(main.right() + 6.5, main.center().y));
 }
 
@@ -101,7 +109,7 @@ fn painted_text_colours(h: &Harness, cell: &str) -> Vec<egui::Color32> {
 
 /// Whether the widget draws itself as pressed: a filled rectangle in the pressed token behind it.
 fn paints_pressed(h: &Harness, label: &str) -> bool {
-    let rect = h.get_by_label(label).rect();
+    let rect = main_half(h, label);
     let pressed = Tokens::get(&h.ctx).pressed;
     h.output().shapes.iter().any(|s| match &s.shape {
         Shape::Rect(r) => r.fill == pressed && r.rect.contains(rect.center()),
@@ -110,7 +118,9 @@ fn paints_pressed(h: &Harness, label: &str) -> bool {
 }
 
 fn toggled(h: &Harness, label: &str) -> Option<Toggled> {
-    h.get_by_label(label).accesskit_node().toggled()
+    let mut nodes: Vec<_> = h.query_all_by_label(label).collect();
+    nodes.sort_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x));
+    nodes.first().map(|n| n.accesskit_node().toggled()).unwrap_or(None)
 }
 
 fn run(h: &mut Harness, id: &str, params: Json) -> Json {

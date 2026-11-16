@@ -584,9 +584,9 @@ pub(crate) fn merge_json(mut base: Json, patch: &Json) -> Json {
 }
 
 fn halign(s: &mut Session, p: &Json, a: HAlign) -> Result<Json> {
-    // Clicking the active alignment again returns to General.
-    let cur = active_style(s)?.align.h;
-    let a = if cur == a && p.get("on").is_none() { HAlign::General } else { a };
+    // Clicking the alignment the cell already has leaves it alone, the way Excel does: the button
+    // is a choice of one of three, not a toggle, so pressing the pressed one is a no-op. (It used
+    // to fall back to General, which looked like a stray click had wiped the formatting.)
     apply_style(s, p, |st| st.align.h = a)
 }
 

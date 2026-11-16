@@ -31,8 +31,21 @@ fn choose(h: &mut egui_kittest::Harness<'static, SheetApp>, label: &str) {
 }
 
 fn click(h: &mut egui_kittest::Harness<'static, SheetApp>, label: &str) {
-    h.get_by_role_and_label(egui::accesskit::Role::Button, label).click();
+    pick(h, label).click();
     h.run_steps(3);
+}
+
+/// The node a label means when the ribbon has one too: the ribbon's Backstage/Menu buttons are named
+/// from their tooltips now, so "Save" matches both the tab's Save and the ribbon's. A dialog's button
+/// is the one lower on the screen (the ribbon is the strip at the top).
+fn pick<'a>(h: &'a egui_kittest::Harness<'static, SheetApp>, label: &'a str) -> egui_kittest::Node<'a> {
+    let mut sorted: Vec<_> = h.query_all_by_role_and_label(egui::accesskit::Role::Button, label).collect();
+    sorted.sort_by(|a, b| a.rect().center().y.total_cmp(&b.rect().center().y));
+    let lowest = sorted.pop();
+    match lowest {
+        Some(node) => node,
+        None => h.get_by_role_and_label(egui::accesskit::Role::Button, label),
+    }
 }
 
 fn page(h: &egui_kittest::Harness<'static, SheetApp>) -> Option<&'static str> {
@@ -240,7 +253,7 @@ fn step_commands(h: &mut egui_kittest::Harness<'static, SheetApp>) -> Vec<egui::
 }
 
 fn click_commands(h: &mut egui_kittest::Harness<'static, SheetApp>, label: &str) -> Vec<egui::ViewportCommand> {
-    h.get_by_role_and_label(egui::accesskit::Role::Button, label).click();
+    pick(h, label).click();
     step_commands(h)
 }
 
