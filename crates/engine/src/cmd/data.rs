@@ -595,6 +595,32 @@ fn sorted_anchor(sh: &Sheet, a: Anchor, bottom: (u32, u32, f32, f32), by_cols: b
 
 // ---------------------------------------------------------------- filter
 
+/// Drops the sheet AutoFilter when it is the one over `range`, giving its hidden rows back.
+/// Used when a table stops carrying a filter (its filter buttons go): the criteria were the
+/// table's, and a table without them has nowhere to keep them — the file represents a filter only
+/// in the sheet or the table part. Left on the sheet they were dropped on save while the rows they
+/// hid were written as hand-hidden ones, so the reopened sheet hid rows nothing could clear
+/// (found by the command-sequence fuzzer: `data.filterBy` then `table.headerRow` off).
+pub(crate) fn drop_filter_over(sh: &mut Sheet, range: RangeRef) {
+    let Some(af) = sh.autofilter.as_ref() else { return };
+    if !range.contains_range(&af.range) {
+        return;
+    }
+    let body = af.range;
+    sh.autofilter = None;
+    // The line info each hidden row gave up comes back with it (a height, a style, a hand-hidden
+    // flag); what the filter hides elsewhere stays parked.
+    let saved = sh.filter_hidden.take_saved();
+    sh.filter_hidden.retain(|row| row < body.start.row || row > body.end.row);
+    for (row, info) in saved {
+        if row >= body.start.row && row <= body.end.row {
+            sh.rows.insert(row, info);
+        } else {
+            sh.filter_hidden.save(row, info);
+        }
+    }
+}
+
 fn toggle_filter(s: &mut Session, p: &Json) -> Result<Json> {
     let (sheet, r) = data_target(s, p, "data.filter")?;
     super::refuse_unless_allowed(s, sheet, "Filtering", |p| p.autofilter)?;
@@ -609,11 +635,17 @@ fn toggle_filter(s: &mut Session, p: &Json) -> Result<Json> {
     if let Some(name) = in_table {
         return edit(s, |cx| {
             let sh = cx.sheet_mut(sheet)?;
+            let mut dropped = None;
             if let Some(t) = sh.tables.iter_mut().find(|t| t.name == name) {
                 t.filter_button = !t.filter_button;
                 if !t.filter_button {
                     t.filter.clear();
+                    dropped = Some(t.range);
                 }
+            }
+            if let Some(range) = dropped {
+                drop_filter_over(sh, range);
+                cx.structural = true;
             }
             Ok(Json::Null)
         });
@@ -800,7 +832,15 @@ pub(crate) fn apply_filter(wb: &mut Workbook, sheet: usize) {
             col_stats.insert(i, (thr, avg));
         }
     }
-    let hide = evaluate(wb, sh, &af, &col_stats);
+    let mut hide = evaluate(wb, sh, &af, &col_stats);
+    // A row no filter covers is never filtered: a table's totals row is out of every range, so a
+    // filter whose range runs over it (the sheet's does, when it is the table's) must leave it
+    // alone. Hiding one wrote it as a hand-hidden row — the file can only hold a filtered row as
+    // hidden, and the reader has no range to put it back in — so the sheet reopened with a row
+    // the running one showed. Found by the command-sequence fuzz: a top-2 filter, delete the
+    // table's totals row, then a value filter, and the save/reload invariant saw rows differ.
+    let ranges = sh.filter_row_ranges();
+    hide.retain(|(row, hidden)| !*hidden || ranges.iter().any(|(a, b)| row >= a && row <= b));
     let Some(shm) = wb.sheet_mut(sheet) else { return };
     // The previous filter gives back what it took off the rows it hid.
     let mut previous = std::mem::take(&mut shm.filter_hidden);

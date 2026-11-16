@@ -188,11 +188,12 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slic
     let sid = |s: gridcraft_model::StyleId| if s.0 < nstyles { s.0 } else { 0 };
 
     // A table's dropdown filter is kept in `sheet.autofilter`, not in `Table::filter` (the
-    // engine's only live filter state, which the reader also fills). Where the two coincide,
-    // fold the sheet filter's criteria into the table so they reach the file: the stored
-    // `colId` offsets are relative to the range's first column, and both ranges start at the
-    // same column, so they carry over verbatim. A filter that only partially covers a table
-    // has nowhere valid to go, so it keeps being suppressed below.
+    // engine's only live filter state, which the reader moves a table's filter back into). Where
+    // the two coincide, fold the sheet filter's criteria into the table so they reach the file:
+    // the stored `colId` offsets are relative to the range's first column, so a filter that
+    // starts right of the table's first column is shifted onto the table's own columns. A filter
+    // covering columns outside the table has nowhere valid to go and keeps being suppressed
+    // below.
     let folded: Vec<Table> = match &sheet.autofilter {
         Some(af) if !af.criteria.is_empty() => sheet
             .tables
@@ -203,9 +204,9 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slic
                     && t.filter_button
                     && t.filter.is_empty()
                     && t.range.contains_range(&af.range)
-                    && t.range.start.col == af.range.start.col
+                    && let Some(shift) = af.range.start.col.checked_sub(t.range.start.col)
                 {
-                    t.filter = af.criteria.clone();
+                    t.filter = af.criteria.iter().map(|(col, c)| (col.saturating_add(shift), c.clone())).collect();
                 }
                 t
             })

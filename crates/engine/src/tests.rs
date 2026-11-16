@@ -5264,8 +5264,17 @@ fn a_table_filter_survives_a_save_and_reload() {
     assert_eq!(v(&s, "E1"), Value::Number(6.0), "after F9");
     let d = s.doc().unwrap();
     let sh = d.wb.active().unwrap();
-    assert!(sh.autofilter.is_none(), "the table part carries the filter");
-    assert!(!sh.tables[0].filter.is_empty(), "the criteria came back on the table");
+    use gridcraft_model::FilterCriterion;
+    // The file holds the criteria in the table part (a sheet AutoFilter may not overlap a table);
+    // opening moves them back to the sheet's one live filter, so Clear Filter and the dropdown
+    // work on them, and not a second copy left on the table to drift out of step.
+    let af = sh.autofilter.as_ref().expect("the filter came back as the sheet's");
+    assert!(
+        matches!(af.criteria.as_slice(), [(1, FilterCriterion::Custom { a, b: None, .. })] if a == &(">".to_string(), "0".to_string())),
+        "{:?}",
+        af.criteria
+    );
+    assert!(sh.tables[0].filter.is_empty(), "the table part's criteria are not duplicated on the table");
 }
 
 #[test]

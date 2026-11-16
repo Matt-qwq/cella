@@ -1441,11 +1441,11 @@ fn japanese_paper_sizes_round_trip() {
 }
 
 /// A table's dropdown filter lives in `sheet.autofilter` (the engine's only live filter state),
-/// not in `Table::filter`. Writing used to suppress the sheet `<autoFilter>` because a table
-/// intersects it and write the table part from `Table::filter`, which was empty: the criteria
-/// were lost on every save, leaving the rows hidden with no filter to clear on reopen.
+/// not in `Table::filter`: the writer folds it into the table part because a sheet `<autoFilter>`
+/// may not overlap a table, and the reader moves it back out again. Read only into the table, the
+/// criteria were gone once the file was reopened: the rows stayed hidden with no filter to clear.
 #[test]
-fn a_table_filter_criteria_survive_a_round_trip() {
+fn a_table_filter_criteria_come_back_as_the_sheets_filter() {
     let mut wb = Workbook::new();
     let s = wb.sheet_mut(0).unwrap();
     for (r, v) in [(0u32, "Region"), (1, "East"), (2, "West"), (3, "East")] {
@@ -1477,18 +1477,27 @@ fn a_table_filter_criteria_survive_a_round_trip() {
     let (back, rep) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
     assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
     let b = back.sheet(0).unwrap();
+    let af = b.autofilter.as_ref().expect("the filter came back as the sheet's, not only as the table's");
+    assert_eq!(af.range, rr("A1:A4"));
+    assert!(
+        matches!(af.criteria.as_slice(), [(0, FilterCriterion::Values { values, .. })] if values == &["East".to_string()]),
+        "the criteria were dropped: {:?}",
+        af.criteria
+    );
     let t = b.tables.first().expect("the table survived");
-    let (_, crit) = t.filter.first().expect("the table's filter criteria were kept on save");
-    assert!(matches!(crit, FilterCriterion::Values { values, .. } if values == &["East".to_string()]), "the criteria were dropped: {:?}", t.filter);
+    assert!(t.filter.is_empty(), "the criteria are not also left in the table part: {:?}", t.filter);
     assert!(b.is_row_hidden(1), "the row the filter hid is still hidden");
-    assert!(b.autofilter.is_none(), "a table's filter belongs to the table part, not the sheet");
+    assert!(b.rows.get(&1).is_none_or(|i| !i.hidden), "and it is hidden by the filter, not by hand");
+    // Saving the reopened workbook keeps them: the fold and the read are inverses.
+    let (again, _) = read_xlsx(&write_xlsx(&back).unwrap()).unwrap();
+    assert_eq!(again.sheet(0).unwrap().autofilter.as_ref().map(|a| a.criteria.clone()), Some(af.criteria.clone()));
 }
 
 /// Stored `colId` offsets are relative to the filter range's first column, so criteria of a filter
-/// that starts right of the table's first column must not be folded into the table part, where
-/// they would apply to the wrong column.
+/// that starts right of the table's first column move onto the table's own columns when folded —
+/// folded verbatim they would filter the wrong column, and not folded at all they were lost.
 #[test]
-fn a_partial_sheet_filter_is_not_folded_into_a_table() {
+fn a_sheet_filter_inside_a_table_is_folded_onto_the_tables_own_column() {
     let mut wb = Workbook::new();
     let s = wb.sheet_mut(0).unwrap();
     for (a, v) in [("A1", "Id"), ("B1", "Region"), ("A2", "1"), ("B2", "East"), ("A3", "2"), ("B3", "West")] {
@@ -1519,9 +1528,49 @@ fn a_partial_sheet_filter_is_not_folded_into_a_table() {
     let (back, rep) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
     assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
     let b = back.sheet(0).unwrap();
-    let t = b.tables.first().expect("the table survived");
-    assert!(t.filter.is_empty(), "the criteria landed on the wrong table column: {:?}", t.filter);
-    assert!(b.autofilter.is_none(), "a sheet filter inside a table would be invalid");
+    let af = b.autofilter.as_ref().expect("the filter came back");
+    assert_eq!(af.range, rr("A1:B3"), "the filter is the table's range now");
+    assert!(
+        matches!(af.criteria.as_slice(), [(1, FilterCriterion::Values { values, .. })] if values == &["East".to_string()]),
+        "the criterion must sit on Region (colId 1), not on Id: {:?}",
+        af.criteria
+    );
+    assert!(b.tables.first().is_some_and(|t| t.filter.is_empty()), "and not be duplicated in the table part");
+}
+
+/// Every criterion kind a sheet AutoFilter holds survives a round trip, including a value that
+/// starts with an apostrophe — text in a file, not a syntax marker.
+#[test]
+fn every_sheet_filter_criterion_kind_survives_a_round_trip() {
+    let mut wb = Workbook::new();
+    let s = wb.sheet_mut(0).unwrap();
+    for (c, h) in ["Code", "Qty", "Kind", "Score", "Fill", "Font"].iter().enumerate() {
+        s.set_value(CellRef::new(0, c as u32), Value::text(*h));
+    }
+    for r in 1..=5u32 {
+        s.set_value(CellRef::new(r, 0), Value::text(if r % 2 == 0 { "'007" } else { "121" }));
+        s.set_value(CellRef::new(r, 1), Value::Number(f64::from(r)));
+        s.set_value(CellRef::new(r, 3), Value::Number(f64::from(r) * 10.0));
+    }
+    let criteria = vec![
+        (0, FilterCriterion::Values { values: vec!["'007".into(), "121".into()], blanks: true }),
+        (1, FilterCriterion::Custom { a: (">".into(), "1".into()), b: Some(("<".into(), "9".into())), and: true }),
+        (2, FilterCriterion::Top10 { bottom: true, percent: true, count: 3 }),
+        (3, FilterCriterion::AboveAverage(false)),
+        (4, FilterCriterion::FillColor(Color::Rgb(0x00FF00))),
+        (5, FilterCriterion::FontColor(Color::Rgb(0x0000FF))),
+    ];
+    s.autofilter = Some(AutoFilter { range: rr("A1:F6"), criteria: criteria.clone() });
+    s.filter_hidden = FilterHidden::build([2u32, 4], BTreeMap::new());
+
+    let (back, rep) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
+    assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+    let b = back.sheet(0).unwrap();
+    let af = b.autofilter.as_ref().expect("the sheet filter came back");
+    assert_eq!(af.range, rr("A1:F6"));
+    assert_eq!(af.criteria, criteria, "every criterion kind came back as it went in");
+    assert!(b.filter_hidden.contains(2) && b.filter_hidden.contains(4), "the rows the filter hid stay in the filter bitmap");
+    assert!(b.rows.iter().all(|(_, i)| !i.hidden), "and not as hand-hidden rows a Clear Filter cannot bring back");
 }
 
 /// A paged sheet saves to the same bytes as the live one: the writer's scan decodes pages without

@@ -82,6 +82,24 @@ pub fn read_autofilter(cx: &mut Ctx<'_>, e: &El) -> Option<AutoFilter> {
     }
     Some(AutoFilter { range, criteria })
 }
+/// A table's dropdown filter is stored in the table part, but a sheet has exactly one live
+/// filter and it is `sheet.autofilter` — what the filter menu reads, what `data.clearFilter`
+/// clears and what the writer folds back into the table. Read only into `Table::filter`, it was
+/// gone from the sheet once reopened: the rows it hid stayed hidden with no filter to clear.
+/// Move the first filtered table's criteria there, which is the inverse of the writer's fold. A
+/// second filtered table (Excel allows one filter per table) keeps its own, where it is written
+/// back verbatim.
+pub(crate) fn promote_table_filter(sheet: &mut Sheet) {
+    if sheet.autofilter.is_some() {
+        return;
+    }
+    let i = sheet.tables.iter().position(|t| t.header_row && !t.filter.is_empty());
+    let Some(i) = i else { return };
+    let Some(t) = sheet.tables.get_mut(i) else { return };
+    let criteria = std::mem::take(&mut t.filter);
+    sheet.autofilter = Some(AutoFilter { range: t.filter_range(), criteria });
+}
+
 pub fn read_table(cx: &mut Ctx<'_>, x: &El) -> Option<Table> {
     let range = x.attr("ref").and_then(RangeRef::parse)?;
     let name = x.attr("displayName").or_else(|| x.attr("name")).unwrap_or("Table").to_string();
