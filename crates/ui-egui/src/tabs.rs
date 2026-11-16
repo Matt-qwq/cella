@@ -83,37 +83,47 @@ fn tab_drop(i: usize, steps: i64, copy: bool) -> Option<serde_json::Value> {
 
 pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
+    // File › Options › Advanced, "Display options for this workbook": the tabs and the
+    // horizontal scroll bar (which lives in this bar) can be hidden and saved so.
+    let view = app.session.active().map(|d| d.wb.view).unwrap_or_default();
     egui::Panel::bottom("sheet_tabs").exact_size(32.0).frame(egui::Frame::NONE.fill(t.tab_bar)).show(ui, |ui| {
         let rect = ui.max_rect();
         ui.painter().line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, t.ribbon_border));
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(8.0);
-            if crate::widgets::icon_button(ui, Icon::Left, t.text_dim, app.ui.language.tr("Previous sheet"), vec2(24.0, 24.0)).clicked() {
-                app.run_or_alert("sheet.previous", json!({}));
+            if view.show_sheet_tabs {
+                ui.add_space(8.0);
+                if crate::widgets::icon_button(ui, Icon::Left, t.text_dim, app.ui.language.tr("Previous sheet"), vec2(24.0, 24.0)).clicked() {
+                    app.run_or_alert("sheet.previous", json!({}));
+                }
+                if crate::widgets::icon_button(ui, Icon::Right, t.text_dim, app.ui.language.tr("Next sheet"), vec2(24.0, 24.0)).clicked() {
+                    app.run_or_alert("sheet.next", json!({}));
+                }
+                let all = crate::widgets::icon_button(ui, Icon::SheetList, t.text_dim, app.ui.language.tr("All sheets"), vec2(24.0, 24.0));
+                all.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.ui.language.tr("All sheets")));
+                let items = app.session.active().map(|d| navigator_items(&d.wb.sheets)).unwrap_or_default();
+                let active = app.session.active().map(|d| d.wb.active_sheet.to_string()).unwrap_or_default();
+                let rows: Vec<(&str, String)> = items.iter().map(|(i, name)| (i.as_str(), name.clone())).collect();
+                if let crate::ribbon::ComboResult::Picked(i) = crate::ribbon::editable_combo(ui, &all, "sheet_navigator", &active, &rows, false)
+                    && let Ok(i) = i.parse::<usize>()
+                {
+                    activate_sheet(app, i);
+                }
+                ui.add_space(8.0);
             }
-            if crate::widgets::icon_button(ui, Icon::Right, t.text_dim, app.ui.language.tr("Next sheet"), vec2(24.0, 24.0)).clicked() {
-                app.run_or_alert("sheet.next", json!({}));
-            }
-            let all = crate::widgets::icon_button(ui, Icon::SheetList, t.text_dim, app.ui.language.tr("All sheets"), vec2(24.0, 24.0));
-            all.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.ui.language.tr("All sheets")));
-            let items = app.session.active().map(|d| navigator_items(&d.wb.sheets)).unwrap_or_default();
-            let active = app.session.active().map(|d| d.wb.active_sheet.to_string()).unwrap_or_default();
-            let rows: Vec<(&str, String)> = items.iter().map(|(i, name)| (i.as_str(), name.clone())).collect();
-            if let crate::ribbon::ComboResult::Picked(i) = crate::ribbon::editable_combo(ui, &all, "sheet_navigator", &active, &rows, false)
-                && let Ok(i) = i.parse::<usize>()
-            {
-                activate_sheet(app, i);
-            }
-            ui.add_space(8.0);
             let Some(d) = app.session.active() else { return };
-            let sheets: Vec<(usize, String, Option<[u8; 3]>, bool, bool)> =
+            // No tabs: the strip has no cells, so it takes no room and the horizontal scroll
+            // bar below keeps the bar to itself (as in Excel, the bar stays when the tabs go).
+            let sheets: Vec<(usize, String, Option<[u8; 3]>, bool, bool)> = if view.show_sheet_tabs {
                 d.wb.sheets
                     .iter()
                     .enumerate()
                     .filter(|(_, s)| s.visibility == Visibility::Visible)
                     .map(|(i, s)| (i, s.name.clone(), s.tab_color.and_then(|c| c.resolve(&d.wb.theme)), i == d.wb.active_sheet, s.is_chart_sheet()))
-                    .collect();
+                    .collect()
+            } else {
+                Vec::new()
+            };
             // Keep worksheet tabs in their own horizontally scrollable viewport. As in Excel, the
             // tabs get up to 60% of the bar and the grid's horizontal scrollbar the rest; a strip
             // that needs less shrinks to its tabs, so New sheet (+) sits right after the last one.
@@ -283,15 +293,19 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                         });
                     });
             });
-            ui.add_space(6.0);
-            if crate::widgets::icon_button(ui, Icon::Plus, t.text_dim, app.ui.language.tr("New sheet (⇧F11)"), vec2(26.0, 26.0)).clicked() {
-                app.run_or_alert("home.insertSheet", json!({}));
+            if view.show_sheet_tabs {
+                ui.add_space(6.0);
+                if crate::widgets::icon_button(ui, Icon::Plus, t.text_dim, app.ui.language.tr("New sheet (⇧F11)"), vec2(26.0, 26.0)).clicked() {
+                    app.run_or_alert("home.insertSheet", json!({}));
+                }
             }
             // The track ends where the grid does, so it stops under the vertical scrollbar.
             let avail = ui.available_rect_before_wrap();
             let right = app.grid.rect.map_or(avail.right(), |r| r.right()).min(avail.right());
             let track = Rect::from_min_max(pos2(avail.left() + 8.0, avail.center().y - 7.0), pos2(right, avail.center().y + 7.0));
-            crate::grid::horizontal_scrollbar(app, ui, track, &t);
+            if view.show_horizontal_scroll {
+                crate::grid::horizontal_scrollbar(app, ui, track, &t);
+            }
         });
     });
 }

@@ -260,6 +260,15 @@ pub fn item_key(name: &str) -> Option<String> {
     parse_name(name).map(|(k, _)| k.to_ascii_lowercase())
 }
 
+/// Whether the workbook holds part of an item under `name` in the chunked form, `_gc_<key>_<k>`
+/// (compared without case): the names the defined-name commands must not define, rename or delete,
+/// because each is one chunk of an item and changing it would leave the rest behind. A legacy
+/// `_sc_<key>` name is a whole item in one name, so it is not protected here: the name commands
+/// treat it like any other name.
+pub fn holds_chunk(wb: &Workbook, name: &str) -> bool {
+    wb.names.iter().any(|n| n.name.eq_ignore_ascii_case(name) && matches!(item_of(n), Some((_, Some(_)))))
+}
+
 /// The item a name holds a part of: a hidden workbook-scope `_gc_<key>_<k>` name, or a legacy
 /// `_sc_<key>` one. A visible name of the `_gc_` shape is someone's own name, not an item: it is
 /// neither read, nor listed, nor removed on write.

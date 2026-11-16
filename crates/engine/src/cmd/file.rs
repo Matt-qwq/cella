@@ -35,6 +35,15 @@ pub fn specs() -> Vec<CommandSpec> {
             options
         ),
         cmd!(noundo "window.activate", "Switch Window", ["Window"], None, "{index}", has_doc, activate_window),
+        cmd!(
+            query "window.list",
+            "Windows",
+            ["Window"],
+            None,
+            "{} → [{index, window, title, active, hidden}] the open document’s windows, in Switch Windows order (`index` is what `window.activate` takes; `window` is the id `view.closeWindow` and the other window commands take)",
+            has_doc,
+            list_windows
+        ),
     ]
 }
 
@@ -304,6 +313,32 @@ fn options(s: &mut Session, _: &Json) -> Result<Json> {
         json!({"mode": mode, "iterative": c.iterative, "maxIterations": c.max_iterations, "maxChange": c.max_change, "precisionAsDisplayed": c.precision_as_displayed})
     });
     Ok(json!({"calculation": calculation}))
+}
+
+/// The Window tab's list: the windows of the open document (View ▸ New Window opens more than
+/// one on the same document). `view.switchWindows` lists every window of every document and names
+/// the document each one shows; this one is the document's own list, so it leaves that out and
+/// `index` is still what `window.activate` takes.
+fn list_windows(s: &mut Session, _: &Json) -> Result<Json> {
+    let uid = s.doc()?.uid;
+    let active = s.active_window();
+    let docs = s.documents();
+    let list: Vec<Json> = s
+        .windows()
+        .iter()
+        .enumerate()
+        .filter(|(_, (doc, _))| docs.get(*doc).is_some_and(|d| d.uid == uid))
+        .map(|(index, (doc, w))| {
+            json!({
+                "index": index,
+                "window": w.id.0,
+                "title": docs.get(*doc).map(|d| d.display_title()).unwrap_or_default(),
+                "active": active == Some(w.id),
+                "hidden": w.hidden,
+            })
+        })
+        .collect();
+    Ok(Json::Array(list))
 }
 
 /// Switch to a window by its place in the window list (`view.switchWindows`), which for a session

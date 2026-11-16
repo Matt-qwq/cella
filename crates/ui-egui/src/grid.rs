@@ -441,13 +441,16 @@ impl Geo {
         let (fr, fc) = sh.freeze.unwrap_or((0, 0));
         let frozen_w = (ci.start(fc) as f32) * z;
         let frozen_h = (ri.start(fr) as f32) * z;
-        let mut band_w = crate::outline::band(row_outline.levels, zoom);
-        let mut band_h = crate::outline::band(col_outline.levels, zoom);
+        // View › Show › Outline Symbols (Ctrl+8): with the symbols off the outline takes no room
+        // beside the headings at all.
+        let symbols = sh.show_outline_symbols;
+        let mut band_w = if symbols { crate::outline::band(row_outline.levels, zoom) } else { 0.0 };
+        let mut band_h = if symbols { crate::outline::band(col_outline.levels, zoom) } else { 0.0 };
         // Without headings the level buttons still need a corner to sit in.
-        if row_outline.levels > 0 && header_h == 0.0 {
+        if symbols && row_outline.levels > 0 && header_h == 0.0 {
             band_h = band_h.max(crate::outline::lane(zoom) + 3.0);
         }
-        if col_outline.levels > 0 && header_w == 0.0 {
+        if symbols && col_outline.levels > 0 && header_w == 0.0 {
             band_w = band_w.max(crate::outline::lane(zoom) + 3.0);
         }
         let cells = Rect::from_min_max(pos2(rect.left() + band_w + header_w, rect.top() + band_h + header_h), rect.max);
@@ -816,7 +819,10 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
     let available = ui.available_rect_before_wrap();
     // A right-to-left sheet has its vertical scrollbar on the left.
     let rtl = app.session.active().and_then(|d| d.wb.active()).is_some_and(|s| s.right_to_left);
-    let bar = 14.0_f32.min(available.width());
+    // File › Options › Advanced: a workbook whose vertical scroll bar is hidden gives its width to
+    // the grid (view.showVerticalScrollBar).
+    let show_bar = app.session.active().is_none_or(|d| d.wb.view.show_vertical_scroll);
+    let bar = if show_bar { 14.0_f32.min(available.width()) } else { 0.0 };
     let rect = if rtl {
         Rect::from_min_max(pos2(available.left() + bar, available.top()), available.max)
     } else {
@@ -1015,7 +1021,9 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
         paint_headers(&painter, &geo, sh, &sel, &t, &quads, &headings);
         paint_freeze_handles(&painter, &geo, sh, &app.grid.drag, &t);
     }
-    crate::outline::paint(&painter, &geo, sh, &t);
+    if sh.show_outline_symbols {
+        crate::outline::paint(&painter, &geo, sh, &t);
+    }
     if geo.rtl {
         let mirror_to = painter.add(egui::Shape::Noop);
         mirror_painted(ui.ctx(), painter.layer_id(), mirror_from.0..mirror_to.0, &geo, &objects);

@@ -36,7 +36,8 @@ pub enum ShowObjects {
 /// values supplied directly through the model.
 ///
 /// The values are modelled so an open + save keeps them — a workbook Excel saved with the tabs
-/// hidden must not come back with them shown and the settings gone.
+/// hidden must not come back with them shown and the settings gone — and the View commands
+/// (`view.showSheetTabs`, `view.showHorizontalScrollBar`, `view.showVerticalScrollBar`) set them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkbookView {
     #[serde(default = "yes")]
@@ -45,11 +46,14 @@ pub struct WorkbookView {
     pub show_horizontal_scroll: bool,
     #[serde(default = "yes")]
     pub show_vertical_scroll: bool,
+    /// The tab bar's share of the horizontal bar, in thousandths (0–1000; the default is 600).
     #[serde(default = "default_tab_ratio")]
     pub tab_ratio: u32,
 }
 
-fn yes() -> bool {
+/// Serde default for a flag the format writes only when it is off (`<workbookView
+/// showSheetTabs="0"/>`, `<sheetPr><outlinePr summaryBelow="0"/>`): absent means on.
+pub(crate) fn yes() -> bool {
     true
 }
 
@@ -67,7 +71,7 @@ impl WorkbookView {
     /// The entire bar, in thousandths: the upper bound used by XLSX I/O.
     pub const MAX_TAB_RATIO: u32 = 1000;
 
-    /// Whether this is what a workbook without a `<bookViews>` shows, which is what the JSON omits.
+    /// Whether every setting is the format's default, which the writer then leaves out.
     pub fn is_default(&self) -> bool {
         *self == WorkbookView::default()
     }

@@ -812,6 +812,19 @@ impl SheetApp {
                     });
                     self.begin_edit(text, false);
                 }
+                UiRequest::InsertName(name) => match self.editor.as_mut() {
+                    // Into the cell being edited, at the caret.
+                    Some(ed) => {
+                        let at = ed.caret.min(ed.text.chars().count());
+                        let byte = ed.text.char_indices().nth(at).map_or(ed.text.len(), |(i, _)| i);
+                        ed.text.insert_str(byte, &name);
+                        ed.caret = at.saturating_add(name.chars().count());
+                        ed.sync_caret = true;
+                        // A name inserted after a point-mode reference replaces nothing.
+                        ed.point = None;
+                    }
+                    None => self.begin_edit(Some(format!("={name}")), false),
+                },
                 UiRequest::OpenUrl(u) => {
                     if let Some(f) = &self.services.open_url {
                         f(&u);
