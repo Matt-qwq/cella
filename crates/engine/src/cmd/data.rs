@@ -645,7 +645,7 @@ fn toggle_filter(s: &mut Session, p: &Json) -> Result<Json> {
             }
             if let Some(range) = dropped {
                 drop_filter_over(sh, range);
-                cx.structural = true;
+                cx.visibility = true; // the rows the filter hid come back: SUBTOTAL(10x) reads that
             }
             Ok(Json::Null)
         });
@@ -666,7 +666,7 @@ fn toggle_filter(s: &mut Session, p: &Json) -> Result<Json> {
                     info.hidden = false;
                 }
             }
-            cx.structural = true;
+            cx.visibility = true;
             Ok(json!({"filter": false}))
         });
     }
@@ -759,7 +759,7 @@ fn filter_by(s: &mut Session, p: &Json) -> Result<Json> {
             }
         }
         apply_filter(&mut cx.wb, sheet);
-        cx.structural = true;
+        cx.visibility = true; // only which rows are shown changed, not any cell's value
         Ok(Json::Null)
     })?;
     let hidden = s.doc()?.wb.sheet(sheet).map(|sh| sh.rows.values().filter(|r| r.hidden).count() + sh.filter_hidden.count() as usize).unwrap_or(0);
@@ -1007,7 +1007,7 @@ fn clear_filter(s: &mut Session, _: &Json) -> Result<Json> {
             a.criteria.clear();
         }
         apply_filter(&mut cx.wb, sheet);
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }
@@ -1016,7 +1016,7 @@ fn reapply(s: &mut Session, _: &Json) -> Result<Json> {
     let sheet = s.doc()?.wb.active_sheet;
     edit(s, |cx| {
         apply_filter(&mut cx.wb, sheet);
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }
@@ -1645,11 +1645,15 @@ fn group(s: &mut Session, p: &Json, on: bool) -> Result<Json> {
         let sh = cx.sheet_mut(si)?;
         let map = if rows { &mut sh.rows } else { &mut sh.cols };
         let b = b.min(a.saturating_add(1_048_575));
+        // Grouping only raises a level; ungrouping a collapsed group shows its lines again. Both
+        // leave every cell's content alone, so nothing is evaluated unless a line came back.
+        let mut revealed = false;
         for i in a..=b {
             let e = map.entry(i).or_default();
             e.outline = if on { (e.outline + 1).min(outline::MAX_LEVEL) } else { e.outline.saturating_sub(1) };
-            if !on && e.outline == 0 {
+            if !on && e.outline == 0 && e.hidden {
                 e.hidden = false;
+                revealed = true;
             }
         }
         // A summary line whose group is gone has nothing left to collapse.
@@ -1659,7 +1663,8 @@ fn group(s: &mut Session, p: &Json, on: bool) -> Result<Json> {
         {
             e.collapsed = false;
         }
-        cx.structural = true; // ungrouping reveals hidden rows: SUBTOTAL(10x) depends on it
+        // SUBTOTAL(10x) reads which rows are hidden; ungrouping a collapsed group changes that.
+        cx.visibility = revealed;
         Ok(Json::Null)
     })
 }
@@ -1704,7 +1709,7 @@ fn detail(s: &mut Session, p: &Json, hide: bool) -> Result<Json> {
                 e.collapsed = false;
             }
         }
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }
@@ -1745,7 +1750,7 @@ fn show_levels(s: &mut Session, p: &Json) -> Result<Json> {
                 map.entry(g.summary()).or_default().collapsed = g.level >= n;
             }
         }
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }

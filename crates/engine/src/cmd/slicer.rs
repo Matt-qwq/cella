@@ -792,7 +792,7 @@ fn set_selection(s: &mut Session, p: &Json) -> Result<Json> {
             sl.selected = new_selected.clone();
         }
         reapply_slicer(&mut cx.wb, sheet, id);
-        cx.structural = true;
+        cx.visibility = true; // the selection becomes the column's filter: only rows are hidden
         Ok(json!({"slicer": id}))
     })
 }
@@ -1013,7 +1013,7 @@ fn slicer_toggle(s: &mut Session, p: &Json) -> Result<Json> {
             sl.selected = new_selected;
         }
         reapply_slicer(&mut cx.wb, sheet, id);
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }
@@ -1042,7 +1042,7 @@ fn slicer_select_all(s: &mut Session, p: &Json) -> Result<Json> {
             sl.selected = None;
         }
         reapply_slicer(&mut cx.wb, sheet, id);
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }
@@ -1197,7 +1197,7 @@ fn slicer_delete(s: &mut Session, p: &Json) -> Result<Json> {
             af.criteria.retain(|(o, _)| *o != off);
         }
         super::data::apply_filter(&mut cx.wb, sheet);
-        cx.structural = true;
+        cx.visibility = true;
         Ok(Json::Null)
     })
 }

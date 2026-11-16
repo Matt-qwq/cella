@@ -505,6 +505,9 @@ fn table_flag(s: &mut Session, p: &Json, which: &str) -> Result<Json> {
                     t.filter.clear();
                     let range = t.range;
                     super::data::drop_filter_over(sh, range);
+                    // The rows the table's filter hid come back: SUBTOTAL(10x) reads that and no
+                    // cell's content changed.
+                    cx.visibility = true;
                 }
             }
             _ => {}

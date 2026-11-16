@@ -1186,6 +1186,47 @@ fn subtotal_skips_hidden() {
     assert_eq!(t.num("B2"), 6.0);
 }
 
+/// A filter or a collapsed group changes no cell — it changes what the sheet shows. Only the
+/// formulas that read that state are evaluated again, and the formulas that read them with it.
+#[test]
+fn a_visibility_change_evaluates_only_the_formulas_that_read_it() {
+    let mut t = T::new();
+    t.set("A1", "1");
+    t.set("A2", "2");
+    t.set("A3", "3");
+    t.set("B1", "=SUBTOTAL(109,A1:A3)");
+    t.set("B2", "=B1*2");
+    t.set("C1", "=A1+A2");
+    t.set("C2", "=C1*3");
+    t.wb.sheet_mut(0).unwrap().rows.insert(1, gridcraft_model::LineInfo { hidden: true, ..Default::default() });
+    t.calc.last_recalc_cells = 0;
+    t.calc.visibility_changed(&mut t.wb);
+    assert_eq!(t.num("B1"), 4.0, "the hidden row is left out");
+    assert_eq!(t.num("B2"), 8.0, "a formula that reads the SUBTOTAL follows it");
+    assert_eq!((t.num("C1"), t.num("C2")), (3.0, 9.0), "a formula visibility does not feed keeps its value");
+    assert_eq!(t.calc.last_recalc_cells, 2, "the SUBTOTAL and its dependent, nothing else");
+    // Showing the row again puts the values back.
+    t.wb.sheet_mut(0).unwrap().rows.remove(&1);
+    t.calc.visibility_changed(&mut t.wb);
+    assert_eq!((t.num("B1"), t.num("B2")), (6.0, 12.0));
+}
+
+/// The `SUBTOTAL` may sit in a defined name rather than in the formula that reads it. The flag comes
+/// from the walk that resolves names, so that formula still follows a visibility change.
+#[test]
+fn a_defined_name_that_holds_a_subtotal_follows_a_visibility_change() {
+    let mut t = T::new();
+    t.set("A1", "1");
+    t.set("A2", "2");
+    t.set("A3", "3");
+    t.define("Total", "SUBTOTAL(109,Sheet1!$A$1:$A$3)");
+    t.set("B1", "=Total*2");
+    assert_eq!(t.num("B1"), 12.0);
+    t.wb.sheet_mut(0).unwrap().rows.insert(1, gridcraft_model::LineInfo { hidden: true, ..Default::default() });
+    t.calc.visibility_changed(&mut t.wb);
+    assert_eq!(t.num("B1"), 8.0);
+}
+
 #[test]
 fn subtotal_109_skips_nested_subtotal() {
     let mut t = T::new();

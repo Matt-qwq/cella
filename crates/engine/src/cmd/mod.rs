@@ -341,7 +341,13 @@ pub(crate) fn check_bulk(cells: u64) -> Result<()> {
 pub struct Ctx<'a> {
     pub wb: Workbook,
     pub changed: Vec<Key>,
+    /// The edit may change sheet geometry (rows, columns, sheets, a table's or a name's meaning):
+    /// the dependency graph is rebuilt and every formula evaluated.
     pub structural: bool,
+    /// The edit changed only which rows are hidden (a filter, a group, a row height): no cell's
+    /// content changed, so only the formulas that read that state (`SUBTOTAL`, `AGGREGATE`) and
+    /// their dependents are evaluated.
+    pub visibility: bool,
     pub sel: &'a mut Selection,
     /// Rows whose automatic height should be recomputed (sheet, row).
     pub fit_rows: Vec<(usize, u32)>,
@@ -365,9 +371,10 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     #[allow(clippy::disallowed_methods)]
     let t0 = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("GRIDCRAFT_PROFILE").map(|_| std::time::Instant::now()) };
     let mut sel = d.selection.clone();
-    let mut ctx = Ctx { wb: (*d.wb).clone(), changed: Vec::new(), structural: false, sel: &mut sel, fit_rows: Vec::new(), protection_checked: false };
+    let mut ctx =
+        Ctx { wb: (*d.wb).clone(), changed: Vec::new(), structural: false, visibility: false, sel: &mut sel, fit_rows: Vec::new(), protection_checked: false };
     let r = f(&mut ctx)?;
-    let Ctx { mut wb, mut changed, structural, mut fit_rows, protection_checked, .. } = ctx;
+    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, .. } = ctx;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
     }
@@ -385,9 +392,14 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     }
     if structural {
         d.calc.recalc_all(&mut wb);
-    } else if !changed.is_empty() {
-        let used = used_range_changes(&d.calc, &d.wb, &wb, &changed);
-        d.calc.cells_changed_with_used(&mut wb, &changed, &used);
+    } else {
+        if !changed.is_empty() {
+            let used = used_range_changes(&d.calc, &d.wb, &wb, &changed);
+            d.calc.cells_changed_with_used(&mut wb, &changed, &used);
+        }
+        if visibility {
+            d.calc.visibility_changed(&mut wb);
+        }
     }
     if let Some(t0) = t0 {
         eprintln!("commit: + recalc {:?}", t0.elapsed());

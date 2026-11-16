@@ -4874,6 +4874,88 @@ fn subtotal_109_recalculates_when_row_height_or_autofit_reveals_rows() {
     assert_eq!(v(&s, "C1"), Value::Number(15.0));
 }
 
+/// Every cell's stored content: where it is, its value, its formula and its style.
+fn cell_snapshot(s: &Session) -> Vec<(CellRef, Value, Option<String>, gridcraft_model::StyleId)> {
+    let wb = &s.doc().unwrap().wb;
+    let sh = wb.active().unwrap();
+    sh.cells.iter().map(|(c, cell)| (c, cell.value, cell.formula.as_ref().map(|f| f.text.clone()), sh.style_id(c))).collect()
+}
+
+/// A filter changes which rows are shown, not what any cell holds: the only formulas such an edit
+/// has to evaluate again are the ones that read that state (`SUBTOTAL`, `AGGREGATE`) and the ones
+/// that read them. It used to rebuild the dependency graph and evaluate the whole workbook.
+#[test]
+fn a_filter_change_evaluates_the_subtotal_and_its_dependents_only() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["k", "n"], ["x", 1], ["y", 2], ["x", 4]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "D1", "input": "=SUBTOTAL(109,B2:B4)"})).unwrap();
+    s.execute("cell.set", json!({"cell": "D2", "input": "=D1*10"})).unwrap();
+    assert_eq!((v(&s, "D1"), v(&s, "D2")), (Value::Number(7.0), Value::Number(70.0)));
+    s.execute("selection.set", json!({"range": "A1:B4"})).unwrap();
+    s.execute("data.filter", json!({})).unwrap();
+
+    s.doc_mut().unwrap().calc.last_recalc_cells = 0;
+    s.execute("data.filterBy", json!({"column": "A", "values": ["x"]})).unwrap();
+    assert_eq!(v(&s, "D1"), Value::Number(5.0), "the rows the filter hides are left out");
+    assert_eq!(v(&s, "D2"), Value::Number(50.0), "a formula reading the SUBTOTAL follows it");
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 2, "only the SUBTOTAL and its dependent were evaluated");
+
+    s.doc_mut().unwrap().calc.last_recalc_cells = 0;
+    s.execute("data.clearFilter", json!({})).unwrap();
+    assert_eq!((v(&s, "D1"), v(&s, "D2")), (Value::Number(7.0), Value::Number(70.0)), "clearing the filter puts the value back");
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 2, "clearing it evaluates the same two formulas");
+}
+
+/// A chain of formulas that no filter feeds is not evaluated again when the filter changes.
+#[test]
+fn a_chain_of_formulas_under_a_filter_is_not_evaluated_again() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["k", "n"], ["x", 1], ["y", 2], ["x", 4]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=B2+1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C2", "input": "=C1*2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C3", "input": "=C2+1"})).unwrap();
+    s.execute("selection.set", json!({"range": "A1:B4"})).unwrap();
+    s.execute("data.filter", json!({})).unwrap();
+
+    s.doc_mut().unwrap().calc.last_recalc_cells = 0;
+    s.execute("data.filterBy", json!({"column": "A", "values": ["x"]})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 0, "no formula reads which rows are shown");
+    assert_eq!((v(&s, "C1"), v(&s, "C2"), v(&s, "C3")), (Value::Number(2.0), Value::Number(4.0), Value::Number(5.0)));
+    s.doc_mut().unwrap().calc.last_recalc_cells = 0;
+    s.execute("data.clearFilter", json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 0, "nor does clearing it");
+}
+
+/// Grouping and ungrouping change the outline (and, collapsed, which lines are shown): every cell
+/// keeps its value, formula and style, and nothing is evaluated.
+#[test]
+fn grouping_leaves_every_cell_alone_and_evaluates_nothing() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [3], [4]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=SUBTOTAL(109,A1:A4)"})).unwrap();
+    s.execute("cell.set", json!({"cell": "B2", "input": "=A2*2"})).unwrap();
+    s.execute("range.setValues", json!({"range": "C1", "values": [["styled", true]]})).unwrap();
+    s.execute("selection.set", json!({"range": "C1:D1"})).unwrap();
+    s.execute("home.bold", json!({})).unwrap();
+    let before = cell_snapshot(&s);
+
+    s.doc_mut().unwrap().calc.last_recalc_cells = 0;
+    s.execute("data.group", json!({"rows": "2:3"})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 0, "grouping evaluates nothing");
+    assert_eq!(cell_snapshot(&s), before, "every cell keeps its value, formula and style");
+
+    // Collapsing the group hides its rows, which is state `SUBTOTAL(109)` reads — and nothing else.
+    s.doc_mut().unwrap().calc.last_recalc_cells = 0;
+    s.execute("data.hideDetail", json!({"rows": "2:3"})).unwrap();
+    assert_eq!(v(&s, "B1"), Value::Number(5.0), "the collapsed rows are left out");
+    assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 1, "only the SUBTOTAL was evaluated");
+    s.execute("data.showDetail", json!({"rows": "2:3"})).unwrap();
+    assert_eq!(v(&s, "B1"), Value::Number(10.0));
+
+    s.execute("data.ungroup", json!({"rows": "2:3"})).unwrap();
+    assert_eq!(cell_snapshot(&s), before, "ungrouping leaves every cell alone");
+}
+
 #[test]
 fn paste_special_validation_copies_the_rule() {
     let mut s = s();
