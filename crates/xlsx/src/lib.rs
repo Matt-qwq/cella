@@ -54,6 +54,7 @@ use gridcraft_model::Workbook;
 
 pub use crypto::{DecryptError, EncryptionScheme, check_encryption, decrypt, encrypt_workbook, encrypt_workbook_as, encryption_scheme};
 pub use csv::{MAX_CSV_BYTES, read_csv, write_csv, write_csv_limited};
+pub use fmla::KnownFunctions;
 pub use ods::read_ods;
 pub use package::MAX_PART;
 
@@ -104,6 +105,13 @@ pub fn read_xlsx(bytes: &[u8]) -> Result<(Workbook, ReadReport), IoError> {
     read::read_xlsx(bytes)
 }
 
+/// [`read_xlsx`] with everything the read may be told (see [`ReadOptions`]): the engine reads a
+/// workbook's bytes through this, so its [`KnownFunctions`] decide which Google Sheets export
+/// wrappers are unwrapped.
+pub fn read_xlsx_with(bytes: &[u8], options: ReadOptions) -> Result<(Workbook, ReadReport), IoError> {
+    read::read_xlsx_with(bytes, sheet_read::ReadPlan::from_options(options))
+}
+
 /// [`read_xlsx`] with the reader allowed to spill completed bands to a page file.
 pub fn read_xlsx_paged(bytes: &[u8], paging: bool) -> Result<(Workbook, ReadReport), IoError> {
     read::read_xlsx_paged(bytes, paging)
@@ -131,6 +139,10 @@ pub struct ReadOptions {
     /// Tests pin it so a read with no usable place can be proven without touching the process
     /// environment, which is global and unsafe to mutate from a parallel test.
     pub spill_temp: Option<std::path::PathBuf>,
+    /// The worksheet functions the evaluator can calculate, for unwrapping Google Sheets' export
+    /// wrappers (`#2871`). The default leaves every wrapper as the file wrote it, which is what a
+    /// read outside the engine does: the cell then keeps the file's cached value as Excel shows it.
+    pub known_function: KnownFunctions,
 }
 
 /// [`read_xlsx_file`] with a [`ReadOptions`] plan. The engine opens a document by path through

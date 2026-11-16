@@ -24,6 +24,9 @@ struct Shared {
     anchor: CellRef,
     expr: Option<Expr>,
     text: String,
+    /// The master formula was unwrapped from Google Sheets' export wrapper: its copies are
+    /// dynamic-array formulas too.
+    unwrapped: bool,
 }
 
 #[derive(Default)]
@@ -43,6 +46,9 @@ struct RowState {
     skip_row: bool,
     /// The cells of the row being read, handed to the store in one go and reused for the next row.
     row_cells: Vec<(u32, Cell)>,
+    /// Cells whose formula arrived without dynamic-array metadata (see
+    /// [`crate::array_formula::apply_legacy`]): rewritten once names and tables are loaded.
+    legacy: Vec<CellRef>,
 }
 
 /// The read-only half of [`Ctx`] that row decoding needs: shared strings, cell formats, value
@@ -54,6 +60,9 @@ pub(crate) struct DecodeCtx<'a> {
     xf_map: &'a [gridcraft_model::StyleId],
     pictures: &'a [Option<Arc<gridcraft_model::CellPicture>>],
     date_system: DateSystem,
+    /// The functions the evaluator can calculate: a Google Sheets export wrapper is unwrapped
+    /// only when every function it holds is one.
+    known: crate::KnownFunctions,
 }
 
 impl DecodeCtx<'_> {
@@ -83,6 +92,8 @@ pub(crate) struct ReadPlan {
     /// Where the page file may live and what it may be called. `None`, or a target with no
     /// directory, leaves the store to choose the system temp directory under its own name.
     pub spill: Option<SpillTarget>,
+    /// The functions the evaluator can calculate, for unwrapping Google Sheets' export wrappers.
+    pub known_function: crate::KnownFunctions,
 }
 
 /// A place and a name hint for the page file a paging read creates. The model sanitizes the hint
@@ -101,7 +112,14 @@ impl Default for ReadPlan {
     fn default() -> Self {
         // One window is big enough to keep the parallel row decode busy and small enough that a
         // sheet unpacks through memory instead of into it.
-        ReadPlan { stream_min: 64 * 1024 * 1024, window: 24 * 1024 * 1024, chunk_min: 8 * 1024 * 1024, paging: false, spill: None }
+        ReadPlan {
+            stream_min: 64 * 1024 * 1024,
+            window: 24 * 1024 * 1024,
+            chunk_min: 8 * 1024 * 1024,
+            paging: false,
+            spill: None,
+            known_function: crate::KnownFunctions::default(),
+        }
     }
 }
 
@@ -119,7 +137,7 @@ fn no_spill_warning(dir: Option<&std::path::Path>) -> String {
     }
 }
 
-pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &ReadPlan) -> Result<Sheet, IoError> {
+pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &ReadPlan) -> Result<(Sheet, Vec<CellRef>), IoError> {
     let rels = cx.pkg.rels(part)?;
     let mut sheet = Sheet::new(name);
     if plan.paging {
@@ -145,10 +163,11 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
     } else {
         Streamed::Whole(cx.pkg.read(part)?.ok_or_else(|| IoError::Format(format!("missing part {part}")))?)
     };
-    let (root, warn, rows_read, dropped) = match streamed {
+    let (root, warn, rows_read, dropped, legacy) = match streamed {
         Streamed::Rows(r) => r,
         Streamed::Whole(bytes) => {
-            let dc = DecodeCtx { sst: &cx.sst, xf_map: &cx.xf_map, pictures: &cx.cell_pictures, date_system: cx.date_system };
+            let dc =
+                DecodeCtx { sst: &cx.sst, xf_map: &cx.xf_map, pictures: &cx.cell_pictures, date_system: cx.date_system, known: plan.known_function };
             read_rows(&bytes, &dc, &mut sheet, default_height, name, plan)
         }
     };
@@ -331,7 +350,7 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
         }
     }
     heal_filter_hidden(&mut sheet);
-    Ok(sheet)
+    Ok((sheet, legacy))
 }
 
 /// A file stores a row its filter hides as `hidden="1"` on the row. Read that way, a million-row
@@ -507,15 +526,22 @@ fn adopt_spills(sheet: &mut Sheet) {
 /// events. A rows region whose rows carry no cross-row state (no shared or array formulas) is cut
 /// at row boundaries and decoded on several threads; the rows are then applied in document order,
 /// so the model sees exactly the sequence a single pass gives it.
-fn read_rows(bytes: &[u8], dc: &DecodeCtx<'_>, sheet: &mut Sheet, default_height: f32, name: &str, plan: &ReadPlan) -> (El, Vec<String>, u64, u64) {
+fn read_rows(
+    bytes: &[u8],
+    dc: &DecodeCtx<'_>,
+    sheet: &mut Sheet,
+    default_height: f32,
+    name: &str,
+    plan: &ReadPlan,
+) -> (El, Vec<String>, u64, u64, Vec<CellRef>) {
     let mut warn = Vec::new();
     let Some((open_start, open_end, self_closing)) = sheet_data_span(bytes) else {
         // No `<sheetData>` at all: read the part as the document it is.
         return match xml::parse(bytes) {
-            Ok(root) => (root, warn, 0, 0),
+            Ok(root) => (root, warn, 0, 0, Vec::new()),
             Err(e) => {
                 warn.push(format!("sheet \"{name}\" is damaged ({e})"));
-                (El::default(), warn, 0, 0)
+                (El::default(), warn, 0, 0, Vec::new())
             }
         };
     };
@@ -533,10 +559,11 @@ fn read_rows(bytes: &[u8], dc: &DecodeCtx<'_>, sheet: &mut Sheet, default_height
     let mut parallel = true;
     let mut rows_read = 0u64;
     let mut dropped = 0u64;
-    decode_rows(rows, dc, sheet, default_height, &mut st, &mut parallel, &mut warn, &mut rows_read, &mut dropped, plan);
+    let mut legacy = Vec::new();
+    decode_rows(rows, dc, sheet, default_height, &mut st, &mut parallel, &mut warn, &mut rows_read, &mut dropped, &mut legacy, plan);
     let tail = worksheet_part(suffix, Part::Tail, &mut warn);
     root.children.extend(tail.children);
-    (root, warn, rows_read, dropped)
+    (root, warn, rows_read, dropped, legacy)
 }
 
 /// Which end of `<sheetData>` a fragment of a worksheet part comes from.
@@ -588,6 +615,7 @@ fn decode_rows(
     warn: &mut Vec<String>,
     rows_read: &mut u64,
     dropped: &mut u64,
+    legacy: &mut Vec<CellRef>,
     plan: &ReadPlan,
 ) {
     if bytes.is_empty() {
@@ -609,9 +637,11 @@ fn decode_rows(
                     *rows_read += chunk.rows_read;
                     *dropped += chunk.dropped;
                     warn.extend(std::mem::take(&mut chunk.warn));
+                    legacy.append(&mut chunk.legacy);
                     apply_chunk(sheet, chunk);
                 }
             }
+            legacy.append(&mut st.legacy);
             return;
         }
     }
@@ -630,6 +660,7 @@ fn decode_rows(
     }
     *rows_read += st.rows - rows_before;
     *dropped += st.dropped - dropped_before;
+    legacy.append(&mut st.legacy);
 }
 
 /// One cell after decoding: either a value/formula cell, or a picture with its style (a picture
@@ -654,6 +685,8 @@ struct Chunk {
     rows_read: u64,
     dropped: u64,
     warn: Vec<String>,
+    /// Legacy formula cells of this chunk (see [`RowState::legacy`]).
+    legacy: Vec<CellRef>,
 }
 
 /// How many threads to read rows on: the machine's parallelism, capped so a big sheet does not
@@ -771,6 +804,7 @@ fn decode_chunk(bytes: &[u8], dc: &DecodeCtx<'_>, default_height: f32) -> Chunk 
         rows_read: 0,
         dropped: 0,
         warn: Vec::new(),
+        legacy: Vec::new(),
     };
     let mut st = RowState::default();
     let mut row: Option<(u32, Option<LineInfo>, Vec<DecodedCell>)> = None;
@@ -816,13 +850,14 @@ fn decode_chunk(bytes: &[u8], dc: &DecodeCtx<'_>, default_height: f32) -> Chunk 
         pack_row(&mut chunk, &mut batch, r, info, cells);
     }
     chunk.dropped += st.dropped;
+    chunk.legacy = std::mem::take(&mut st.legacy);
     chunk
 }
 
 /// What a streaming read produced: the rows it could decode, or — when the part turned out not to
 /// be streamable (UTF-16, or no `<sheetData>`) — its bytes, to be read the ordinary way.
 enum Streamed {
-    Rows((El, Vec<String>, u64, u64)),
+    Rows((El, Vec<String>, u64, u64, Vec<CellRef>)),
     Whole(Vec<u8>),
 }
 
@@ -837,7 +872,7 @@ fn stream_rows(cx: &mut Ctx<'_>, part: &str, sheet: &mut Sheet, default_height: 
     // formats. Two disjoint halves of `cx`, which is what lets the inflating thread take the first
     // and this thread keep the second.
     let Ctx { pkg, sst, xf_map, cell_pictures, date_system, .. } = cx;
-    let dc = DecodeCtx { sst, xf_map, pictures: cell_pictures, date_system: *date_system };
+    let dc = DecodeCtx { sst, xf_map, pictures: cell_pictures, date_system: *date_system, known: plan.known_function };
     let Some(reader) = pkg.open_part(part)? else {
         return Ok(Streamed::Whole(Vec::new()));
     };
@@ -963,6 +998,7 @@ fn consume_windows(
     let mut parallel = true;
     let mut rows_read = 0u64;
     let mut dropped = 0u64;
+    let mut legacy: Vec<CellRef> = Vec::new();
     let mut suffix: Vec<u8> = Vec::new();
     if self_closing {
         suffix = std::mem::take(&mut buf);
@@ -972,7 +1008,19 @@ fn consume_windows(
     } else {
         loop {
             if let Some((close, past)) = sheet_data_close(&buf) {
-                decode_rows(&buf[..close], dc, sheet, default_height, &mut st, &mut parallel, &mut warn, &mut rows_read, &mut dropped, plan);
+                decode_rows(
+                    &buf[..close],
+                    dc,
+                    sheet,
+                    default_height,
+                    &mut st,
+                    &mut parallel,
+                    &mut warn,
+                    &mut rows_read,
+                    &mut dropped,
+                    &mut legacy,
+                    plan,
+                );
                 suffix = buf.split_off(past);
                 while !eof {
                     pull(&mut suffix, &mut eof)?;
@@ -981,13 +1029,25 @@ fn consume_windows(
             }
             if eof {
                 // A part that never closes `<sheetData>`: decode what came and stop.
-                decode_rows(&buf, dc, sheet, default_height, &mut st, &mut parallel, &mut warn, &mut rows_read, &mut dropped, plan);
+                decode_rows(&buf, dc, sheet, default_height, &mut st, &mut parallel, &mut warn, &mut rows_read, &mut dropped, &mut legacy, plan);
                 break;
             }
             if buf.len() >= plan.window
                 && let Some(cut) = last_row_end(&buf)
             {
-                decode_rows(&buf[..cut], dc, sheet, default_height, &mut st, &mut parallel, &mut warn, &mut rows_read, &mut dropped, plan);
+                decode_rows(
+                    &buf[..cut],
+                    dc,
+                    sheet,
+                    default_height,
+                    &mut st,
+                    &mut parallel,
+                    &mut warn,
+                    &mut rows_read,
+                    &mut dropped,
+                    &mut legacy,
+                    plan,
+                );
                 buf.drain(..cut);
                 continue;
             }
@@ -999,7 +1059,7 @@ fn consume_windows(
     }
     let tail = worksheet_part(&suffix, Part::Tail, &mut warn);
     root.children.extend(tail.children);
-    Ok(Streamed::Rows((root, warn, rows_read, dropped)))
+    Ok(Streamed::Rows((root, warn, rows_read, dropped, legacy)))
 }
 
 /// `AB123` → the cell, for the exact form a spreadsheet writes in a cell's `r=`. Anything else
@@ -1245,10 +1305,15 @@ fn decode_cell(dc: &DecodeCtx<'_>, warn: &mut Vec<String>, st: &mut RowState, c:
         return Some(DecodedCell { at: pos, style, cell: None, picture: Some(picture), spill: None });
     }
     let dynamic = c.cm;
-    let (formula, spill) = match c.f.as_ref().and_then(|f| read_formula(warn, st, f, pos, dynamic)) {
+    let (formula, spill) = match c.f.as_ref().and_then(|f| read_formula(warn, st, f, pos, dynamic, dc.known)) {
         Some((fm, spill)) => (Some(fm), spill),
         None => (None, None),
     };
+    // A formula without dynamic-array metadata is a legacy formula, unless entered as a
+    // Ctrl+Shift+Enter array or unwrapped from Google Sheets' export (both mark it dynamic).
+    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && f.expr_arc().is_some()) {
+        st.legacy.push(pos);
+    }
     let value = if formula.is_none() && st.derived.iter().any(|r| r.contains(pos) && r.start != pos) { Value::Empty } else { value };
     Some(DecodedCell { at: pos, style, cell: Some(Cell { value, formula: formula.map(Arc::new), style }), picture: None, spill })
 }
@@ -1261,9 +1326,14 @@ fn read_formula(
     f: &crate::rows::FormulaAttrs<'_>,
     pos: CellRef,
     dynamic: bool,
+    known: crate::KnownFunctions,
 ) -> Option<(Formula, Option<RangeRef>)> {
-    // Keep the file's dynamic-array mark, so saving never turns the formula into a legacy one.
-    read_formula_text(warn, st, f, pos, dynamic).map(|(fm, spill)| (Formula { dynamic, ..fm }, spill))
+    // Keep the file's dynamic-array mark (and treat a formula unwrapped from Google Sheets'
+    // export as dynamic), so saving never turns the formula into a legacy one.
+    let mut unwrapped = false;
+    let (fm, spill) = read_formula_text(warn, st, f, pos, dynamic, known, &mut unwrapped)?;
+    let dynamic = dynamic || unwrapped;
+    Some((Formula { dynamic, ..fm }, spill))
 }
 
 fn read_formula_text(
@@ -1272,21 +1342,30 @@ fn read_formula_text(
     f: &crate::rows::FormulaAttrs<'_>,
     pos: CellRef,
     dynamic: bool,
+    known: crate::KnownFunctions,
+    unwrapped: &mut bool,
 ) -> Option<(Formula, Option<RangeRef>)> {
-    let model = from_file(f.text.trim());
+    let mut model = from_file(f.text.trim());
+    if let Some(known) = known.given()
+        && let Some(u) = crate::fmla::unwrap_google_sheets(&model, known)
+    {
+        model = u;
+        *unwrapped = true;
+    }
     let text = model.as_str();
     match f.kind.unwrap_or("normal") {
         "shared" => {
             let si = f.si.and_then(|v| v.trim().parse::<u32>().ok())?;
             if !text.is_empty() {
                 let expr = gridcraft_formula::parse(text).ok();
-                st.shared.insert(si, Shared { anchor: pos, expr, text: text.to_string() });
+                st.shared.insert(si, Shared { anchor: pos, expr, text: text.to_string(), unwrapped: *unwrapped });
                 Some((Formula::new(text), None))
             } else {
                 let Some(sh) = st.shared.get(&si) else {
                     warn.push("a shared formula refers to a missing master cell; kept the cached value".into());
                     return None;
                 };
+                *unwrapped |= sh.unwrapped;
                 Some((
                     match &sh.expr {
                         Some(e) => {

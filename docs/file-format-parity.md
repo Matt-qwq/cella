@@ -6,7 +6,7 @@
 
 
 
-> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-03 · **Change:** minor (status brought up to round 17: `.xls` **charts, autoshapes and text boxes** are read — the chart substream inside the worksheet and each shape's DrawingML fragment (or its OfficeArt type and anchor), its group kind and variants, series ranges, title, legend and the `msosptChart` anchor — and verified in Excel 16 by converting a five-kind workbook and reopening it with the same kinds, titles and anchors; the `.xls` row records pictures, `CF12`, charts and shapes as read and keeps OLE objects/controls/chart sheets out; **RC4 is recorded as not an ECMA-376 Standard cipher** ([MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 package), so the encrypted-`.xls` item waits for a `.xls` writer; no format or score change) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-03 · **Last updated:** 2026-11-16 · **Change:** minor (status brought up to round 17: `.xls` **charts, autoshapes and text boxes** are read — the chart substream inside the worksheet and each shape's DrawingML fragment (or its OfficeArt type and anchor), its group kind and variants, series ranges, title, legend and the `msosptChart` anchor — and verified in Excel 16 by converting a five-kind workbook and reopening it with the same kinds, titles and anchors; the `.xls` row records pictures, `CF12`, charts and shapes as read and keeps OLE objects/controls/chart sheets out; **RC4 is recorded as not an ECMA-376 Standard cipher** ([MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 package), so the encrypted-`.xls` item waits for a `.xls` writer; no format or score change) · **Target:** Microsoft Excel (Microsoft 365)
 
 
 
@@ -618,6 +618,8 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 |---|---|---|
+
+| 2026-11-16 | minor | **Legacy implicit intersection is applied on read**: a formula a file saved without dynamic-array metadata (no `cm`) is rewritten to its dynamic-array reading with Excel's `@` where a reference that may cover several cells stands where one value is expected (IF's condition and IFERROR's and IFNA's arguments inside array functions included, T taking a reference's top-left cell, ROW/COLUMN of a range its first); a dynamic-array formula and a Ctrl+Shift+Enter array range are read as written. The engine also unwraps Google Sheets' export wrapper `IFERROR(__xludf.DUMMYFUNCTION("<formula>"),<cached value>)` when it can calculate every function inside, and keeps the wrapper (so the cell shows the file's cached value) when it cannot |
 
 
 

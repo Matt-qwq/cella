@@ -160,13 +160,146 @@ fn strip_param_prefix(n: String) -> String {
 pub fn from_file(text: &str) -> String {
     let body = text.strip_prefix('=').unwrap_or(text);
     match gridcraft_formula::parse(body) {
-        Ok(e) => gridcraft_formula::print(&e.map(&mut |x| match x {
-            Expr::Name(n) => Expr::Name(strip_param_prefix(n)),
-            Expr::Call(n, args) => Expr::Call(strip_param_prefix(n), args),
-            other => other,
-        })),
+        Ok(e) => gridcraft_formula::print(&strip_param_prefixes(e)),
         Err(_) => body.to_string(),
     }
+}
+
+fn strip_param_prefixes(e: Expr) -> Expr {
+    e.map(&mut |x| match x {
+        Expr::Name(n) => Expr::Name(strip_param_prefix(n)),
+        Expr::Call(n, args) => Expr::Call(strip_param_prefix(n), args),
+        other => other,
+    })
+}
+
+/// The worksheet functions the evaluator can calculate, for reading (#2871). A Google Sheets
+/// export wrapper is unwrapped only when every function inside it is one, so a formula GridCraft
+/// would show as `#NAME?` keeps the wrapper and the file's cached value instead.
+///
+/// Only a predicate that lives for the whole program can be given (a plain `fn`, as the engine
+/// passes): a read may decode rows on several threads.
+#[derive(Clone, Copy, Default)]
+pub struct KnownFunctions(Option<&'static (dyn Fn(&str) -> bool + Sync)>);
+
+impl KnownFunctions {
+    /// With the evaluator's answers: `known(name)` says whether it can calculate the function.
+    pub fn new(known: &'static (dyn Fn(&str) -> bool + Sync)) -> KnownFunctions {
+        KnownFunctions(Some(known))
+    }
+
+    /// The predicate, when the caller gave one.
+    pub(crate) fn given(self) -> Option<&'static (dyn Fn(&str) -> bool + Sync)> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for KnownFunctions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "KnownFunctions(given)" } else { "KnownFunctions(none)" })
+    }
+}
+
+/// The function Google Sheets' XLSX export wraps formulas in when it thinks Excel lacks one of
+/// their functions.
+const DUMMY_FUNCTION: &str = "__xludf.DUMMYFUNCTION";
+
+/// Whether `text` may hold Google Sheets' export wrapper: a cheap test before parsing.
+fn mentions_dummy_function(text: &str) -> bool {
+    const NEEDLE: &[u8] = b"DUMMYFUNCTION";
+    text.as_bytes().windows(NEEDLE.len()).any(|w| w.eq_ignore_ascii_case(NEEDLE))
+}
+
+/// The model text of `text` (a formula as read, see [`from_file`]) with its Google Sheets export
+/// wrappers replaced, or `None` when nothing changes.
+pub(crate) fn unwrap_google_sheets(text: &str, known: &dyn Fn(&str) -> bool) -> Option<String> {
+    if !mentions_dummy_function(text) {
+        return None;
+    }
+    let e = gridcraft_formula::parse(text.strip_prefix('=').unwrap_or(text)).ok()?;
+    let unwrapped = unwrap_dummy_functions(e, known)?;
+    Some(gridcraft_formula::print(&strip_param_prefixes(unwrapped)))
+}
+
+/// The original formula inside Google Sheets' export wrapper
+/// `IFERROR(__xludf.DUMMYFUNCTION("<formula, quotes doubled>"),<cached value>)`, if `e` is that
+/// wrapper, the text parses and every function it calls is `known`. The parser has already undone
+/// the doubled quotes.
+fn dummy_function_inner(e: &Expr, known: &dyn Fn(&str) -> bool) -> Option<Expr> {
+    let Expr::Call(name, args) = e else { return None };
+    // The parser has already dropped an `_xlfn.` prefix from IFERROR.
+    if !name.eq_ignore_ascii_case("IFERROR") {
+        return None;
+    }
+    let [Expr::Call(dummy, inner), _fallback] = args.as_slice() else { return None };
+    if !dummy.eq_ignore_ascii_case(DUMMY_FUNCTION) {
+        return None;
+    }
+    let [Expr::Text(src)] = inner.as_slice() else { return None };
+    // The text came out of a formula within the length limit, so it is within it too; check
+    // anyway rather than rely on that.
+    if src.len() > gridcraft_formula::MAX_FORMULA_LEN && src.chars().count() > gridcraft_formula::MAX_FORMULA_LEN {
+        return None;
+    }
+    let parsed = gridcraft_formula::parse(src).ok()?;
+    // A function GridCraft can't calculate would show `#NAME?` where Excel shows the cached
+    // value; a wrapper inside the text is one too, so only one level is ever unwrapped.
+    let mut all_known = true;
+    parsed.walk(&mut |x| {
+        if let Expr::Call(n, _) = x {
+            all_known &= known(n);
+        }
+    });
+    all_known.then_some(parsed)
+}
+
+/// `e` with each Google Sheets export wrapper (see [`dummy_function_inner`]) replaced by the
+/// formula it holds, for the whole formula or anywhere inside it, or `None` when none is. If the
+/// result no longer parses (nesting beyond the parser's limit), nothing is replaced.
+fn unwrap_dummy_functions(e: Expr, known: &dyn Fn(&str) -> bool) -> Option<Expr> {
+    // The whole formula: no parentheses needed.
+    if let Some(inner) = dummy_function_inner(&e, known) {
+        return Some(inner);
+    }
+    let mut found = false;
+    let rewritten = e.map(&mut |x| match dummy_function_inner(&x, known) {
+        // The printer writes no parentheses of its own, so keep the inner formula's precedence
+        // with explicit ones unless it is a single operand.
+        Some(
+            inner @ (Expr::Call(..)
+            | Expr::Ref(_)
+            | Expr::Name(_)
+            | Expr::Number(_)
+            | Expr::Text(_)
+            | Expr::Bool(_)
+            | Expr::Error(_)
+            | Expr::Paren(_)
+            | Expr::Array(_)
+            | Expr::Struct(_)),
+        ) => {
+            found = true;
+            inner
+        }
+        Some(inner) => {
+            found = true;
+            Expr::Paren(Box::new(inner))
+        }
+        None => x,
+    });
+    if !found {
+        return None;
+    }
+    gridcraft_formula::parse(&gridcraft_formula::print(&rewritten)).ok()?;
+    Some(rewritten)
+}
+
+/// What the engine passes as the known-function predicate, for tests here: the functions these
+/// tests' formulas call. The crate has no function library beside it, so the list is explicit.
+#[cfg(test)]
+pub(crate) fn test_known_function(n: &str) -> bool {
+    const KNOWN: [&str; 15] =
+        ["IF", "IFERROR", "IFNA", "MAX", "FILTER", "ROW", "CHAR", "SUM", "SORT", "RAND", "TEXT", "INDEX", "LET", "LAMBDA", "ABS"];
+    KNOWN.iter().any(|s| s.eq_ignore_ascii_case(n))
 }
 
 #[cfg(test)]
