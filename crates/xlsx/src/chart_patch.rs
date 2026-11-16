@@ -211,6 +211,35 @@ const CHART_ORDER: &[&str] = &[
 ];
 const LEGEND_ORDER: &[&str] = &["legendPos", "legendEntry", "layout", "overlay", "spPr", "txPr", "extLst"];
 const LEGEND_ENTRY_ORDER: &[&str] = &["idx", "delete", "txPr", "extLst"];
+/// CT_PlotArea: the layout, then the chart groups and their axes (the schema lets the pair repeat
+/// in any mix), then the data table, then the plot area's own shape. Only the table's position is
+/// patched, so the groups and axes are ranked as the block they are.
+const PLOTAREA_ORDER: &[&str] = &[
+    "layout",
+    "barChart",
+    "bar3DChart",
+    "lineChart",
+    "line3DChart",
+    "areaChart",
+    "area3DChart",
+    "pieChart",
+    "pie3DChart",
+    "ofPieChart",
+    "doughnutChart",
+    "scatterChart",
+    "bubbleChart",
+    "radarChart",
+    "stockChart",
+    "surfaceChart",
+    "surface3DChart",
+    "valAx",
+    "catAx",
+    "dateAx",
+    "serAx",
+    "dTable",
+    "spPr",
+    "extLst",
+];
 const VALAX_ORDER: &[&str] = &[
     "axId",
     "scaling",
@@ -1348,6 +1377,12 @@ pub fn patch_chart(xml: &str, then: &Chart, now: &Chart, wb: &Workbook, si: usiz
     }
     if then.x_gridlines != now.x_gridlines {
         patch_gridlines(&mut plan, x_ax, then.x_gridlines, now.x_gridlines);
+    }
+    // The data table is part of the plot area: replaced in place (its own formatting, if a file
+    // gave it any, goes with the four flags the model owns), added before the plot area's shape, or
+    // dropped when the table is switched off.
+    if then.data_table != now.data_table {
+        plan.set(plot, PLOTAREA_ORDER, "dTable", now.data_table.as_ref().map(crate::chart::data_table_xml));
     }
 
     let mut out = String::with_capacity(xml.len() + 256);

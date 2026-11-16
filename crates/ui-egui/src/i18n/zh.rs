@@ -2065,6 +2065,17 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "A second window needs the desktop app: the browser build keeps every workbook in this page." => {
             "第二个窗口需要使用桌面版：浏览器版的所有工作簿都在这个页面中。"
         }
+        // zh-chart-table - entries the chart Format pane's data table needs (Add Chart Element ▸
+        // Data Table).
+        "Data Table" => "数据表",
+        "Show the data table" => "显示数据表",
+        "Legend keys in the table" => "表中的图例项",
+        "Horizontal borders" => "水平边框",
+        "Vertical borders" => "垂直边框",
+        "Table outline" => "表格外框",
+        "A data table needs a column, bar, line or area chart (or a combo of those)." => {
+            "数据表需要柱形图、条形图、折线图或面积图（或它们的组合图）。"
+        }
         _ => return None,
     })
 }

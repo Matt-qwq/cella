@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use gridcraft_core::CellRef;
 use gridcraft_model::{
-    Anchor, AxisCrossing, AxisOptions, Chart, ChartKind, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines, LabelFont,
-    LabelOptions, LabelPosition, LegendPos, PointFormat, PointLabel, Series, Sheet, Workbook,
+    Anchor, AxisCrossing, AxisOptions, Chart, ChartDataTable, ChartKind, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines,
+    LabelFont, LabelOptions, LabelPosition, LegendPos, PointFormat, PointLabel, Series, Sheet, Workbook,
 };
 
 use crate::{read_xlsx, write_xlsx};
@@ -54,6 +54,7 @@ fn full_chart() -> Chart {
         number_format: Some("$#,##0".into()),
     };
     c.data_labels = true;
+    c.data_table = Some(ChartDataTable { show_keys: false, ..ChartDataTable::default() });
     c.labels = LabelOptions {
         show_value: true,
         show_percentage: true,
@@ -135,6 +136,7 @@ fn every_axis_label_error_and_point_option_round_trips() {
     assert_eq!(got.y_axis, want.y_axis, "value axis");
     assert_eq!(got.labels, want.labels, "chart labels");
     assert_eq!(got.data_labels, want.data_labels);
+    assert_eq!(got.data_table, want.data_table, "data table");
     for (a, b) in got.series.iter().zip(&want.series) {
         assert_eq!(a.labels, b.labels, "{}: labels", b.name.as_deref().unwrap_or(""));
         assert_eq!(a.error_bars, b.error_bars, "{}: error bars", b.name.as_deref().unwrap_or(""));
@@ -147,6 +149,41 @@ fn every_axis_label_error_and_point_option_round_trips() {
     // A second save writes the same part: nothing drifts on the way round.
     let again = write_xlsx(&back).unwrap();
     assert_eq!(chart_part(&again, "xl/charts/chart1.xml"), chart_part(&bytes, "xl/charts/chart1.xml"));
+}
+
+/// A data table is part of the model, not something the kept part carries: a chart built in code
+/// writes one, a file's one is read back, an edit replaces the element in place, and switching the
+/// table off removes it while the rest of the part stays.
+#[test]
+fn a_data_table_is_written_from_the_model_and_read_back() {
+    let table = ChartDataTable { show_keys: false, horizontal_border: true, vertical_border: false, outline: true };
+    let mut wb = bar_workbook();
+    Arc::make_mut(&mut wb.sheets[0]).charts[0].data_table = Some(table);
+    let bytes = write_xlsx(&wb).unwrap();
+    // The chart was built in code, so the part is written from the model, in CT_DTable order.
+    let part = chart_part(&bytes, "xl/charts/chart1.xml");
+    assert!(
+        part.contains(
+            "<c:dTable><c:showHorzBorder val=\"1\"/><c:showVertBorder val=\"0\"/><c:showOutline val=\"1\"/><c:showKeys val=\"0\"/></c:dTable>"
+        ),
+        "{part}"
+    );
+    let (mut back, _rep) = read_xlsx(&bytes).unwrap();
+    assert_eq!(back.sheets[0].charts[0].data_table, Some(table), "the table is read into the model");
+    // An edit changes the element in place: one element, the new flags, the rest of the part kept.
+    Arc::make_mut(&mut back.sheets[0]).charts[0].data_table = Some(ChartDataTable { outline: false, ..table });
+    let bytes = write_xlsx(&back).unwrap();
+    let part = chart_part(&bytes, "xl/charts/chart1.xml");
+    assert_eq!(part.matches("<c:dTable>").count(), 1, "{part}");
+    assert!(part.contains("<c:showOutline val=\"0\"/>"), "{part}");
+    assert!(part.contains("<c:barChart>"), "{part}");
+    // Switched off, the element goes with it.
+    Arc::make_mut(&mut back.sheets[0]).charts[0].data_table = None;
+    let bytes = write_xlsx(&back).unwrap();
+    let part = chart_part(&bytes, "xl/charts/chart1.xml");
+    assert!(!part.contains("dTable"), "{part}");
+    let (gone, _rep) = read_xlsx(&bytes).unwrap();
+    assert_eq!(gone.sheets[0].charts[0].data_table, None, "and stays off");
 }
 
 #[test]

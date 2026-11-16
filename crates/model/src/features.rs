@@ -986,6 +986,29 @@ impl Trendline {
     }
 }
 
+/// A chart's data table (`c:dTable`): the grid of source values printed under the plot, with the
+/// category labels in its header row and one row per series. It is independent of the chart legend
+/// (its own `showKeys` flag draws the legend keys beside the series names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChartDataTable {
+    /// A legend key beside each series name in the table's stub.
+    pub show_keys: bool,
+    /// A line between the rows (`showHorzBorder`).
+    pub horizontal_border: bool,
+    /// A line between the columns (`showVertBorder`).
+    pub vertical_border: bool,
+    /// A box around the whole table (`showOutline`).
+    pub outline: bool,
+}
+
+impl Default for ChartDataTable {
+    /// Excel's defaults for a table it just added: every border and key on.
+    fn default() -> Self {
+        Self { show_keys: true, horizontal_border: true, vertical_border: true, outline: true }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Chart {
     pub id: u32,
@@ -995,6 +1018,9 @@ pub struct Chart {
     pub series: Vec<Series>,
     pub legend: LegendPos,
     pub data_labels: bool,
+    /// The data table under the plot (`c:dTable`); `None` draws no table.
+    #[serde(default)]
+    pub data_table: Option<ChartDataTable>,
     /// The value axis's major gridlines. This flag is older than [`Gridlines`], so it keeps its
     /// meaning (and a file written before minor and category-axis gridlines existed still reads the
     /// same); [`Chart::y_gridlines`] is the value axis's whole set.
@@ -1043,6 +1069,31 @@ pub struct Chart {
 }
 
 impl Chart {
+    /// Whether this chart can print a data table: a category-axis column, bar, line or area chart
+    /// (or a combo made only of those). A pie-like, scatter, radar, stock or chartex chart has no
+    /// table in Excel either.
+    pub fn supports_data_table(&self) -> bool {
+        let eligible = |kind: ChartKind| {
+            matches!(
+                kind,
+                ChartKind::ColumnClustered
+                    | ChartKind::ColumnStacked
+                    | ChartKind::ColumnStacked100
+                    | ChartKind::BarClustered
+                    | ChartKind::BarStacked
+                    | ChartKind::BarStacked100
+                    | ChartKind::Line
+                    | ChartKind::LineMarkers
+                    | ChartKind::LineStacked
+                    | ChartKind::Area
+                    | ChartKind::AreaStacked
+            )
+        };
+        // A combo chart's series each carry their own kind; one without a kind of its own is drawn
+        // as the combo default (a line).
+        eligible(self.kind) || (self.kind == ChartKind::Combo && self.series.iter().all(|s| eligible(s.kind.unwrap_or(ChartKind::Line))))
+    }
+
     /// The value axis's gridlines: the legacy [`Chart::gridlines`] flag is its major set.
     pub fn y_gridlines(&self) -> Gridlines {
         Gridlines { major: self.gridlines, minor: self.gridlines_minor }

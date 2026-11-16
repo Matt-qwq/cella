@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 use gridcraft_core::{RangeRef, Value, category_levels};
 use gridcraft_formula::{Expr, SheetSel};
 use gridcraft_model::{
-    AxisCrossing, AxisOptions, Chart, ChartKind, Color, DefinedName, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines, LabelFont,
-    LabelOptions, LabelPosition, LegendPos, LineDash, PointFormat, PointLabel, Series, Trendline, TrendlineKind, Workbook,
+    AxisCrossing, AxisOptions, Chart, ChartDataTable, ChartKind, Color, DefinedName, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars,
+    Gridlines, LabelFont, LabelOptions, LabelPosition, LegendPos, LineDash, PointFormat, PointLabel, Series, Trendline, TrendlineKind, Workbook,
 };
 
 use crate::drawing::{dml_color, srgb};
@@ -352,6 +352,18 @@ fn bool_val(e: &El, tag: &str) -> bool {
     e.child(tag).is_some_and(|c| c.flag("val", true))
 }
 
+/// A chart's `c:dTable`: the four flags, each keeping the value Excel means when a file leaves
+/// the attribute out (the three borders are on, the legend keys are off).
+fn read_data_table(t: &El) -> ChartDataTable {
+    let flag = |tag: &str, default: bool| t.child(tag).map(|c| c.flag("val", default)).unwrap_or(default);
+    ChartDataTable {
+        show_keys: flag("showKeys", false),
+        horizontal_border: flag("showHorzBorder", true),
+        vertical_border: flag("showVertBorder", true),
+        outline: flag("showOutline", true),
+    }
+}
+
 fn f64_val(e: &El, tag: &str) -> Option<f64> {
     e.child(tag).and_then(|c| c.attr_f64("val"))
 }
@@ -590,6 +602,7 @@ pub fn read_chart(root: &El) -> Option<Chart> {
         series,
         legend,
         data_labels,
+        data_table: plot.child("dTable").map(read_data_table),
         gridlines: y_gridlines.major,
         gridlines_minor: y_gridlines.minor,
         x_gridlines,
@@ -1229,6 +1242,18 @@ struct Ax<'a> {
 }
 
 /// CT_Scaling child order: logBase, orientation, max, min.
+/// A `<c:dTable>` in CT_DTable order: the three border sets, then the legend keys. The writer
+/// and the patcher both spell it here, so a table added by an edit says what the chart's own says.
+pub(crate) fn data_table_xml(t: &ChartDataTable) -> String {
+    format!(
+        "<c:dTable><c:showHorzBorder val=\"{}\"/><c:showVertBorder val=\"{}\"/><c:showOutline val=\"{}\"/><c:showKeys val=\"{}\"/></c:dTable>",
+        u8::from(t.horizontal_border),
+        u8::from(t.vertical_border),
+        u8::from(t.outline),
+        u8::from(t.show_keys)
+    )
+}
+
 pub(crate) fn legend_pos_file(p: LegendPos) -> Option<&'static str> {
     match p {
         LegendPos::None => None,
@@ -1585,6 +1610,9 @@ pub fn write_chart(wb: &Workbook, si: usize, ch: &Chart, book_name: &str) -> Cha
             options: &secondary_y,
             numeric_cat: true,
         }));
+    }
+    if let Some(t) = &ch.data_table {
+        s.push_str(&data_table_xml(t));
     }
     s.push_str("</c:plotArea>");
     if legend_pos_file(ch.legend).is_some() {

@@ -5,6 +5,8 @@ use gridcraft_model::{Anchor, Chart, ChartKind, Color, LegendPos, Series, Sparkl
 
 use crate::*;
 
+mod data_table;
+
 const ALL_KINDS: [ChartKind; 25] = [
     ChartKind::ColumnClustered,
     ChartKind::ColumnStacked,
