@@ -1,0 +1,26 @@
+# GridCraft performance budgets — `cargo xtask perf` fails when a scenario is slower than its
+# budget. What each scenario measures is in docs/performance.md.
+#
+# Recorded with `cargo xtask perf --update` (best of three passes × 2, never below 1 ms) on the
+# dev machine, release build: a scenario must be TWICE as slow as this to fail. A slower or shared
+# machine: GRIDCRAFT_PERF_SCALE=2 cargo xtask perf. Re-record only for an intended change.
+#
+# Format: <scenario> <rows> <budget ms>
+aggregate       100000  180
+edit.recalc     100000  410
+edit.undo       100000  610
+fill.chained    100000  970
+fill.formulas   100000  860
+fill.values     100000  710
+open.xlsx       100000  1400
+save.xlsx       100000  690
+sort.desc       100000  1450
+aggregate      1000000  1850
+edit.recalc    1000000  4600
+edit.undo      1000000  8100
+fill.chained   1000000  10500
+fill.formulas  1000000  8750
+fill.values    1000000  8050
+open.xlsx      1000000  17250
+save.xlsx      1000000  8000
+sort.desc      1000000  19000
