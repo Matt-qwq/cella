@@ -170,6 +170,13 @@ pub struct Out {
     pub drawings: u32,
     pub tables: u32,
     pub comments: u32,
+    /// Legacy VML drawing parts written (notes and form controls share one per sheet).
+    pub vmls: u32,
+    /// The VML shape blocks GridCraft's own drawings have claimed so far: the next drawing numbers
+    /// its shapes after them.
+    pub vml_block: u32,
+    /// Control properties parts written (`xl/ctrlProps/ctrlPropN.xml`).
+    pub ctrl_props: u32,
     /// Authors of threaded comments, in first-use order; written to `xl/persons/person.xml`.
     pub persons: Vec<String>,
     pub table_id: u32,
@@ -202,6 +209,9 @@ impl Default for Out {
             drawings: 0,
             tables: 0,
             comments: 0,
+            vmls: 0,
+            vml_block: 0,
+            ctrl_props: 0,
             persons: vec![],
             table_id: 0,
             table_ids: vec![],
@@ -418,6 +428,9 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
         drawings: 0,
         tables: 0,
         comments: 0,
+        vmls: 0,
+        vml_block: 0,
+        ctrl_props: 0,
         persons: vec![],
         table_id: 0,
         table_ids: vec![],

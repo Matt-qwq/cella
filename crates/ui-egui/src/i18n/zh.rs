@@ -2083,6 +2083,22 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "A data table needs a column, bar, line or area chart (or a combo of those)." => {
             "数据表需要柱形图、条形图、折线图或面积图（或它们的组合图）。"
         }
+        // zh-controls - entries the form controls (Insert > Controls) need: their command labels,
+        // the names a control shows in the grid and the messages working one can raise.
+        "Button" => "按钮",
+        "Slider" => "滑块",
+        "Spin Button" => "数值调节钮",
+        "Form Controls" => "表单控件",
+        "Form Control" => "表单控件",
+        "Format Control" => "设置控件格式",
+        "Assign Action" => "指定操作",
+        "Change Control Value" => "更改控件值",
+        "Change Slider" => "更改滑块",
+        "Change Spin Button" => "更改数值调节钮",
+        "Press Button" => "按下按钮",
+        "Insert Button" => "插入按钮",
+        "Insert Slider" => "插入滑块",
+        "Insert Spin Button" => "插入数值调节钮",
         _ => return None,
     })
 }

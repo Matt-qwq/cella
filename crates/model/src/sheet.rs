@@ -165,6 +165,9 @@ pub struct Sheet {
     /// On-sheet slicer widgets (filter a table column by clicking value tiles).
     #[serde(default)]
     pub slicers: Vec<Slicer>,
+    /// Form controls (buttons, sliders, spin buttons). They paint above every other object.
+    #[serde(default)]
+    pub controls: Vec<crate::controls::FormControl>,
     /// Slicers bound to a PivotTable's cache (Excel's Insert ▸ Slicer); saved in `.xlsx`.
     #[serde(default)]
     pub pivot_slicers: Vec<crate::slicer::PivotSlicer>,
@@ -254,6 +257,7 @@ impl Sheet {
             equations: vec![],
             sparklines: vec![],
             slicers: vec![],
+            controls: vec![],
             pivot_slicers: vec![],
             pivot_timelines: vec![],
             pivots: vec![],

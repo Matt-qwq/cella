@@ -19,6 +19,7 @@ pub mod dialogs;
 pub mod editor;
 mod floating_pictures;
 pub mod fonts;
+mod form_controls;
 pub mod formula_bar;
 mod formula_locale;
 pub mod grid;

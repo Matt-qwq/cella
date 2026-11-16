@@ -42,6 +42,12 @@ pub struct Ctx<'a> {
     /// The anchors drawings give slicer and timeline views, by view name. A slicer part carries no
     /// position, so the model takes the anchor from here.
     pub widget_frames: Vec<crate::drawing::WidgetFrame>,
+    /// The VML shape numbers of the form controls the sheet reader modelled: the pass-through
+    /// leaves those shapes, and their `<control>` entries, out of what it keeps.
+    pub controls_modelled: std::collections::HashSet<u64>,
+    /// The sheet's VML drawing holds a control only it lists (a check box) that is not modelled, so
+    /// the drawing is kept even when no `<controls>` element is left to keep.
+    pub vml_only_unmodelled: bool,
 }
 
 impl Ctx<'_> {
@@ -193,6 +199,8 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
         cf_ext_ids: vec![],
         sheet_ext: false,
         widget_frames: vec![],
+        controls_modelled: std::collections::HashSet::new(),
+        vml_only_unmodelled: false,
     };
     let root_rels = cx.pkg.rels("")?;
     let wb_part = find_rel(&root_rels, "officeDocument").map(|r| r.target.clone()).unwrap_or_else(|| "xl/workbook.xml".into());

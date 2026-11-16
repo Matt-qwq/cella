@@ -13,6 +13,7 @@ mod csv_tests;
 mod encrypted_tests;
 mod fixtures;
 mod fmla_rewrite;
+mod form_controls;
 mod google_sheets_dummy;
 mod ink_roundtrip;
 mod legacy_intersection;

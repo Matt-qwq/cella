@@ -3,6 +3,7 @@
 
 pub mod analysis;
 pub mod chart;
+pub mod controls;
 pub mod data;
 pub mod draw;
 pub mod edit;
@@ -154,6 +155,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(query::specs());
         v.extend(model::specs());
         v.extend(chart::specs());
+        v.extend(controls::specs());
         v.extend(draw::specs());
         v.extend(spelling::specs());
         v.extend(solver::specs());
@@ -390,6 +392,8 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     if let Some(t0) = t0 {
         eprintln!("commit: + recalc {:?}", t0.elapsed());
     }
+    // A slider or spin button whose linked cell now holds a number moves to it.
+    controls::sync_linked_values(&mut wb);
     fit_rows.sort_unstable();
     fit_rows.dedup();
     for (si, row) in fit_rows {
