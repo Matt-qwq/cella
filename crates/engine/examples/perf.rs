@@ -46,6 +46,7 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("sort.desc", "sort rows by one column, descending", sort_desc),
     ("save.xlsx", "save the workbook as xlsx", save_xlsx),
     ("open.xlsx", "open those bytes again (full recalc)", open_xlsx),
+    ("rebuild.graph", "rebuild the dependency graph from the workbook (no recalculation)", rebuild_graph),
 ];
 
 struct Bench {
@@ -344,6 +345,18 @@ fn open_xlsx(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
         Ok(bytes)
     })?;
     Ok((format!("opened those {bytes} bytes again"), ms))
+}
+
+fn rebuild_graph(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let (formulas, ms) = timed(|| {
+        let d = b.session.doc_mut().map_err(err)?;
+        // The build is the half of a full recalculation that is not the pass: it reads every
+        // formula's precedents and re-indexes them. Nothing is evaluated, so the values the
+        // scenarios before it produced stay put.
+        d.calc.rebuild(&d.wb);
+        Ok(d.calc.graph.len())
+    })?;
+    Ok((format!("{formulas} formulas indexed"), ms))
 }
 
 /// The `--json` document: one row per (scenario, row count), in run order.

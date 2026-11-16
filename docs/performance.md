@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** `edit.undo` is cheap again: Undo restores the snapshot and re-inserts only the formulas the edit rewrote, instead of rebuilding the dependency graph (§ Measured on the dev machine) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** `rebuild.graph` is a scenario of its own: the dependency-graph build now costs a quarter of what an open's rebuild did, and the harness measures it (§ Scenarios) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 GridCraft is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
@@ -12,7 +12,7 @@ real export, not a synthetic grid.
 
 ## Scenarios
 
-`crates/engine/examples/perf.rs` runs one session through nine named scenarios, in this order,
+`crates/engine/examples/perf.rs` runs one session through ten named scenarios, in this order,
 because that is how a real session looks (values, formulas over them, edits, sort, save, open).
 Each reports one number: its own wall-clock time in ms.
 
@@ -27,6 +27,7 @@ Each reports one number: its own wall-clock time in ms.
 | `sort.desc` | `data.sortDescending` over `A1:F{n}` by one column | sort is the slowest interactive operation we have (see below) |
 | `save.xlsx` | `file.saveBytes` as xlsx | the write path: pack, compress, stream |
 | `open.xlsx` | opens those bytes again | the read path plus the full recalculation of every formula |
+| `rebuild.graph` | `Calc::rebuild` over every formula of the workbook, and nothing evaluated | the dependency-graph build on its own: an open and a structural edit both pay it, and it used to be the larger half of an open |
 
 Run it yourself:
 
@@ -127,6 +128,7 @@ recorded from, and the reason a budget is a threshold and not a target):
 | `sort.desc` | 715 ms | 9.48 s |
 | `save.xlsx` | 341 ms | 4.00 s |
 | `open.xlsx` | 684 ms | 8.60 s |
+| `rebuild.graph` | 292 ms | 1.50 s |
 
 Reading it:
 
@@ -165,5 +167,10 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-16:** `rebuild.graph` added: the graph build is measured on its own (2M formulas of the
+  reference workbook, 1.50 s at 1M rows, from 3.87 s). The graph now keeps its precedent areas in
+  one arena, its dependents inline per cell (`Deps`), and walks a formula without allocating
+  (`calc::walk`), which also makes `fill.formulas` and `open.xlsx` cheaper (§ Measured on the dev
+  machine).
 - **2026-11-16:** created. `cargo xtask perf`, the nine named scenarios, `xtask/perf-budgets.txt`
   and the `--json` document the gate parses (schema 1).

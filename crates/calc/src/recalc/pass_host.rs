@@ -319,7 +319,7 @@ fn reads_own_spill(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
-    node.areas.iter().any(|area| area.sheet == sheet && area.range.intersects(&range))
+    host.graph.areas_of(node).iter().any(|area| area.sheet == sheet && area.range.intersects(&range))
 }
 
 /// How many formulas [`spill_feeds_its_source`] walks before it stops looking. A source range that
@@ -340,7 +340,7 @@ fn spill_feeds_its_source(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) 
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
     let mut seen: HashSet<Key> = HashSet::default();
-    let mut queue: VecDeque<Area> = node.areas.iter().cloned().collect();
+    let mut queue: VecDeque<Area> = host.graph.areas_of(node).iter().cloned().collect();
     while let Some(area) = queue.pop_front() {
         let Some(sh) = host.wb.sheet(area.sheet) else { continue };
         for (c, cell) in sh.cells.iter_range(area.range) {
@@ -354,10 +354,10 @@ fn spill_feeds_its_source(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) 
                 continue;
             }
             let Some(n) = host.graph.nodes.get(&k) else { continue };
-            if n.areas.iter().any(|x| x.sheet == sheet && x.range.intersects(&range)) {
+            if host.graph.areas_of(n).iter().any(|x| x.sheet == sheet && x.range.intersects(&range)) {
                 return true;
             }
-            queue.extend(n.areas.iter().cloned());
+            queue.extend(host.graph.areas_of(n).iter().cloned());
             if seen.len() >= SPILL_LOOP_FORMULAS {
                 return false;
             }
