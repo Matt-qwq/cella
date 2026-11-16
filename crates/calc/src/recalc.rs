@@ -68,6 +68,11 @@ pub struct Calc {
     /// covers.
     #[cfg(test)]
     read_probes: u64,
+    /// Stored spill ranges the pass examined deciding whether an array spills over another
+    /// formula's spill: once each to index them, plus the index entries lookups examined (tests
+    /// check that M blocked arrays over N stored spills cost N + M, not N × M).
+    #[cfg(test)]
+    block_probes: u64,
 }
 
 impl Default for Calc {
@@ -87,6 +92,8 @@ impl Default for Calc {
             seed_probes: 0,
             #[cfg(test)]
             read_probes: 0,
+            #[cfg(test)]
+            block_probes: 0,
         }
     }
 }
@@ -894,6 +901,7 @@ impl Calc {
                 #[cfg(test)]
                 {
                     self.read_probes += host.spill_index.probes();
+                    self.block_probes += host.block_probes();
                 }
                 (host.results, host.spills, host.cycles)
             };
@@ -1337,6 +1345,57 @@ pub(crate) mod tests {
         // Four times the areas and four times the cells: the walk was sixteen times the work, the
         // index is the cells (plus the block each one shares with the area it lands on).
         assert!(large <= 6 * small, "{small} entries for 75 areas, {large} for 300");
+    }
+
+    /// Entries a pass examines over `ranges` stored spill areas, each with a new array just below
+    /// and to the left of it that would spill over one of its cells: the arrays are blocked
+    /// (`#SPILL!`), so each one asks which stored area holds the cell it would cover.
+    fn blocked_over_stored_spills(ranges: u32) -> u64 {
+        let mut wb = Workbook::new();
+        for i in 0..ranges {
+            put_formula(&mut wb, 0, &format!("C{}", i * 6 + 1), "=SEQUENCE(2,2)");
+        }
+        let mut calc = Calc::new();
+        calc.recalc_all(&mut wb);
+        assert_eq!(wb.sheet(0).unwrap().spill_ranges.len(), ranges as usize);
+        // One row down and one column left of each area's anchor, so an array covers the area's
+        // bottom-left cell without covering its anchor (which would block it as content), and no
+        // edit lands inside an area (which would recalculate that area).
+        let mut keys: Vec<Key> = Vec::new();
+        for i in 0..ranges {
+            let anchor = CellRef::new(i * 6 + 1, 1);
+            wb.sheet_mut(0).unwrap().cells.set(anchor, Cell::formula(Formula::new("=SEQUENCE(2,2)")));
+            keys.push((0, anchor));
+        }
+        calc.block_probes = 0;
+        calc.cells_changed(&mut wb, &keys);
+        let sh = wb.sheet(0).unwrap();
+        for &(_, c) in &keys {
+            assert_eq!(sh.value(c), Value::Error(CellError::Spill), "{c:?} did not spill, over a stored area");
+        }
+        calc.block_probes
+    }
+
+    #[test]
+    fn arrays_blocked_by_stored_areas_cost_the_areas_and_the_arrays() {
+        // An array that would spill over a cell another formula's spill holds is #SPILL!. Asking
+        // the sheet's stored ranges about every cell of the array walked all of them per array:
+        // 400 areas with 400 arrays was 160,000 containment checks, and sixteen times each was 256
+        // times the work. The areas are indexed once a pass, so the work is their number plus the
+        // number of cells that ask.
+        let counts = [100u32, 400, 1_600];
+        let probes: Vec<u64> = counts.iter().copied().map(blocked_over_stored_spills).collect();
+        for (&n, &p) in counts.iter().zip(&probes) {
+            // The build walks the sheet's ranges once, and each array examines the entries of the
+            // one block its cell falls in (about three areas at this spacing), not all of them.
+            assert!(p > 0, "no array was blocked through the index among {n} areas");
+            assert!(p <= 8 * 2 * u64::from(n), "{p} entries for {n} areas and {n} arrays");
+        }
+        eprintln!("stored spill areas / arrays -> entries examined: {counts:?} -> {probes:?}");
+        // Sixteen times the areas and sixteen times the arrays: linear, where the walk was
+        // quadratic (16 x 16 = 256 times the work).
+        assert!(probes[2] <= 20 * probes[0], "{probes:?}");
+        assert!(probes[1] <= 6 * probes[0], "{probes:?}");
     }
 
     #[test]

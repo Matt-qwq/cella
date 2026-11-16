@@ -111,6 +111,15 @@ pub(super) struct PassHost<'a> {
     /// The areas of `spills`, in 16 x 16 blocks: a read of a cell a spill covers, and the areas a
     /// range read meets, are found without walking every array the pass has produced.
     pub(super) spill_index: SpillIndex,
+    /// The spill areas the sheets hold at the start of the pass (what a previous pass laid out),
+    /// indexed per sheet: an array may not spill over a cell one of those holds. Built the first
+    /// time an array would spill over a cell that holds a spilled value, and only of the anchors
+    /// this pass doesn't recalculate (those may spill elsewhere now, so they don't block). Taken
+    /// out and given back like `spill_hits`, so nothing holds a borrow of it.
+    stored_spills: std::cell::Cell<HashMap<usize, SpillIndex>>,
+    /// Stored spill ranges the index above was built from (tests check the cost with it).
+    #[cfg(test)]
+    stored_visits: std::cell::Cell<u64>,
     /// Scratch buffer for [`PassHost::spill_hits`], reused across reads.
     spill_hits: Vec<CellRef>,
     /// Used range per sheet: the workbook doesn't change during a pass, and working it out walks
@@ -201,6 +210,33 @@ impl<'a> PassHost<'a> {
         self.spills.remove(&k);
     }
 
+    /// Entries this pass examined deciding whether an array spills over a stored spill: the stored
+    /// ranges once each to index them, and the index entries lookups read (tests check the cost
+    /// with it).
+    #[cfg(test)]
+    pub(super) fn block_probes(&self) -> u64 {
+        let stored = self.stored_spills.take();
+        let probes = stored.values().map(SpillIndex::probes).sum::<u64>();
+        self.stored_spills.set(stored);
+        self.stored_visits.get().saturating_add(probes)
+    }
+
+    /// The spill areas `sheet` holds at the start of the pass, in 16 x 16 blocks, without the
+    /// anchors this pass recalculates: a cell one of them covers stops an array from spilling
+    /// there. The workbook doesn't change during a pass, so one build a sheet answers every array.
+    fn stored_spill_index(&self, sheet: usize) -> SpillIndex {
+        let mut index = SpillIndex::default();
+        let Some(sh) = self.wb.sheet(sheet) else { return index };
+        #[cfg(test)]
+        self.stored_visits.set(self.stored_visits.get().saturating_add(sh.spill_ranges.len() as u64));
+        for (anchor, range) in &sh.spill_ranges {
+            if !self.exprs.contains_key(&(sheet, *anchor)) {
+                index.insert_rect((sheet, *anchor), *range, false);
+            }
+        }
+        index
+    }
+
     pub(super) fn new(
         wb: &'a Workbook,
         graph: &'a Graph,
@@ -220,6 +256,9 @@ impl<'a> PassHost<'a> {
             in_flight: 0,
             spills: HashMap::default(),
             spill_index: SpillIndex::default(),
+            stored_spills: std::cell::Cell::default(),
+            #[cfg(test)]
+            stored_visits: std::cell::Cell::new(0),
             spill_hits: Vec::new(),
             used: HashMap::default(),
             blocks: HashMap::default(),
@@ -335,17 +374,28 @@ fn spill_blocked(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
-    let own = sh.spill_ranges.get(&anchor);
-    let spilled_over = |c: CellRef| {
-        !own.is_some_and(|o| o.contains(c))
-            && sh.spill_ranges.iter().any(|(o, r)| *o != anchor && r.contains(c) && !host.exprs.contains_key(&(sheet, *o)))
-    };
-    end.row >= gridcraft_core::MAX_ROWS
+    if end.row >= gridcraft_core::MAX_ROWS
         || end.col >= gridcraft_core::MAX_COLS
         || sh.merges.iter().any(|m| m.intersects(&range))
         || sh.tables.iter().any(|t| t.range.contains(anchor))
         || sh.cells.iter_range(range).any(|(c, cell)| c != anchor && (!cell.value.is_empty() || cell.formula.is_some()))
-        || sh.spill.range(range.start..=range.end).any(|(c, _)| range.contains(*c) && spilled_over(*c))
+    {
+        return true;
+    }
+    // Only a cell that holds a spilled value can be one another formula's spill holds, so the
+    // areas are looked for only when the array would cover one. Their index is built once a sheet
+    // and pass: a cell inside it is a block lookup, where a walk over every stored range was one
+    // containment check per cell of the array and per range the sheet holds.
+    let mut over = sh.spill.range(range.start..=range.end).map(|(c, _)| *c).filter(|c| range.contains(*c)).peekable();
+    if over.peek().is_none() {
+        return false;
+    }
+    let own = sh.spill_ranges.get(&anchor);
+    let mut index = host.stored_spills.take();
+    let entry = index.entry(sheet).or_insert_with(|| host.stored_spill_index(sheet));
+    let blocked = over.any(|c| !own.is_some_and(|o| o.contains(c)) && !matches!(entry.covering(sheet, c), Cover::None));
+    host.stored_spills.set(index);
+    blocked
 }
 
 /// Whether a cell's value says its formula is an array that spilled nothing: blocked (`#SPILL!`)
