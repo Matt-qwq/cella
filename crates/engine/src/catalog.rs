@@ -134,7 +134,6 @@ pub const CATALOG: &[(&str, &str, &str, &str)] = &[
     ("insert.wordArt", "Insert", "Text", "WordArt"),
     ("insert.signatureLine", "Insert", "Text", "Signature Line"),
     ("insert.object", "Insert", "Text", "Object"),
-    ("insert.equation", "Insert", "Symbols", "Equation"),
     ("insert.symbol", "Insert", "Symbols", "Symbol"),
     ("insert.checkbox", "Insert", "Cell Controls", "Checkbox"),
     // Draw
