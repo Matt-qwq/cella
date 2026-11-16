@@ -12,6 +12,17 @@ fn quoted_sheet_qualified_name_keeps_quotes() {
     assert_eq!(rt("'It''s'!Total+1"), "'It''s'!Total+1");
 }
 
+/// A range whose second end repeats the sheet name (`Sheet1!A1:Sheet1!B2`) must lex as two ends,
+/// not as a 3-D span from sheet `A1` to sheet `Sheet1` (upstream 4c0cc095, reviewed in 4eb2fb5c).
+#[test]
+fn range_end_repeating_sheet_name_round_trips() {
+    assert_eq!(rt("'a'!A1:'a'!B2"), "a!A1:a!B2");
+    assert_eq!(rt("Sheet1!A1:Sheet1!B2"), "Sheet1!A1:Sheet1!B2");
+    assert_eq!(rt("SUM(a!A1:a!B2)"), "SUM(a!A1:a!B2)");
+    // Sheet names match without regard to case, as Excel's do.
+    assert_eq!(rt("Sheet1!A1:SHEET1!B2"), "Sheet1!A1:SHEET1!B2");
+}
+
 #[test]
 fn intersection_with_deleted_operand_reparses() {
     // Deleting the columns of an intersection operand prints `A1:B2 #REF!`; that text must parse back.
@@ -502,4 +513,60 @@ fn number_literal_too_large_for_f64_is_a_parse_error() {
         assert!(parse(bad).is_err(), "{bad} should fail");
     }
     assert!(parse("1E+308").is_ok());
+}
+
+#[test]
+fn three_d_span_and_cell_start_still_lex_as_span() {
+    // A sheet name that starts with a cell reference stays a span; the repeated-sheet rule does not eat it.
+    assert_eq!(rt("SUM(Sheet1:Sheet3!A1)"), "SUM(Sheet1:Sheet3!A1)");
+    assert_eq!(rt("SUM(Q1:Sheet3!A1)"), "SUM('Q1:Sheet3'!A1)");
+}
+
+/// A `!` inside a structured reference's brackets belongs to a column name (`Table1[Done!]`),
+/// never to a sheet prefix; outside them it still splits the sheet off the name (upstream c39d2ad1,
+/// "Keep '!' in structured-reference columns intact on XLSX save").
+#[test]
+fn structured_reference_column_with_bang_is_not_a_sheet_prefix() {
+    assert_eq!(print(&Expr::Name("Table1[Done!]".into())), "Table1[Done!]");
+    assert_eq!(print(&Expr::Name("Table1[[#This Row],[Col]]".into())), "Table1[[#This Row],[Col]]");
+    // A sheet-qualified name that carries a structured reference is quoted, so it parses back.
+    assert_eq!(print(&Expr::Name("My Sheet!Table1[Qty]".into())), "'My Sheet'!Table1[Qty]");
+    assert_eq!(print(&Expr::Name("[1]Sheet1!Total".into())), "'[1]Sheet1'!Total");
+}
+
+/// References print the same through the appending printer for every reference shape
+/// (upstream 393a524a, "Speed up XLSX worksheet writing").
+#[test]
+fn reference_shapes_print_unchanged() {
+    for text in [
+        "A1",
+        "XFD1048576",
+        "$AA$10:AB$11",
+        "$A:XFD",
+        "B:$C",
+        "1:$1048576",
+        "$3:4",
+        "'My Sheet'!A1",
+        "'It''s'!$B$2:C3",
+        "Sheet1:Sheet3!B2",
+        "'Sheet 1:Sheet3'!B2",
+        "SUM(A1:.B3)+SUM(A.:.B)",
+    ] {
+        let e = parse(text).unwrap_or_else(|err| panic!("{text}: {err}"));
+        assert_eq!(print(&e), text);
+        if let Expr::Ref(r) = &e {
+            assert_eq!(printer::reference_a1(r), text);
+        }
+    }
+}
+
+/// A column named `@a` is not this-row shorthand, so it prints in the double-bracket form
+/// (upstream 59a8b14d, "Print structured refs to columns starting with @ in double brackets").
+#[test]
+fn column_starting_with_at_round_trips() {
+    for name in ["@a", "a@b"] {
+        let s = StructRef { table: "T".into(), specifiers: vec![], col_start: Some(name.into()), col_end: None };
+        let text = format!("={}", printer::struct_ref(&s));
+        assert_eq!(parse(&text).ok(), Some(Expr::Struct(s)), "printed as {text}");
+    }
 }
