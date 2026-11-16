@@ -1005,6 +1005,8 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
         app.selected_chart = None;
     }
     let objects = crate::chartview::paint_objects(app, &painter.with_clip_rect(geo.cells), &geo, &wb, si, sh, &mut paint);
+    // Form controls paint above every other object.
+    crate::form_controls::paint(app, &painter.with_clip_rect(geo.cells), &geo, sh);
     // Back in the grid state, so the click and drag code (`chartview::element_at`) reads the click
     // regions of the layout that painted the chart instead of laying it out again.
     app.grid.paint = Some(paint);
@@ -2493,6 +2495,11 @@ fn interact(app: &mut SheetApp, ui: &mut egui::Ui, resp: &egui::Response, geo: &
             }
             return;
         }
+    }
+    // Form controls: a click on a button runs its action, a slider follows a drag, a spin button's
+    // arrow steps it. They paint above every object, so they take the pointer first.
+    if crate::form_controls::interact(app, &ctx, resp, geo, sh) {
+        return;
     }
     // A plain click on a pivot slicer's value tile toggles it (Ctrl/Cmd for multi-select); the
     // clear button selects every tile again. One click is one command, so one undo step.

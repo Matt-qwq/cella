@@ -182,6 +182,9 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
 
     let mut fit_to_page = false;
     let mut column_assignments_left = MAX_COLUMN_ASSIGNMENTS;
+    // The relationship id of the sheet's legacy VML drawing (`<legacyDrawing r:id>`), where form
+    // controls keep their shapes.
+    let mut legacy_rid: Option<String> = None;
     cx.cf_ext_ids.clear();
     for e in &root.children {
         match e.name.as_str() {
@@ -328,6 +331,7 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
                     }
                 }
             }
+            "legacyDrawing" => legacy_rid = e.attr("id").map(str::to_string),
             "extLst" => read_ext(cx, e, &mut sheet),
             "protectedRanges" => read_protected_ranges(e, &mut sheet),
             _ => {}
@@ -354,6 +358,15 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
             }
         }
     }
+    // Form controls: the sheet's `<controls>` element with the properties part of each control,
+    // falling back to the shapes of the legacy VML drawing. What was modelled is recorded so the
+    // pass-through keeps only the controls this reader left alone.
+    cx.controls_modelled.clear();
+    cx.vml_only_unmodelled = false;
+    let controls_el = root.children.iter().find_map(crate::controls::controls_of);
+    let read = crate::controls::read(cx, controls_el, legacy_rid.as_deref(), &rels, &mut sheet);
+    cx.controls_modelled = read.modelled;
+    cx.vml_only_unmodelled = read.vml_only_unmodelled;
     heal_filter_hidden(&mut sheet);
     Ok((sheet, legacy))
 }

@@ -17,6 +17,7 @@ mod cfb;
 mod chart;
 mod chart_patch;
 mod chartex;
+mod controls;
 mod crypto;
 mod csv;
 mod drawing;
