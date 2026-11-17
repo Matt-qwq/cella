@@ -84,7 +84,8 @@ impl<'h> Evaluator<'h> {
         };
         match gridcraft_formula::parse(&text) {
             Ok(Expr::Ref(_)) if !a1_ok => err(CellError::Ref),
-            Ok(e @ (Expr::Ref(_) | Expr::Name(_) | Expr::Struct(_))) => match self.eval(&e) {
+            // The text names coordinates: an absolute tree, whatever this formula's own tree is.
+            Ok(e @ (Expr::Ref(_) | Expr::Name(_) | Expr::Struct(_))) => match self.eval_absolute(&e) {
                 r @ Ev::R(_) => r,
                 _ => err(CellError::Ref),
             },

@@ -47,6 +47,14 @@ fn legacy_formulas_read_with_implicit_intersection() {
     ];
     for (a, text) in cases {
         assert_eq!(formula(&wb, a), (text.to_string(), None), "{a}");
+        // The skip that keeps opening a two-million-formula workbook from building two million
+        // trees is sound where it applies: a formula it leaves alone is read as written. (It is
+        // *not* the writer's `needs_array`, which answers a different question: it says no for
+        // `SUMPRODUCT(IFERROR(A1:A3/A1:A3,0))` although that reads with an `@` inside.)
+        let f = wb.sheet(0).unwrap().cell(at(a)).unwrap().formula.clone().unwrap();
+        if !crate::array_formula::may_need_reading_for_test(&f, at(a)) {
+            assert!(!text.contains('@'), "{a} was read with an @ the skip said it could not need");
+        }
     }
     // A dynamic-array formula with `cm` is read as written; so is a Ctrl+Shift+Enter array.
     assert_eq!(formula(&wb, "C2"), ("TANH(A1:A3)".to_string(), None));

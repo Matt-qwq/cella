@@ -43,18 +43,33 @@ impl Shape {
 }
 
 pub(crate) fn needs_array(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula) -> bool {
-    // The tree the cell reads at its own position: a shape cell resolves there (sizes are the
-    // same wherever it resolves, §4.12 of SHAPE-SHARING.md — this is the only place that needs
-    // coordinates, for a name's definition).
-    let Some(expr) = formula.expr_at(at) else { return false };
+    // The canonical tree of the cell's shape, read where the cell is, or the cell's own tree (which
+    // is absolute). Neither is resolved: this runs for every formula of every save, and the
+    // analysis asks only for *sizes*, which translation preserves (SHAPE-SHARING.md §4.12).
+    let shape = formula.shape();
+    let (expr, base): (&Expr, Option<CellRef>) = match (&formula.expr, &shape) {
+        (Some(tree), _) => (tree, None),
+        (_, Some(shape)) => (shape.tree(), Some(at)),
+        // Text alone (a document read back from JSON): parse it, which is what the reader did.
+        (None, None) => match formula.expr_at(at) {
+            Some(tree) => return needs_array_of(wb, sheet, at, &tree, None),
+            None => return false,
+        },
+    };
+    needs_array_of(wb, sheet, at, expr, base)
+}
+
+/// [`needs_array`] for a tree whose relative parts are offsets from `base` (`None`: an absolute
+/// tree).
+fn needs_array_of(wb: &Workbook, sheet: usize, at: CellRef, expr: &Expr, base: Option<CellRef>) -> bool {
     // The budget covers every node of a formula as long as Excel allows (8,192 characters make
     // at most about 8,200 nodes), so only names that expand a lot fall back to array evaluation.
     let mut scan = Scan { wb, at, remaining: 16_384, locals: Vec::new() };
-    let shape = scan.expr(&expr, sheet, false, 0);
+    let shape = scan.expr(expr, sheet, base, false, 0);
     // An explicit `@` is written as `_xlfn.SINGLE`, which only dynamic-array formulas carry.
-    let mut at = false;
-    expr.walk(&mut |e| at |= matches!(e, Expr::Unary(UnOp::At, _)));
-    shape.array || shape.affected || at
+    let mut has_at = false;
+    expr.walk(&mut |e| has_at |= matches!(e, Expr::Unary(UnOp::At, _)));
+    shape.array || shape.affected || has_at
 }
 
 struct Scan<'a> {
@@ -65,7 +80,9 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
-    fn expr(&mut self, e: &Expr, sheet: usize, array_context: bool, depth: usize) -> Shape {
+    /// `base` is the cell a shape's relative references are offsets from (`None`: the tree is
+    /// absolute, as a defined name's definition is).
+    fn expr(&mut self, e: &Expr, sheet: usize, base: Option<CellRef>, array_context: bool, depth: usize) -> Shape {
         // Names can be cyclic, and a short chain of repeated names can expand exponentially.
         // Preserve array evaluation when analysis cannot safely finish.
         if depth >= 64 || self.remaining == 0 {
@@ -73,7 +90,17 @@ impl Scan<'_> {
         }
         self.remaining -= 1;
         match e {
-            Expr::Ref(r) => Shape { array: !r.range().is_single() || matches!(r.sheet, SheetSel::Span(_, _)), affected: false },
+            Expr::Ref(r) => {
+                // The reference's size, read where the formula lives. It is the same wherever a
+                // shape resolves (only a reference that leaves the sheet differs, and such a cell
+                // shows #REF!), so this asks for a size, never a position.
+                let single = match base {
+                    Some(base) => r.range_at(base).is_some_and(|range| range.is_single()),
+                    // An absolute tree read from A1: what `range` spells.
+                    None => r.range().is_single(),
+                };
+                Shape { array: !single || matches!(r.sheet, SheetSel::Span(_, _)), affected: false }
+            }
             Expr::Array(rows) => Shape { array: rows.len() > 1 || rows.first().is_some_and(|r| r.len() > 1), affected: false },
             Expr::Name(n) => {
                 if let Some((_, shape)) = self.locals.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case(n)) {
@@ -85,7 +112,9 @@ impl Scan<'_> {
                 };
                 if let Some(def) = self.wb.name(bare, scope) {
                     return match gridcraft_formula::parse_name(def.formula.trim_start_matches('=')) {
-                        Ok(expr) => self.expr(&expr, def.scope.unwrap_or(scope), array_context, depth + 1),
+                        // A definition is written once and kept from A1: its references are
+                        // coordinates, whatever the formula using it reads.
+                        Ok(expr) => self.expr(&expr, def.scope.unwrap_or(scope), None, array_context, depth + 1),
                         Err(_) => Shape::array(),
                     };
                 }
@@ -105,9 +134,9 @@ impl Scan<'_> {
                 };
                 Shape { array: !(one_row && one_col), affected: false }
             }
-            Expr::Paren(x) => self.expr(x, sheet, array_context, depth + 1),
+            Expr::Paren(x) => self.expr(x, sheet, base, array_context, depth + 1),
             Expr::Unary(op, x) => {
-                let child = self.expr(x, sheet, array_context, depth + 1);
+                let child = self.expr(x, sheet, base, array_context, depth + 1);
                 match op {
                     UnOp::At => Shape { array: false, affected: child.affected },
                     // A trim reference is a reference operator, like `:`.
@@ -129,22 +158,22 @@ impl Scan<'_> {
                     spine.push((*op, b.as_ref()));
                     left = a.as_ref();
                 }
-                let mut acc = self.expr(left, sheet, array_context, depth + 1);
+                let mut acc = self.expr(left, sheet, base, array_context, depth + 1);
                 while let Some((op, b)) = spine.pop() {
-                    let b = self.expr(b, sheet, array_context, depth + 1);
+                    let b = self.expr(b, sheet, base, array_context, depth + 1);
                     let reference = matches!(op, BinOp::Range | BinOp::Union | BinOp::Intersect);
                     let array = reference || acc.array || b.array;
                     acc = Shape { array, affected: acc.affected || b.affected || (!reference && array && !array_context) };
                 }
                 acc
             }
-            Expr::Call(name, args) => self.call(name, args, sheet, array_context, depth + 1),
+            Expr::Call(name, args) => self.call(name, args, sheet, base, array_context, depth + 1),
             Expr::Invoke(_, _) => Shape { array: true, affected: false },
             _ => Shape::default(),
         }
     }
 
-    fn call(&mut self, name: &str, args: &[Expr], sheet: usize, array_context: bool, depth: usize) -> Shape {
+    fn call(&mut self, name: &str, args: &[Expr], sheet: usize, base: Option<CellRef>, array_context: bool, depth: usize) -> Shape {
         if name == "LET"
             && args.len() >= 3
             && let Some((last, bindings)) = args.split_last()
@@ -153,12 +182,12 @@ impl Scan<'_> {
             let mut affected = false;
             for pair in bindings.as_chunks::<2>().0 {
                 if let [Expr::Name(n), value] = pair {
-                    let shape = self.expr(value, sheet, array_context, depth);
+                    let shape = self.expr(value, sheet, base, array_context, depth);
                     affected |= shape.affected;
                     self.locals.push((n.clone(), shape));
                 }
             }
-            let mut result = self.expr(last, sheet, array_context, depth);
+            let mut result = self.expr(last, sheet, base, array_context, depth);
             result.affected |= affected;
             self.locals.truncate(saved);
             return result;
@@ -173,7 +202,7 @@ impl Scan<'_> {
         }
         for (i, arg) in args.iter().enumerate() {
             let context = array_context || legacy_array || (name == "INDEX" && i == 0);
-            let shape = self.expr(arg, sheet, context, depth);
+            let shape = self.expr(arg, sheet, base, context, depth);
             affected |= shape.affected;
             if shape.array && scalar_arg(name, i) {
                 lifted = true;
@@ -185,7 +214,8 @@ impl Scan<'_> {
         let array = match name {
             "INDIRECT" => match args.first() {
                 Some(Expr::Text(text)) if !matches!(args.get(1), Some(Expr::Bool(false))) => {
-                    gridcraft_formula::parse(text).map(|e| self.expr(&e, sheet, array_context, depth).array).unwrap_or(true)
+                    // The text names coordinates: an absolute tree.
+                    gridcraft_formula::parse(text).map(|e| self.expr(&e, sheet, None, array_context, depth).array).unwrap_or(true)
                 }
                 _ => true,
             },
@@ -365,9 +395,74 @@ pub(crate) fn apply_legacy(wb: &mut Workbook, cells: Vec<(usize, Vec<CellRef>)>)
     }
 }
 
+/// Whether the legacy reading of `formula` can differ from the text it was read as: whether
+/// anything in it may produce several values, which is what an `@` intersects.
+///
+/// **Not** the writer's [`needs_array`], which asks a different question (does the result need array
+/// evaluation): `SUMPRODUCT(IFERROR(A1:A3/A1:A3,0))` needs no array evaluation and still reads with
+/// an `@` inside. The rule here is only about what can be multi-valued, and it is decided from the
+/// cell's **shape** without resolving it — one tree per fill, not one per cell.
+fn may_need_reading(formula: &Formula, at: CellRef) -> bool {
+    let shape = formula.shape();
+    match (&formula.expr, &shape) {
+        (Some(tree), _) => !is_certainly_scalar(tree, None),
+        (_, Some(shape)) => !is_certainly_scalar(shape.tree(), Some(at)),
+        // Text alone (a document that never went through the reader): the reading may change it,
+        // and the caller resolves it anyway.
+        (None, None) => true,
+    }
+}
+
+/// Whether every subexpression of `e` is certainly one value: cells, literals and operators, with
+/// every reference reading one cell and no call anywhere. A formula shaped like that cannot produce
+/// several values, so its legacy reading is the text it was read as and no `@` can be inserted —
+/// which is most formulas on a large sheet (`=B1*C1+D1`, `=H1+G2`).
+///
+/// Deliberately says no to anything it does not have to say yes about (a name, a structured
+/// reference, an array literal, a call, `@`/`#`/a trim reference, `:`, and a 3-D span): those go
+/// through the analysis.
+fn is_certainly_scalar(e: &Expr, base: Option<CellRef>) -> bool {
+    let mut certain = true;
+    e.walk(&mut |x| {
+        if !certain {
+            return;
+        }
+        certain = match x {
+            Expr::Ref(r) => {
+                let single = match base {
+                    Some(base) => r.range_at(base).is_some_and(|range| range.is_single()),
+                    None => r.range().is_single(),
+                };
+                single && !matches!(r.sheet, SheetSel::Span(..))
+            }
+            Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Missing | Expr::Paren(_) => true,
+            Expr::Unary(UnOp::Neg | UnOp::Plus | UnOp::Percent, _) => true,
+            Expr::Binary(op, _, _) => !matches!(op, BinOp::Range | BinOp::Union | BinOp::Intersect),
+            // A call, a name, a structured reference, an array literal, `@`/`#`/a trim reference,
+            // or a LAMBDA invocation: could be several values, so it is analysed.
+            _ => false,
+        };
+    });
+    certain
+}
+
+/// [`may_need_reading`], for the test that holds the skip to the reading it skips.
+#[cfg(test)]
+pub(crate) fn may_need_reading_for_test(formula: &Formula, at: CellRef) -> bool {
+    may_need_reading(formula, at)
+}
+
 /// The dynamic-array reading of a legacy formula, when it differs.
 fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &mut NameCache, shapes: &mut ShapeTable) -> Option<Formula> {
     if formula.array.is_some() {
+        return None;
+    }
+    // Nothing to intersect: every reference is one cell, no function it calls can return several
+    // values and it uses no reference operator — so the legacy reading is the formula as written.
+    // Decided from the cell's **shape** without resolving it, which is what keeps opening a
+    // two-million-formula workbook from building two million trees: this analysis runs for every
+    // formula a file marks as legacy, which is nearly all of them.
+    if !may_need_reading(formula, at) {
         return None;
     }
     let expr = formula.expr_at(at)?;
