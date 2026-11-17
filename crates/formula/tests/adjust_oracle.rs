@@ -17,6 +17,16 @@ mod old {
         if (0..MAX_ROWS as i64).contains(&row) && (0..MAX_COLS as i64).contains(&col) { Some((row as u32, col as u32)) } else { None }
     }
 
+    /// A coordinate as the previous implementation carried it (`u32`): what the adjustment sees
+    /// is always an absolute tree, so this never fails on a case the oracle tests.
+    fn coord(v: i32) -> Option<u32> {
+        u32::try_from(v).ok()
+    }
+
+    fn signed(v: u32) -> Option<i32> {
+        i32::try_from(v).ok()
+    }
+
     pub fn shift_relative(e: Expr, dr: i64, dc: i64) -> Expr {
         e.map(&mut |x| match x {
             Expr::Ref(r) => match shift_ref(&r, dr, dc) {
@@ -28,18 +38,19 @@ mod old {
     }
 
     fn shift_anchor(a: &Anchor, dr: i64, dc: i64) -> Option<Anchor> {
-        let row = if a.row_abs { a.row as i64 } else { a.row as i64 + dr };
-        let col = if a.col_abs { a.col as i64 } else { a.col as i64 + dc };
+        let row = if a.row_abs { i64::from(a.row) } else { i64::from(a.row) + dr };
+        let col = if a.col_abs { i64::from(a.col) } else { i64::from(a.col) + dc };
         let (row, col) = clamp_anchor(row, col)?;
-        Some(Anchor { row, col, ..*a })
+        Some(Anchor { row: signed(row)?, col: signed(col)?, ..*a })
     }
 
-    fn shift_line(v: u32, abs: bool, d: i64, max: u32) -> Option<u32> {
+    fn shift_line(v: i32, abs: bool, d: i64, max: u32) -> Option<i32> {
+        let v = coord(v)?;
         if abs {
-            return Some(v);
+            return signed(v);
         }
         let n = v as i64 + d;
-        if (0..max as i64).contains(&n) { Some(n as u32) } else { None }
+        if (0..max as i64).contains(&n) { signed(u32::try_from(n).ok()?) } else { None }
     }
 
     fn shift_ref(r: &Reference, dr: i64, dc: i64) -> Option<Reference> {
@@ -72,32 +83,38 @@ mod old {
         })
     }
 
-    fn map_index(v: u32, at: u32, count: u32, insert: bool, max: u32) -> Option<u32> {
-        if insert {
+    fn map_index(v: i32, at: u32, count: u32, insert: bool, max: u32) -> Option<i32> {
+        let v = coord(v)?;
+        let n = if insert {
             if v >= at {
                 let n = v as u64 + count as u64;
-                if n >= max as u64 { None } else { Some(n as u32) }
+                if n >= max as u64 {
+                    return None;
+                }
+                u32::try_from(n).ok()?
             } else {
-                Some(v)
+                v
             }
         } else if v < at {
-            Some(v)
+            v
         } else if v >= at.saturating_add(count) {
-            Some(v - count)
+            v - count
         } else {
-            None
-        }
+            return None;
+        };
+        signed(n)
     }
 
-    fn map_span(lo: u32, hi: u32, at: u32, count: u32, insert: bool, max: u32) -> Option<(u32, u32)> {
-        if insert {
+    fn map_span(lo: i32, hi: i32, at: u32, count: u32, insert: bool, max: u32) -> Option<(i32, i32)> {
+        let (lo, hi) = (coord(lo)?, coord(hi)?);
+        let (lo2, hi2) = if insert {
             let lo2 = if lo >= at { lo as u64 + count as u64 } else { lo as u64 };
             let hi2 = if hi >= at { hi as u64 + count as u64 } else { hi as u64 };
             let hi2 = hi2.min(max as u64 - 1);
             if lo2 > hi2 {
                 return None;
             }
-            Some((lo2 as u32, hi2 as u32))
+            (u32::try_from(lo2).ok()?, u32::try_from(hi2).ok()?)
         } else {
             let end = at.saturating_add(count);
             if lo >= at && hi < end {
@@ -117,8 +134,9 @@ mod old {
             } else {
                 at.saturating_sub(1)
             };
-            Some((lo2, hi2.max(lo2)))
-        }
+            (lo2, hi2.max(lo2))
+        };
+        Some((signed(lo2)?, signed(hi2)?))
     }
 
     fn adjust_ref(r: &Reference, edit: &Edit) -> Option<Reference> {
@@ -170,8 +188,8 @@ mod old {
                     return Some(r.clone());
                 }
                 let mv = |a: &Anchor| -> Option<Anchor> {
-                    let (row, col) = clamp_anchor(a.row as i64 + dr, a.col as i64 + dc)?;
-                    Some(Anchor { row, col, ..*a })
+                    let (row, col) = clamp_anchor(i64::from(a.row) + dr, i64::from(a.col) + dc)?;
+                    Some(Anchor { row: signed(row)?, col: signed(col)?, ..*a })
                 };
                 let kind = match &r.kind {
                     RefKind::Cell(a) => RefKind::Cell(mv(a)?),

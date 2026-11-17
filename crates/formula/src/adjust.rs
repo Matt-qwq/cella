@@ -65,7 +65,14 @@ fn copy_node(e: &Expr, dr: i64, dc: i64) -> Expr {
 /// store a name's relative references as seen from A1 (a name for "the cell to the left" defined
 /// in B1 is `Sheet1!XFD1`), and a use in another cell moves them by that cell's offset from A1.
 pub fn shift_relative_wrapping(e: Expr, dr: i64, dc: i64) -> Expr {
-    let wrap = |v: u32, abs: bool, d: i64, max: u32| if abs { v } else { (v as i64 + d).rem_euclid(max as i64) as u32 };
+    // A relative part wraps (it does not clamp), and the result is 0..max, which an `i32` holds.
+    let wrap = |v: i32, abs: bool, d: i64, max: u32| -> i32 {
+        if abs {
+            return v;
+        }
+        let n = (i64::from(v) + d).rem_euclid(i64::from(max));
+        i32::try_from(n).unwrap_or(0)
+    };
     let anchor = |a: Anchor| Anchor { row: wrap(a.row, a.row_abs, dr, MAX_ROWS), col: wrap(a.col, a.col_abs, dc, MAX_COLS), ..a };
     e.map(&mut |x| match x {
         Expr::Ref(r) => {
@@ -91,18 +98,18 @@ pub fn has_relative_refs(e: &Expr) -> bool {
 }
 
 fn shift_anchor(a: &Anchor, dr: i64, dc: i64) -> Option<Anchor> {
-    let row = if a.row_abs { a.row as i64 } else { a.row as i64 + dr };
-    let col = if a.col_abs { a.col as i64 } else { a.col as i64 + dc };
+    let row = if a.row_abs { i64::from(a.row) } else { i64::from(a.row) + dr };
+    let col = if a.col_abs { i64::from(a.col) } else { i64::from(a.col) + dc };
     let (row, col) = clamp_anchor(row, col)?;
     Some(Anchor { row, col, ..*a })
 }
 
-fn shift_line(v: u32, abs: bool, d: i64, max: u32) -> Option<u32> {
+fn shift_line(v: i32, abs: bool, d: i64, max: u32) -> Option<i32> {
     if abs {
         return Some(v);
     }
-    let n = v as i64 + d;
-    if (0..max as i64).contains(&n) { Some(n as u32) } else { None }
+    let n = i64::from(v) + d;
+    if (0..i64::from(max)).contains(&n) { i32::try_from(n).ok() } else { None }
 }
 
 fn shift_ref(r: Reference, dr: i64, dc: i64) -> Option<Reference> {
@@ -189,36 +196,48 @@ pub fn adjust_if_changed(e: &Expr, host: &str, target: &str, edit: &Edit) -> Opt
 }
 
 /// New position of an index after an insert (`None` never) or delete (`None` = deleted).
-fn map_index(v: u32, at: u32, count: u32, insert: bool, max: u32) -> Option<u32> {
-    if insert {
+fn map_index(v: i32, at: u32, count: u32, insert: bool, max: u32) -> Option<i32> {
+    // Sheet indices are non-negative here (an absolute tree's coordinate, never a shape's offset);
+    // the arithmetic runs in `i64` so an insert near the sheet's end cannot wrap.
+    let v = i64::from(v);
+    let (at, count, max) = (i64::from(at), i64::from(count), i64::from(max));
+    let n = if insert {
         if v >= at {
-            let n = v as u64 + count as u64;
-            if n >= max as u64 { None } else { Some(n as u32) }
+            let n = v + count;
+            if n >= max {
+                return None;
+            }
+            n
         } else {
-            Some(v)
+            v
         }
     } else if v < at {
-        Some(v)
-    } else if v >= at.saturating_add(count) {
-        Some(v - count)
+        v
+    } else if v >= at + count {
+        v - count
     } else {
-        None
-    }
+        return None;
+    };
+    i32::try_from(n).ok()
 }
 
 /// Adjusts a span `[lo, hi]` (inclusive) on one axis.
-fn map_span(lo: u32, hi: u32, at: u32, count: u32, insert: bool, max: u32) -> Option<(u32, u32)> {
+fn map_span(lo: i32, hi: i32, at: u32, count: u32, insert: bool, max: u32) -> Option<(i32, i32)> {
+    // As in `map_index`: coordinates, arithmetic in `i64`. `(at - 1).max(0)` keeps today's
+    // `at.saturating_sub(1)`: a delete at the sheet's first line leaves an empty span at row 0.
+    let (lo, hi) = (i64::from(lo), i64::from(hi));
+    let (at, count, max) = (i64::from(at), i64::from(count), i64::from(max));
     if insert {
-        let lo2 = if lo >= at { lo as u64 + count as u64 } else { lo as u64 };
-        let hi2 = if hi >= at { hi as u64 + count as u64 } else { hi as u64 };
+        let lo2 = if lo >= at { lo + count } else { lo };
+        let hi2 = if hi >= at { hi + count } else { hi };
         // Whole-sheet spans (e.g. A:A) stay whole.
-        let hi2 = hi2.min(max as u64 - 1);
+        let hi2 = hi2.min(max - 1);
         if lo2 > hi2 {
             return None;
         }
-        Some((lo2 as u32, hi2 as u32))
+        Some((i32::try_from(lo2).ok()?, i32::try_from(hi2).ok()?))
     } else {
-        let end = at.saturating_add(count); // exclusive
+        let end = at + count; // exclusive
         if lo >= at && hi < end {
             return None; // fully deleted
         }
@@ -234,8 +253,10 @@ fn map_span(lo: u32, hi: u32, at: u32, count: u32, insert: bool, max: u32) -> Op
         } else if hi >= end {
             hi - count
         } else {
-            at.saturating_sub(1)
+            (at - 1).max(0)
         };
+        let lo2 = i32::try_from(lo2).ok()?;
+        let hi2 = i32::try_from(hi2).ok()?;
         Some((lo2, hi2.max(lo2)))
     }
 }
@@ -290,7 +311,7 @@ fn adjust_ref(r: Reference, edit: &Edit) -> Option<Reference> {
                 return Some(r);
             }
             let mv = |a: &Anchor| -> Option<Anchor> {
-                let (row, col) = clamp_anchor(a.row as i64 + dr, a.col as i64 + dc)?;
+                let (row, col) = clamp_anchor(i64::from(a.row) + dr, i64::from(a.col) + dc)?;
                 Some(Anchor { row, col, ..*a })
             };
             let kind = match &r.kind {

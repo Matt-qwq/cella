@@ -125,10 +125,14 @@ impl Cell {
 }
 
 /// The layout the undo budget and the store's byte accounting read (SHAPE-SHARING.md §1.1, S0).
+/// 64-bit numbers: `Formula` holds a `String` and `Cell` a `Value`, so a 32-bit target (wasm32)
+/// has its own, smaller layout.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Formula>() == 64);
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Cell>() == 40);
 
-#[cfg(test)]
+#[cfg(all(test, target_pointer_width = "64"))]
 mod size_pins {
     use super::{Cell, Formula};
 

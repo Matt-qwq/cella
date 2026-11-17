@@ -6,10 +6,16 @@ use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef};
 use serde::{Deserialize, Serialize};
 
 /// One end of a reference, with `$` anchors.
+///
+/// The coordinates are signed because one tree now serves every cell a formula was filled into
+/// (a *shape*, see [`crate::shape`]): a **relative** part is then an offset from the formula's own
+/// cell (negative = up/left), and an **absolute** part (a `$` part) stays the coordinate itself. An
+/// absolute tree — what the parser produces for a cell — holds coordinates for both, exactly as
+/// before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Anchor {
-    pub row: u32,
-    pub col: u32,
+    pub row: i32,
+    pub col: i32,
     pub row_abs: bool,
     pub col_abs: bool,
 }
@@ -17,27 +23,85 @@ pub struct Anchor {
 /// The sizes formula byte accounting rests on (SHAPE-SHARING.md §1.1, pinned by S0). Every one of
 /// them is the whole point of the shape work — `Expr` is dominated by its `Struct` variant — so a
 /// layout change has to be re-measured there rather than silently absorbed here.
+///
+/// The numbers are the 64-bit target's, which is where the byte arithmetic was measured; the types
+/// that hold a `String` or a `Vec` are smaller on a 32-bit target (wasm32), so only the two that
+/// hold no pointer are pinned everywhere.
 const _: () = assert!(std::mem::size_of::<Anchor>() == 12);
 const _: () = assert!(std::mem::size_of::<RefKind>() == 24);
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<SheetSel>() == 48);
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<StructRef>() == 96);
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Reference>() == 72);
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Expr>() == 96);
 
 impl Anchor {
-    pub fn cell(&self) -> CellRef {
-        CellRef::new(self.row, self.col)
+    /// An absolute anchor for `c` (the `$` flags as given): what a caller building a tree for a
+    /// range it already has needs. `None` for a position outside any sheet this API can spell.
+    pub fn at(c: CellRef, row_abs: bool, col_abs: bool) -> Option<Anchor> {
+        Some(Anchor { row: i32::try_from(c.row).ok()?, col: i32::try_from(c.col).ok()?, row_abs, col_abs })
     }
+
+    /// The cell this anchor names when it is read at `base`: for an absolute tree every part is a
+    /// coordinate (and `base` is unused), for a shape a relative part is an offset from `base`.
+    /// `None` when the result is off the sheet, which a shape's relative part can be.
+    pub fn cell_at(&self, base: CellRef) -> Option<CellRef> {
+        // The arithmetic goes through `i64` (see [`offset`]): a signed coordinate is input-derived
+        // once a shape exists, so it is never allowed to wrap.
+        let row = coord(self.row, self.row_abs, base.row, MAX_ROWS)?;
+        let col = coord(self.col, self.col_abs, base.col, MAX_COLS)?;
+        Some(CellRef::new(row, col))
+    }
+
+    /// The anchor as an absolute tree spells it when the formula lives at `base` — the inverse of
+    /// [`Anchor::offset_from`], and what a shape resolves to. `None` when it lands off the sheet.
+    pub fn resolved(&self, base: CellRef) -> Option<Anchor> {
+        let c = self.cell_at(base)?;
+        Some(Anchor { row: i32::try_from(c.row).ok()?, col: i32::try_from(c.col).ok()?, ..*self })
+    }
+
+    /// The anchor a shape stores for a formula living at `base`: the inverse of [`cell_at`].
+    pub(crate) fn offset_from(&self, base: CellRef) -> Anchor {
+        Anchor { row: offset(self.row, self.row_abs, base.row), col: offset(self.col, self.col_abs, base.col), ..*self }
+    }
+}
+
+/// One coordinate of a reference read at `base` (0-based): an absolute part is the coordinate
+/// itself, a relative one is an offset from `base`. `None` when the result is off the sheet.
+fn coord(v: i32, abs: bool, base: u32, max: u32) -> Option<u32> {
+    let n = if abs { i64::from(v) } else { i64::from(v) + i64::from(base) };
+    let n = u32::try_from(n).ok()?;
+    (n < max).then_some(n)
+}
+
+/// [`coord`] as the `i32` a whole-row or whole-column reference keeps (`3:5`, `A:C`).
+pub(crate) fn line_at(v: i32, abs: bool, base: u32, max: u32) -> Option<i32> {
+    i32::try_from(coord(v, abs, base, max)?).ok()
+}
+
+/// One coordinate of a shape read at `base`: an absolute part keeps the coordinate, a relative one
+/// becomes its offset from `base` (the inverse of [`coord`]).
+pub(crate) fn offset(v: i32, abs: bool, base: u32) -> i32 {
+    if abs {
+        return v;
+    }
+    // A tree the parser built never leaves the sheet, so the difference fits an `i32`; a tree from
+    // elsewhere is still not allowed to wrap.
+    let d = i64::from(v).saturating_sub(i64::from(base));
+    i32::try_from(d).unwrap_or(if d < 0 { i32::MIN } else { i32::MAX })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RefKind {
     Cell(Anchor),
     Range(Anchor, Anchor),
-    /// Whole rows `3:5` (row, abs) pairs.
-    Rows(u32, bool, u32, bool),
-    /// Whole columns `A:C`.
-    Cols(u32, bool, u32, bool),
+    /// Whole rows `3:5` (row, row abs, row, row abs) — signed as in [`Anchor`].
+    Rows(i32, bool, i32, bool),
+    /// Whole columns `A:C` (col, col abs, col, col abs).
+    Cols(i32, bool, i32, bool),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -56,13 +120,41 @@ pub struct Reference {
 }
 
 impl Reference {
+    /// The reference an *absolute* tree spells (a parsed formula, a defined name, a chart anchor):
+    /// every part is a coordinate, so reading the tree at A1 gives it back.
     pub fn range(&self) -> RangeRef {
+        // An absolute tree is on the sheet by construction (the parser, the BIFF decoder and the
+        // engine all keep 0..MAX), so this only stands in for a caller that read a shape as if it
+        // were absolute. It answers the sheet's first cell rather than panicking.
+        self.range_at(CellRef::new(0, 0)).unwrap_or_else(|| RangeRef::cell(CellRef::new(0, 0)))
+    }
+
+    /// The reference this formula reads when it lives at `base`. `None` when a relative part falls
+    /// off the sheet: the caller renders `#REF!`, i.e. the shape does not fit there.
+    pub fn range_at(&self, base: CellRef) -> Option<RangeRef> {
         match &self.kind {
-            RefKind::Cell(a) => RangeRef::cell(a.cell()),
-            RefKind::Range(a, b) => RangeRef::new(a.cell(), b.cell()),
-            RefKind::Rows(r0, _, r1, _) => RangeRef::rows((*r0).min(*r1), (*r0).max(*r1)),
-            RefKind::Cols(c0, _, c1, _) => RangeRef::cols((*c0).min(*c1), (*c0).max(*c1)),
+            RefKind::Cell(a) => a.cell_at(base).map(RangeRef::cell),
+            RefKind::Range(a, b) => Some(RangeRef::new(a.cell_at(base)?, b.cell_at(base)?)),
+            RefKind::Rows(r0, a0, r1, a1) => {
+                let (x, y) = (coord(*r0, *a0, base.row, MAX_ROWS)?, coord(*r1, *a1, base.row, MAX_ROWS)?);
+                Some(RangeRef::rows(x.min(y), x.max(y)))
+            }
+            RefKind::Cols(c0, a0, c1, a1) => {
+                let (x, y) = (coord(*c0, *a0, base.col, MAX_COLS)?, coord(*c1, *a1, base.col, MAX_COLS)?);
+                Some(RangeRef::cols(x.min(y), x.max(y)))
+            }
         }
+    }
+
+    /// The reference a shape stores for a formula living at `base`: the inverse of [`range_at`].
+    pub(crate) fn offset_at(&self, base: CellRef) -> Reference {
+        let kind = match &self.kind {
+            RefKind::Cell(a) => RefKind::Cell(a.offset_from(base)),
+            RefKind::Range(a, b) => RefKind::Range(a.offset_from(base), b.offset_from(base)),
+            RefKind::Rows(r0, a0, r1, a1) => RefKind::Rows(offset(*r0, *a0, base.row), *a0, offset(*r1, *a1, base.row), *a1),
+            RefKind::Cols(c0, a0, c1, a1) => RefKind::Cols(offset(*c0, *a0, base.col), *a0, offset(*c1, *a1, base.col), *a1),
+        };
+        Reference { sheet: self.sheet.clone(), kind }
     }
     pub fn sheet_name(&self) -> Option<&str> {
         match &self.sheet {
@@ -360,6 +452,10 @@ impl PartialEq for Expr {
     }
 }
 
-pub(crate) fn clamp_anchor(row: i64, col: i64) -> Option<(u32, u32)> {
-    if (0..MAX_ROWS as i64).contains(&row) && (0..MAX_COLS as i64).contains(&col) { Some((row as u32, col as u32)) } else { None }
+pub(crate) fn clamp_anchor(row: i64, col: i64) -> Option<(i32, i32)> {
+    if (0..MAX_ROWS as i64).contains(&row) && (0..MAX_COLS as i64).contains(&col) {
+        Some((i32::try_from(row).ok()?, i32::try_from(col).ok()?))
+    } else {
+        None
+    }
 }

@@ -574,6 +574,8 @@ fn column_starting_with_at_round_trips() {
 /// The layout a formula's byte accounting is read from (SHAPE-SHARING.md §1.1, S0). The numbers
 /// printed here are the ones `ast.rs` pins with `const` assertions; the test exists so the whole
 /// table can be seen at once (`cargo test -p gridcraft-formula --lib -- --nocapture formula_sizes`).
+/// 64-bit numbers only: a 32-bit target's pointers are smaller and its layout is not the measured one.
+#[cfg(target_pointer_width = "64")]
 #[test]
 fn formula_sizes_are_pinned() {
     let sizes = [

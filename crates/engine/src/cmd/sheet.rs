@@ -1026,12 +1026,13 @@ fn step_sheet(s: &mut Session, dir: isize) -> Result<Json> {
 
 /// Where a range of the edited sheet goes after a structural edit (`None` = deleted).
 pub(crate) fn map_range(r: RangeRef, e: &Edit) -> Option<RangeRef> {
+    let (Some(start), Some(end)) = (gridcraft_formula::Anchor::at(r.start, false, false), gridcraft_formula::Anchor::at(r.end, false, false)) else {
+        // A range outside the sheet is not one the editor can hold; leave it where it is.
+        return Some(r);
+    };
     let expr = gridcraft_formula::Expr::Ref(gridcraft_formula::Reference {
         sheet: gridcraft_formula::SheetSel::Current,
-        kind: gridcraft_formula::RefKind::Range(
-            gridcraft_formula::Anchor { row: r.start.row, col: r.start.col, row_abs: false, col_abs: false },
-            gridcraft_formula::Anchor { row: r.end.row, col: r.end.col, row_abs: false, col_abs: false },
-        ),
+        kind: gridcraft_formula::RefKind::Range(start, end),
     });
     match gridcraft_formula::adjust::adjust(expr, "S", "S", e) {
         gridcraft_formula::Expr::Ref(r) => Some(r.range()),
