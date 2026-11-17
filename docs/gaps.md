@@ -260,7 +260,8 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   to ≈105 MB and changes 13 call sites) and the area arena 125.0 MB (at 1.25× live by construction);
   the undo stack 241.6 MB *charged* (its own heap is a fraction of that; at 1M the structural answer
   is restoring into a paged store — attach the page file and let the byte-budget page cache decode
-  bands on demand — not attempted); the journal's base64 copy of a file (42–94 MB); and a structural
+  bands on demand — not attempted); the journal's 42 MB of replayed bulk edits (a single huge
+  parameter is boxed to a marker now, so the 94 MB base64 case is gone); and a structural
   edit still prints every moved cell's text (S5's floor: one print per moved cell); and the undo of a
   workbook *opened* paged (>200 MiB file) still walks the bands, because such a step never records a
   delta.

@@ -86,13 +86,32 @@ pub fn is_secret_param(key: &str) -> bool {
     key == "password" || key.ends_with("Password")
 }
 
+/// The longest string a journal entry keeps. A file.open from base64 carries the whole
+/// workbook, so an entry without this cap held tens of megabytes alive for one open; a paste of
+/// ten thousand rows is the same story. The entry still records that the parameter was there and
+/// how big it was — what a replay cannot do is use the bytes.
+pub const JOURNAL_MAX_STRING: usize = 64 * 1024;
+
 /// The params as the journal records them: secret params are left out, so a password never
-/// reaches the journal dialog, `engine.journal` or a recorded script (saved in the workbook).
+/// reaches the journal dialog, engine.journal or a recorded script (saved in the workbook),
+/// and a string longer than JOURNAL_MAX_STRING is replaced by a marker that keeps its length.
 /// Replaying such an entry runs the command without that param.
 pub fn journal_params(params: &Json) -> Json {
-    match params {
+    let kept = match params {
         Json::Object(o) => Json::Object(o.iter().filter(|(k, _)| !is_secret_param(k)).map(|(k, v)| (k.clone(), v.clone())).collect()),
         other => other.clone(),
+    };
+    boxed_large_strings(kept)
+}
+
+/// Replaces every string longer than JOURNAL_MAX_STRING with "<omitted: N chars>", at any depth
+/// (the base64 of a file, the values of a paste). Everything else is returned untouched.
+fn boxed_large_strings(v: Json) -> Json {
+    match v {
+        Json::String(s) if s.len() > JOURNAL_MAX_STRING => Json::String(format!("<omitted: {} chars>", s.chars().count())),
+        Json::Array(items) => Json::Array(items.into_iter().map(boxed_large_strings).collect()),
+        Json::Object(map) => Json::Object(map.into_iter().map(|(k, v)| (k, boxed_large_strings(v))).collect()),
+        other => other,
     }
 }
 

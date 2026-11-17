@@ -278,7 +278,7 @@ capacities and layouts — not a heap census — and `total == Σ parts` is a te
 | · dependents map | 478.2 MB | 142.6 MB | 12.6 % |
 | · precedent-area arena | 201.3 MB | 125.0 MB | 11.0 % |
 | **history / undo** | **737.6 MB** | **241.6 MB** | 21.3 % |
-| journal (base64 of the saved file) | 42.1 MB | 42.1 MB | 3.7 % |
+| journal (recent commands) | 42.1 MB | 42.1 MB | 3.7 % |
 | **total** | **2.90 GB** | **1.14 GB** | |
 
 Reopened from the 70 MB xlsx: **0.95 GB** (was 2.18 GB). The workbook as built holds **3 shapes for
@@ -376,7 +376,10 @@ What is left, in the order the accounting ranks it:
   transpose, clear-all, and the print/clipboard exports) found all of them band-ordered: a band is 64
   consecutive rows, and a write materialises the band it lands in. Anything added later that reorders
   rows has to do what sort does.
-- **The journal, 42–94 MB**, keeps the saved file as base64 in an open's params.
+- **The journal, 42.1 MB** at 1M rows — a hundred `range.setValues` entries of ten thousand
+  rows each, kept so they replay, under a 64 MB budget. A *single* huge parameter no longer
+  survives: a string past 64 KiB is journalled as `<omitted: N chars>` (the base64 of an opened
+  file was 94 MB of it), which took the reopened workbook's total from 954 to **869 MB**.
 - **A structural edit still prints every moved cell's text** (`rewrite_all_formulas` walks the shape
   trees in place now, but each moved cell with a relative reference has a different A1 spelling).
   Making the rewrite shape-level is the design's S5; the printing cannot be removed, so the win is

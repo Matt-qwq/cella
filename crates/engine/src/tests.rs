@@ -5396,15 +5396,17 @@ fn box_whisker_quartile_methods_survive_xlsx() {
 fn journal_is_capped_by_serialized_size() {
     let mut s = s();
     s.execute("cell.set", json!({"cell": "A1", "input": "5"})).unwrap();
-    // Large entries (like a `file.open` with its base64): the oldest go once the cap is passed.
-    let pad = "x".repeat(crate::JOURNAL_MAX_BYTES / 8);
-    for i in 0..12 {
+    // Many fat entries: the oldest go once the byte cap is passed. (One huge string cannot do it
+    // any more — a string past JOURNAL_MAX_STRING is boxed down to a marker, see journal_params.)
+    let pad = "x".repeat(crate::cmd::JOURNAL_MAX_STRING - 64);
+    let n = crate::JOURNAL_MAX_BYTES / pad.len() + 100;
+    for i in 0..n {
         s.execute("selection.set", json!({"range": "B2", "pad": pad, "n": i})).unwrap();
     }
     let bytes: usize = s.journal.iter().map(|e| serde_json::to_vec(e).unwrap().len()).sum();
     assert!(bytes <= crate::JOURNAL_MAX_BYTES, "{bytes}");
-    assert!(s.journal.len() < 12, "{}", s.journal.len());
-    assert_eq!(s.journal.last().unwrap().1["n"], 11, "the newest entries stay");
+    assert!(s.journal.len() < n, "{}", s.journal.len());
+    assert_eq!(s.journal.last().unwrap().1["n"], json!(n - 1), "the newest entries stay");
     // Small entries are kept as they were.
     s.execute("cell.set", json!({"cell": "A2", "input": "=SUM(A1)"})).unwrap();
     assert_eq!(s.journal.last().unwrap(), &("cell.set".to_string(), json!({"cell": "A2", "input": "=SUM(A1)"})));
@@ -7782,4 +7784,39 @@ mod compressed_history {
         assert_eq!(v(&s, "C1"), Value::from(99.0), "and comes back");
         assert_eq!(v(&s, "B1"), Value::from(1.0));
     }
+}
+#[test]
+fn a_large_parameter_is_journalled_without_its_bytes() {
+    // A file.open from base64 carries the whole workbook: one such entry held ~94 MB alive for
+    // the reference workbook. The entry keeps the fact and the size, not the bytes.
+    let mut s = Session::new();
+    let mut csv = String::from("a,b\n");
+    for i in 0..20_000 {
+        csv.push_str(&format!("{i},{}\n", i * 2));
+    }
+    assert!(csv.len() > 100_000);
+    let b64 = crate::io::base64_encode(csv.as_bytes());
+    s.execute("file.open", json!({"name": "big.csv", "base64": b64})).expect("open");
+    let (id, params) = s.journal.last().cloned().expect("the open is journaled");
+    assert_eq!(id, "file.open");
+    let kept = params["base64"].as_str().expect("the param is still there");
+    assert!(kept.starts_with("<omitted: "), "{kept}");
+    assert!(kept.ends_with(" chars>"), "{kept}");
+    assert!(s.journal_bytes < crate::JOURNAL_MAX_BYTES, "one open cannot blow the budget: {}", s.journal_bytes);
+    // The document opened; only replay of that entry would need the bytes again.
+    assert_eq!(s.doc().expect("a document").wb.active().expect("a sheet").used_range().map(|r| r.height()), Some(20_001));
+}
+
+#[test]
+fn journal_params_keep_short_strings_and_drop_only_the_huge_ones() {
+    let small = json!({"path": "book.xlsx", "sheet": "Data", "rows": [["a", "b"], ["c", "d"]]});
+    assert_eq!(crate::cmd::journal_params(&small), small, "ordinary params are untouched");
+    let long = "x".repeat(crate::cmd::JOURNAL_MAX_STRING + 1);
+    let p = crate::cmd::journal_params(&json!({"name": "big.xlsx", "base64": long, "nested": {"values": [long]}}));
+    assert_eq!(p["name"], json!("big.xlsx"));
+    assert!(p["base64"].as_str().expect("string").starts_with("<omitted: "));
+    assert!(p["nested"]["values"][0].as_str().expect("string").starts_with("<omitted: "), "any depth");
+    // A secret is still removed, not boxed.
+    let p = crate::cmd::journal_params(&json!({"password": "hunter2", "name": "a"}));
+    assert!(p.get("password").is_none());
 }
