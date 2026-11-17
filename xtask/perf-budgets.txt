@@ -6,25 +6,25 @@
 # machine: GRIDCRAFT_PERF_SCALE=2 cargo xtask perf. Re-record only for an intended change.
 #
 # Format: <scenario> <rows> <budget ms>
-aggregate       100000  220
-edit.recalc     100000  460
-edit.undo       100000  6
-fill.chained    100000  800
-fill.formulas   100000  620
-fill.values     100000  430
-open.csv        100000  140
-open.xlsx       100000  950
-rebuild.graph   100000  300
-save.xlsx       100000  720
+aggregate       100000  200
+edit.recalc     100000  420
+edit.undo       100000  3
+fill.chained    100000  740
+fill.formulas   100000  560
+fill.values     100000  420
+open.csv        100000  150
+open.xlsx       100000  930
+rebuild.graph   100000  270
+save.xlsx       100000  430
 sort.desc       100000  1250
-aggregate      1000000  2200
-edit.recalc    1000000  4700
-edit.undo      1000000  59
-fill.chained   1000000  8000
-fill.formulas  1000000  5700
-fill.values    1000000  4500
-open.csv       1000000  1300
-open.xlsx      1000000  11250
-rebuild.graph  1000000  3450
-save.xlsx      1000000  7400
-sort.desc      1000000  16000
+aggregate      1000000  2000
+edit.recalc    1000000  4650
+edit.undo      1000000  54
+fill.chained   1000000  7850
+fill.formulas  1000000  5500
+fill.values    1000000  4600
+open.csv       1000000  1250
+open.xlsx      1000000  10500
+rebuild.graph  1000000  3300
+save.xlsx      1000000  4900
+sort.desc      1000000  15000
