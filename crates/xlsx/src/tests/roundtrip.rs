@@ -727,6 +727,77 @@ fn precompressed_sheets_write_the_same_package() {
     }
 }
 
+/// The shared string table is filled in the file's first-use order: sheet by sheet, row by row,
+/// cell by cell, with a table header's override text where the cell that holds it comes and a
+/// formula's cached text going into the cell rather than the table. The writer fills it in a
+/// pre-pass over each sheet — the ids have to exist before a row is built — so this pins the order
+/// that pre-pass and the row builder must agree on: the list, the reference count and the unique
+/// count in the file.
+#[test]
+fn shared_strings_are_in_first_use_order() {
+    let mut wb = Workbook::new();
+    wb.sheets.clear();
+    let mut one = Sheet::new("One");
+    one.set_value(at("A1"), Value::text("common"));
+    one.set_value(at("B1"), Value::text("alpha"));
+    one.set_value(at("A2"), Value::text("beta"));
+    one.set_value(at("B2"), Value::text("common"));
+    one.set_value(at("C2"), Value::Number(7.0));
+    // A table's header overrides the cells under it, so those cells write the column names.
+    one.set_value(at("A4"), Value::text("not this"));
+    one.set_value(at("B4"), Value::text("not this either"));
+    let col = |n: &str| TableColumn { name: n.into(), totals: TotalsFn::None, totals_label: None, formula: None, unique_name: None, xml: None };
+    one.tables.push(Table {
+        id: 1,
+        name: "Table1".into(),
+        range: rr("A4:B5"),
+        header_row: true,
+        totals_row: false,
+        columns: vec![col("Header one"), col("Header two")],
+        style: String::new(),
+        banded_rows: false,
+        banded_cols: false,
+        first_col: false,
+        last_col: false,
+        filter_button: false,
+        filter: vec![],
+        table_type: None,
+        connection_id: None,
+    });
+    let mut two = Sheet::new("Two");
+    // Already in the table: no new entry, and the reference still counts.
+    two.set_value(at("A1"), Value::text("common"));
+    two.set_value(at("A2"), Value::text("gamma"));
+    two.set_cell(at("B2"), Cell { value: Value::text("xy"), formula: Some(Arc::new(Formula::new("CONCAT(\"x\",\"y\")"))), style: StyleId::DEFAULT });
+    let mut three = Sheet::new("Three");
+    three.set_value(at("A1"), Value::text("delta"));
+    three.set_value(at("A2"), Value::text("alpha"));
+    for s in [one, two, three] {
+        wb.sheets.push(Arc::new(s));
+    }
+
+    let bytes = write_xlsx(&wb).unwrap();
+    let mut pkg = Package::open(&bytes).unwrap();
+    let sst = pkg.read_xml("xl/sharedStrings.xml").unwrap().unwrap();
+    // Six text cells on the first sheet (the two table headers are overrides), two on the second
+    // (the formula's cached text is written inline) and two on the third.
+    assert_eq!(sst.attr("count"), Some("10"));
+    assert_eq!(sst.attr("uniqueCount"), Some("7"));
+    let list: Vec<String> = sst.kids("si").map(crate::xml::rich_text).collect();
+    let want = ["common", "alpha", "beta", "Header one", "Header two", "gamma", "delta"];
+    assert_eq!(list, want.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+    // And the cells read back to the text the file gave them, overrides included.
+    let (back, _) = read_xlsx(&bytes).unwrap();
+    let one = back.sheet(0).unwrap();
+    assert_eq!(one.value(at("A1")), Value::text("common"));
+    assert_eq!(one.value(at("A4")), Value::text("Header one"));
+    assert_eq!(one.value(at("B4")), Value::text("Header two"));
+    let two = back.sheet(1).unwrap();
+    assert_eq!(two.value(at("A1")), Value::text("common"));
+    assert_eq!(two.value(at("B2")), Value::text("xy"));
+}
+
 #[test]
 fn iterative_calculation_settings_roundtrip() {
     let calc_pr = |wb: &Workbook| {

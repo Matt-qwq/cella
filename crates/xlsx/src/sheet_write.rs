@@ -1,11 +1,12 @@
 //! Writing worksheet parts and the parts they own (tables, comments, drawings, charts).
 
+use crate::IoError;
 use crate::drawing::{Obj, image_content_type, image_ext};
 use crate::fmla::text_to_file;
 use crate::styles::{color_attrs, dxf_id};
 use crate::tables::{paper_id, px_to_col_width, px_to_pt};
 use crate::write::{
-    CT_CHART, CT_COMMENTS, CT_DRAWING, CT_TABLE, CT_THREADED_COMMENTS, NS_MAIN, NS_REL, NS_THREADED, Out, REL_THREADED_COMMENT, Rels, XML_DECL,
+    CT_CHART, CT_COMMENTS, CT_DRAWING, CT_TABLE, CT_THREADED_COMMENTS, NS_MAIN, NS_REL, NS_THREADED, Out, REL_THREADED_COMMENT, Rels, Sst, XML_DECL,
 };
 use crate::xml::{encode_xstring, esc, esc_attr, num};
 use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
@@ -181,11 +182,18 @@ pub fn write_chart_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out
     s.push_str("</chartsheet>");
     (s, rels)
 }
-pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slicers: &crate::slicer::SlicerWriter) -> (String, Rels) {
+/// The worksheet's part and its relationships. The only way it can fail is a text cell whose
+/// string the shared-string pre-pass never saw, which would be a writer bug, not a workbook one.
+pub fn write_sheet(
+    wb: &Workbook,
+    si: usize,
+    selected: bool,
+    out: &mut Out,
+    slicers: &crate::slicer::SlicerWriter,
+) -> Result<(String, Rels), IoError> {
     let mut rels = Rels::default();
-    let Some(sheet) = wb.sheet(si) else { return (String::new(), rels) };
-    let nstyles = wb.styles.len() as u32;
-    let sid = |s: gridcraft_model::StyleId| if s.0 < nstyles { s.0 } else { 0 };
+    let Some(sheet) = wb.sheet(si) else { return Ok((String::new(), rels)) };
+    let styles = StyleIds { count: wb.styles.len() as u32 };
 
     // A table's dropdown filter is kept in `sheet.autofilter`, not in `Table::filter` (the
     // engine's only live filter state, which the reader moves a table's filter back into). Where
@@ -373,7 +381,7 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slic
             let w = i.size.unwrap_or(sheet.default_col_width);
             let _ = write!(s, "<col min=\"{}\" max=\"{}\" width=\"{}\"", a + 1, b + 1, num(px_to_col_width(w)));
             if let Some(st) = i.style {
-                let _ = write!(s, " style=\"{}\"", sid(st));
+                let _ = write!(s, " style=\"{}\"", styles.get(st));
             }
             if i.hidden {
                 s.push_str(" hidden=\"1\"");
@@ -420,84 +428,29 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slic
     for (c, v) in &extra {
         touch(&mut additions, *c).value = Some(v);
     }
+    // A cell's static picture is a rich-data value, written as the `vm` id its first use in the
+    // sheet gives it. A picture sits at one cell and the rows are written ascending, so the cell
+    // map's own order is the file's order; assigning the ids here leaves the row walk read-only.
     for (c, picture) in &sheet.cell_pictures {
-        touch(&mut additions, *c).picture = Some(picture);
+        let vm = out.cell_pictures.index(picture);
+        touch(&mut additions, *c).picture_vm = Some(vm);
     }
     for (c, r) in &dynamic {
         touch(&mut additions, *c).dynamic = Some(*r);
     }
 
     s.push_str("<sheetData>");
-    // A save walks every cell once, so it scans without filling the page cache: the viewport's
-    // working set stays where it was, and the sheet's tail is not left resident.
-    let mut store = sheet.cells.iter_scan(RangeRef::all()).peekable();
-    let mut sparse = additions.into_iter().peekable();
-    let mut info_rows = sheet.rows.iter().peekable();
-    let mut filter_rows = sheet.filter_hidden.rows().peekable();
-    loop {
-        let next_store = store.peek().map(|(at, _)| at.row);
-        let next_sparse = sparse.peek().map(|(r, _)| *r);
-        let next_info = info_rows.peek().map(|(r, _)| *r);
-        let next_filter = filter_rows.peek().copied();
-        let Some(row) = [next_store, next_sparse, next_info, next_filter].into_iter().flatten().min() else { break };
-        let mut info = if next_info == Some(row) {
-            info_rows.next().map(|(_, i)| *i).unwrap_or_default()
-        } else {
-            sheet.rows.get(&row).copied().unwrap_or_default()
-        };
-        // A row the filter hides lives in the bitmap, not in the line map.
-        if next_filter == Some(row) {
-            filter_rows.next();
-            info.hidden = true;
-        }
-        let mut adds: std::iter::Peekable<std::vec::IntoIter<(u32, Additions<'_>)>> = if next_sparse == Some(row) {
-            sparse.next().map(|(_, v)| v).unwrap_or_default().into_iter().peekable()
-        } else {
-            Vec::new().into_iter().peekable()
-        };
-        let has_cells = next_store == Some(row) || adds.peek().is_some();
-        if !has_cells && info == LineInfo::default() {
-            continue;
-        }
-        write_row_open(&mut s, row, &info, &sid);
-        if !has_cells {
-            s.push_str("/>");
-            continue;
-        }
-        s.push('>');
-        loop {
-            let stored = store.peek().filter(|(at, _)| at.row == row);
-            let add_col = adds.peek().map(|(col, _)| *col);
-            let mut a = Additions::default();
-            let (col, cell) = match (stored, add_col) {
-                (Some((at, _)), Some(acol)) if acol < at.col => {
-                    let (col, addition) = adds.next().unwrap_or((0, Additions::default()));
-                    a = addition;
-                    (col, None)
-                }
-                (Some(_), _) => {
-                    let (at, cell) = store.next().unwrap_or((CellRef::new(row, 0), Cell::default()));
-                    if add_col == Some(at.col) {
-                        a = adds.next().map(|(_, addition)| addition).unwrap_or_default();
-                    }
-                    (at.col, Some(cell))
-                }
-                (None, Some(_)) => {
-                    let (col, addition) = adds.next().unwrap_or((0, Additions::default()));
-                    a = addition;
-                    (col, None)
-                }
-                (None, None) => break,
-            };
-            let at = CellRef::new(row, col);
-            let array = a.dynamic.or_else(|| {
-                let f = cell.as_ref()?.formula.as_ref()?;
-                (f.array.is_none() && crate::array_formula::needs_array(wb, si, at, f)).then_some(RangeRef::cell(at))
-            });
-            write_cell(&mut s, at, cell.as_ref(), a.picture, a.override_text, a.value, array.as_ref(), &sid, out);
-        }
-        s.push_str("</row>");
-    }
+    // A text cell is a reference into the workbook's shared string table, and that table's order is
+    // the file's first-use order: sheet by sheet, row by row, cell by cell. Only a walk in that
+    // order can establish it, so the sheet's strings are counted and given their ids first (a
+    // pre-pass, `SstCollector`), and the row builder that follows only reads them (`Sst::id`).
+    // That is what lets a window of rows be built without the `Out` the save is assembling.
+    walk_rows(sheet, RangeRef::all(), &additions, &mut SstCollector { sst: &mut out.sst })?;
+    let mut rows = RowBuilder { wb, si, styles, sst: &out.sst, xml: String::new(), flags: RowFlags::default() };
+    walk_rows(sheet, RangeRef::all(), &additions, &mut rows)?;
+    out.needs_calc |= rows.flags.needs_calc;
+    out.dynamic_arrays |= rows.flags.dynamic_arrays;
+    s.push_str(&rows.xml);
     s.push_str("</sheetData>");
 
     // sheetProtection
@@ -882,16 +835,226 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out, slic
         s.push_str("</extLst>");
     }
     s.push_str("</worksheet>");
-    (s, rels)
+    Ok((s, rels))
 }
+/// Style ids as the file spells them: a style the workbook's table does not hold is written as 0
+/// (a reader can hand out ids the writer's own table lacks).
+#[derive(Clone, Copy)]
+struct StyleIds {
+    count: u32,
+}
+
+impl StyleIds {
+    fn get(self, s: gridcraft_model::StyleId) -> u32 {
+        if s.0 < self.count { s.0 } else { 0 }
+    }
+}
+
+/// What the row walk reports to the workbook assembly: a formula with no cached value makes Excel
+/// recalculate, and a formula that needs array evaluation sets the cell metadata flag.
+#[derive(Clone, Copy, Default)]
+struct RowFlags {
+    needs_calc: bool,
+    dynamic_arrays: bool,
+}
+
+/// One pass over a window of a sheet's rows in the order the file writes them: the store's cells
+/// merged with the sparse additions, the sheet's own line info, and the rows a filter hides. The
+/// shared-string pre-pass and the row builder are both this walk, so the table one fills is exactly
+/// the table the other reads, cell for cell and in the same order.
+trait RowVisitor {
+    /// `<row …`, up to the point where the cells (or the closing `/>`) follow.
+    fn row_open(&mut self, row: u32, info: &LineInfo);
+    /// A row with nothing to write: `/>`.
+    fn row_empty(&mut self);
+    /// The `>` that opens a row's cells.
+    fn row_cells(&mut self);
+    /// `</row>`.
+    fn row_close(&mut self);
+    /// One cell of the row being written.
+    fn cell(&mut self, at: CellRef, cell: Option<&Cell>, additions: &Additions<'_>) -> Result<(), IoError>;
+}
+
+/// Walks the rows of `window` (whole rows, ascending) and hands each row and cell to `v`.
+fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, v: &mut V) -> Result<(), IoError> {
+    // A save walks every cell once, so it scans without filling the page cache: the viewport's
+    // working set stays where it was, and the sheet's tail is not left resident.
+    let mut store = sheet.cells.iter_scan(window).peekable();
+    let mut sparse = additions.range(window.start.row..=window.end.row).peekable();
+    let mut info_rows = sheet.rows.range(window.start.row..=window.end.row).peekable();
+    let mut filter_rows = sheet.filter_hidden.rows().skip_while(|r| *r < window.start.row).take_while(|r| *r <= window.end.row).peekable();
+    loop {
+        let next_store = store.peek().map(|(at, _)| at.row);
+        let next_sparse = sparse.peek().map(|(r, _)| **r);
+        let next_info = info_rows.peek().map(|(r, _)| *r);
+        let next_filter = filter_rows.peek().copied();
+        let Some(row) = [next_store, next_sparse, next_info, next_filter].into_iter().flatten().min() else { break };
+        let mut info = if next_info == Some(row) {
+            info_rows.next().map(|(_, i)| *i).unwrap_or_default()
+        } else {
+            sheet.rows.get(&row).copied().unwrap_or_default()
+        };
+        // A row the filter hides lives in the bitmap, not in the line map.
+        if next_filter == Some(row) {
+            filter_rows.next();
+            info.hidden = true;
+        }
+        let mut adds: std::iter::Peekable<std::vec::IntoIter<(u32, Additions<'_>)>> = if next_sparse == Some(row) {
+            sparse.next().map(|(_, v)| v.clone()).unwrap_or_default().into_iter().peekable()
+        } else {
+            Vec::new().into_iter().peekable()
+        };
+        let has_cells = next_store == Some(row) || adds.peek().is_some();
+        if !has_cells && info == LineInfo::default() {
+            continue;
+        }
+        v.row_open(row, &info);
+        if !has_cells {
+            v.row_empty();
+            continue;
+        }
+        v.row_cells();
+        loop {
+            let stored = store.peek().filter(|(at, _)| at.row == row);
+            let add_col = adds.peek().map(|(col, _)| *col);
+            let mut a = Additions::default();
+            let (col, cell) = match (stored, add_col) {
+                (Some((at, _)), Some(acol)) if acol < at.col => {
+                    let (col, addition) = adds.next().unwrap_or((0, Additions::default()));
+                    a = addition;
+                    (col, None)
+                }
+                (Some(_), _) => {
+                    let (at, cell) = store.next().unwrap_or((CellRef::new(row, 0), Cell::default()));
+                    if add_col == Some(at.col) {
+                        a = adds.next().map(|(_, addition)| addition).unwrap_or_default();
+                    }
+                    (at.col, Some(cell))
+                }
+                (None, Some(_)) => {
+                    let (col, addition) = adds.next().unwrap_or((0, Additions::default()));
+                    a = addition;
+                    (col, None)
+                }
+                (None, None) => break,
+            };
+            v.cell(CellRef::new(row, col), cell.as_ref(), &a)?;
+        }
+        v.row_close();
+    }
+    Ok(())
+}
+
+/// Fills the workbook's shared string table from a sheet's cells: every text a cell writes is
+/// counted, and its first use gives it the next id (see [`Sst`]). This is the pre-pass a save needs
+/// because the table's order is the file's order, and a row window cannot know what the windows
+/// before it put in the table.
+struct SstCollector<'a> {
+    sst: &'a mut Sst,
+}
+
+impl RowVisitor for SstCollector<'_> {
+    fn row_open(&mut self, _row: u32, _info: &LineInfo) {}
+    fn row_empty(&mut self) {}
+    fn row_cells(&mut self) {}
+    fn row_close(&mut self) {}
+    fn cell(&mut self, _at: CellRef, cell: Option<&Cell>, a: &Additions<'_>) -> Result<(), IoError> {
+        // A picture cell caches `#VALUE!`, and a formula's text result goes into the cell itself
+        // (`t="str"`), so neither reaches the shared strings.
+        if a.picture_vm.is_some() || formula_of(cell, a).is_some() {
+            return Ok(());
+        }
+        if let Value::Text(t) = cell_value(cell, a.override_text, a.value) {
+            self.sst.index(&t);
+        }
+        Ok(())
+    }
+}
+
+/// Builds one window of a sheet's rows: the `<row>` elements into `xml` and the flags the workbook
+/// assembly reads back. It touches no [`Out`], which is what lets a window be built on a worker
+/// thread.
+struct RowBuilder<'a> {
+    wb: &'a Workbook,
+    si: usize,
+    styles: StyleIds,
+    sst: &'a Sst,
+    xml: String,
+    flags: RowFlags,
+}
+
+impl RowBuilder<'_> {
+    fn push_cell(&mut self, at: CellRef, cell: Option<&Cell>, a: &Additions<'_>) -> Result<(), IoError> {
+        // A non-spilling formula may still need array evaluation to avoid implicit intersection.
+        // The analysis reads the cell's own formula: a table header's override writes its text and
+        // no formula at all.
+        let array = a.dynamic.or_else(|| {
+            let f = cell?.formula.as_ref()?;
+            (f.array.is_none() && crate::array_formula::needs_array(self.wb, self.si, at, f)).then_some(RangeRef::cell(at))
+        });
+        write_cell(&mut self.xml, self.styles, self.sst, at, cell, a, array.as_ref(), &mut self.flags)
+    }
+}
+
+impl RowVisitor for RowBuilder<'_> {
+    fn row_open(&mut self, row: u32, info: &LineInfo) {
+        write_row_open(&mut self.xml, row, info, self.styles);
+    }
+    fn row_empty(&mut self) {
+        self.xml.push_str("/>");
+    }
+    fn row_cells(&mut self) {
+        self.xml.push('>');
+    }
+    fn row_close(&mut self) {
+        self.xml.push_str("</row>");
+    }
+    fn cell(&mut self, at: CellRef, cell: Option<&Cell>, a: &Additions<'_>) -> Result<(), IoError> {
+        self.push_cell(at, cell, a)
+    }
+}
+
+/// The formula a cell writes: an override (a table header's text, a spilled value) replaces the
+/// cell, formula and all.
+fn formula_of<'c>(cell: Option<&'c Cell>, a: &Additions<'_>) -> Option<&'c gridcraft_model::Formula> {
+    if a.override_text.is_some() {
+        return None;
+    }
+    cell.and_then(|x| x.formula.as_deref())
+}
+
+/// What a cell writes, before the format's own mapping: the overrides the row walk folds in (a table
+/// header's text, a spilled value), an array's top-left, and the two cached errors the file format
+/// cannot hold (`#CIRC!` is written as 0, and `#SPILL!`/`#CALC!` as `#VALUE!`, which is what Excel
+/// itself caches). The shared-string pre-pass and the row builder both resolve a cell here, so the
+/// table cannot drift from the XML.
+fn cell_value(cell: Option<&Cell>, ov: Option<&String>, extra: Option<&Value>) -> Value {
+    let value: Value = match (ov, extra) {
+        (Some(t), _) => Value::text(t.as_str()),
+        (None, Some(v)) => v.clone(),
+        _ => cell.map(|x| x.value.scalar()).unwrap_or(Value::Empty),
+    };
+    let value = match value {
+        Value::Array(a) => a.get(0, 0).cloned().unwrap_or(Value::Empty),
+        v => v,
+    };
+    match value {
+        Value::Error(CellError::Circ) => Value::Number(0.0),
+        Value::Error(CellError::Spill | CellError::Calc) => Value::Error(CellError::Value),
+        v => v,
+    }
+}
+
 /// What a cell needs beyond the store: a table header's text, a spilled value, a picture, or the
 /// range a dynamic array formula spills into. All are sparse, which is why they are looked up in a
 /// per-row list during the one ordered walk rather than in a map keyed by cell.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Additions<'a> {
     override_text: Option<&'a String>,
     value: Option<&'a Value>,
-    picture: Option<&'a std::sync::Arc<gridcraft_model::CellPicture>>,
+    /// The `vm` id of the cell's static picture (a rich-data value), assigned in the sheet's cell
+    /// order before any row is built.
+    picture_vm: Option<u32>,
     dynamic: Option<RangeRef>,
 }
 /// The additions for one cell, adding the entry when it isn't there yet.
@@ -907,13 +1070,13 @@ fn touch<'b, 'a>(additions: &'b mut BTreeMap<u32, Vec<(u32, Additions<'a>)>>, c:
     &mut row[at].1
 }
 /// `<row …` up to the point where its cells (or `/>`) follow.
-fn write_row_open(s: &mut String, r: u32, info: &LineInfo, sid: &dyn Fn(gridcraft_model::StyleId) -> u32) {
+fn write_row_open(s: &mut String, r: u32, info: &LineInfo, styles: StyleIds) {
     s.push_str("<row r=\"");
     push_u32(s, r + 1);
     s.push('"');
     if let Some(st) = info.style {
         s.push_str(" s=\"");
-        push_u32(s, sid(st));
+        push_u32(s, styles.get(st));
         s.push_str("\" customFormat=\"1\"");
     }
     if let Some(h) = info.size {
@@ -987,16 +1150,15 @@ fn push_num(s: &mut String, n: f64) {
 }
 fn write_cell(
     s: &mut String,
+    styles: StyleIds,
+    sst: &Sst,
     c: CellRef,
     cell: Option<&Cell>,
-    picture: Option<&std::sync::Arc<gridcraft_model::CellPicture>>,
-    ov: Option<&String>,
-    extra: Option<&Value>,
+    a: &Additions<'_>,
     dynamic: Option<&RangeRef>,
-    sid: &dyn Fn(gridcraft_model::StyleId) -> u32,
-    out: &mut Out,
-) {
-    let style = cell.map(|x| sid(x.style)).unwrap_or(0);
+    flags: &mut RowFlags,
+) -> Result<(), IoError> {
+    let style = cell.map(|x| styles.get(x.style)).unwrap_or(0);
     s.push_str("<c r=\"");
     a1_into(s, c);
     s.push('"');
@@ -1005,30 +1167,14 @@ fn write_cell(
         push_u32(s, style);
         s.push('"');
     }
-    if let Some(picture) = picture {
-        let vm = out.cell_pictures.index(picture);
+    if let Some(vm) = a.picture_vm {
         s.push_str(" t=\"e\" vm=\"");
         push_u32(s, vm);
         s.push_str("\"><v>#VALUE!</v></c>");
-        return;
+        return Ok(());
     }
-    let formula = if ov.is_some() { None } else { cell.and_then(|x| x.formula.as_ref()) };
-    let value: Value = match (ov, extra) {
-        (Some(t), _) => Value::text(t.as_str()),
-        (None, Some(v)) => v.clone(),
-        _ => cell.map(|x| x.value.scalar()).unwrap_or(Value::Empty),
-    };
-    let value = match value {
-        Value::Array(a) => a.get(0, 0).cloned().unwrap_or(Value::Empty),
-        v => v,
-    };
-    let value = match value {
-        Value::Error(CellError::Circ) => Value::Number(0.0),
-        // #SPILL! and #CALC! are not error codes of the file format (Excel refuses a file that
-        // caches them); Excel itself caches them as #VALUE!.
-        Value::Error(CellError::Spill | CellError::Calc) => Value::Error(CellError::Value),
-        v => v,
-    };
+    let formula = formula_of(cell, a);
+    let value = cell_value(cell, a.override_text, a.value);
     // A formula read with dynamic-array metadata keeps it, even where the shape analysis would
     // not need it: Excel decided the formula is evaluated as an array.
     let own = formula.filter(|f| f.dynamic && f.array.is_none()).map(|_| RangeRef::cell(c));
@@ -1036,7 +1182,7 @@ fn write_cell(
     // A non-spilling formula may still need array evaluation to avoid implicit intersection.
     if dynamic.is_some() && formula.is_some_and(|f| f.array.is_none()) {
         s.push_str(" cm=\"1\"");
-        out.dynamic_arrays = true;
+        flags.dynamic_arrays = true;
     }
     if let Some(f) = formula {
         let t = match &value {
@@ -1082,10 +1228,10 @@ fn write_cell(
                 s.push_str(e.as_str());
                 s.push_str("</v>");
             }
-            _ => out.needs_calc = true,
+            _ => flags.needs_calc = true,
         }
         s.push_str("</c>");
-        return;
+        return Ok(());
     }
     match &value {
         Value::Empty | Value::Array(_) => s.push_str("/>"),
@@ -1095,7 +1241,9 @@ fn write_cell(
             s.push_str("</v></c>");
         }
         Value::Text(t) => {
-            let i = out.sst.index(t);
+            // The pre-pass counted this string and gave it its id; a miss here would be a writer
+            // bug, and writing a reference the table does not hold would make the file invalid.
+            let i = sst.id(t).ok_or_else(|| IoError::Format("a worksheet text cell is missing from the shared string table".into()))?;
             s.push_str(" t=\"s\"><v>");
             push_u32(s, i);
             s.push_str("</v></c>");
@@ -1109,6 +1257,7 @@ fn write_cell(
             s.push_str("</v></c>");
         }
     }
+    Ok(())
 }
 const X14_NS: &str = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
 const XM_NS: &str = "http://schemas.microsoft.com/office/excel/2006/main";
@@ -1124,19 +1273,63 @@ const DEFAULT_NOTE_SIZE_PT: (f64, f64) = (108.0, 59.25);
 mod perf {
     use super::*;
 
-    /// The whole save split into "make the XML" and "compress the package". Point it at a file with
-    /// GRIDCRAFT_PERF_FILE (the clock is read here, which the crate bans on wasm):
-    ///   GRIDCRAFT_PERF_FILE=big.xlsx cargo test --release -p gridcraft-xlsx --lib -- --ignored --nocapture saving_a_big_file
+    /// A workbook shaped like the perf example's own: a text column, four number columns, and two
+    /// formula columns, on one sheet.
+    fn big_workbook(rows: u32) -> Workbook {
+        let mut sheet = Sheet::new("Big");
+        for r in 0..rows {
+            let n = f64::from(r);
+            let row = r + 1;
+            sheet.set_value(CellRef::new(r, 0), Value::text(format!("Item {r}")));
+            sheet.set_value(CellRef::new(r, 1), Value::Number(n));
+            sheet.set_value(CellRef::new(r, 2), Value::Number(n % 97.0));
+            sheet.set_value(CellRef::new(r, 3), Value::Number((n % 13.0) * 1.5));
+            sheet.set_value(CellRef::new(r, 4), Value::Number(1.0));
+            sheet.set_value(CellRef::new(r, 5), Value::Number(2.0));
+            let g = format!("B{row}*C{row}+D{row}");
+            let h = if r == 0 { format!("G{row}") } else { format!("H{}+G{row}", row - 1) };
+            for (col, text) in [(6u32, g), (7, h)] {
+                let formula = gridcraft_model::Formula::new(&text);
+                let value = Value::Number(n * 2.0);
+                sheet.set_cell(
+                    CellRef::new(r, col),
+                    Cell { value, formula: Some(std::sync::Arc::new(formula)), style: gridcraft_model::StyleId::DEFAULT },
+                );
+            }
+        }
+        let mut wb = Workbook::new();
+        wb.sheets.clear();
+        wb.sheets.push(std::sync::Arc::new(sheet));
+        wb
+    }
+
+    /// Where a save's time goes: the worksheet XML build (one `write_sheet` per sheet) against the
+    /// whole write, which also deflates every sheet. A synthetic workbook of GRIDCRAFT_PERF_ROWS
+    /// rows (default 1,000,000) unless GRIDCRAFT_PERF_FILE points at a real file (the clock is read
+    /// here, which the crate bans on wasm):
+    ///   cargo test --release -p gridcraft-xlsx --lib -- --ignored --nocapture saving_a_big_file
+    ///   GRIDCRAFT_PERF_FILE=big.xlsx ... saving_a_big_file
     #[test]
     #[ignore = "timing, not a check"]
     #[cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
     fn saving_a_big_file() {
-        let Ok(path) = std::env::var("GRIDCRAFT_PERF_FILE") else { return };
-        let (wb, _) = crate::read_xlsx_file(std::path::Path::new(&path)).expect("read");
+        let wb = match std::env::var("GRIDCRAFT_PERF_FILE") {
+            Ok(path) => crate::read_xlsx_file(std::path::Path::new(&path)).expect("read").0,
+            Err(_) => {
+                let rows: u32 = std::env::var("GRIDCRAFT_PERF_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
+                big_workbook(rows)
+            }
+        };
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        println!("  {} cores, {} sheets", threads, wb.sheets.len());
         let mut out = crate::write::Out::default();
+        let mut build = std::time::Duration::ZERO;
+        let mut xml_bytes = 0usize;
         for (i, sheet) in wb.sheets.iter().enumerate() {
             let t = std::time::Instant::now();
-            let (xml, _) = write_sheet(&wb, i, i == wb.active_sheet, &mut out, &crate::slicer::SlicerWriter::default());
+            let (xml, _) = write_sheet(&wb, i, i == wb.active_sheet, &mut out, &crate::slicer::SlicerWriter::default()).expect("sheet");
+            build += t.elapsed();
+            xml_bytes += xml.len();
             println!(
                 "  {:<28} {:>10.1} MB xml   {:>8.2?}   {:.0} ns a cell",
                 sheet.name.chars().take(28).collect::<String>(),
@@ -1147,10 +1340,22 @@ mod perf {
         }
         let t = std::time::Instant::now();
         let bytes = crate::write_xlsx(&wb).expect("write");
-        println!("  total write_xlsx {:?}   {:.0} MB out", t.elapsed(), bytes.len() as f64 / 1048576.0);
+        let total = t.elapsed();
+        println!(
+            "  XML build {:.2?} ({:.0} MB)   total write_xlsx {:.2?} ({:.0} MB out)   build is {:.0} % of the save",
+            build,
+            xml_bytes as f64 / 1048576.0,
+            total,
+            bytes.len() as f64 / 1048576.0,
+            100.0 * build.as_secs_f64() / total.as_secs_f64().max(f64::EPSILON)
+        );
 
         // The biggest worksheet's XML through the zip writer at several levels: what compression
-        // costs and what it buys, on this file's real text rather than a synthetic row.
+        // costs and what it buys, on this file's real text rather than a synthetic row. Off unless
+        // asked, because it takes minutes on a million-row sheet.
+        if std::env::var_os("GRIDCRAFT_PERF_ZIP").is_none() {
+            return;
+        }
         if let Some(sheet) = wb.sheets.iter().max_by_key(|s| s.cells.len()) {
             let mut out = crate::write::Out::default();
             let (xml, _) = write_sheet(
@@ -1159,7 +1364,8 @@ mod perf {
                 false,
                 &mut out,
                 &crate::slicer::SlicerWriter::default(),
-            );
+            )
+            .expect("sheet");
             let data = xml.as_bytes();
             println!("  {} ({:.0} MB), through the zip writer:", sheet.name, data.len() as f64 / 1048576.0);
             for level in [1, 3, 6, 9] {

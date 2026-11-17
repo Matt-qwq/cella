@@ -105,6 +105,12 @@ impl Sst {
         self.map.insert(s.to_string(), i);
         i
     }
+    /// The id [`Sst::index`] gave `s`, for a reader that must not grow the table. A save fills the
+    /// table in a pre-pass over the sheets (in file order), so the row builder that writes the cells
+    /// can look ids up while a window of rows is built on a worker thread.
+    pub fn id(&self, s: &str) -> Option<u32> {
+        self.map.get(s).copied()
+    }
 }
 
 /// The thread that deflates worksheet XML while the next sheet is written. One worker and a
@@ -496,7 +502,7 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
             sheet_id += 1;
             continue;
         }
-        let (xml, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers);
+        let (xml, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers)?;
         pivots.add_sheet(wb, i, &mut out, &mut rels, &slicers);
         let name = format!("xl/worksheets/sheet{}.xml", i + 1);
         if precompress_sheets {
