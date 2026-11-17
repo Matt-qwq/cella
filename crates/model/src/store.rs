@@ -589,6 +589,65 @@ fn number_hash(bits: u64) -> usize {
     h as usize
 }
 
+/// The live heap bytes of one band, by allocation class: the breakdown
+/// [`Band::memory`] returns and [`Band::heap_bytes`] sums.
+///
+/// One allocation is counted once: a text, a row's extras table or a parsed formula tree that
+/// several rows (or a page cache entry) share through `Arc` is charged its control block here, and
+/// its contents by whoever holds the last reference — the `Arc::strong_count` convention the page
+/// cache has always used. The band's own `Arc` control block is not counted (the store's index
+/// charges the pointer that names it).
+///
+/// Not counted, deliberately: allocator slack beyond a `Vec`'s capacity, and the values inside an
+/// `Arc<Array>` (see [`Band::memory`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BandMemory {
+    /// The `Band` struct itself and its row index (`rows`, a `BandRow` each).
+    header: usize,
+    /// The presence bitmaps.
+    bitmaps: usize,
+    /// The payload stripe.
+    payloads: usize,
+    /// The kind stripe.
+    kinds: usize,
+    /// The style stripe.
+    styles: usize,
+    /// The band's `StyleId` dictionary.
+    style_ids: usize,
+    /// The number dictionary and its open-addressing slots.
+    numbers: usize,
+    /// The text dictionary: its two vectors, and each text's characters or its control block.
+    texts: usize,
+    /// The row side tables: the `RowExtras` structs and their three vectors.
+    row_extras: usize,
+    /// A formula's `Formula` struct and its text.
+    formula_text: usize,
+    /// The parsed expression trees of the band's formulas.
+    formula_exprs: usize,
+    /// Array values: their struct (their values are not walked).
+    arrays: usize,
+    /// Payloads in a row's overflow vector.
+    wide: usize,
+}
+
+impl BandMemory {
+    fn total(&self) -> usize {
+        self.header
+            .saturating_add(self.bitmaps)
+            .saturating_add(self.payloads)
+            .saturating_add(self.kinds)
+            .saturating_add(self.styles)
+            .saturating_add(self.style_ids)
+            .saturating_add(self.numbers)
+            .saturating_add(self.texts)
+            .saturating_add(self.row_extras)
+            .saturating_add(self.formula_text)
+            .saturating_add(self.formula_exprs)
+            .saturating_add(self.arrays)
+            .saturating_add(self.wide)
+    }
+}
+
 impl Band {
     /// Heap bytes of the band's header, its stripes and its number table: everything a band owns
     /// before the rows' headers, their extras and the text contents.
@@ -621,28 +680,87 @@ impl Band {
         text.len().saturating_add(std::mem::size_of::<Arc<str>>())
     }
 
-    /// Heap bytes this band owns, for the page cache's budget. A text or an extras table another
-    /// owner also holds is charged as its pointer, not as its contents: `decode_band` builds fresh
-    /// strings, while a band primed from a live one shares them, and that memory already belongs to
-    /// the model (or to an undo snapshot). O(rows + texts) and allocation-free, so one decode can
-    /// afford it.
-    fn heap_bytes(&self) -> usize {
+    /// Heap bytes this band owns, by allocation class. O(rows + texts + formulas): every figure is
+    /// a len/capacity/size_of product, and only the questions that depend on sharing (is this
+    /// text, extras table, formula or tree held by someone else too?) need the walk.
+    ///
+    /// Where a row's extras table is also held by an undo snapshot's band, both stores charge the
+    /// control block and neither the contents (neither holds the last reference); an edit that
+    /// rewrites a row's formulas copies that row's table, so this is a floor for the rows an
+    /// untouched value edit shares. See [`CellStore::memory`] for the whole contract.
+    fn memory(&self) -> BandMemory {
         use std::mem::size_of;
-        let mut bytes = self.stripe_bytes();
-        bytes += self.rows.capacity() * size_of::<BandRow>();
-        bytes += self.style_ids.capacity() * size_of::<StyleId>();
+        let mut m = BandMemory {
+            header: size_of::<Band>().saturating_add(self.rows.capacity() * size_of::<BandRow>()),
+            bitmaps: self.bits.capacity() * size_of::<u64>(),
+            payloads: self.payloads.capacity() * size_of::<u16>(),
+            kinds: self.kinds.capacity() * size_of::<(u16, u16)>(),
+            styles: self.styles.capacity() * size_of::<(u16, u16)>(),
+            style_ids: self.style_ids.capacity() * size_of::<StyleId>(),
+            numbers: self.numbers.capacity() * size_of::<f64>() + self.number_slots.capacity() * size_of::<u16>(),
+            texts: self.texts.capacity() * size_of::<Arc<str>>() + self.text_index.capacity() * size_of::<(usize, u32)>(),
+            ..BandMemory::default()
+        };
+        // The dictionary holds each distinct `Arc<str>` once, so a text two cells share is charged
+        // once. A text another band or a snapshot also holds is charged its control block: the
+        // band holding the last reference charges the characters. Per band, not per store.
+        for text in &self.texts {
+            m.texts = m.texts.saturating_add(if Arc::strong_count(text) > 1 { size_of::<Arc<str>>() } else { Self::text_bytes(text) });
+        }
+        // Formulas and arrays are collected first and charged once per pointer: a paste, or a cell
+        // written twice, can put the same `Arc<Formula>` (or the same tree) behind several rows.
+        // Sorted by pointer rather than scanned, so a band holding a million formula cells cannot
+        // go quadratic. The keys are addresses: compared, never dereferenced.
+        let mut formulas: Vec<(usize, usize, usize, usize)> = Vec::new();
+        let mut arrays: Vec<usize> = Vec::new();
         for row in &self.rows {
-            match &row.extras {
-                None => {}
-                Some(extras) if Arc::strong_count(extras) > 1 => bytes = bytes.saturating_add(size_of::<Arc<RowExtras>>()),
-                // The band holds the only reference: the vecs and the formula trees are its cost.
-                Some(_) => bytes = bytes.saturating_add(size_of::<RowExtras>()).saturating_add(Self::extras_bytes(row)),
+            let Some(extras) = &row.extras else { continue };
+            m.row_extras = m.row_extras.saturating_add(size_of::<Arc<RowExtras>>());
+            if Arc::strong_count(extras) > 1 {
+                // Another owner (a snapshot's band) holds the table's contents.
+                continue;
+            }
+            m.row_extras = m
+                .row_extras
+                .saturating_add(size_of::<RowExtras>())
+                .saturating_add(extras.formulas.capacity() * size_of::<(u32, Arc<Formula>)>())
+                .saturating_add(extras.arrays.capacity() * size_of::<(u32, Arc<gridcraft_core::Array>)>());
+            m.wide = m.wide.saturating_add(extras.wide.capacity() * size_of::<u64>());
+            for (_, f) in &extras.formulas {
+                let tree = f.expr.as_ref().map_or(0, |e| Arc::as_ptr(e) as usize);
+                formulas.push((Arc::as_ptr(f) as usize, tree, f.text.len(), f.expr_bytes as usize));
+            }
+            for (_, a) in &extras.arrays {
+                arrays.push(Arc::as_ptr(a) as usize);
             }
         }
-        for text in &self.texts {
-            bytes = bytes.saturating_add(if Arc::strong_count(text) > 1 { size_of::<Arc<str>>() } else { Self::text_bytes(text) });
+        formulas.sort_unstable();
+        formulas.dedup();
+        let mut trees: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for (_, tree, text, expr_bytes) in formulas {
+            m.formula_text = m.formula_text.saturating_add(size_of::<Formula>()).saturating_add(text);
+            // The tree is also held by the graph's node, which charges its pointer only: the tree
+            // itself is charged here, once, however many cells of the band share it.
+            if tree != 0 && trees.insert(tree) {
+                m.formula_exprs = m.formula_exprs.saturating_add(expr_bytes);
+            }
         }
-        bytes
+        // An array's values are not walked: the same array is reachable from the sheet's spill map
+        // and from the pass that produced it, and counting its values one by one would turn a
+        // report that must stay O(bands) into a per-cell walk.
+        arrays.sort_unstable();
+        arrays.dedup();
+        m.arrays = m.arrays.saturating_add(arrays.len() * size_of::<gridcraft_core::Array>());
+        m
+    }
+
+    /// Heap bytes this band owns, for the page cache's budget: the band's whole report, so the
+    /// cache's charge and the memory report cannot disagree. A text or an extras table another
+    /// owner also holds is charged as its control block, not as its contents: `decode_band` builds
+    /// fresh strings, while a band primed from a live one shares them, and that memory already
+    /// belongs to the model (or to an undo snapshot).
+    fn heap_bytes(&self) -> usize {
+        self.memory().total()
     }
 
     fn row_index(&self, key: u32) -> Option<usize> {
@@ -1384,6 +1502,12 @@ impl RowMap {
         self.identity == other.identity && self.segments == other.segments
     }
 
+    /// Heap bytes of this map: the two segment vectors, or nothing while it is the identity.
+    fn memory(&self) -> usize {
+        let entry = std::mem::size_of::<RowSegment>();
+        self.segments.capacity().saturating_mul(entry).saturating_add(self.by_physical.capacity().saturating_mul(entry))
+    }
+
     fn map(&self, logical: u32) -> Option<u32> {
         if logical >= gridcraft_core::MAX_ROWS {
             return None;
@@ -1605,6 +1729,16 @@ impl ColMap {
     /// The column sibling of [`RowMap::same_as`].
     fn same_as(&self, other: &ColMap) -> bool {
         self.identity == other.identity && self.segments == other.segments
+    }
+
+    /// Heap bytes of this map: the two segment vectors and the free list.
+    fn memory(&self) -> usize {
+        let entry = std::mem::size_of::<ColSegment>();
+        self.segments
+            .capacity()
+            .saturating_mul(entry)
+            .saturating_add(self.by_physical.capacity().saturating_mul(entry))
+            .saturating_add(self.free.capacity().saturating_mul(std::mem::size_of::<u32>()))
     }
 
     /// Materializes the initial identity run for the columns the sheet actually holds. Unlike
@@ -1878,6 +2012,123 @@ pub struct SpillOptions<'a> {
     pub temp: Option<&'a std::path::Path>,
 }
 
+/// The live heap bytes a [`CellStore`] reaches, by allocation class: what [`CellStore::memory`]
+/// reports.
+///
+/// # The contract
+///
+/// *An allocation is counted once.* Inside a band the [`Arc::strong_count`] convention decides
+/// who charges a shared text, a row's extras table, a formula and its parsed tree: the owner that
+/// holds the last reference charges the contents, and any other owner charges the control block.
+/// Where a tree is shared by design (the dependency graph's node holds the same `Arc<Expr>`), the
+/// cell charges it and the graph charges only the node that points at it.
+///
+/// A band this store shares with another store (an undo snapshot) *is* charged by both: each store
+/// can reach it and neither owns it. A caller that reports the history beside the live workbook
+/// must therefore report what the history retains *beyond* the live workbook —
+/// [`retained_bytes_against`](CellStore::retained_bytes_against) is that figure — or it would count
+/// the shared bands twice.
+///
+/// Deliberately not counted: allocator slack beyond a `Vec`'s capacity, the `Arc` control block of
+/// the bands themselves, the page file on disk, the `Value`s inside an `Arc<Array>` (see
+/// [`Band::memory`]), and the row/column `LineMap`s (a sheet's, not a store's).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct StoreMemory {
+    /// The `BTreeMap`s that name the live bands and the pages, entry slots and node headers.
+    pub band_index: usize,
+    /// The `Band` structs and their row indexes.
+    pub band_headers: usize,
+    /// The presence bitmaps.
+    pub bitmaps: usize,
+    /// The payload stripe (a `u16` a stored cell).
+    pub payloads: usize,
+    /// The kind runs.
+    pub kind_runs: usize,
+    /// The style runs.
+    pub style_runs: usize,
+    /// The per-band `StyleId` dictionaries.
+    pub style_ids: usize,
+    /// The per-band number dictionaries and their slots.
+    pub number_dictionaries: usize,
+    /// The text dictionaries: their vectors and the characters they hold.
+    pub texts: usize,
+    /// The row side tables (`RowExtras`): their structs and their three vectors.
+    pub row_extras: usize,
+    /// Formula text, with the `Formula` struct that holds it.
+    pub formula_text: usize,
+    /// Parsed formula expression trees.
+    pub formula_exprs: usize,
+    /// Array values (their struct; their values are not walked).
+    pub arrays: usize,
+    /// Payloads in the row overflow vectors of a band with too many distinct numbers.
+    pub wide: usize,
+    /// The logical→physical row and column maps.
+    pub maps: usize,
+    /// The page file's handle, its decoded-band queue, and the pages' cached bands.
+    pub page_cache: usize,
+}
+
+impl StoreMemory {
+    pub fn total(&self) -> usize {
+        [
+            self.band_index,
+            self.band_headers,
+            self.bitmaps,
+            self.payloads,
+            self.kind_runs,
+            self.style_runs,
+            self.style_ids,
+            self.number_dictionaries,
+            self.texts,
+            self.row_extras,
+            self.formula_text,
+            self.formula_exprs,
+            self.arrays,
+            self.wide,
+            self.maps,
+            self.page_cache,
+        ]
+        .iter()
+        .fold(0usize, |sum, part| sum.saturating_add(*part))
+    }
+
+    /// Adds one band's breakdown, class by class: the only place a band's fields meet the store's.
+    fn add_band(&mut self, b: &BandMemory) {
+        self.band_headers = self.band_headers.saturating_add(b.header);
+        self.bitmaps = self.bitmaps.saturating_add(b.bitmaps);
+        self.payloads = self.payloads.saturating_add(b.payloads);
+        self.kind_runs = self.kind_runs.saturating_add(b.kinds);
+        self.style_runs = self.style_runs.saturating_add(b.styles);
+        self.style_ids = self.style_ids.saturating_add(b.style_ids);
+        self.number_dictionaries = self.number_dictionaries.saturating_add(b.numbers);
+        self.texts = self.texts.saturating_add(b.texts);
+        self.row_extras = self.row_extras.saturating_add(b.row_extras);
+        self.formula_text = self.formula_text.saturating_add(b.formula_text);
+        self.formula_exprs = self.formula_exprs.saturating_add(b.formula_exprs);
+        self.arrays = self.arrays.saturating_add(b.arrays);
+        self.wide = self.wide.saturating_add(b.wide);
+    }
+}
+
+/// Heap bytes of a `BTreeMap` holding `len` entries of `entry` bytes each.
+///
+/// std's B-tree packs 11 (key, value) slots into a node and splits a node when it is full, so a
+/// node holds about eight entries: the index is `len.div_ceil(8)` nodes of 11 slots plus the
+/// 16-byte node header (the parent link and the two length words). The keys and values the slots
+/// hold are counted where they are allocated.
+pub fn btree_index_bytes(len: usize, entry: usize) -> usize {
+    const SLOTS: usize = 11;
+    const FILL: usize = 8;
+    const HEADER: usize = 16;
+    len.div_ceil(FILL).saturating_mul(SLOTS.saturating_mul(entry).saturating_add(HEADER))
+}
+
+/// Heap bytes of a hashbrown `HashMap`/`HashSet` whose `capacity()` is `capacity` entries of
+/// `entry` bytes each: the table allocates eight buckets per seven entries and keeps one control
+/// byte a bucket.
+pub fn hash_index_bytes(capacity: usize, entry: usize) -> usize {
+    capacity.div_ceil(7).saturating_mul(8).saturating_mul(entry.saturating_add(1))
+}
 /// The cached used range of a [`CellStore`]: the box, and whether a walk has to rebuild it.
 #[derive(Clone, Copy, Debug, Default)]
 struct UsedBox {
@@ -3895,6 +4146,35 @@ impl CellStore {
         self.packed_breakdown().iter().sum()
     }
 
+    /// The live heap bytes this store reaches, by allocation class: one pass over the bands and
+    /// one over the pages (each [`Band::memory`] is O(rows + texts + formulas) for that band), and
+    /// `len`/`capacity` arithmetic for everything else. No cell is visited, so the answer is cheap
+    /// enough for a UI question even on a million-row sheet.
+    ///
+    /// The contract — what is counted once, what a snapshot changes, and what is deliberately left
+    /// out — is on [`StoreMemory`].
+    pub fn memory(&self) -> StoreMemory {
+        use std::mem::size_of;
+        let mut m = StoreMemory {
+            band_index: btree_index_bytes(self.bands.len(), size_of::<(u32, Arc<Band>)>())
+                .saturating_add(btree_index_bytes(self.pages.len(), size_of::<(u32, Arc<page::Page>)>())),
+            maps: self.row_map.memory().saturating_add(self.col_map.memory()),
+            // The file's handle and decoded-band queue are shared with this store's clones and
+            // snapshots; the store that has the file charges them, and a caller that also reports
+            // the history measures its entries against this workbook (see [`StoreMemory`]).
+            page_cache: self
+                .page_file
+                .as_ref()
+                .map_or(0, |file| file.memory())
+                .saturating_add(self.pages.values().map(|page| page.memory()).sum::<usize>()),
+            ..StoreMemory::default()
+        };
+        for band in self.bands.values() {
+            m.add_band(&band.memory());
+        }
+        m
+    }
+
     /// Removes every cell in `r` and returns them.
     pub fn take_range(&mut self, r: RangeRef) -> Vec<(CellRef, Cell)> {
         let keys: Vec<CellRef> = self.iter_range(r).map(|(c, _)| c).collect();
@@ -4608,6 +4888,12 @@ mod page {
             true
         }
 
+        /// Heap bytes of the cache: its recency queue's entries (its counters and the budget live
+        /// in the struct, which the page file charges).
+        pub(super) fn memory(&self) -> usize {
+            let state = self.state();
+            state.queue.capacity().saturating_mul(std::mem::size_of::<Entry>())
+        }
         pub(super) fn stats(&self) -> PageCacheStats {
             let state = self.state();
             PageCacheStats {
@@ -4698,6 +4984,12 @@ mod page {
         /// The bytes the installed band was charged, or 0 when nothing is decoded.
         pub(super) fn cached_bytes(&self) -> usize {
             self.cached_bytes.load(Ordering::Relaxed)
+        }
+
+        /// Heap bytes of this page: its header and the decoded band it caches (zero when nothing
+        /// is decoded). The decoded band is a copy of a page and is not in the store's band map.
+        pub(super) fn memory(&self) -> usize {
+            std::mem::size_of::<Page>().saturating_add(self.cached_bytes())
         }
 
         fn lock_band(&self) -> MutexGuard<'_, Cached> {
@@ -4840,6 +5132,11 @@ mod page {
         /// when the last handle closes; see [`super::CellStore::page_file_path`].
         pub(super) fn path(&self) -> &Path {
             &self.path
+        }
+
+        /// Heap bytes of the file: the handle, its name, and the decoded-band cache it owns.
+        pub(super) fn memory(&self) -> usize {
+            std::mem::size_of::<PageFile>().saturating_add(self.path.as_os_str().len()).saturating_add(self.cache.memory())
         }
 
         /// Whether a write has already failed (see the field's comment).
@@ -7571,6 +7868,146 @@ mod tests {
         assert_eq!(store.used_range(), store.walk_used());
         store.remove(c(599, 3));
         assert_eq!(store.used_range(), Some(RangeRef::new(c(0, 3), c(598, 3))));
+    }
+
+    /// A report has to be a partition: a field added later must not be counted twice, and the
+    /// total must be the fields. The store here holds values, styles, texts and formulas, so every
+    /// class of the report is non-empty.
+    #[test]
+    fn store_memory_total_is_the_sum_of_its_parts() {
+        let mut s = CellStore::new();
+        for row in 0..200u32 {
+            s.set(c(row, 0), Cell::value(Value::Number(f64::from(row))));
+            s.set(c(row, 1), Cell::value(Value::Text(Arc::from(format!("row {row}").as_str()))));
+            s.set(c(row, 2), Cell { value: Value::Number(1.0), formula: Some(Arc::new(Formula::new("=A1+B1"))), style: StyleId(1) });
+        }
+        let m = s.memory();
+        let sum = m.band_index
+            + m.band_headers
+            + m.bitmaps
+            + m.payloads
+            + m.kind_runs
+            + m.style_runs
+            + m.style_ids
+            + m.number_dictionaries
+            + m.texts
+            + m.row_extras
+            + m.formula_text
+            + m.formula_exprs
+            + m.arrays
+            + m.wide
+            + m.maps
+            + m.page_cache;
+        assert_eq!(m.total(), sum, "the total is the sum of the fields");
+        for (name, part) in [
+            ("band headers", m.band_headers),
+            ("bitmaps", m.bitmaps),
+            ("payloads", m.payloads),
+            ("kind runs", m.kind_runs),
+            ("texts", m.texts),
+            ("row extras", m.row_extras),
+            ("formula text", m.formula_text),
+            ("formula trees", m.formula_exprs),
+        ] {
+            assert!(part > 0, "{name} is reported");
+        }
+        // A store holding 600 cells costs its packing, not 600 `Cell` structs (40 bytes each).
+        assert!(m.total() > 600 * 8, "the packing is charged");
+    }
+
+    /// A thousand formulas cost a formula's text, its parsed tree and its side-table entry — three
+    /// figures that move together. The bound is the factor the shape implies: each formula's text
+    /// is the same four characters here, so the text grows by about
+    /// `1000 * (size_of::<Formula>() + 4)` and the trees by `1000 * size_of::<Expr>()` a node.
+    #[test]
+    fn a_thousand_formulas_raise_the_formula_lines() {
+        let mut s = CellStore::new();
+        for row in 0..1000u32 {
+            s.set(c(row, 0), Cell::value(Value::Number(f64::from(row))));
+        }
+        let before = s.memory();
+        for row in 0..1000u32 {
+            let mut cell = plain(row);
+            cell.formula = Some(Arc::new(Formula::new("=A1+1")));
+            s.set(c(row, 1), cell);
+        }
+        let after = s.memory();
+        let text = after.formula_text.saturating_sub(before.formula_text);
+        let trees = after.formula_exprs.saturating_sub(before.formula_exprs);
+        let extras = after.row_extras.saturating_sub(before.row_extras);
+        let formula = std::mem::size_of::<Formula>();
+        assert!(text >= 1000 * formula, "{text} bytes of formula text for 1000 formulas");
+        assert!(text <= 2 * 1000 * (formula + 8), "{text} bytes is not more than the struct and its text");
+        let one_tree = Formula::new("=A1+1").expr_bytes as usize;
+        assert!(one_tree > 0, "the formula parses into a tree");
+        assert_eq!(trees, 1000 * one_tree, "each formula's tree is charged");
+        assert!(extras > 0, "each row gained a side table");
+    }
+
+    /// Two cells that hold the same `Arc<str>` share one copy: the band's text dictionary keeps one
+    /// entry per pointer, so the second cell must not add the characters again.
+    #[test]
+    fn a_text_two_cells_share_is_charged_once() {
+        let text: Arc<str> = Arc::from("a shared string");
+        let mut one = CellStore::new();
+        one.set(c(0, 0), Cell::value(Value::Text(Arc::clone(&text))));
+        let alone = one.memory().texts;
+        let mut two = CellStore::new();
+        two.set(c(0, 0), Cell::value(Value::Text(Arc::clone(&text))));
+        two.set(c(1, 0), Cell::value(Value::Text(Arc::clone(&text))));
+        assert_eq!(two.memory().texts, alone, "the shared string is charged once");
+    }
+
+    /// Two formulas can share one parsed tree (`Formula::share_expr` after a rebuild): the tree is
+    /// charged once, while both formula texts are.
+    #[test]
+    fn an_expression_tree_two_cells_share_is_charged_once() {
+        let first = Formula::new("=A1+1");
+        let tree = first.expr.clone().expect("the formula parses");
+        let mut second = Formula::new("=A1*2");
+        // A formula read back from a file carries its text alone; `share_expr` hands it the tree
+        // that was parsed for another cell instead of parsing the same text again.
+        second.expr = None;
+        second.expr_bytes = 0;
+        second.share_expr(&tree);
+        assert!(second.expr.as_ref().is_some_and(|e| Arc::ptr_eq(e, &tree)), "the tree is shared");
+        let mut s = CellStore::new();
+        s.set(c(0, 0), Cell { value: Value::Number(1.0), formula: Some(Arc::new(first.clone())), style: StyleId::DEFAULT });
+        let one = s.memory();
+        s.set(c(1, 0), Cell { value: Value::Number(1.0), formula: Some(Arc::new(second)), style: StyleId::DEFAULT });
+        let two = s.memory();
+        assert_eq!(two.formula_exprs, one.formula_exprs, "the shared tree is charged once");
+        assert!(two.formula_text > one.formula_text, "both formula texts are charged");
+    }
+
+    /// An empty store reports almost nothing — the index and its two maps — and never panics.
+    #[test]
+    fn an_empty_store_has_a_small_report() {
+        let m = CellStore::new().memory();
+        assert!(m.total() < 1024, "{} bytes for an empty store", m.total());
+        assert_eq!(m.formula_text, 0);
+        assert_eq!(m.formula_exprs, 0);
+        assert_eq!(m.texts, 0);
+    }
+
+    /// A paged store charges the decoded bands it caches, and the report falls back when the cache
+    /// drops them: the page file's queue is part of the store's live memory, not a guess.
+    #[test]
+    fn a_paged_store_reports_its_page_cache() {
+        let mut s = CellStore::new();
+        for row in 0..200u32 {
+            s.set(c(row, 0), Cell::value(Value::Number(f64::from(row))));
+        }
+        let live = s.memory().total();
+        assert!(s.enable_paging_with_cache(64 << 20), "a page file is created");
+        assert!(s.paged_band_count() > 0);
+        let spilled = s.memory();
+        assert_eq!(spilled.band_headers, 0, "no live band is left to charge");
+        assert!(spilled.page_cache > 0, "the page file is charged");
+        assert!(s.get(c(0, 0)).is_some());
+        let cached = s.memory().page_cache;
+        assert!(cached > spilled.page_cache, "the decoded band is charged");
+        assert!(live > 0);
     }
 }
 
