@@ -570,3 +570,25 @@ fn column_starting_with_at_round_trips() {
         assert_eq!(parse(&text).ok(), Some(Expr::Struct(s)), "printed as {text}");
     }
 }
+
+/// The layout a formula's byte accounting is read from (SHAPE-SHARING.md §1.1, S0). The numbers
+/// printed here are the ones `ast.rs` pins with `const` assertions; the test exists so the whole
+/// table can be seen at once (`cargo test -p gridcraft-formula --lib -- --nocapture formula_sizes`).
+/// 64-bit numbers only: a 32-bit target's pointers are smaller and its layout is not the measured one.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn formula_sizes_are_pinned() {
+    let sizes = [
+        ("Anchor", std::mem::size_of::<Anchor>()),
+        ("RefKind", std::mem::size_of::<RefKind>()),
+        ("SheetSel", std::mem::size_of::<SheetSel>()),
+        ("StructRef", std::mem::size_of::<StructRef>()),
+        ("Reference", std::mem::size_of::<Reference>()),
+        ("Expr", std::mem::size_of::<Expr>()),
+    ];
+    for (name, bytes) in sizes {
+        println!("size_of::<{name}>() = {bytes}");
+    }
+    // The three the shape work's arithmetic names, and the three containers behind them.
+    assert_eq!(sizes, [("Anchor", 12), ("RefKind", 24), ("SheetSel", 48), ("StructRef", 96), ("Reference", 72), ("Expr", 96)]);
+}

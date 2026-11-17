@@ -19,15 +19,22 @@ fn sheet_prefix(s: &SheetSel) -> String {
     }
 }
 
+/// A signed coordinate as a sheet index. Only an absolute tree reaches A1 printing (invariant 4
+/// of SHAPE-SHARING.md: a shape is never printed with `print`), so the fallback never runs; it
+/// keeps a misuse printing a valid cell instead of a 20-digit number.
+fn on_sheet(v: i32) -> u32 {
+    u32::try_from(v).map_or(0, |v| v)
+}
+
 fn push_anchor_a1(s: &mut String, a: &Anchor) {
     if a.col_abs {
         s.push('$');
     }
-    push_col(s, a.col);
+    push_col(s, on_sheet(a.col));
     if a.row_abs {
         s.push('$');
     }
-    let _ = write!(s, "{}", a.row as u64 + 1);
+    let _ = write!(s, "{}", u64::from(on_sheet(a.row)) + 1);
 }
 
 /// Appends [`gridcraft_core::col_to_letters`]`(col)` without allocating.
@@ -77,23 +84,25 @@ fn push_range_a1(s: &mut String, r: &Reference, sep: &str) {
             push_anchor_a1(s, b);
         }
         RefKind::Rows(r0, a0, r1, a1) => {
-            let _ = write!(s, "{}{}{sep}{}{}", dollar(*a0), r0 + 1, dollar(*a1), r1 + 1);
+            let _ = write!(s, "{}{}{sep}{}{}", dollar(*a0), u64::from(on_sheet(*r0)) + 1, dollar(*a1), u64::from(on_sheet(*r1)) + 1);
         }
         RefKind::Cols(c0, a0, c1, a1) => {
             s.push_str(dollar(*a0));
-            push_col(s, *c0);
+            push_col(s, on_sheet(*c0));
             s.push_str(sep);
             s.push_str(dollar(*a1));
-            push_col(s, *c1);
+            push_col(s, on_sheet(*c1));
         }
     }
 }
 
-fn r1c1_part(letter: char, v: u32, abs: bool, base: u32) -> String {
+/// One R1C1 part. An absolute part is a coordinate, a relative one an offset from `base` — the
+/// shape's own representation, which is why `print_r1c1(canonical, A1)` is its intern key.
+fn r1c1_part(letter: char, v: i32, abs: bool, base: u32) -> String {
     if abs {
-        format!("{letter}{}", v + 1)
+        format!("{letter}{}", u64::from(on_sheet(v)) + 1)
     } else {
-        let d = v as i64 - base as i64;
+        let d = i64::from(v) - i64::from(base);
         if d == 0 { letter.to_string() } else { format!("{letter}[{d}]") }
     }
 }

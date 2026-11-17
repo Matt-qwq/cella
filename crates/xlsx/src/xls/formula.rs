@@ -133,7 +133,9 @@ fn anchor(row: u16, col: u16, base: CellRef, relative: bool) -> Anchor {
     } else {
         (u32::from(row), u32::from(c) & 0xFF)
     };
-    Anchor { row: r, col: c, row_abs: !row_rel, col_abs: !col_rel }
+    // The row is masked to 0..=65535 and the column to 0..=255 above, so both fit the signed
+    // carrier an `Anchor` now uses; the fallback is unreachable rather than a silent clamp.
+    Anchor { row: i32::try_from(r).unwrap_or(0), col: i32::try_from(c).unwrap_or(0), row_abs: !row_rel, col_abs: !col_rel }
 }
 
 /// An area; a range spanning every BIFF8 row (or column) becomes a whole-column (row) ref.

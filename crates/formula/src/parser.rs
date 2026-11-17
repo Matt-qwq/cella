@@ -109,15 +109,19 @@ struct Parser {
     input: bool,
 }
 
-fn word_is_cols(w: &str) -> Option<(u32, bool)> {
+fn word_is_cols(w: &str) -> Option<(i32, bool)> {
     let abs = w.starts_with('$');
-    letters_to_col(w.trim_start_matches('$')).map(|c| (c, abs))
+    let col = i32::try_from(letters_to_col(w.trim_start_matches('$'))?).ok()?;
+    Some((col, abs))
 }
 
-fn word_is_row(w: &str) -> Option<(u32, bool)> {
+fn word_is_row(w: &str) -> Option<(i32, bool)> {
     let abs = w.starts_with('$');
     let n: u32 = w.trim_start_matches('$').parse().ok()?;
-    if n == 0 || n > MAX_ROWS { None } else { Some((n - 1, abs)) }
+    if n == 0 || n > MAX_ROWS {
+        return None;
+    }
+    Some((i32::try_from(n - 1).ok()?, abs))
 }
 
 fn word_is_cell(w: &str) -> Option<Anchor> {
@@ -125,7 +129,7 @@ fn word_is_cell(w: &str) -> Option<Anchor> {
     if !rest.is_empty() {
         return None;
     }
-    Some(Anchor { row, col, row_abs, col_abs })
+    Some(Anchor { row: i32::try_from(row).ok()?, col: i32::try_from(col).ok()?, row_abs, col_abs })
 }
 
 /// `_xlfn.XLOOKUP` → `XLOOKUP`. `_xludf.` is kept (`_xludf.SUM`): it marks a user-defined
