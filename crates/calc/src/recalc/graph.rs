@@ -4,6 +4,8 @@
 use std::collections::BTreeSet;
 use std::hash::{BuildHasherDefault, Hasher};
 
+use serde::Serialize;
+
 use gridcraft_core::{CellRef, RangeRef};
 use gridcraft_formula::Expr;
 
@@ -267,6 +269,19 @@ impl<T: Copy + Ord> Intervals<T> {
         self.pending.remove(&it);
     }
 
+    /// Heap bytes of this index: its items, the dead flags, the segment tree and the pending
+    /// insertions (see [`GraphMemory`]).
+    pub(super) fn memory(&self) -> usize {
+        use std::mem::size_of;
+        let item = size_of::<(u32, u32, T)>();
+        self.items
+            .capacity()
+            .saturating_mul(item)
+            .saturating_add(self.dead.capacity())
+            .saturating_add(self.max_end.capacity().saturating_mul(size_of::<u32>()))
+            // A `BTreeSet` has no capacity: charge the nodes its `len` entries sit in.
+            .saturating_add(gridcraft_model::btree_index_bytes(self.pending.len(), item))
+    }
     /// Merges pending insertions and drops dead entries when there are enough of them.
     pub(super) fn settle(&mut self) {
         if self.pending.len() <= PENDING && self.dead_count <= (self.items.len() / 2).max(PENDING) {
@@ -330,6 +345,53 @@ impl<T: Copy + Ord> Intervals<T> {
     }
 }
 
+/// The live heap bytes of a [`Graph`], by allocation class: what [`Graph::memory`] returns.
+///
+/// Every figure is a `len`/`capacity`/*`size_of`* product. The one pass over entries is the
+/// `Deps::Many` vectors ([`GraphMemory::cell_deps`]): a `Vec`'s capacity is not derivable from the
+/// map's own capacity, so the values are visited once — no allocation, about a nanosecond an entry
+/// (a few milliseconds on the reference workload's 1.5M precedent cells, which is why this is a
+/// diagnostic and not something to ask for every frame).
+///
+/// Not counted: the parsed expression trees the nodes point at. The cell owns the tree (its text
+/// is the source of truth and the store's report charges the tree), so charging it here would
+/// count one allocation twice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct GraphMemory {
+    /// The `Key → Node` table: its slots and control bytes.
+    pub nodes: usize,
+    /// The precedent-area arena, including the garbage [`Graph::settle`] has not packed away.
+    pub areas: usize,
+    /// The single-cell precedent → dependents table, and every `Deps::Many` vector it holds.
+    pub cell_deps: usize,
+    /// How many of that table's entries are `Deps::Many` lists (what the one walk above counts).
+    pub many_lists: usize,
+    /// The per-column interval index of range precedents.
+    pub cols: usize,
+    /// The per-sheet interval index of ranges wider than 64 columns.
+    pub wide: usize,
+    /// Anchor → range of a legacy (Ctrl+Shift+Enter) array formula.
+    pub legacy_ranges: usize,
+    /// The `dynamic`/`may_spill`/`legacy`/`trim`/`visibility` sets.
+    pub flags: usize,
+    /// The range indexes changed since the last [`Graph::settle`].
+    pub unsettled: usize,
+    /// The buffers `insert`/`remove` sort their index entries in.
+    pub scratch: usize,
+}
+
+impl GraphMemory {
+    pub fn total(&self) -> usize {
+        [self.nodes, self.areas, self.cell_deps, self.cols, self.wide, self.legacy_ranges, self.flags, self.unsettled, self.scratch]
+            .iter()
+            .fold(0usize, |sum, part| sum.saturating_add(*part))
+    }
+}
+
+/// Heap bytes of one hash set of `T` (see [`GraphMemory`]).
+fn set_bytes<T>(set: &HashSet<T>) -> usize {
+    gridcraft_model::hash_index_bytes(set.capacity(), std::mem::size_of::<T>())
+}
 /// The formulas that read which cells.
 ///
 /// Precedent areas live in one arena instead of a `Vec` per node: a rebuild of a million formulas
@@ -657,5 +719,101 @@ impl Graph {
     /// Precedent areas of a formula cell (for Trace Precedents).
     pub fn precedents_of(&self, k: Key) -> Vec<Area> {
         self.nodes.get(&k).map(|n| self.areas_of(n).to_vec()).unwrap_or_default()
+    }
+
+    /// The live heap bytes of this graph, by allocation class: the numbers a memory report shows,
+    /// and the shape a later representation change has to be measured against. Everything is
+    /// `len`/`capacity`/`size_of` arithmetic except the `Deps::Many` vectors, which the map cannot
+    /// size for us; see [`GraphMemory`].
+    pub fn memory(&self) -> GraphMemory {
+        use std::mem::size_of;
+        let mut m = GraphMemory {
+            nodes: gridcraft_model::hash_index_bytes(self.nodes.capacity(), size_of::<(Key, Node)>()),
+            areas: self.areas.capacity().saturating_mul(size_of::<Area>()),
+            cell_deps: gridcraft_model::hash_index_bytes(self.cell_deps.capacity(), size_of::<(Key, Deps)>()),
+            cols: gridcraft_model::hash_index_bytes(self.col_deps.capacity(), size_of::<((usize, u32), Intervals<Key>)>())
+                .saturating_add(self.col_deps.values().map(Intervals::memory).sum::<usize>()),
+            wide: gridcraft_model::hash_index_bytes(self.wide_deps.capacity(), size_of::<(usize, Intervals<(u32, u32, Key)>)>())
+                .saturating_add(self.wide_deps.values().map(Intervals::memory).sum::<usize>()),
+            legacy_ranges: gridcraft_model::hash_index_bytes(self.legacy_range.capacity(), size_of::<(Key, RangeRef)>()),
+            flags: set_bytes(&self.dynamic)
+                .saturating_add(set_bytes(&self.may_spill))
+                .saturating_add(set_bytes(&self.legacy))
+                .saturating_add(set_bytes(&self.trim))
+                .saturating_add(set_bytes(&self.visibility)),
+            unsettled: set_bytes(&self.unsettled_cols).saturating_add(set_bytes(&self.unsettled_wide)),
+            scratch: self
+                .scratch_cells
+                .capacity()
+                .saturating_mul(size_of::<Key>())
+                .saturating_add(self.scratch_cols.capacity().saturating_mul(size_of::<(usize, u32, u32, u32)>()))
+                .saturating_add(self.scratch_wide.capacity().saturating_mul(size_of::<(usize, RangeRef)>())),
+            ..GraphMemory::default()
+        };
+        // The one entry pass: a `Deps::Many` vector's capacity is not derivable from the table.
+        for deps in self.cell_deps.values() {
+            if let Deps::Many(v) = deps {
+                m.many_lists = m.many_lists.saturating_add(1);
+                m.cell_deps = m.cell_deps.saturating_add(v.capacity().saturating_mul(size_of::<Key>()));
+            }
+        }
+        m
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gridcraft_core::CellRef;
+
+    fn key(sheet: usize, row: u32, col: u32) -> Key {
+        (sheet, CellRef::new(row, col))
+    }
+
+    fn single(sheet: usize, row: u32, col: u32) -> Area {
+        let c = CellRef::new(row, col);
+        Area { sheet, range: RangeRef::new(c, c) }
+    }
+
+    fn whole_column(sheet: usize, col: u32) -> Area {
+        Area { sheet, range: RangeRef::new(CellRef::new(0, col), CellRef::new(999, col)) }
+    }
+
+    /// A report has to be a partition, so a field added later cannot be counted twice. The graph
+    /// here holds single-cell and range precedents, so every class but the rare ones is non-empty.
+    #[test]
+    fn graph_memory_total_is_the_sum_of_its_parts() {
+        let mut g = Graph::default();
+        for row in 0..500u32 {
+            g.insert(key(0, row, 6), &[single(0, row, 0), whole_column(0, 2)], None, Node::new(None, false, false, false));
+        }
+        g.settle();
+        let m = g.memory();
+        let sum = m.nodes + m.areas + m.cell_deps + m.cols + m.wide + m.legacy_ranges + m.flags + m.unsettled + m.scratch;
+        assert_eq!(m.total(), sum, "the total is the sum of the fields");
+        assert!(m.nodes > 0, "the nodes are charged");
+        assert!(m.areas > 0, "the precedent arena is charged");
+        assert!(m.cell_deps > 0, "single-cell precedents are indexed");
+        assert!(m.cols > 0, "a range precedent is in the per-column index");
+        assert_eq!(m.wide, 0, "no range is wider than 64 columns here");
+    }
+
+    /// One precedent read by a thousand formulas is the `Deps::Many` case: the list leaves the
+    /// inline `One`/`Two` shapes and the report grows by its vector (the one entry pass the
+    /// report makes).
+    #[test]
+    fn one_precedent_read_by_a_thousand_formulas_grows_the_dependents_map() {
+        let mut g = Graph::default();
+        g.insert(key(0, 0, 6), &[single(0, 5, 0)], None, Node::new(None, false, false, false));
+        let first = g.memory();
+        assert_eq!(first.many_lists, 0, "one dependent fits inline");
+        for row in 1..1000u32 {
+            g.insert(key(0, row, 6), &[single(0, 5, 0)], None, Node::new(None, false, false, false));
+        }
+        let many = g.memory();
+        assert_eq!(many.many_lists, 1, "one precedent holds the list");
+        let trunk = 1000 * std::mem::size_of::<Key>();
+        assert!(many.cell_deps >= first.cell_deps + trunk, "the vector of 1000 keys is charged: {} vs {}", many.cell_deps, first.cell_deps);
+        assert!(many.nodes > first.nodes, "the formulas' nodes are charged");
     }
 }
