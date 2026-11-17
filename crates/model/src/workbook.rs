@@ -423,15 +423,19 @@ impl Workbook {
         if lambdas.is_empty() {
             return;
         }
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for sheet in self.sheets.iter_mut() {
             let fixed: Vec<_> = sheet
                 .cells
                 .iter()
                 .filter_map(|(c, cell)| {
                     let f = cell.formula.as_ref()?;
-                    let e = f.expr()?;
+                    let e = f.expr_at(c)?;
                     let ne = spell_calls(e.clone(), &lambdas);
-                    (ne != e).then(|| (c, Formula { array: f.array, dynamic: f.dynamic, ..Formula::from_expr(ne) }))
+                    // A rename to another spelling of the same call answers the file question the
+                    // same way: only `LET`/`LAMBDA` and a LAMBDA name's `_xlpm.` prefix are affected.
+                    let rewrite = f.shape().is_some_and(|s| s.file_rewrite);
+                    (ne != e).then(|| (c, Formula { array: f.array, dynamic: f.dynamic, ..Formula::from_expr_at(ne, c, &mut shapes, rewrite) }))
                 })
                 .collect();
             if fixed.is_empty() {

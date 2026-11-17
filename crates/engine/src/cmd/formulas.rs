@@ -130,8 +130,9 @@ fn auto_sum(s: &mut Session, p: &Json) -> Result<Json> {
             .collect();
         let sheet = d.wb.active_sheet;
         edit(s, |cx| {
+            let mut shapes = gridcraft_formula::ShapeTable::default();
             for (c, f) in &writes {
-                let cell = super::edit::input_to_cell(f, sheet, *c, &mut cx.wb)?.unwrap_or_default();
+                let cell = super::edit::input_to_cell(f, sheet, *c, &mut cx.wb, &mut shapes)?.unwrap_or_default();
                 cx.sheet_mut(sheet)?.set_cell(*c, cell);
                 cx.touch(sheet, *c);
             }
@@ -408,7 +409,7 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
         let Some(sh) = wb.sheet_mut(i) else { continue };
         let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> = sh.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect();
         for (c, f) in formulas {
-            let Some(e) = f.expr().and_then(rename) else { continue };
+            let Some(e) = f.expr_at(c).and_then(rename) else { continue };
             let mut nf = Formula::from_expr(e);
             nf.array = f.array;
             nf.dynamic = f.dynamic;

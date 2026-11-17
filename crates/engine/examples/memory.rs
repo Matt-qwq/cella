@@ -79,6 +79,7 @@ fn measure(rows: usize) -> Result<(), String> {
     println!();
     println!("GridCraft memory — {rows} rows x 6 columns{}", if cfg!(debug_assertions) { " (debug build)" } else { "" });
     print_report("as built (built by the perf scenario's three fills)", &live);
+    print_shapes(&session);
 
     eprintln!("memory: {rows} rows — saving and opening again");
     let saved = session.execute("file.saveBytes", json!({"format": "xlsx"})).map_err(err)?;
@@ -87,8 +88,34 @@ fn measure(rows: usize) -> Result<(), String> {
     session.execute("file.open", json!({"name": "big.xlsx", "base64": b64})).map_err(err)?;
     let reopened = session.memory_report();
     print_report(&format!("the same workbook saved as xlsx ({bytes} bytes) and opened again"), &reopened);
+    print_shapes(&session);
     print_difference(&live, &reopened);
     Ok(())
+}
+
+/// How many formulas the workbook holds and how many parsed trees they share: the shape work's
+/// headline number (SHAPE-SHARING.md §0 — the reference workload's two million formulas are two
+/// shapes, `=RC[-5]*RC[-4]+RC[-3]` and `=SUM(R2C7:RC[-1])`).
+fn print_shapes(session: &Session) {
+    let Ok(doc) = session.doc() else { return };
+    let mut formulas = 0usize;
+    let mut shapes: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut trees = 0usize;
+    for sheet in &doc.wb.sheets {
+        for (_, f, _) in sheet.cells.formulas() {
+            formulas = formulas.saturating_add(1);
+            match &f.shape {
+                Some(shape) => {
+                    shapes.insert(std::sync::Arc::as_ptr(shape) as usize);
+                }
+                None => trees = trees.saturating_add(1),
+            }
+        }
+    }
+    println!("  {:<26}{:>16}  the trees the formulas share", "formula shapes", format!("{} of {formulas}", shapes.len()));
+    if trees > 0 {
+        println!("  {:<26}{:>16}  {trees} formulas keep a tree of their own", "", "");
+    }
 }
 
 /// Builds the reference workload through the engine's commands: the same three fills, in the same

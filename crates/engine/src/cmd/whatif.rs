@@ -449,6 +449,7 @@ fn scenario_show(s: &mut Session, p: &Json) -> Result<Json> {
     let si = d.wb.sheet_index(&sc.sheet).ok_or_else(|| bad(CMD, format!("the scenario's sheet `{}` no longer exists", sc.sheet)))?;
     let (_, cells) = cell_list(&d.wb, &sc.changing, CMD, MAX_SCENARIO_CELLS)?;
     edit(s, |cx| {
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for (c, v) in cells.iter().zip(sc.values.iter()) {
             // Stored numbers are values, not typed text: entering them through the parser would
             // apply percent entry (9 -> 9%) to a Percentage-formatted cell.
@@ -457,7 +458,7 @@ fn scenario_show(s: &mut Session, p: &Json) -> Result<Json> {
                     let style = cx.wb.sheet(si).map(|sh| sh.style_id(*c)).unwrap_or_default();
                     Some(Cell { value: Value::Number(n), formula: None, style })
                 }
-                None => super::edit::input_to_cell(&super::edit::json_to_input(v), si, *c, &mut cx.wb)?,
+                None => super::edit::input_to_cell(&super::edit::json_to_input(v), si, *c, &mut cx.wb, &mut shapes)?,
             };
             let sh = cx.sheet_mut(si)?;
             match cell {
@@ -795,7 +796,7 @@ fn advanced_filter(s: &mut Session, p: &Json) -> Result<Json> {
                 let head = crate::display::cell_text(wb, csh, CellRef::new(crit.start.row, cc)).trim().to_lowercase();
                 match headers.iter().position(|h| !head.is_empty() && *h == head) {
                     Some(off) => conds.push(Cond::Compare(off as u32, v)),
-                    None => match formula.and_then(|f| f.expr()) {
+                    None => match formula.and_then(|f| f.expr_at(at)) {
                         Some(e) => conds.push(Cond::Computed(e, at)),
                         None => return Err(EngineError::Other(format!("The criteria label `{head}` doesn't match a column of the list."))),
                     },

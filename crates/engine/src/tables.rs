@@ -238,7 +238,7 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
         let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> =
             cx.wb.sheets.get(i).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
         for (c, f) in formulas {
-            let Some(e) = f.expr() else { continue };
+            let Some(e) = f.expr_at(c) else { continue };
             let mut hit = false;
             let ne = e.map(&mut |x| match x {
                 gridcraft_formula::Expr::Struct(mut st) => {

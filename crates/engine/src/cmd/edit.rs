@@ -139,7 +139,13 @@ pub fn specs() -> Vec<CommandSpec> {
 /// What typing `input` into a cell produces (constant or formula, plus an automatic number
 /// format). Inherits the destination's cell, row or column style, including its number
 /// format, before parsing. Errors when the formula can't be parsed.
-pub(crate) fn input_to_cell(input: &str, sheet: usize, at: CellRef, wb: &mut gridcraft_model::Workbook) -> Result<Option<Cell>> {
+pub(crate) fn input_to_cell(
+    input: &str,
+    sheet: usize,
+    at: CellRef,
+    wb: &mut gridcraft_model::Workbook,
+    shapes: &mut gridcraft_formula::ShapeTable,
+) -> Result<Option<Cell>> {
     let style = wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
     if input.is_empty() {
         let c = Cell { value: Value::Empty, formula: None, style };
@@ -158,7 +164,8 @@ pub(crate) fn input_to_cell(input: &str, sheet: usize, at: CellRef, wb: &mut gri
         let body = input.strip_prefix('=').unwrap_or(input);
         let expr = wb.name_call_case(parse_typed_formula(body)?);
         check_arg_counts(&expr)?;
-        let mut cell = Cell::formula(Formula::from_expr(expr));
+        let rewrite = gridcraft_xlsx::needs_file_rewrite(&expr);
+        let mut cell = Cell::formula(Formula::from_expr_at(expr, at, shapes, rewrite));
         cell.style = style;
         // Formulas whose result is a date/time get a format from functions like TODAY().
         if wb.styles.get(style).num_fmt.as_str() == "General" {
@@ -277,7 +284,8 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
                     gridcraft_calc::eval::MAX_CELLS
                 )));
             }
-            let mut cell = input_to_cell(&input, sheet, range.start, &mut cx.wb)?.unwrap_or_default();
+            let mut shapes = gridcraft_formula::ShapeTable::default();
+            let mut cell = input_to_cell(&input, sheet, range.start, &mut cx.wb, &mut shapes)?.unwrap_or_default();
             if let Some(f) = cell.formula.as_mut() {
                 std::sync::Arc::make_mut(f).array = Some(range);
             }
@@ -302,7 +310,8 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
             }
             return Ok(Json::Null);
         }
-        let cell = input_to_cell(&input, sheet, at, &mut cx.wb)?;
+        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let cell = input_to_cell(&input, sheet, at, &mut cx.wb, &mut shapes)?;
         let sh = cx.sheet_mut(sheet)?;
         match cell {
             Some(c) => sh.set_cell(at, c),
@@ -346,6 +355,10 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     // becoming a serial number, and "=A1" stays that text instead of becoming a formula.
     let raw = bool_param(p, "raw").unwrap_or(false);
     let mut count = 0;
+    // The shapes this command interns: a formula string written into a thousand cells is one
+    // shape when it spells the same references (an absolute one, or a plain `=$A$1*2`), where
+    // every cell used to hold its own tree.
+    let mut shapes = gridcraft_formula::ShapeTable::default();
     // A data import is mostly rows: the store builds a whole row in one pass (set_row_cells),
     // while a cell at a time pays a row lookup, a band lookup and a growth step each. A sheet
     // holding a cell picture keeps the per-cell way, because set_cell owns that rule.
@@ -376,7 +389,7 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
                     }
                     // Only a typed input can be blank (an empty string) or a formula, and only a
                     // typed input needs its text built: a number's own spelling is never used.
-                    _ => input_to_cell(&json_to_input(v), sheet, at, &mut cx.wb)?,
+                    _ => input_to_cell(&json_to_input(v), sheet, at, &mut cx.wb, &mut shapes)?,
                 };
                 match cell {
                     Some(c) if bulk => batch.push((at.col, c)),
@@ -412,7 +425,10 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
         // Each cell gets what typing the input there gives: the automatic number format where
         // it's General, its own format otherwise, text where it's Text. That depends only on
         // the cell's style, so the input is parsed once per style.
+        // The input as it was entered, parsed once per style: every cell of the fill then shares
+        // its shape and prints its own text from it.
         let mut by_style: std::collections::HashMap<StyleId, Option<Cell>> = std::collections::HashMap::new();
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for r in &ranges {
             if r.count() > 2_000_000 {
                 return Err(bad("range.fill", "range too large"));
@@ -422,17 +438,29 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
                 let base = match by_style.get(&style) {
                     Some(c) => c.clone(),
                     None => {
-                        let c = input_to_cell(&input, sheet, at, &mut cx.wb)?;
+                        let mut c = input_to_cell(&input, sheet, at, &mut cx.wb, &mut shapes)?;
+                        // The input is the text typed at the *active* cell, and every other cell of
+                        // the selection adjusts from there — so its shape is the one interned at
+                        // `origin`, not at whichever cell happened to carry this style first.
+                        if let Some(formula) = c.as_mut().and_then(|cell| cell.formula.as_ref()).cloned() {
+                            let rewrite = formula.shape().is_some_and(|s| s.file_rewrite);
+                            let entered = Formula::new_at(&formula.text, origin, &mut shapes, rewrite);
+                            if let Some(cell) = c.as_mut() {
+                                cell.formula = Some(std::sync::Arc::new(entered));
+                            }
+                        }
                         by_style.insert(style, c.clone());
                         c
                     }
                 };
                 let mut cell = base.unwrap_or_default();
+                // One shape for the whole fill: the destination shares it and only prints its own
+                // text, unless a reference of it would fall off the sheet (then it is materialised
+                // with the `#REF!` Excel shows, once for that cell).
                 if let Some(f) = &cell.formula
-                    && let Some(e) = f.expr()
+                    && let Some(moved) = f.copied_to(origin, at)
                 {
-                    let shifted = gridcraft_formula::adjust::shift_relative(e, at.row as i64 - origin.row as i64, at.col as i64 - origin.col as i64);
-                    cell.formula = Some(std::sync::Arc::new(Formula::from_expr(shifted)));
+                    cell.formula = Some(std::sync::Arc::new(moved));
                 }
                 cx.sheet_mut(sheet)?.set_cell(at, cell);
                 cx.touch(sheet, at);
@@ -935,6 +963,7 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
     let rows: Vec<Vec<String>> = parse_tsv(text);
     let h = rows.len();
     let w = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut shapes = gridcraft_formula::ShapeTable::default();
     // The HTML flavour, when the host passed it: the number behind each cell's shown text. Read
     // only as far as the text's own shape, so spans in the markup can't expand without bound.
     let html = str_param(p, "html").map(|html| crate::clip_html::table_cells(html, h, w)).unwrap_or_default();
@@ -942,7 +971,7 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
         for (ri, row) in rows.iter().enumerate() {
             for (ci, v) in row.iter().enumerate() {
                 let Some(c) = at.offset(ri as i64, ci as i64) else { continue };
-                let mut cell = input_to_cell(v, sheet, c, &mut cx.wb).unwrap_or_else(|_| Some(Cell::value(Value::text(v.as_str()))));
+                let mut cell = input_to_cell(v, sheet, c, &mut cx.wb, &mut shapes).unwrap_or_else(|_| Some(Cell::value(Value::text(v.as_str()))));
                 if let Some(cl) = cell.as_mut() {
                     numeric_from_html(cl, v, html.get(ri).and_then(|r| r.get(ci)), &mut cx.wb);
                 }
@@ -1088,6 +1117,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     let skip_blanks = bool_param(p, "skipBlanks").unwrap_or(false);
     let transpose = bool_param(p, "transpose").unwrap_or(false);
     let link = bool_param(p, "link").unwrap_or(false);
+    // The shapes this paste interns, for the cells a source shape cannot serve (a move to another
+    // sheet qualifies its references, and a reference can clamp at the destination).
+    let mut shapes = gridcraft_formula::ShapeTable::default();
     if link && !clip.areas.is_empty() {
         return Err(EngineError::Other("This action won't work on multiple selections.".into()));
     }
@@ -1159,10 +1191,12 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         let old_picture = cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell_pictures.get(&dest)).cloned();
                         let mut new_picture = old_picture.clone();
                         let mut new = old.clone();
-                        let shift = |cell: &Cell| -> Option<std::sync::Arc<Formula>> {
+                        let mut shift = |cell: &Cell| -> Option<std::sync::Arc<Formula>> {
                             let f = cell.formula.as_ref()?;
-                            let e = f.expr()?;
                             if cut_move {
+                                // A move rewrites its references below, workbook-wide; here the cell
+                                // only takes the tree it reads, qualified when it leaves its sheet.
+                                let e = f.expr_at(sc)?;
                                 // A moved formula still reads cells on its original sheet. Qualify
                                 // those references before the workbook-wide move adjustment below.
                                 let e = if dest_sheet != clip.sheet {
@@ -1176,16 +1210,19 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 } else {
                                     e
                                 };
-                                let mut moved = Formula::from_expr(e);
+                                let rewrite = gridcraft_xlsx::needs_file_rewrite(&e);
+                                let mut moved = Formula::from_expr_at(e, dest, &mut shapes, rewrite);
                                 // The array range moves with its formula.
                                 let (dr, dc) = (dest.row as i64 - sc.row as i64, dest.col as i64 - sc.col as i64);
                                 moved.array = f.array.and_then(|a| Some(RangeRef::new(a.start.offset(dr, dc)?, a.end.offset(dr, dc)?)));
                                 moved.dynamic = f.dynamic;
                                 return Some(std::sync::Arc::new(moved));
                             }
-                            let moved =
-                                gridcraft_formula::adjust::shift_relative(e, dest.row as i64 - sc.row as i64, dest.col as i64 - sc.col as i64);
-                            Some(std::sync::Arc::new(Formula { dynamic: f.dynamic, ..Formula::from_expr(moved) }))
+                            // A copy shares the source's shape when it fits the destination: one
+                            // `Arc` and one print a cell, no tree built.
+                            let mut moved = f.copied_to(sc, dest)?;
+                            moved.dynamic = f.dynamic;
+                            Some(std::sync::Arc::new(moved))
                         };
                         if link {
                             let sheet_prefix = if dest_sheet == clip.sheet && same_doc {
@@ -1193,7 +1230,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             } else {
                                 format!("{}!", gridcraft_formula::quote_sheet(&src_sheet_name))
                             };
-                            new.formula = Some(std::sync::Arc::new(Formula::new(&format!("={sheet_prefix}{}", sc.a1()))));
+                            // A plain sheet-qualified reference: no function, so no file spelling.
+                            let link_text = format!("={sheet_prefix}{}", sc.a1());
+                            new.formula = Some(std::sync::Arc::new(Formula::new_at(&link_text, dest, &mut shapes, false)));
                             new.value = Value::Empty;
                             new_picture = None;
                         } else {
@@ -1368,6 +1407,22 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
     // Rows and columns inserted or deleted on the target sheet move its legacy array ranges too
     // (a cut moves its arrays itself).
     let moves_arrays = matches!(e, Edit::Insert { .. } | Edit::Delete { .. } | Edit::InsertCells { .. } | Edit::DeleteCells { .. });
+    // Every [`Edit`] variant moves cells: rows, columns or a block inserted or deleted, or a cut
+    // pasted here or on another sheet. A shape is anchored at the cell it was interned for, so a
+    // moved formula cell is interned again even when its text does not change — inserting a row
+    // above `=A1` moves the formula and not the cell it names. (S5 of `plan/SHAPE-SHARING.md`
+    // rewrites the shape instead, one per shape, and this walk becomes a text update of the cells
+    // whose text really changes.)
+    let moves_cells = matches!(
+        e,
+        Edit::Insert { .. }
+            | Edit::Delete { .. }
+            | Edit::InsertCells { .. }
+            | Edit::DeleteCells { .. }
+            | Edit::Move { .. }
+            | Edit::MoveToSheet { .. }
+    );
+    let mut shapes = gridcraft_formula::ShapeTable::default();
     for si in 0..wb.sheets.len() {
         let host = wb.sheets.get(si).map(|s| s.name.clone()).unwrap_or_default();
         // The store yields formulas from its side tables, not by walking every cell: a
@@ -1380,6 +1435,10 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
         let on_target = moves_arrays && host.eq_ignore_ascii_case(target);
         let Some(sheet) = wb.sheet_mut(si) else { continue };
         for (c, f) in keys {
+            // The cell's *text* spells the tree the formula holds, at the position it was written
+            // for: this rewrite runs after the store moved the cells the edit inserted, deleted or
+            // moved, so the cell a shape resolves at is no longer the cell it was interned for
+            // (SHAPE-SHARING.md §5.1 S5 makes this a rewrite of the shape itself, one per shape).
             let Some(expr) = f.expr() else { continue };
             let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
             let text = gridcraft_formula::print(&new);
@@ -1387,10 +1446,12 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
                 Some(a) if on_target => super::sheet::map_range(a, e),
                 a => a,
             };
-            if (text != f.text || array != f.array)
+            if (text != f.text || array != f.array || (moves_cells && f.shape.is_some()))
                 && let Some(mut cell) = sheet.cells.get(c)
             {
-                let mut nf = Formula::from_expr(new);
+                // Interned at the cell it sits at now, so `expr_at` is this tree again.
+                let rewrite = gridcraft_xlsx::needs_file_rewrite(&new);
+                let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
                 nf.array = array;
                 nf.dynamic = f.dynamic;
                 cell.formula = Some(std::sync::Arc::new(nf));
@@ -1730,6 +1791,7 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
     let active = s.doc()?.selection.active;
     let n = edit(s, |cx| {
         let sheets: Vec<usize> = if workbook { (0..cx.wb.sheets.len()).collect() } else { vec![cx.wb.active_sheet] };
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         let mut n = 0;
         for si in sheets {
             let cells: Vec<(CellRef, String)> =
@@ -1748,7 +1810,7 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
                 } else {
                     replace_ci(&text, &what, &with)
                 };
-                let cell = input_to_cell(&new, si, c, &mut cx.wb).unwrap_or_else(|_| Some(Cell::value(Value::text(new.as_str()))));
+                let cell = input_to_cell(&new, si, c, &mut cx.wb, &mut shapes).unwrap_or_else(|_| Some(Cell::value(Value::text(new.as_str()))));
                 let sh = cx.sheet_mut(si)?;
                 match cell {
                     Some(cell) => sh.set_cell(c, cell),
@@ -1893,6 +1955,28 @@ fn begin_edit(s: &mut Session, _: &Json) -> Result<Json> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A formula typed in the engine learns how a file spells it *when its shape is interned*: the
+    /// `_xlfn.` table lives one crate above the model, so a shape interned without it would be saved
+    /// under the model's own spelling — `XLOOKUP(...)` where Excel reads `_xlfn.XLOOKUP(...)` and
+    /// repairs the file (SHAPE-SHARING.md §5.2 S3).
+    #[test]
+    fn a_typed_formula_knows_how_a_file_spells_it() {
+        let mut s = Session::new();
+        s.new_workbook();
+        for (cell, input, rewrite) in
+            [("A1", "=XLOOKUP(1,B:B,C:C)", true), ("A2", "=LET(x,1,x+1)", true), ("A3", "=B3*C3+D3", false), ("A4", "=SUM(B4:B9)", false)]
+        {
+            s.execute("cell.set", json!({"cell": cell, "input": input})).unwrap();
+            let at = CellRef::parse(cell).unwrap();
+            let sh = s.doc().unwrap().wb.active().unwrap();
+            let f = sh.cells.get(at).and_then(|c| c.formula).expect("the formula is stored");
+            // The syntax half the model can see, ORed with the file-format half only this crate can.
+            let shape = f.shape().expect("a typed formula interns a shape");
+            assert_eq!(shape.file_rewrite, rewrite, "{input}");
+            assert_eq!(shape.print_at(at).as_deref(), Some(f.text.as_str()), "{input}");
+        }
+    }
 
     #[test]
     fn cell_set_takes_numbers_for_input_and_value() {

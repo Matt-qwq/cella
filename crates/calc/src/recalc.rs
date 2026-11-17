@@ -60,12 +60,13 @@ pub struct Calc {
     /// Buffer [`precedents_into`] fills for the formula being inserted into the graph, so building
     /// the graph of a million formulas does not allocate a `Vec` per formula.
     scratch_areas: Vec<Area>,
-    /// The formulas the last rebuild had to parse from their text, with the tree it parsed. A
-    /// document read back from its own saved form keeps a formula's text alone (`Formula::expr` is
-    /// not written to a file), so after a rebuild these are handed back to their cells: the writer,
-    /// a sort, a fill and a paste then share the tree instead of parsing the text once each. Empty
-    /// for a workbook whose cells already carry theirs.
-    unshared: Vec<(Key, std::sync::Arc<Expr>)>,
+    /// The shapes the last rebuild had to make for formulas that arrived as text alone, with the
+    /// cell each belongs to. A document read back from its own saved form or from a JSON document
+    /// keeps a formula's text alone (`Formula::shape` is not written anywhere), so after a rebuild
+    /// these are handed back to their cells: the writer, a sort, a fill and a paste then share one
+    /// shape per family instead of parsing the text once each. Empty for a workbook whose cells
+    /// already carry a shape or a tree.
+    unshared: Vec<(Key, std::sync::Arc<gridcraft_formula::Shape>)>,
     #[cfg(test)]
     parallel_runs: usize,
     /// Index entries the last `cells_changed` examined looking for the spill areas the edit
@@ -474,22 +475,23 @@ fn write_values_ordered(wb: &mut Workbook, values: &[(Key, Value)]) {
     }
 }
 
-/// Gives each formula the tree the rebuild parsed for it, when its cell has none: parsing it again
-/// on every later use (the writer, a sort, a fill, a paste) is what this avoids, and the tree is
-/// shared through the `Arc` rather than copied. A cell that already holds one is skipped, so the
-/// write costs nothing for a formula the user typed or a file reader parsed.
-pub(crate) fn share_exprs(wb: &mut Workbook, mut shared: Vec<(Key, std::sync::Arc<Expr>)>) {
+/// Gives each formula the shape the rebuild made for it, when its cell has none: parsing it again
+/// on every later use (the writer, a sort, a fill, a paste) is what this avoids, and the shape is
+/// shared through the `Arc` rather than copied — a document whose formulas are all one shape gets
+/// one `Arc` for the lot. A cell that already holds a shape or a tree is skipped, so the write
+/// costs nothing for a formula the user typed or a file reader parsed.
+pub(crate) fn share_shapes(wb: &mut Workbook, mut shared: Vec<(Key, std::sync::Arc<gridcraft_formula::Shape>)>) {
     shared.sort_unstable_by_key(|(k, _)| (k.0, k.1.row, k.1.col));
-    for ((si, at), e) in shared {
+    for ((si, at), shape) in shared {
         let Some(sheet) = wb.sheet_mut(si) else { continue };
         let Some(mut cell) = sheet.cells.get(at) else { continue };
         let Some(mut f) = cell.formula.clone() else { continue };
-        if f.expr.is_some() {
+        if f.expr.is_some() || f.shape.is_some() {
             continue;
         }
         // The store still holds the `Arc`, so this copies the `Formula` (its text and the pointer
-        // to the tree), not the tree.
-        std::sync::Arc::make_mut(&mut f).share_expr(&e);
+        // to the shape), not the shape.
+        std::sync::Arc::make_mut(&mut f).shape = Some(shape);
         cell.formula = Some(f);
         sheet.cells.set(at, cell);
     }
@@ -559,7 +561,7 @@ impl Calc {
                                 break;
                             }
                         }
-                        if leaf && node.expr.is_some() {
+                        if leaf && node.has_formula() {
                             local.push(k);
                         }
                     }
@@ -573,9 +575,7 @@ impl Calc {
                     let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
                     for &k in &local {
                         if let Some(node) = graph.nodes.get(&k) {
-                            if let Some(e) = &node.expr {
-                                trees.push(k, e);
-                            }
+                            trees.push(k, node);
                             if let Some(r) = graph.legacy_of(k) {
                                 legacy.insert(k, r);
                             }
@@ -679,18 +679,22 @@ impl Calc {
     pub fn memory(&self) -> CalcMemory {
         use std::mem::size_of;
         let mut unshared_trees = 0usize;
-        for (_, tree) in &self.unshared {
-            if std::sync::Arc::strong_count(tree) == 1 {
-                let mut bytes = 0usize;
-                tree.walk(&mut |_| bytes = bytes.saturating_add(size_of::<Expr>()));
-                unshared_trees = unshared_trees.saturating_add(bytes);
+        for (_, shape) in &self.unshared {
+            // A shape counts its own tree (one `size_of::<Expr>()` a node, the figure the store
+            // charges), so there is nothing to walk.
+            if std::sync::Arc::strong_count(shape) == 1 {
+                unshared_trees = unshared_trees.saturating_add(shape.bytes as usize);
             }
         }
         CalcMemory {
             graph: self.graph.memory(),
             circular: self.circular.capacity().saturating_mul(size_of::<Key>()),
             scratch_areas: self.scratch_areas.capacity().saturating_mul(size_of::<Area>()),
-            unshared: self.unshared.capacity().saturating_mul(size_of::<(Key, std::sync::Arc<Expr>)>()).saturating_add(unshared_trees),
+            unshared: self
+                .unshared
+                .capacity()
+                .saturating_mul(size_of::<(Key, std::sync::Arc<gridcraft_formula::Shape>)>())
+                .saturating_add(unshared_trees),
             names: self.names.memory(),
             pass: 0,
         }
@@ -708,30 +712,66 @@ impl Calc {
         self.parallel_fallback = false;
         self.graph = Graph::default();
         self.unshared.clear();
+        // The shapes of the formulas that arrived as text alone are interned here, so a document
+        // of a million formulas of one shape ends with one.
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for (si, sheet) in wb.sheets.iter().enumerate() {
             // One pass to learn the size (moving, not cloning, what the store hands out): the
             // graph's tables then grow once instead of rehashing every entry a dozen times.
             let formulas: Vec<_> = sheet.cells.formulas().collect();
             self.graph.reserve(si, formulas.len());
             for (c, f, _) in formulas {
-                if let Some(e) = f.expr_arc() {
-                    let reads = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
-                    let may_spill = may_return_array(&mut self.names, wb, si, &e);
+                if let Some((node, keep)) = self.node_for(wb, si, c, &f, &mut shapes) {
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node = Node::new(Some(e.clone()), reads.dynamic, may_spill, reads.trim)
-                        .with_volatile(reads.volatile)
-                        .with_visibility(reads.hidden_rows);
                     self.graph.insert((si, c), &areas, f.array, node);
                     self.scratch_areas = areas;
-                    // The tree had to be parsed anyway; keeping it for the cell saves parsing it
-                    // again for every later use.
-                    if f.expr.is_none() {
-                        self.unshared.push(((si, c), e));
+                    // The shape is kept for the cell, so the next use needs no parse either.
+                    if let Some(shape) = keep {
+                        self.unshared.push(((si, c), shape));
                     }
                 }
             }
         }
         self.graph.settle();
+    }
+
+    /// The graph node of the formula at `(si, at)`: what the formula reads, its flags, and how the
+    /// pass finds the tree it evaluates — the cell's own, or the shape it shares with every cell of
+    /// its fill (the node then holds eight bytes where a tree stood).
+    ///
+    /// Also returns the shape a cell that arrived as text alone should keep: its one parse gives
+    /// both the tree to walk for precedents and the shape to intern, which `shapes` deduplicates.
+    /// `None` when the text does not parse — the formula has no node at all.
+    fn node_for(
+        &mut self,
+        wb: &Workbook,
+        si: usize,
+        at: CellRef,
+        f: &gridcraft_model::Formula,
+        shapes: &mut gridcraft_formula::ShapeTable,
+    ) -> Option<(Node, Option<std::sync::Arc<gridcraft_formula::Shape>>)> {
+        // The absolute tree this formula reads here. A shape node does not keep it: the pass
+        // resolves the shape at this cell when (and only when) it evaluates the formula.
+        let (expr, keep) = match (&f.expr, f.shape()) {
+            (Some(tree), _) => ((**tree).clone(), None),
+            (None, Some(shape)) => (shape.resolve(at)?, None),
+            (None, None) => {
+                let e = gridcraft_formula::parse(&f.text).ok()?;
+                let shape = shapes.intern(gridcraft_formula::Shape::from_expr(e.clone(), at));
+                (e, Some(shape))
+            }
+        };
+        let reads = precedents_into(&mut self.names, wb, si, &expr, &mut self.scratch_areas);
+        let may_spill = may_return_array(&mut self.names, wb, si, &expr);
+        let shape = match &keep {
+            Some(shape) => Some(std::sync::Arc::clone(shape)),
+            None => f.shape(),
+        };
+        let node = Node::new(f.expr.clone(), reads.dynamic, may_spill, reads.trim)
+            .with_volatile(reads.volatile)
+            .with_visibility(reads.hidden_rows)
+            .with_shape(shape);
+        Some((node, keep))
     }
 
     /// Puts the graph right after the workbook was replaced with a snapshot of an earlier version
@@ -761,15 +801,15 @@ impl Calc {
         };
         self.last_restore_cells = Some(changes.len());
         self.parallel_fallback = false;
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for (si, at, formula) in changes {
-            // A formula whose text does not parse has no node at all, as in `rebuild`.
-            match formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array))) {
-                Some((e, legacy)) => {
-                    let reads = precedents_into(&mut self.names, to, si, &e, &mut self.scratch_areas);
-                    let may_spill = may_return_array(&mut self.names, to, si, &e);
+            // A formula whose text does not parse has no node at all, as in `rebuild`. The shape
+            // a text-only formula's parse makes is dropped here: this path has a snapshot to look
+            // at, not a workbook to write to (a rebuild is the one that keeps it).
+            match formula.as_ref().and_then(|f| self.node_for(to, si, at, f, &mut shapes)) {
+                Some((node, _keep)) => {
+                    let legacy = formula.as_ref().and_then(|f| f.array);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node =
-                        Node::new(Some(e), reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows);
                     self.graph.insert((si, at), &areas, legacy, node);
                     self.scratch_areas = areas;
                 }
@@ -806,7 +846,7 @@ impl Calc {
     /// Recalculates every formula (F9 / Ctrl+Alt+F9, and after loading).
     pub fn recalc_all(&mut self, wb: &mut Workbook) {
         self.rebuild(wb);
-        share_exprs(wb, std::mem::take(&mut self.unshared));
+        share_shapes(wb, std::mem::take(&mut self.unshared));
         let prefer = spill_owners(wb);
         // Spills are laid out again from the formulas where they are now (a structural edit moves
         // or deletes the formulas, not the values they spilled).
@@ -834,7 +874,7 @@ impl Calc {
     pub fn recalc_on_open(&mut self, wb: &mut Workbook) {
         let tp = prof_now();
         self.rebuild(wb);
-        share_exprs(wb, std::mem::take(&mut self.unshared));
+        share_shapes(wb, std::mem::take(&mut self.unshared));
         let rebuild_ms = prof_now() - tp;
         let ts = prof_now();
         if wb.calc.full_calc_on_load {
@@ -915,17 +955,15 @@ impl Calc {
         // Whether the edit put a formula anywhere: when it did not, and the workbook has none
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
         let mut formulas = false;
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for &k in changed {
             let formula = wb.sheet(k.0).and_then(|s| s.cell(k.1)).and_then(|c| c.formula.clone());
             formulas |= formula.is_some();
-            let parsed = formula.as_ref().and_then(|f| f.expr_arc().map(|e| (e, f.array)));
+            let parsed = formula.as_ref().and_then(|f| self.node_for(wb, k.0, k.1, f, &mut shapes));
             match parsed {
-                Some((e, legacy)) => {
-                    let reads = precedents_into(&mut self.names, wb, k.0, &e, &mut self.scratch_areas);
-                    let may_spill = may_return_array(&mut self.names, wb, k.0, &e);
+                Some((node, _keep)) => {
+                    let legacy = formula.as_ref().and_then(|f| f.array);
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    let node =
-                        Node::new(Some(e), reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows);
                     self.graph.insert(k, &areas, legacy, node);
                     self.scratch_areas = areas;
                 }
@@ -1190,9 +1228,7 @@ impl Calc {
             let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
             for k in &dirty {
                 if let Some(node) = self.graph.nodes.get(k) {
-                    if let Some(e) = &node.expr {
-                        trees.push(*k, e);
-                    }
+                    trees.push(*k, node);
                     if let Some(r) = self.graph.legacy_of(*k) {
                         legacy.insert(*k, r);
                     }
@@ -2297,7 +2333,7 @@ pub(crate) mod tests {
         let mut put = |wb: &mut Workbook, at: String, text: String| {
             let at = CellRef::parse(&at).unwrap();
             wb.sheet_mut(0).unwrap().cells.set(at, Cell::formula(Formula::new(&text)));
-            trees.push((0, at), &std::sync::Arc::new(gridcraft_formula::parse(&text[1..]).unwrap()));
+            trees.push_tree((0, at), &std::sync::Arc::new(gridcraft_formula::parse(&text[1..]).unwrap()));
         };
         // A1 reads A2, ..., A64 (the 64th formula deep) reads a wide range of formulas.
         for r in 1..64 {
@@ -2326,7 +2362,7 @@ pub(crate) mod tests {
         let mut trees = Trees::default();
         for (at, formula) in pending {
             let expr = gridcraft_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).ok()?;
-            trees.push((0, CellRef::parse(at)?), &std::sync::Arc::new(expr));
+            trees.push_tree((0, CellRef::parse(at)?), &std::sync::Arc::new(expr));
         }
 
         // A cell in `pending` is calculated the first time something reads it, which is the state

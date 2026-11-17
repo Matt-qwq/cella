@@ -70,7 +70,15 @@ fn assert_google_book(wb: &Workbook) {
     assert_eq!(value(wb, "J1"), Value::text("bonjour"));
     // Every unwrapped formula parses.
     for cell in ["A1", "E1", "F1", "F2", "F3", "G1", "I1"] {
-        assert!(formula(wb, cell).expr().is_some(), "{cell}");
+        assert!(formula(wb, cell).expr_at(at(cell)).is_some(), "{cell}");
+    }
+    // The file names its shared formula family (`t="shared"` `si=0`): one parse for it, one shape
+    // for its three cells, each printing its own text (SHAPE-SHARING.md §3.4.3, §4.3).
+    let master = formula(wb, "F1").shape().expect("a parsed formula has a shape");
+    for cell in ["F1", "F2", "F3"] {
+        let shape = formula(wb, cell).shape().expect("a family member has the family's shape");
+        assert!(std::sync::Arc::ptr_eq(&master, &shape), "{cell} parsed its own tree");
+        assert_eq!(shape.print_at(at(cell)).as_deref(), Some(formula(wb, cell).text.as_str()), "{cell}");
     }
 }
 

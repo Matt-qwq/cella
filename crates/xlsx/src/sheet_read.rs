@@ -9,7 +9,6 @@ use crate::tables::{col_width_to_px, paper_name, pt_to_px};
 use crate::xml::{self, El};
 use gridcraft_core::date::{serial_from_ymd, time_fraction};
 use gridcraft_core::{CellError, CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_formula::Expr;
 use gridcraft_model::{
     AutoFilter, Cell, CfOperator, CfRule, CfValueKind, Comment, CondFormat, EditRange, ErrorStyle, FilterCriterion, FilterHidden, Formula, Hyperlink,
     LineInfo, NoteBox, NoteCorner, Orientation, PageOrder, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn,
@@ -25,9 +24,12 @@ pub(crate) use parts::{promote_table_filter, read_comments, read_hyperlinks, rea
 pub use parts::{read_autofilter, read_table};
 pub(crate) use rules::{read_cf, read_validation};
 
+/// One `t="shared"` family: the master cell's shape, so a member is a print and an `Arc` clone
+/// instead of a parse and a tree shift (a file from Excel names its families, which is what makes
+/// one parse for two million formulas possible — SHAPE-SHARING.md §3.4.3).
 struct Shared {
     anchor: CellRef,
-    expr: Option<Expr>,
+    shape: Option<Arc<gridcraft_formula::Shape>>,
     text: String,
     /// The master formula was unwrapped from Google Sheets' export wrapper: its copies are
     /// dynamic-array formulas too.
@@ -37,6 +39,14 @@ struct Shared {
 struct RowState {
     next_row: u32,
     shared: HashMap<u32, Shared>,
+    /// The shapes this part's formulas intern into: one table per worksheet part read, entries
+    /// `Weak`, so a shape dies with the last cell that holds it. It lives here because the shapes
+    /// are made here — a read is where the same shape is seen a million times (the `t="shared"`
+    /// families, or two columns of one fill) — and it needs no plumbing past the read: the cells
+    /// hold the `Arc`s. Never a `static` (it would share shapes across documents and never free
+    /// them); one table per workbook is a session's own choice, and equal shapes from two parts of
+    /// one workbook simply end up as two `Arc`s with the same tree.
+    shapes: gridcraft_formula::ShapeTable,
     /// Legacy array ranges: cached values inside them (other than the anchor) are not stored, so
     /// the formula fills them again on recalculation. Dynamic-array spills are not here: the file
     /// keeps their values, which [`adopt_spills`] moves to the sheet's spill map afterwards.
@@ -1314,7 +1324,9 @@ fn decode_cell(dc: &DecodeCtx<'_>, warn: &mut Vec<String>, st: &mut RowState, c:
     };
     // A formula without dynamic-array metadata is a legacy formula, unless entered as a
     // Ctrl+Shift+Enter array or unwrapped from Google Sheets' export (both mark it dynamic).
-    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && f.expr_arc().is_some()) {
+    // "It parses" without asking the text again: a formula the reader could parse holds a shape
+    // (or, from the legacy-array rewriter, a tree), and one it could not holds neither.
+    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && (f.shape.is_some() || f.expr.is_some())) {
         st.legacy.push(pos);
     }
     let value = if formula.is_none() && st.derived.iter().any(|r| r.contains(pos) && r.start != pos) { Value::Empty } else { value };
@@ -1346,38 +1358,31 @@ fn read_formula_text(
     known: crate::KnownFunctions,
     unwrapped: &mut bool,
 ) -> Option<(Formula, Option<RangeRef>)> {
-    // One parse for the whole conversion (`formula_from_file`): the file's text, in the model's
-    // spelling, with the tree already parsed.
-    let mut fm = crate::fmla::formula_from_file(f.text.trim());
+    // One parse for the whole conversion (`formula_from_file_at`): the file's text, in the model's
+    // spelling, with the shape already interned at this cell.
+    let mut fm = crate::fmla::formula_from_file_at(f.text.trim(), pos, &mut st.shapes);
     if let Some(known) = known.given()
         && let Some(u) = crate::fmla::unwrap_google_sheets(&fm.text, known)
     {
-        fm = Formula::new(&u);
+        fm = crate::fmla::formula_from_file_at(&u, pos, &mut st.shapes);
         *unwrapped = true;
     }
     match f.kind.unwrap_or("normal") {
         "shared" => {
             let si = f.si.and_then(|v| v.trim().parse::<u32>().ok())?;
             if !fm.text.is_empty() {
-                st.shared.insert(si, Shared { anchor: pos, expr: fm.expr.as_deref().cloned(), text: fm.text.clone(), unwrapped: *unwrapped });
+                st.shared.insert(si, Shared { anchor: pos, shape: fm.shape.clone(), text: fm.text.clone(), unwrapped: *unwrapped });
                 Some((fm, None))
             } else {
+                // The family is named by the file: the member reuses the master's shape, so the
+                // family costs one parse however many cells it has (2M formulas in a handful of
+                // families on an Excel-written sheet, where every cell would otherwise parse).
                 let Some(sh) = st.shared.get(&si) else {
                     warn.push("a shared formula refers to a missing master cell; kept the cached value".into());
                     return None;
                 };
                 *unwrapped |= sh.unwrapped;
-                Some((
-                    match &sh.expr {
-                        Some(e) => {
-                            let dr = pos.row as i64 - sh.anchor.row as i64;
-                            let dc = pos.col as i64 - sh.anchor.col as i64;
-                            Formula::from_expr(gridcraft_formula::adjust::shift_relative(e.clone(), dr, dc))
-                        }
-                        None => Formula::new(&sh.text),
-                    },
-                    None,
-                ))
+                Some((Formula::copied_from(sh.shape.as_ref(), &sh.text, sh.anchor, pos).unwrap_or_else(|| Formula::new(&sh.text)), None))
             }
         }
         "array" => {

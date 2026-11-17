@@ -486,6 +486,9 @@ struct SheetState<'g> {
     frozen: bool,
     /// `Window2.rwTop` and `colLeft`: the first visible row and column.
     scrolled_to: Option<(u16, u16)>,
+    /// The shapes this sheet's formulas intern into (see `RowState::shapes` in `sheet_read`):
+    /// one table for the sheet, `Weak` entries, gone with its last cell.
+    shapes: gridcraft_formula::ShapeTable,
 }
 
 impl SheetState<'_> {
@@ -525,11 +528,17 @@ impl SheetState<'_> {
         match decode(&p.rgce, &p.rgcb, pos, mode, &self.g.links) {
             Ok(e) => {
                 let text = gridcraft_formula::print(&e);
-                let mut f = Formula::new(&text);
-                if f.expr.is_none() {
+                // Parsing the text it just printed is the second parse of this formula (the RPN
+                // decode is the first); it is what proves the model's text reads back — the text is
+                // what a save writes — so it stays until the .xls reader is measured
+                // (SHAPE-SHARING.md §3.4.3). The shape keeps the tree, so nothing downstream parses
+                // it again.
+                if gridcraft_formula::parse(&text).is_err() {
                     self.unsupported("syntax GridCraft can't parse yet");
                     return;
                 }
+                let rewrite = crate::fmla::needs_file_rewrite(&e);
+                let mut f = Formula::from_expr_at(e, pos, &mut self.shapes, rewrite);
                 f.array = array.filter(|r| !r.is_single());
                 if let Some(mut cell) = self.sheet.cells.get(pos) {
                     cell.formula = Some(Arc::new(f));
@@ -599,6 +608,7 @@ fn worksheet(
         cf12_group: None,
         cf12_left: 0,
         cf12_via_cfex: false,
+        shapes: gridcraft_formula::ShapeTable::default(),
         drawing: vec![],
         chart_index: 0,
         chart_anchor_index: vec![],

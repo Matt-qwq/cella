@@ -793,7 +793,16 @@ fn recalc_diff(wb: &Workbook) -> Result<(), String> {
     value_diff(wb, &fresh, "a full recalc", false).map_or(Ok(()), Err)
 }
 
-fn normalized_formula(f: &Formula) -> String {
+/// A formula as a save and a reload compare it, and the **master invariant** of the shape work
+/// (SHAPE-SHARING.md §4.3): a cell's text is the print of the tree it evaluates, resolved at the
+/// cell's own position. The tree is the cell's own cache, the shape it shares with its fill, or the
+/// text parsed — whichever the cell has — and a cell whose text disagreed with it would save a
+/// formula that reads back as a different one, so every formula the fuzzer visits is checked here.
+fn normalized_formula(at: CellRef, f: &Formula) -> String {
+    if let Some(e) = f.expr_at(at) {
+        let printed = gridcraft_formula::print(&e);
+        assert_eq!(printed, f.text, "{at:?}: the cell's text is not the print of its tree at its cell");
+    }
     let text = Formula::new(&f.text).text;
     if f.array.is_some() { format!("{{={text}}}") } else { format!("={text}") }
 }
@@ -839,7 +848,8 @@ fn roundtrip_diff(wb: &Workbook) -> Result<(), String> {
         return Err(format!("sheets {:?} reload as {:?}", names(wb), names(&back)));
     }
     for (x, y) in wb.sheets.iter().zip(&back.sheets) {
-        let formulas = |s: &Sheet| s.cells.iter().filter_map(|(c, cell)| Some((c, normalized_formula(cell.formula.as_ref()?)))).collect::<Vec<_>>();
+        let formulas =
+            |s: &Sheet| s.cells.iter().filter_map(|(c, cell)| Some((c, normalized_formula(c, cell.formula.as_ref()?)))).collect::<Vec<_>>();
         let (fx, fy) = (formulas(x), formulas(y));
         if fx != fy {
             let first = fx.iter().zip(&fy).find(|(a, b)| a != b).map(|(a, b)| format!("{a:?} vs {b:?}"));
