@@ -268,6 +268,8 @@ pub fn contributors_ui(ui: &mut egui::Ui) {
             });
         }
     });
+    ui.separator();
+    ui.label(RichText::new(crate::widgets::tr(ui, "Includes work from GridCraft by the ArtCraft team and its contributors.")).small().weak());
     ui.data_mut(|d| d.insert_temp(id, v));
 }
 
