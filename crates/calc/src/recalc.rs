@@ -161,23 +161,32 @@ fn spill_owners(wb: &Workbook) -> HashSet<Key> {
 ///
 /// Functions that aggregate or look up a block and return one value are listed as scalar: their
 /// arguments are not walked, so `SUM(A1:A3)` stays parallel although its argument is a range.
-fn may_return_array(names: &mut crate::eval::NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> bool {
-    may_return_array_at(names, wb, sheet, e, 0)
+fn may_return_array(names: &mut crate::eval::NameCache, wb: &Workbook, sheet: usize, e: &Expr, base: Option<CellRef>) -> bool {
+    may_return_array_at(names, wb, sheet, e, base, 0)
 }
 
 /// [`may_return_array`] at name depth `depth`. Only a name recurses (into its definition, at
 /// most `MAX_NAME_DEPTH` deep): the formula tree itself is walked with an explicit stack, as a
 /// long operator chain must not recurse once per operand.
-fn may_return_array_at(names: &mut crate::eval::NameCache, wb: &Workbook, sheet: usize, root: &Expr, depth: usize) -> bool {
+fn may_return_array_at(names: &mut crate::eval::NameCache, wb: &Workbook, sheet: usize, root: &Expr, base: Option<CellRef>, depth: usize) -> bool {
     let mut stack = crate::walk::Stack::new(root);
     while let Some(e) = stack.pop() {
         match e {
             Expr::Array(_) => return true,
-            Expr::Ref(r) => {
-                if !r.range().is_single() {
-                    return true;
+            // One reference's size, read where the formula lives (a shape's offsets are sizes
+            // wherever it resolves). A reference that leaves the sheet reads nothing.
+            Expr::Ref(r) => match base {
+                Some(base) => {
+                    if r.range_at(base).is_none_or(|range| !range.is_single()) {
+                        return true;
+                    }
                 }
-            }
+                None => {
+                    if !r.range().is_single() {
+                        return true;
+                    }
+                }
+            },
             Expr::Unary(UnOp::Spill | UnOp::Trim(_), _) => return true,
             Expr::Call(name, args) => {
                 if is_array_function(name) {
@@ -200,7 +209,7 @@ fn may_return_array_at(names: &mut crate::eval::NameCache, wb: &Workbook, sheet:
             // one value. Anything that can't be resolved statically may return an array.
             Expr::Name(n) => match names.target(wb, sheet, n) {
                 crate::eval::NameTarget::Definition(def, scope) if depth < crate::eval::MAX_NAME_DEPTH => {
-                    if may_return_array_at(names, wb, scope, &def, depth + 1) {
+                    if may_return_array_at(names, wb, scope, &def, None, depth + 1) {
                         return true;
                     }
                 }
@@ -750,22 +759,25 @@ impl Calc {
         f: &gridcraft_model::Formula,
         shapes: &mut gridcraft_formula::ShapeTable,
     ) -> Option<(Node, Option<std::sync::Arc<gridcraft_formula::Shape>>)> {
-        // The absolute tree this formula reads here. A shape node does not keep it: the pass
-        // resolves the shape at this cell when (and only when) it evaluates the formula.
-        let (expr, keep) = match (&f.expr, f.shape()) {
-            (Some(tree), _) => ((**tree).clone(), None),
-            (None, Some(shape)) => (shape.resolve(at)?, None),
+        // The tree this formula reads, and the cell its relative parts are offsets from when it
+        // is a shape's canonical tree (None for a cell's own tree, which is absolute). Nothing is
+        // resolved here: a shape is walked once, in place, for a million cells (S4).
+        let own = f.shape();
+        let mut keep: Option<std::sync::Arc<gridcraft_formula::Shape>> = None;
+        let (tree, base): (&gridcraft_formula::Expr, Option<CellRef>) = match (&f.expr, &own) {
+            (Some(tree), _) => (tree, None),
+            (_, Some(shape)) => (shape.tree(), Some(at)),
             (None, None) => {
                 let e = gridcraft_formula::parse(&f.text).ok()?;
-                let shape = shapes.intern(gridcraft_formula::Shape::from_expr(e.clone(), at));
-                (e, Some(shape))
+                keep = Some(shapes.intern(gridcraft_formula::Shape::from_expr(e, at)));
+                (keep.as_ref()?.tree(), Some(at))
             }
         };
-        let reads = precedents_into(&mut self.names, wb, si, &expr, &mut self.scratch_areas);
-        let may_spill = may_return_array(&mut self.names, wb, si, &expr);
+        let reads = precedents_into(&mut self.names, wb, si, tree, base, &mut self.scratch_areas);
+        let may_spill = may_return_array(&mut self.names, wb, si, tree, base);
         let shape = match &keep {
             Some(shape) => Some(std::sync::Arc::clone(shape)),
-            None => f.shape(),
+            None => own,
         };
         let node = Node::new(f.expr.clone(), reads.dynamic, may_spill, reads.trim)
             .with_volatile(reads.volatile)

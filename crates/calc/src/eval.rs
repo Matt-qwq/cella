@@ -160,6 +160,11 @@ pub struct Evaluator<'h> {
     pub host: &'h mut dyn Host,
     pub sheet: usize,
     pub at: CellRef,
+    /// The cell the tree being evaluated was written for, when that tree is a **shape's canonical
+    /// tree**: its relative references are offsets from here, so one tree serves a million cells.
+    /// `None` for an absolute tree — a defined name's definition, `INDIRECT`'s own parse, a tree a
+    /// caller already resolved — whose references are coordinates (see `Reference::range`).
+    base: Option<CellRef>,
     env: Vec<(String, Ev)>,
     depth: usize,
     /// LAMBDA calls in progress.
@@ -210,8 +215,27 @@ impl Ctx for FnCtx<'_, '_> {
     fn computed_criterion(&mut self, row: usize, col: usize, db: &Array, record: usize) -> Option<bool> {
         let area = self.criteria?;
         let at = area.range.start.offset(row as i64, col as i64).filter(|c| area.range.contains(*c))?;
-        let expr = self.ev.host.workbook().sheet(area.sheet)?.cell(at)?.formula.as_ref()?.expr_at(at)?;
-        let shifted = gridcraft_formula::adjust::shift_relative(expr, record as i64 - 1, 0);
+        // The criteria formula is written for the first record, so each record reads it from one
+        // row lower. A cell holding a shape reads its **canonical tree** with the base moved down
+        // — no tree is built per record; a cell with its own tree is shifted as before.
+        let formula = self.ev.host.workbook().sheet(area.sheet)?.cell(at)?.formula.clone()?;
+        let shape = formula.shape();
+        let shifted: Expr;
+        let down = record as i64 - 1;
+        // The record's row must be on the sheet for a shape's tree to be read there; past it, the
+        // tree is materialised and shifted instead.
+        let record_at = at.offset(down, 0);
+        let (tree, base): (&Expr, Option<CellRef>) = match (&formula.expr, &shape, record_at) {
+            (_, Some(shape), Some(record_at)) => (shape.tree(), Some(record_at)),
+            (Some(tree), _, _) => {
+                shifted = gridcraft_formula::adjust::shift_relative((**tree).clone(), down, 0);
+                (&shifted, None)
+            }
+            _ => {
+                shifted = gridcraft_formula::adjust::shift_relative(formula.expr_at(at)?, down, 0);
+                (&shifted, None)
+            }
+        };
         let env = (0..db.cols)
             .filter_map(|c| match db.get(0, c) {
                 Some(Value::Text(t)) if !t.trim().is_empty() => {
@@ -224,6 +248,7 @@ impl Ctx for FnCtx<'_, '_> {
             host: &mut *self.ev.host,
             sheet: area.sheet,
             at,
+            base,
             env,
             depth: self.ev.depth,
             calls: self.ev.calls,
@@ -232,7 +257,7 @@ impl Ctx for FnCtx<'_, '_> {
             work: self.ev.work,
             exhausted: false,
         };
-        let v = matches!(ev.value(&shifted).scalar().to_bool(), Ok(true));
+        let v = matches!(ev.value(tree).scalar().to_bool(), Ok(true));
         // The child's spend counts against this cell's budget.
         self.ev.fuel = ev.fuel;
         self.ev.work = ev.work;
@@ -255,8 +280,50 @@ impl Ctx for FnCtx<'_, '_> {
 }
 
 impl<'h> Evaluator<'h> {
+    /// An evaluator for an **absolute** tree: every reference in it is a coordinate (a defined
+    /// name's definition, a tree the caller resolved, `INDIRECT`'s own parse).
     pub fn new(host: &'h mut dyn Host, sheet: usize, at: CellRef) -> Self {
-        Evaluator { host, sheet, at, env: Vec::new(), depth: 0, calls: 0, stack_top: 0, fuel: LAMBDA_FUEL, work: EVAL_WORK, exhausted: false }
+        Evaluator {
+            host,
+            sheet,
+            at,
+            base: None,
+            env: Vec::new(),
+            depth: 0,
+            calls: 0,
+            stack_top: 0,
+            fuel: LAMBDA_FUEL,
+            work: EVAL_WORK,
+            exhausted: false,
+        }
+    }
+
+    /// The same evaluator for a shape's canonical tree: its relative references are offsets from
+    /// `base`, so the one tree of a million-cell fill is evaluated in place, with no per-cell copy
+    /// (S4 of `plan/SHAPE-SHARING.md`).
+    pub fn at_base(mut self, base: Option<CellRef>) -> Self {
+        self.base = base;
+        self
+    }
+
+    /// The range `r` reads in this tree: a coordinate when the tree is absolute, `base + offset`
+    /// when it is a shape's canonical tree. An error is `#REF!` — a relative part that leaves the
+    /// sheet, which is what a formula copied past the edge shows (a shape never does at the cell
+    /// it was interned for).
+    pub fn ref_range(&self, r: &Reference) -> Result<RangeRef, CellError> {
+        match self.base {
+            Some(base) => r.range_at(base).ok_or(CellError::Ref),
+            None => Ok(r.range()),
+        }
+    }
+
+    /// Evaluates `e`, whose references are coordinates whatever this formula's own tree is: what
+    /// `INDIRECT`'s parsed text and a defined name's definition need (neither is a shape).
+    pub(crate) fn eval_absolute(&mut self, e: &Expr) -> Ev {
+        let outer = self.base.take();
+        let r = self.eval(e);
+        self.base = outer;
+        r
     }
 
     /// Spends `units` of this cell's work; `false` (and nothing left) when there isn't enough.
@@ -288,7 +355,7 @@ impl<'h> Evaluator<'h> {
         // the cell directly instead of building an area vector and dereferencing it. The result
         // is exactly what `deref(Ev::R(areas))` gives for one single-cell area.
         if let Expr::Ref(r) = e
-            && let range = r.range()
+            && let Ok(range) = self.ref_range(r)
             && range.is_single()
         {
             let sheet = match &r.sheet {
@@ -319,7 +386,7 @@ impl<'h> Evaluator<'h> {
     }
 
     pub fn reference_areas(&self, r: &Reference) -> Result<Vec<Area>, CellError> {
-        let range = r.range();
+        let range = self.ref_range(r)?;
         Ok(self.resolve_sheet(&r.sheet)?.into_iter().map(|sheet| Area { sheet, range }).collect())
     }
 
@@ -485,7 +552,9 @@ impl<'h> Evaluator<'h> {
     fn name_value(&mut self, expr: &Expr, scope: usize) -> Ev {
         let saved = self.sheet;
         self.sheet = scope;
-        let r = self.eval(expr);
+        // A definition is written once and kept from A1: its references are coordinates, not
+        // offsets from the cell using the name.
+        let r = self.eval_absolute(expr);
         self.sheet = saved;
         r
     }

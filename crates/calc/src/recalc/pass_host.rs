@@ -153,16 +153,17 @@ impl Trees {
         self.index.get(&k).copied()
     }
 
-    /// The absolute tree to evaluate in `slot`: the cell's own, or its shape resolved at the cell.
+    /// The tree to evaluate in `slot` and the cell its relative parts are offsets from (`None`
+    /// when the tree is absolute).
     ///
-    /// A shape cell's tree is built here and dropped when the evaluation ends, never kept: the
-    /// whole point of the shape is that a million cells of one fill do not hold a million trees,
-    /// and what is left is one hot tree walked a million times. (S4 of `plan/SHAPE-SHARING.md`
-    /// removes even this by resolving references in the evaluator, at the cell it knows.)
-    pub(super) fn expr(&self, slot: u32) -> Option<std::sync::Arc<Expr>> {
+    /// A shape cell is read **in place**: the one tree of a million-cell fill is walked where it
+    /// is, and each reference adds the cell's position as it is read (`Evaluator::ref_range`),
+    /// instead of being resolved into a private tree per formula per pass (S4 of
+    /// `plan/SHAPE-SHARING.md`).
+    pub(super) fn source(&self, slot: u32) -> Option<(&Expr, Option<CellRef>)> {
         match self.trees.get(slot as usize)? {
-            Source::Tree(tree) => Some(std::sync::Arc::clone(tree)),
-            Source::Shape(shape, at) => shape.resolve(*at).map(std::sync::Arc::new),
+            Source::Tree(tree) => Some((tree, None)),
+            Source::Shape(shape, at) => Some((shape.tree(), Some(*at))),
         }
     }
 
@@ -651,7 +652,7 @@ impl PassHost<'_> {
         }
         // A slot marked in flight is a formula being evaluated: reading it is a circular reference.
         let running = self.in_flight > 0 && current.in_flight;
-        let Some(expr) = trees.expr(slot) else {
+        let Some((expr, base)) = trees.source(slot) else {
             return self.wb.sheet(k.0).map(|s| s.value(k.1)).unwrap_or_default();
         };
         if self.suspend.is_some() {
@@ -689,8 +690,8 @@ impl PassHost<'_> {
         }
         let outer_out_of_stack = std::mem::replace(&mut self.out_of_stack, false);
         let v = {
-            let mut ev = Evaluator::new(self, k.0, k.1);
-            ev.value(&expr)
+            let mut ev = Evaluator::new(self, k.0, k.1).at_base(base);
+            ev.value(expr)
         };
         let out_of_stack = std::mem::replace(&mut self.out_of_stack, outer_out_of_stack);
         if out_of_stack && self.depth > 1 && self.suspend.is_none() {
@@ -737,7 +738,7 @@ impl PassHost<'_> {
         // A blank cell shows as 0 in a formula's result, inside an array as well (`=A1:A3`,
         // FILTER or SORT of a range with blanks). GROUPBY and PIVOTBY lay out blank cells
         // of their own, which stay blank.
-        let keep_blanks = matches!(&*expr, Expr::Call(n, _) if matches!(n.as_str(), "GROUPBY" | "PIVOTBY"));
+        let keep_blanks = matches!(expr, Expr::Call(n, _) if matches!(n.as_str(), "GROUPBY" | "PIVOTBY"));
         let v = match v {
             Value::Array(a) => {
                 let a = if keep_blanks || !a.data.iter().any(|x| matches!(x, Value::Empty)) {

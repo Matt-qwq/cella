@@ -207,27 +207,49 @@ pub struct Precedents {
 /// and an edit of B1 does. `names` keeps the resolved definitions between calls.
 pub fn precedents(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr) -> (Vec<Area>, Precedents) {
     let mut out = Vec::new();
-    let reads = precedents_into(names, wb, sheet, e, &mut out);
+    let reads = precedents_into(names, wb, sheet, e, None, &mut out);
     (out, reads)
+}
+
+/// The range `r` reads in a tree whose relative parts are offsets from `base`, or coordinates when
+/// `base` is `None` (an absolute tree: a defined name's definition, a resolved tree).
+fn resolved(r: &Reference, base: Option<CellRef>) -> Option<RangeRef> {
+    match base {
+        Some(base) => r.range_at(base),
+        None => Some(r.range()),
+    }
 }
 
 /// [`precedents`] appending to a buffer the caller reuses and emptying it first.
 ///
 /// Building the graph asks a million formulas for their precedents; one `Vec` per formula is a
 /// million allocations that say nothing the graph does not already know.
-pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, out: &mut Vec<Area>) -> Precedents {
+/// `base` is the cell the tree's **relative** parts are offsets from when it is a shape's
+/// canonical tree, and `None` when it is absolute (what `Reference::range` spells). A shape is read
+/// where it is, so building the graph of a million-cell fill walks one tree and adds a cell offset
+/// per reference instead of resolving a tree per formula (S4 of `plan/SHAPE-SHARING.md`).
+pub fn precedents_into(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, base: Option<CellRef>, out: &mut Vec<Area>) -> Precedents {
     out.clear();
     // One budget for the whole walk, shared by the definitions it follows: past
     // `MAX_PRECEDENT_NODES` the result is conservative (the formula is marked `dynamic`, so it
     // recalculates every time) rather than a walk that never ends.
     let mut left = MAX_PRECEDENT_NODES;
-    precedents_at(names, wb, sheet, e, 0, &mut left, out)
+    precedents_at(names, wb, sheet, e, base, 0, &mut left, out)
 }
 
 /// [`precedents`] at name depth `depth`: a name whose definition is static contributes that
 /// definition's references (`Rate` defined as `Sheet1!$B$1` reads one cell), and only a
 /// definition that can move stays dynamic.
-fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, depth: usize, left: &mut usize, out: &mut Vec<Area>) -> Precedents {
+fn precedents_at(
+    names: &mut NameCache,
+    wb: &Workbook,
+    sheet: usize,
+    e: &Expr,
+    base: Option<CellRef>,
+    depth: usize,
+    left: &mut usize,
+    out: &mut Vec<Area>,
+) -> Precedents {
     let mut dynamic = false;
     let mut trim = false;
     let mut hidden_rows = false;
@@ -274,20 +296,26 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             volatile = true;
         }
         match x {
-            Expr::Ref(r) => {
-                let range = r.range();
-                trim |= trimmed(range);
-                push(&mut *out, r, range);
-            }
+            Expr::Ref(r) => match resolved(r, base) {
+                Some(range) => {
+                    trim |= trimmed(range);
+                    push(&mut *out, r, range);
+                }
+                // A relative part off the sheet: the cell shows `#REF!` there, so it reads
+                // nothing — and it is recalculated every time rather than once on a guess.
+                None => dynamic = true,
+            },
             // The cells SUMIF/AVERAGEIF really read from the sum range (see `resized_sum_range`); when
             // the criteria range's size isn't known statically, recalculate the formula every time.
             Expr::Call(n, args) if resizes_sum_range(n, args.len()) => match (args.first(), args.get(2)) {
-                (Some(Expr::Ref(c)), Some(Expr::Ref(s))) => {
-                    let (crit, sum) = (c.range(), s.range());
-                    let resized = resized_sum_range(sum, crit.height(), crit.width());
-                    trim |= trimmed(resized);
-                    push(&mut *out, s, resized);
-                }
+                (Some(Expr::Ref(c)), Some(Expr::Ref(s))) => match (resolved(c, base), resolved(s, base)) {
+                    (Some(crit), Some(sum)) => {
+                        let resized = resized_sum_range(sum, crit.height(), crit.width());
+                        trim |= trimmed(resized);
+                        push(&mut *out, s, resized);
+                    }
+                    _ => dynamic = true,
+                },
                 (_, Some(Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Array(_) | Expr::Missing)) => {}
                 _ => dynamic = true,
             },
@@ -300,8 +328,9 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
                 // refreshed: the whole written area is the dependency (and the lookup is dynamic
                 // because a refresh may move the report).
                 dynamic = true;
-                if let Some(Expr::Ref(r)) = args.get(1) {
-                    let at = r.range().start;
+                if let Some(Expr::Ref(r)) = args.get(1)
+                    && let Some(at) = resolved(r, base).map(|range| range.start)
+                {
                     let mut sheets: Vec<usize> = Vec::new();
                     match &r.sheet {
                         SheetSel::Current => sheets.push(sheet),
@@ -326,7 +355,8 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             }
             Expr::Name(n) => match names.target(wb, sheet, n) {
                 NameTarget::Definition(def, scope) if depth < MAX_NAME_DEPTH && *left > 0 && !is_lambda_definition(&def) => {
-                    let inner = precedents_at(names, wb, scope, &def, depth + 1, left, out);
+                    // A definition is written once and kept from A1: its references are coordinates.
+                    let inner = precedents_at(names, wb, scope, &def, None, depth + 1, left, out);
                     dynamic |= inner.dynamic;
                     trim |= inner.trim;
                     // `Rate` defined as `NOW()` is as volatile as the call it stands for.
@@ -352,8 +382,8 @@ fn precedents_at(names: &mut NameCache, wb: &Workbook, sheet: usize, e: &Expr, d
             // the references inside it, not only those references.
             Expr::Binary(BinOp::Range, a, b) if !matches!((&**a, &**b), (Expr::Ref(_), Expr::Ref(_))) => {
                 let mut inner = Vec::new();
-                precedents_at(names, wb, sheet, a, depth, left, &mut inner);
-                precedents_at(names, wb, sheet, b, depth, left, &mut inner);
+                precedents_at(names, wb, sheet, a, base, depth, left, &mut inner);
+                precedents_at(names, wb, sheet, b, base, depth, left, &mut inner);
                 let mut boxes: Vec<Area> = Vec::new();
                 for area in inner {
                     match boxes.iter_mut().find(|x| x.sheet == area.sheet) {
