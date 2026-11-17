@@ -434,14 +434,35 @@ pub(crate) fn can_compress(bands: usize, newer_retained: usize, byte_budget: usi
     bands > 0 && bands <= COMPRESS_MAX_BANDS && newer_retained.saturating_add(bands.saturating_mul(COMPRESS_BYTES_PER_BAND)) <= byte_budget
 }
 
-/// Whether the newest step is offered its spill. It is the step the next Ctrl+Z restores, so it is
-/// left live — an undo of a live snapshot decodes nothing — unless it alone costs more than the
-/// whole budget: no amount of dropping can fit that step, and the alternative is holding the sheet
-/// it replaced. Then it is worth the whole sheet's encode (which the newest step pays alone, split
-/// over the cores), and only if the pages it becomes still fit beside the `newer` steps — the older
-/// ones, which the budget has already been given its chance at.
+/// Whether the newest step is offered its spill, gated by the same quantity as any other step: how
+/// many bands have to be encoded, at the ~100 µs a band an encode costs ([COMPRESS_MAX_BANDS]), and
+/// whether the pages they become fit beside the older steps.
+///
+/// The newest step is the one the next Ctrl+Z restores, so it is left live — an undo of a live
+/// snapshot reads no page — unless it alone costs more than the whole budget. Even then only the
+/// part that does not fit is spilled, and if *that* part is more than an edit may spend encoding
+/// (the gate's ceiling), it is not spilled at all: the step stays live and is charged what it
+/// really costs, which is what the budget did before pages existed. A million-row step is exactly
+/// that case — a third of the sheet is thousands of bands, a second and a half of encode inside the
+/// fill that pushed it — and paying it to save memory the round before had not yet asked for was
+/// the trade this gate refuses.
 fn worth_spilling_newest(retained: usize, newer_retained: usize, bands: usize, byte_budget: usize) -> bool {
-    retained > byte_budget && bands > 0 && newer_retained.saturating_add(bands.saturating_mul(COMPRESS_BYTES_PER_BAND)) <= byte_budget
+    // What the step costs and what it may keep: the room the older steps leave of the budget.
+    let room = byte_budget.saturating_sub(newer_retained);
+    let needed = retained.saturating_sub(room);
+    if bands == 0 || needed == 0 {
+        return false;
+    }
+    // How many of its bands that part is — the count `can_compress` gates an older step's whole
+    // spill with. A band's page costs [COMPRESS_BYTES_PER_BAND] and frees the rest of what the band
+    // cost the step, so the part that does not fit is that many bands at the difference.
+    let per_band = retained / bands;
+    let freed_per_band = per_band.saturating_sub(COMPRESS_BYTES_PER_BAND);
+    if freed_per_band == 0 {
+        return false;
+    }
+    let spill = needed.div_ceil(freed_per_band);
+    spill <= bands && spill <= COMPRESS_MAX_BANDS
 }
 
 /// The bands a history step would have to spill: its own, on the sheets the next version no longer

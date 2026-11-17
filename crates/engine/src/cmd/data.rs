@@ -305,6 +305,15 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // the whole range in an order that has nothing to do with the bands (a permutation), so on a
         // paged store each line would decode the band it lands in and evict the one it just read:
         // the sheet comes back into memory once, up front, and the move runs on live bands.
+        //
+        // The command layer's other bulk walks were audited and none needs this: a walk that goes
+        // forward through rows or down a column is a walk up the bands (a band is 64 consecutive
+        // rows), a walk backwards is the same walk in reverse, and every write materializes the band
+        // it lands in and keeps it live, so a write-driven pass decodes each band once whatever
+        // order it visits them in. That leaves the sort as the one command that reorders cells, and
+        // the ones above as safe: Remove Duplicates (rows ascending), Fill and the value batch (band
+        // by band), paste and its transpose (the destination moves, the source is read row by row),
+        // and a whole-sheet clear (writes only).
         if let Some(paged) = cx.wb.sheet_mut(sheet)
             && paged.cells.paged_band_count() > 0
         {
