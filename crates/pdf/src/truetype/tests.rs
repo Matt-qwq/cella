@@ -12,8 +12,8 @@ fn reads_the_tables_the_pdf_writer_needs() {
     let face = basic_face();
     assert_eq!(face.glyph_count(), 8);
     assert_eq!(face.units_per_em(), 1000);
-    assert_eq!(face.family_name().as_deref(), Some("GridCraft Synthetic"));
-    assert_eq!(face.postscript_name().as_deref(), Some("GridCraftSynthetic"));
+    assert_eq!(face.family_name().as_deref(), Some("Cella Synthetic"));
+    assert_eq!(face.postscript_name().as_deref(), Some("CellaSynthetic"));
     assert_eq!(face.bbox()[2], 1000);
     assert_eq!(face.ascent_descent(), (800, -200));
     // cmap (format 4) for BMP characters, format 12 for the astral one.

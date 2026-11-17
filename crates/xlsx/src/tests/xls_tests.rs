@@ -1,7 +1,7 @@
 //! Legacy `.xls` (BIFF8) import. Every test file is assembled here from the [MS-CFB] and
 //! [MS-XLS] structures; no Excel-produced file is used.
 
-use gridcraft_core::{CellError, CellRef, DateSystem, RangeRef, Value};
+use cella_core::{CellError, CellRef, DateSystem, RangeRef, Value};
 
 use crate::{Format, IoError, read_xls, read_xlsx, sniff, write_xlsx};
 
@@ -285,11 +285,11 @@ fn sample(date1904: bool) -> Vec<u8> {
     cat(&[&globals([p1, p2, p3]), &sheet1, &data, &chart])
 }
 
-fn v(wb: &gridcraft_model::Workbook, sheet: usize, a1: &str) -> Value {
+fn v(wb: &cella_model::Workbook, sheet: usize, a1: &str) -> Value {
     wb.sheets[sheet].value(CellRef::parse(a1).unwrap())
 }
 
-fn ftext(wb: &gridcraft_model::Workbook, a1: &str) -> Option<String> {
+fn ftext(wb: &cella_model::Workbook, a1: &str) -> Option<String> {
     wb.sheets[0].cell(CellRef::parse(a1).unwrap()).and_then(|c| c.formula).map(|f| f.text.clone())
 }
 
@@ -587,11 +587,11 @@ fn reads_iterative_calculation_settings() {
     let (wb, _) = read_xls(&compound("Workbook", &cat(&[&globals(p1, p2), &sheet1, &sheet2]))).unwrap();
     assert!(wb.calc.iterative);
     assert_eq!((wb.calc.max_iterations, wb.calc.max_change), (50, 0.01));
-    assert_eq!(wb.calc.mode, gridcraft_model::CalcMode::Manual);
+    assert_eq!(wb.calc.mode, cella_model::CalcMode::Manual);
     assert!(wb.calc.precision_as_displayed);
     // Without the records: Excel's defaults, iteration off.
     let (wb, _) = read_xls(&compound("Workbook", &sample(false))).unwrap();
-    assert_eq!(wb.calc, gridcraft_model::CalcSettings::default());
+    assert_eq!(wb.calc, cella_model::CalcSettings::default());
 }
 
 #[test]
@@ -777,36 +777,36 @@ fn xls_fonts_palette_fills_and_borders_reach_the_model() {
     assert_eq!(s.font.name, "Times New Roman");
     assert_eq!(s.font.size, 14.0);
     assert!(s.font.bold && s.font.italic);
-    assert_eq!(s.font.color, gridcraft_model::Color::Rgb(0x123456));
-    assert_eq!(s.font.underline, gridcraft_model::Underline::Single);
+    assert_eq!(s.font.color, cella_model::Color::Rgb(0x123456));
+    assert_eq!(s.font.underline, cella_model::Underline::Single);
     assert_eq!(s.font.charset, Some(134));
     assert_eq!(s.num_fmt.as_str(), "0.000");
-    assert_eq!(s.align.h, gridcraft_model::HAlign::Center);
+    assert_eq!(s.align.h, cella_model::HAlign::Center);
     assert!(s.align.wrap);
-    assert_eq!(s.align.v, gridcraft_model::VAlign::Bottom);
+    assert_eq!(s.align.v, cella_model::VAlign::Bottom);
     assert_eq!((s.align.rotation, s.align.indent), (-30, 2));
-    assert_eq!(s.fill.pattern, gridcraft_model::PatternType::Solid);
-    assert_eq!(s.fill.fg, gridcraft_model::Color::Rgb(0xABCDEF));
-    assert_eq!(s.borders.left.style, gridcraft_model::BorderStyle::Thin);
-    assert_eq!(s.borders.top.style, gridcraft_model::BorderStyle::Thick);
-    assert_eq!(s.borders.bottom.style, gridcraft_model::BorderStyle::Double);
-    assert_eq!(s.borders.left.color, gridcraft_model::Color::Rgb(0x123456));
-    assert_eq!(s.borders.right.color, gridcraft_model::Color::Rgb(0xABCDEF));
-    assert_eq!(s.borders.bottom.color, gridcraft_model::Color::Auto);
+    assert_eq!(s.fill.pattern, cella_model::PatternType::Solid);
+    assert_eq!(s.fill.fg, cella_model::Color::Rgb(0xABCDEF));
+    assert_eq!(s.borders.left.style, cella_model::BorderStyle::Thin);
+    assert_eq!(s.borders.top.style, cella_model::BorderStyle::Thick);
+    assert_eq!(s.borders.bottom.style, cella_model::BorderStyle::Double);
+    assert_eq!(s.borders.left.color, cella_model::Color::Rgb(0x123456));
+    assert_eq!(s.borders.right.color, cella_model::Color::Rgb(0xABCDEF));
+    assert_eq!(s.borders.bottom.color, cella_model::Color::Auto);
     // Cells that share an XF share a style id; the plain cell keeps General and no fill.
     assert_eq!(sh.style_id(CellRef::parse("A1").unwrap()), sh.style_id(CellRef::parse("A2").unwrap()));
     let plain = style("A3");
     assert_eq!(plain.num_fmt.as_str(), "General");
-    assert_eq!(plain.fill.pattern, gridcraft_model::PatternType::None);
+    assert_eq!(plain.fill.pattern, cella_model::PatternType::None);
     assert!(!plain.font.bold);
     // The named style is bound to its format.
     assert_eq!(wb.cell_styles.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["Comma"]);
     // The Normal style (XF 0) is the workbook's default, and it round-trips through XLSX.
-    assert_eq!(wb.styles.get(gridcraft_model::StyleId::DEFAULT).font.name, "Arial");
+    assert_eq!(wb.styles.get(cella_model::StyleId::DEFAULT).font.name, "Arial");
     let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
     let back_s = back.styles.get(back.sheets[0].style_id(CellRef::parse("A1").unwrap()));
     assert_eq!((back_s.font.name.as_str(), back_s.num_fmt.as_str()), ("Times New Roman", "0.000"));
-    assert_eq!(back_s.fill.fg, gridcraft_model::Color::Rgb(0xABCDEF));
+    assert_eq!(back_s.fill.fg, cella_model::Color::Rgb(0xABCDEF));
 }
 
 #[test]

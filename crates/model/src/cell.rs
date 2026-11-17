@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_formula::adjust::shift_relative_copy;
-use gridcraft_formula::{Expr, Shape, ShapeTable};
+use cella_core::{CellRef, RangeRef, Value};
+use cella_formula::adjust::shift_relative_copy;
+use cella_formula::{Expr, Shape, ShapeTable};
 use serde::{Deserialize, Serialize};
 
 use crate::style::StyleId;
@@ -35,7 +35,7 @@ pub struct Formula {
     /// Read from a file that marks this formula as a dynamic-array formula (cell metadata `cm`).
     /// The writer keeps the mark, so a formula Excel evaluates as an array is never saved as a
     /// legacy formula (which Excel evaluates with implicit intersection). Formulas entered or
-    /// rewritten in GridCraft start without it, and the writer decides from their shape.
+    /// rewritten in Cella start without it, and the writer decides from their shape.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dynamic: bool,
 }
@@ -50,8 +50,8 @@ impl Formula {
     /// fallback — every `expr_at` parses the text until a recalculation interns a shape for it.
     pub fn new(text: &str) -> Formula {
         let body = text.strip_prefix('=').unwrap_or(text);
-        match gridcraft_formula::parse(body) {
-            Ok(e) => Formula::from_text(&gridcraft_formula::print(&e)),
+        match cella_formula::parse(body) {
+            Ok(e) => Formula::from_text(&cella_formula::print(&e)),
             Err(_) => Formula::from_text(body),
         }
     }
@@ -62,7 +62,7 @@ impl Formula {
     /// answer a save reads back from the shape (see [`Formula::from_expr_at`]).
     pub fn new_at(text: &str, at: CellRef, shapes: &mut ShapeTable, file_rewrite: bool) -> Formula {
         let body = text.strip_prefix('=').unwrap_or(text);
-        match gridcraft_formula::parse(body) {
+        match cella_formula::parse(body) {
             Ok(e) => Formula::from_expr_at(e, at, shapes, file_rewrite),
             Err(_) => Formula::from_text(body),
         }
@@ -71,13 +71,13 @@ impl Formula {
     /// and the cell keeps its own A1 text (what a save writes).
     ///
     /// `file_rewrite` is the half of "a file spells this formula differently" that this crate
-    /// cannot compute: `gridcraft-formula` knows the syntax cases (`LET`/`LAMBDA`, `#`, `@`, a trim
-    /// reference, `[@Col]`) but the `_xlfn.`/`_xlws.` function table lives in `gridcraft-xlsx`,
+    /// cannot compute: `cella-formula` knows the syntax cases (`LET`/`LAMBDA`, `#`, `@`, a trim
+    /// reference, `[@Col]`) but the `_xlfn.`/`_xlws.` function table lives in `cella-xlsx`,
     /// above model. It is ORed into [`Shape::file_rewrite`] **before** interning, so a save never
     /// resolves a tree to decide how to spell a formula (S3 of `plan/SHAPE-SHARING.md`) — a shape
     /// interned without it would be saved under the model's own spelling.
     pub fn from_expr_at(e: Expr, at: CellRef, shapes: &mut ShapeTable, file_rewrite: bool) -> Formula {
-        let text = gridcraft_formula::print(&e);
+        let text = cella_formula::print(&e);
         let mut shape = Shape::from_expr(e, at);
         shape.file_rewrite |= file_rewrite;
         Formula { text, shape: Some(shapes.intern(shape)), array: None, dynamic: false }
@@ -104,7 +104,7 @@ impl Formula {
         {
             return Some(e);
         }
-        gridcraft_formula::parse(&self.text).ok()
+        cella_formula::parse(&self.text).ok()
     }
     /// The shape this cell's formula shares with every other cell of the same fill, when it has one.
     pub fn shape(&self) -> Option<Arc<Shape>> {
@@ -135,11 +135,11 @@ impl Formula {
         // shift gave it, held as a **private** shape (no interner in reach, and nothing to share:
         // such a cell is rare and its text is unique). It still prints the text it was given
         // (`Shape::print_at` at `at` is ``text``), so the master invariant holds for it too.
-        let e = shape.map_or_else(|| gridcraft_formula::parse(text).ok(), |s| s.resolve(from))?;
+        let e = shape.map_or_else(|| cella_formula::parse(text).ok(), |s| s.resolve(from))?;
         let shifted = shift_relative_copy(&e, i64::from(at.row) - i64::from(from.row), i64::from(at.col) - i64::from(from.col));
         // The text is the *resolved* tree's: the canonical one stores offsets, and printing those
         // would spell a relative reference as the row and column it is an offset by.
-        let text = gridcraft_formula::print(&shifted);
+        let text = cella_formula::print(&shifted);
         let mut private = Shape::from_expr(shifted, at);
         // A shift keeps the syntax that makes a file spell a formula differently (a `LET`, a `#`,
         // an `@`, a trim reference, a structured reference) and clamping a reference to `#REF!`
@@ -160,7 +160,7 @@ impl Formula {
     /// own text here. The text is the only witness of what such a formula said, because its shape's
     /// base is stale by construction.
     pub fn text_tree(&self) -> Option<Expr> {
-        gridcraft_formula::parse(&self.text).ok()
+        cella_formula::parse(&self.text).ok()
     }
 }
 
@@ -253,12 +253,12 @@ mod tests {
     #[test]
     fn an_array_range_is_boxed_without_changing_the_json() {
         let mut f = Formula::new("=A1:A2*2");
-        f.array = gridcraft_core::RangeRef::parse("C1:D2").map(Box::new);
+        f.array = cella_core::RangeRef::parse("C1:D2").map(Box::new);
         let json = serde_json::to_string(&f).expect("a formula serialises");
         assert_eq!(json, r#"{"text":"A1:A2*2","array":{"start":{"row":0,"col":2},"end":{"row":1,"col":3}}}"#);
         let back: Formula = serde_json::from_str(&json).expect("a formula deserialises");
         assert_eq!(back, f, "the text, the range and the dynamic mark survive");
-        assert_eq!(back.array.as_deref().copied(), gridcraft_core::RangeRef::parse("C1:D2"));
+        assert_eq!(back.array.as_deref().copied(), cella_core::RangeRef::parse("C1:D2"));
         // A formula with no array keeps the field as `null`: the shape the field always had.
         let plain = Formula::new("=A1+1");
         assert_eq!(serde_json::to_string(&plain).expect("serialises"), r#"{"text":"A1+1","array":null}"#);

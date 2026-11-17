@@ -1,8 +1,8 @@
-//! The measure language: the deliberate subset of DAX GridCraft evaluates over its data model.
+//! The measure language: the deliberate subset of DAX Cella evaluates over its data model.
 //!
 //! A measure is a formula such as SUM(Sales[Amount]) or
 //! CALCULATE(SUM(Sales[Amount]), Region[Name] = "West") defined over the model's tables
-//! (gridcraft_model::DataModel) rather than over a sheet. This crate is the whole language: one
+//! (cella_model::DataModel) rather than over a sheet. This crate is the whole language: one
 //! parser, one evaluator, no I/O and no egui, so it builds for WebAssembly and the engine, the
 //! control channel and the tests all reach it the same way.
 //!
@@ -66,8 +66,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use gridcraft_core::Value;
-use gridcraft_model::DataModel;
+use cella_core::Value;
+use cella_model::DataModel;
 
 mod eval;
 mod parse;

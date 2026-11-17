@@ -26,9 +26,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gridcraft_core::CellRef;
-use gridcraft_formula::{BinOp, Expr, RefKind, ShapeTable, SheetSel, StructItem, UnOp};
-use gridcraft_model::{Formula, Workbook};
+use cella_core::CellRef;
+use cella_formula::{BinOp, Expr, RefKind, ShapeTable, SheetSel, StructItem, UnOp};
+use cella_model::{Formula, Workbook};
 
 #[derive(Clone, Copy, Default)]
 struct Shape {
@@ -106,11 +106,11 @@ impl Scan<'_> {
                     return *shape;
                 }
                 let (scope, bare) = match n.rsplit_once('!') {
-                    Some((s, name)) => (self.wb.sheet_index(&gridcraft_core::unquote_sheet(s)).unwrap_or(sheet), name),
+                    Some((s, name)) => (self.wb.sheet_index(&cella_core::unquote_sheet(s)).unwrap_or(sheet), name),
                     None => (sheet, n.as_str()),
                 };
                 if let Some(def) = self.wb.name(bare, scope) {
-                    return match gridcraft_formula::parse_name(def.formula.trim_start_matches('=')) {
+                    return match cella_formula::parse_name(def.formula.trim_start_matches('=')) {
                         // A definition is written once and kept from A1: its references are
                         // coordinates, whatever the formula using it reads.
                         Ok(expr) => self.expr(&expr, def.scope.unwrap_or(scope), None, array_context, depth + 1),
@@ -214,7 +214,7 @@ impl Scan<'_> {
             "INDIRECT" => match args.first() {
                 Some(Expr::Text(text)) if !matches!(args.get(1), Some(Expr::Bool(false))) => {
                     // The text names coordinates: an absolute tree.
-                    gridcraft_formula::parse(text).map(|e| self.expr(&e, sheet, None, array_context, depth).array).unwrap_or(true)
+                    cella_formula::parse(text).map(|e| self.expr(&e, sheet, None, array_context, depth).array).unwrap_or(true)
                 }
                 _ => true,
             },
@@ -493,7 +493,7 @@ fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &m
 /// the same expression, so an `` never takes parentheses the text needs with it. An `` of a
 /// bare union has no such text, so its formula is left as it was read.
 fn reads_back(e: Expr) -> Option<Expr> {
-    gridcraft_formula::parse(&gridcraft_formula::print(&e)).is_ok_and(|p| p == e).then_some(e)
+    cella_formula::parse(&cella_formula::print(&e)).is_ok_and(|p| p == e).then_some(e)
 }
 
 /// The operand of an `` without the parentheses [`at`] adds.
@@ -805,7 +805,7 @@ impl<'a> Legacy<'a> {
             return *kind;
         }
         let (scope, bare) = match n.rsplit_once('!') {
-            Some((s, name)) => (self.wb.sheet_index(&gridcraft_core::unquote_sheet(s)).unwrap_or(sheet), name),
+            Some((s, name)) => (self.wb.sheet_index(&cella_core::unquote_sheet(s)).unwrap_or(sheet), name),
             None => (sheet, n),
         };
         if let Some(def) = self.wb.name(bare, scope) {
@@ -842,7 +842,7 @@ impl<'a> Legacy<'a> {
                 self.read.extend(info.closure.iter().cloned());
                 return info.kind;
             }
-            let Ok(expr) = gridcraft_formula::parse_name(def.formula.trim_start_matches('=')) else { return Kind::Array };
+            let Ok(expr) = cella_formula::parse_name(def.formula.trim_start_matches('=')) else { return Kind::Array };
             self.shared.analyses += 1;
             self.names.insert(key.clone(), None);
             // A name's own formula does not see the formula's LET variables.
@@ -940,7 +940,7 @@ impl<'a> Legacy<'a> {
                 }
             }
             "INDIRECT" => match out.first() {
-                Some(Expr::Text(text)) if !matches!(out.get(1), Some(Expr::Bool(false))) => match gridcraft_formula::parse(text) {
+                Some(Expr::Text(text)) if !matches!(out.get(1), Some(Expr::Bool(false))) => match cella_formula::parse(text) {
                     Ok(e) => {
                         let kind = self.kind_of(e, sheet, depth);
                         if kind == Kind::Scalar { Kind::Scalar } else { Kind::Ref }

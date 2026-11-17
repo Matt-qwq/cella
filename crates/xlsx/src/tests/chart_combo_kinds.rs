@@ -1,6 +1,6 @@
 //! Importing a combination chart keeps each series' own group kind, the first group's included.
 
-use gridcraft_model::ChartKind;
+use cella_model::ChartKind;
 
 use crate::chart::read_chart;
 use crate::xml::parse;
@@ -76,7 +76,7 @@ fn series_keep_their_order_when_the_groups_are_written_out_of_order() {
 /// written.
 #[test]
 fn a_combo_of_bar_groups_is_written_as_horizontal_bars() {
-    use gridcraft_model::{Chart, Series, Workbook};
+    use cella_model::{Chart, Series, Workbook};
 
     use crate::chart::write_chart;
 

@@ -11,7 +11,7 @@
 
 
 
-Every format Excel opens or saves, with GridCraft's read and write support, fidelity and tests.
+Every format Excel opens or saves, with Cella's read and write support, fidelity and tests.
 
 
 
@@ -31,7 +31,7 @@ Excel's list comes from Microsoft's public "File formats that are supported in E
 
 
 
-documentation (the Office bundle is off limits under this repo's clean-room rule). GridCraft's
+documentation (the Office bundle is off limits under this repo's clean-room rule). Cella's
 
 
 
@@ -127,7 +127,7 @@ Dynamic-array formulas keep their mark on save. A formula read with dynamic-arra
 
 
 
-metadata part, even when it returns one value and GridCraft's own shape analysis would not need
+metadata part, even when it returns one value and Cella's own shape analysis would not need
 
 
 
@@ -159,7 +159,7 @@ values) is still dropped.
 
 
 
-| Format | Excel | GridCraft read | GridCraft write | Fidelity / notes | Tests |
+| Format | Excel | Cella read | Cella write | Fidelity / notes | Tests |
 
 
 
@@ -226,7 +226,7 @@ Opening a workbook and saving it must not simplify it. `crates/xlsx/src/passthro
 
 
 
-parts GridCraft has no model for as they are — bytes, relationships, content type — and writes them
+parts Cella has no model for as they are — bytes, relationships, content type — and writes them
 
 
 
@@ -234,7 +234,7 @@ back where they were read from. It is the same mechanism for every row of the ma
 
 
 
-relationship graph walked from an owner, refused when it reaches content GridCraft rewrites.
+relationship graph walked from an owner, refused when it reaches content Cella rewrites.
 
 
 
@@ -294,7 +294,7 @@ relationship graph walked from an owner, refused when it reaches content GridCra
 | Numeric grouping of a PivotTable field | modelled: `rangePr startNum`/`endNum`/`groupInterval` + `groupBy="range"` | pivot cache definition (`<fieldGroup>`) | a number field's grouping (`PivotField.number_group`) is written as [MS-XLSX] `CT_RangePr`'s three numbers **without `groupBy`** (the default is `range`; an explicit value with a start that did not cover the data made Excel refuse the part), one `<groupItems>` child per caption (`<s v="0-9"/>`, `<s v="&lt;0"/>`, `<s v="&gt;100"/>`) and `numFmtId="0"` (not the date groups' 14); reading takes the three numbers back into the model. The **base** field's `sharedItems` carries `containsNumber="1"`, `containsInteger="1"` for whole numbers, `minValue`/`maxValue` **and the distinct values** (`count` + one `<n>` each): without them Excel treats the grouping as unreliable and rewrites it. The cache definition no longer says `refreshOnLoad="1"` — with it Excel rebuilt the cache on every open and re-anchored a number group at the data's minimum, changing the report's labels; records are saved, so no refresh is needed. Excel names the upper tail after the **next boundary** (`>78740` for 28740..72410 by 25000), and `pivot.group` clamps `start`/`end` to the field's extent (reported as `clamped`) because Excel re-anchors there on a refresh. Verified in **Excel 16** (2026-11-02, gate #1's Excel half): the `pivot` oracle fixture opens, refreshes and re-saves with every cell agreeing |
 | Calculated PivotTable items | modelled: the field's last shared items with `f="1"`, `<item f="1" x>` in the table, `<calculatedItems>` on the cache | pivot cache definition (+ PivotTable) | a calculated item (`PivotCalcItem {field, name, formula}`, Excel's Fields, Items & Sets ▸ Calculated Item) is written the way Excel 16 writes one, captured from an Excel-authored pivot: its caption is the field's **last** `<sharedItems>` child with **`f="1"`** (so `count` includes it and item indices after it are unchanged), the table lists it as `<item f="1" x>`, and `<calculatedItems>` is a **child of `<pivotCacheDefinition>`**, after `</cacheFields>` and before `<extLst>`, with `formula="Field[item]+Field[item]"`, `pivotArea/@cacheIndex` (the cache's id), `@outline="0"`, `@fieldPosition` (the field's position among rows then columns) and a `<reference field>` (the cache field index) holding `<x v>` (the item's index). The model's dialog form (`=North+South`) is printed to `Field[item]` and read back (`crates/model/src/pivot_item.rs`); a caption that cannot be written bare (spaces, operators, a number) stays bracketed. Reading drops a definition it cannot express — another field's item, a missing field, a grouped field, another field's index, a bad formula — with a warning. **Verified in Excel 16 (2026-11-02):** the oracle's `pivot` fixture carries `Region[East]+Region[West]`; Excel keeps the definition on open/refresh and recomputes 116,320, and our reader reads Excel's own copy back as `=East+West` |
 | PivotTable label/value filters | the filter's result as hidden items (`pivotField/items/item/@h`); the rule itself is model-only | PivotTable | a label or value filter is evaluated when it is set and its kept labels are written as the field's hidden items — the same representation an axis item filter and the slicer path use — so the report, a save/reopen, a refresh and Excel agree on the visible items. Excel's own `<filters>` element (CT_PivotFilters: `type`/`stringValue1`/`value1`, with the `autoFilter` mirror) is **not** written, so Excel's field dropdown shows hidden items rather than "filtered by value", and a refresh after new data keeps the item set instead of re-evaluating the rule; reading also goes through `item/@h`, so an Excel-authored label/value filter's visible set is preserved but its rule is not re-evaluated. **Never verified in Excel** (gate #1); the choice is deliberate — no invented filter encoding |
-| Unmodelled `extLst` children | the `<ext>` element, with its relationship ids rewritten | workbook, worksheet, table, PivotTable, pivot cache definition | the extensions GridCraft writes itself (calc features, data bars, sparklines, x14 validations, the PivotTable's own x14 extensions) are written from the model, never kept from the source |
+| Unmodelled `extLst` children | the `<ext>` element, with its relationship ids rewritten | workbook, worksheet, table, PivotTable, pivot cache definition | the extensions Cella writes itself (calc features, data bars, sparklines, x14 validations, the PivotTable's own x14 extensions) are written from the model, never kept from the source |
 
 
 
@@ -306,11 +306,11 @@ relationship graph walked from an owner, refused when it reaches content GridCra
 
 
 
-| **Dropped: anything whose graph reaches rewritten content** | — | — | e.g. a control whose preview image is a chart part: keeping it would point at a part GridCraft rewrites |
+| **Dropped: anything whose graph reaches rewritten content** | — | — | e.g. a control whose preview image is a chart part: keeping it would point at a part Cella rewrites |
 
 
 
-| **Dropped: Strict Open XML content** | — | — | its namespaces differ from what GridCraft writes |
+| **Dropped: Strict Open XML content** | — | — | its namespaces differ from what Cella writes |
 
 
 
@@ -378,7 +378,7 @@ Rules that keep a save safe:
 
 
 
-  all-or-nothing, so one cache GridCraft cannot fully understand leaves every slicer (or timeline)
+  all-or-nothing, so one cache Cella cannot fully understand leaves every slicer (or timeline)
 
 
 
@@ -426,7 +426,7 @@ Rules that keep a save safe:
 
 
 
-**Not verified:** an Excel run over a workbook with slicers or timelines saved by GridCraft; repair
+**Not verified:** an Excel run over a workbook with slicers or timelines saved by Cella; repair
 
 
 
@@ -446,7 +446,7 @@ prompts remain unknown (gap #1).
 
 
 
-| Format | Excel | GridCraft read | GridCraft write | Notes |
+| Format | Excel | Cella read | Cella write | Notes |
 
 
 
@@ -476,7 +476,7 @@ prompts remain unknown (gap #1).
 
 
 
-| `.json` | via Power Query | GridCraft's own workbook JSON (debug) and JSON import | GridCraft JSON | Not Power Query's JSON shaping; notes and hyperlinks break export (#126) |
+| `.json` | via Power Query | Cella's own workbook JSON (debug) and JSON import | Cella JSON | Not Power Query's JSON shaping; notes and hyperlinks break export (#126) |
 
 
 
@@ -500,7 +500,7 @@ prompts remain unknown (gap #1).
 
 
 
-| Format | Excel | GridCraft | Notes |
+| Format | Excel | Cella | Notes |
 
 
 
@@ -544,7 +544,7 @@ Server, Access, ODBC, …), web pages, SharePoint and online services, through P
 
 
 
-GridCraft imports CSV/TSV, JSON and HTML tables only, with no query editor, no connections and no
+Cella imports CSV/TSV, JSON and HTML tables only, with no query editor, no connections and no
 
 
 
@@ -635,7 +635,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 | 2026-10-30 | minor | **Standard (ECMA-376, [MS-OFFCRYPTO] 2.3.2) encryption is written**, and the scheme is the caller's choice: `file.save`/`file.saveAs`/`file.saveBytes` take `encryption` (`agile` by default, or `standard`), and an unknown name is an error listing both. A workbook opened with a Standard password is saved back as Standard; `password: ""` still removes the protection. Writer: version-4.2 `EncryptionInfo` (flags fCryptoAPI and fAES, `CALG_AES_128`, `CALG_SHA1`, 128-bit key, `PROV_RSA_AES` and its CSP name, then the verifier) and `EncryptedPackage` as the plaintext length plus AES-128-**ECB** ciphertext, zero-padded ([MS-OFFCRYPTO] 2.3.2.5: one ECB pass, no IV and no per-segment key — the segmented CBC form is Agile's). The key is the Standard derivation ([MS-OFFCRYPTO] 2.3.4.7): SHA-1 over salt + UTF-16LE password, 50,000 rounds, the block-0 hash, then the 0x36/0x5C expansion. No new dependency. Both schemes draw their salts from the same `random_bytes`, so the web build's no-CSPRNG refusal covers both. Tests: a round trip at 0, 1, 15, 16, 4095, 4096, 4097 and 100 kB bytes, a wrong password, a tampered salt/verifier (`WrongPassword`), a flipped ciphertext byte (undetectable by the scheme — Standard has no `dataIntegrity` — and refused by the package's zip CRCs), a fresh salt per save, the header field by field, an independent CFB reader on the Standard container, and the derivation re-derived from the spec inside the test. Engine: `file.save` with `encryption: "standard"` writes a file that opens, the scheme sticks to the document across an ordinary Save, an explicit scheme overrides it, and `""` removes the protection. Oracle: an independent Python implementation (own CFB parser, `hashlib`, an unrelated AES) reproduced the verifier, the key and the package and read the result with `zipfile`, and **Excel 16 opened the file with its password and showed its cells** (a wrong or missing password never got past Excel's prompt); no encrypted corpus here, so a file written by another tool is still untested |
-| 2026-10-30 | minor | XLSX timelines model their selected date range. `PivotTimeline` gains `range: Option<TimelineRange>` (two serials); the cache's `<state><selection startDate endDate>` is read when the state says `filterType="dateBetween"`, and written that way when a range exists (`unknown` with no selection otherwise), before the required `<bounds>`. A date is modelled only in the exact `YYYY-MM-DDThh:mm:ss` form GridCraft writes, and only when the range is ordered, so a reversed range, a fraction of a second, a zone, a date outside the 1900/1904 calendar, a refresh version or a state whose filter type contradicts its children leaves every timeline part byte-identical on the kept path. `slicer.setRange {slicer?, start, end}` sets or clears (`null`/`null`) the range in one undo step: the source rows whose date is inside the range contribute the report's own item labels (its date grouping when the field is on an axis), which become the field's `PivotFilter` and are re-rendered through `pivot.refresh` — the same path `slicer.setSelection` uses, so save → reopen and a later refresh keep the filter. Inverted ranges, one-sided dates, a field with no dates and year-less date text are refused by name; a range past the field's own first/last date is clamped to them and reported (`clamped`). Tests: `slicer_tests.rs` (range round trip, no-range write, kept-path variants, hostile model range), engine `tests.rs` (`slicer.setRange` filters/undo/save-reopen/clear and every refusal). A partially covered period shows whole: the pivot model filters by item labels, not per row |
+| 2026-10-30 | minor | XLSX timelines model their selected date range. `PivotTimeline` gains `range: Option<TimelineRange>` (two serials); the cache's `<state><selection startDate endDate>` is read when the state says `filterType="dateBetween"`, and written that way when a range exists (`unknown` with no selection otherwise), before the required `<bounds>`. A date is modelled only in the exact `YYYY-MM-DDThh:mm:ss` form Cella writes, and only when the range is ordered, so a reversed range, a fraction of a second, a zone, a date outside the 1900/1904 calendar, a refresh version or a state whose filter type contradicts its children leaves every timeline part byte-identical on the kept path. `slicer.setRange {slicer?, start, end}` sets or clears (`null`/`null`) the range in one undo step: the source rows whose date is inside the range contribute the report's own item labels (its date grouping when the field is on an axis), which become the field's `PivotFilter` and are re-rendered through `pivot.refresh` — the same path `slicer.setSelection` uses, so save → reopen and a later refresh keep the filter. Inverted ranges, one-sided dates, a field with no dates and year-less date text are refused by name; a range past the field's own first/last date is clamped to them and reported (`clamped`). Tests: `slicer_tests.rs` (range round trip, no-range write, kept-path variants, hostile model range), engine `tests.rs` (`slicer.setRange` filters/undo/save-reopen/clear and every refusal). A partially covered period shows whole: the pivot model filters by item labels, not per row |
 
 | 2026-10-30 | minor | `.xls` (BIFF8) import reads four more record families into the model the `.xlsx` reader builds, so a legacy file opens with the same objects: **data validation** (`DVal` count + `Dv`: whole, decimal, list, date, time, text length and custom kinds, between/not-between/equal/not-equal/greater/less/greater-or-equal/less-or-equal, a literal list kept quoted and a range list given its `=`, prompt and error titles and text, error style, in-cell drop-down and allow-blank flags); **conditional formats** (`CondFmt` + `CF`: cell-value comparisons with one or two bounds and formula rules, the `DXFN` differential format decoded part by part — font, fill, borders, alignment, number format, protection — and `CFEx` for the priority, stop-if-true and `DXFN12` format); **hyperlinks** (`HLink` + `HLinkTooltip` with the Hyperlink Object's URL and file monikers, a composite moniker's file part, in-workbook locations and the tooltip, joined with `#` as the `.xlsx` reader joins a relationship and a location); **frozen panes** (`Pane` + `WINDOW2.fFrozenRt`, with the scrolling pane's first cell as the view's top-left, and a scrolled sheet's own first visible cell); `Window1.itabCur` picks the active sheet. The `Dv` flags are read from the one 32-bit word 2.4.95's diagram packs them into (not two bytes), and `CF`'s two formulas are located from the record's end so a format length cannot shift them. Truncated or malformed feature records are warnings and the rest of the file still opens; their counts are never allocation hints. Refused with a warning: `CondFmt12`/`CF12` colour scales, data bars and icon sets (the record's tail byte counts are not determined by the specification). These readers are spec-derived and fixture-tested only — no `.xls` corpus and no Excel on this machine. BIFF5 stays refused: [MS-XLS] specifies BIFF8 only (`BOF.vers` MUST be 0x0600), so its record layouts cannot be built clean-room from it. Tests compare every field against what the `.xlsx` reader produces for the same model (`xls_features_tests.rs`), and the unencrypted `.xlsx` save path is untouched (`saved_package_bytes_are_stable`) |
 
@@ -655,7 +655,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 | 2026-11-03 | minor | **`.xls` charts are read**: the chart substream nested in the worksheet (chart group kind and variants, series `BRAI` ranges, cached names, title, legend), with anchors from the `msosptChart` shape and the drawing's order. Verified in Excel 16: a five-kind `.xls` converts and reopens with the same kinds, titles and anchors, and an exported chart renders correctly. **RC4 is not an ECMA-376 Standard cipher** — Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits — so encrypted `.xls` output is re-scoped to a `.xls` writer; #7 is down to shapes/OLE/chart sheets. No score change |
 | 2026-11-03 | minor | Status sync after round 16: file formats at ~54% (65–98 h) to match [target-app-parity.md](target-app-parity.md); the `.xls` row records `CF12` and pictures as read and drops the claim that there is no Excel here, since those readers were settled against Excel 16-authored files. RC4 writing is the one encryption gap. No format change |
 | 2026-11-02 | minor | Gate #1 recorded as owner-blocked (Excel unlicensed on the dev machine) and its non-Excel half split out: [oracle.md](oracle.md) reads our `.xlsx` back through openpyxl and WPS 12.0, and the package validator now refuses a part whose namespace prefix is undeclared — which is how a PivotTable part's missing `xmlns:r` was found (11 saving tests were red before the fix). The corpus entry drops to 3–6 h plus the owner's Excel run |
-| 2026-10-30 | minor | PivotTable slicers and timelines: modelled (cache field, PivotTables filtered, item values with their selected flags, name, caption, style, column count, timeline unit, anchor), read from the model's selectable parts and written once from it; `insert.slicer`/`insert.timeline`/`slicer.setSelection`/`slicer.setStyle`/`slicer.move`/`slicer.delete` drive them, and a selection filters the PivotTable through its own filter and refresh path, undoably and across save/reopen. Content GridCraft cannot model (OLAP caches, item properties, unknown attributes, a timeline's date range) remains byte-identical on the pass-through path. The placement drawing shape is not written (the model keeps the anchor); the file format was not verified in Excel |
+| 2026-10-30 | minor | PivotTable slicers and timelines: modelled (cache field, PivotTables filtered, item values with their selected flags, name, caption, style, column count, timeline unit, anchor), read from the model's selectable parts and written once from it; `insert.slicer`/`insert.timeline`/`slicer.setSelection`/`slicer.setStyle`/`slicer.move`/`slicer.delete` drive them, and a selection filters the PivotTable through its own filter and refresh path, undoably and across save/reopen. Content Cella cannot model (OLAP caches, item properties, unknown attributes, a timeline's date range) remains byte-identical on the pass-through path. The placement drawing shape is not written (the model keeps the anchor); the file format was not verified in Excel |
 
 
 
@@ -672,7 +672,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 
-| 2026-10-30 | minor | Pass-through of unmodelled XLSX content: slicers and slicer caches, timelines and their caches, query tables attached to tables, and the `extLst` children of the workbook, worksheets, tables, PivotTables and pivot caches GridCraft doesn't model are kept byte-for-byte with their relationships and content types, and dropped with the sheet, table or PivotTable that owned them (never a relationship to a part that isn't written). The data model and chart extensions are still dropped. A strict package validator (`testing::check_package`) runs on every package the test suite saves: targets exist, every part has a content type, no orphan parts, no stale overrides (`owner_extensions.rs`) |
+| 2026-10-30 | minor | Pass-through of unmodelled XLSX content: slicers and slicer caches, timelines and their caches, query tables attached to tables, and the `extLst` children of the workbook, worksheets, tables, PivotTables and pivot caches Cella doesn't model are kept byte-for-byte with their relationships and content types, and dropped with the sheet, table or PivotTable that owned them (never a relationship to a part that isn't written). The data model and chart extensions are still dropped. A strict package validator (`testing::check_package`) runs on every package the test suite saves: targets exist, every part has a content type, no orphan parts, no stale overrides (`owner_extensions.rs`) |
 
 
 
@@ -720,7 +720,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 
-| 2026-10-18 | trivial | XLSX PivotTables: `rowGrandTotals` is the Grand Total row and `colGrandTotals` the Grand Total column. Both were read and written the other way round, which a GridCraft round trip hid, so an Excel file with only one grand total opened showing the other |
+| 2026-10-18 | trivial | XLSX PivotTables: `rowGrandTotals` is the Grand Total row and `colGrandTotals` the Grand Total column. Both were read and written the other way round, which a Cella round trip hid, so an Excel file with only one grand total opened showing the other |
 
 
 
@@ -804,7 +804,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 
-| 2026-10-12 | minor | macOS: the app bundle declares `.xlsb` and `.ods`, so Finder's Open With offers GridCraft for them, as Linux and Windows already did (#321) |
+| 2026-10-12 | minor | macOS: the app bundle declares `.xlsb` and `.ods`, so Finder's Open With offers Cella for them, as Linux and Windows already did (#321) |
 
 
 

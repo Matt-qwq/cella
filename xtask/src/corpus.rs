@@ -1,4 +1,4 @@
-//! `cargo xtask corpus <dir>`: open every `.xlsx` in a directory through GridCraft, report each
+//! `cargo xtask corpus <dir>`: open every `.xlsx` in a directory through Cella, report each
 //! workbook's warnings, save and reopen a sample to prove the writer keeps what the reader read,
 //! and (when python + openpyxl are installed) read the saved copy back through a foreign parser.
 //!
@@ -13,8 +13,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use gridcraft_engine::core::Value;
-use gridcraft_engine::model::Workbook;
+use cella_engine::core::Value;
+use cella_engine::model::Workbook;
 
 /// Most workbooks one run reads, and the most bytes it will read in total.
 const MAX_FILES: usize = 2_000;
@@ -130,7 +130,7 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     let keep_dir = keep.as_ref();
     let temp = match keep_dir {
         Some(dir) => dir.clone(),
-        None => std::env::temp_dir().join(format!("gridcraft-corpus-{}", std::process::id())),
+        None => std::env::temp_dir().join(format!("cella-corpus-{}", std::process::id())),
     };
     if openpyxl || keep_dir.is_some() {
         if keep_dir.is_none() {
@@ -254,7 +254,7 @@ fn check(path: &Path, save: bool, python: Option<&str>, temp: &Path, index: usiz
             return r;
         }
     };
-    let wb = match gridcraft_engine::io::open_bytes(&name, &bytes) {
+    let wb = match cella_engine::io::open_bytes(&name, &bytes) {
         Ok((wb, warnings)) => {
             r.warnings = warnings.len();
             r.warning_texts = warnings.iter().take(20).cloned().collect();
@@ -284,8 +284,8 @@ fn round_trip(
     saved: &mut Option<String>,
 ) -> Result<(), String> {
     let before = digest(wb);
-    let bytes = gridcraft_engine::io::save_bytes(wb, name).map_err(|e| e.to_string())?;
-    let (back, _) = gridcraft_engine::io::open_bytes(name, &bytes).map_err(|e| format!("reopen: {e}"))?;
+    let bytes = cella_engine::io::save_bytes(wb, name).map_err(|e| e.to_string())?;
+    let (back, _) = cella_engine::io::open_bytes(name, &bytes).map_err(|e| format!("reopen: {e}"))?;
     let after = digest(&back);
     let file = temp.join(saved_name(index, name));
     if let Err(e) = std::fs::write(&file, &bytes) {
@@ -333,7 +333,7 @@ fn digest(wb: &Workbook) -> (usize, usize, u64) {
         }
         // Priorities are ranks: the writer renumbers them 1..n on save, which keeps the relative
         // order (what Excel applies) but not the absolute numbers a file happened to use.
-        let mut cfs: Vec<&gridcraft_engine::model::CondFormat> = sheet.cond_formats.iter().collect();
+        let mut cfs: Vec<&cella_engine::model::CondFormat> = sheet.cond_formats.iter().collect();
         cfs.sort_by_key(|c| c.priority);
         for (rank, cf) in cfs.iter().enumerate() {
             (rank, cf.stop_if_true, cf.ranges.len()).hash(&mut hasher);
@@ -493,18 +493,18 @@ mod tests {
     use super::{check, collect, digest, short_name};
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gridcraft-corpus-test-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cella-corpus-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     fn sales() -> Vec<u8> {
-        let mut s = gridcraft_engine::Session::new();
+        let mut s = cella_engine::Session::new();
         s.new_workbook();
         s.execute("file.new", serde_json::json!({"sample": "sales"})).unwrap();
         let wb = (*s.doc().unwrap().wb).clone();
-        gridcraft_engine::io::save_bytes(&wb, "sales.xlsx").unwrap()
+        cella_engine::io::save_bytes(&wb, "sales.xlsx").unwrap()
     }
 
     #[test]
@@ -566,7 +566,7 @@ mod tests {
         assert!(r.error.is_some());
         assert!(!r.ok());
         // A digest of the same model does not depend on the run.
-        let mut s = gridcraft_engine::Session::new();
+        let mut s = cella_engine::Session::new();
         s.new_workbook();
         s.execute("file.new", serde_json::json!({"sample": "sales"})).unwrap();
         let wb = (*s.doc().unwrap().wb).clone();

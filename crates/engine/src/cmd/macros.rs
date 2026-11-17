@@ -1,4 +1,4 @@
-//! Macros: upstream's `macro.*` ids as aliases of GridCraft's script commands (adoption of
+//! Macros: upstream's `macro.*` ids as aliases of Cella's script commands (adoption of
 //! upstream's `crates/engine/src/cmd/macros.rs`).
 //!
 //! There is one store and one editor here — the script step list in the defined-name stash and the

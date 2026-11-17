@@ -1,9 +1,9 @@
 //! Form dialogs draw their field labels and choices in the interface language, as their titles
 //! and OK/Cancel buttons already were (Page Setup showed "Left margin (in):" in every language).
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 fn harness() -> egui_kittest::Harness<'static, SheetApp> {

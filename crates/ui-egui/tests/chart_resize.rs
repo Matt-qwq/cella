@@ -1,10 +1,10 @@
 //! Resizing a chart by dragging its bottom-right corner or with the Format Chart Area Size fields, through real input.
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::{SheetApp, grid::Geo};
 use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, pos2, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -53,13 +53,13 @@ fn frame(h: &Harness, id: u32) -> (f64, f64, f32, f32) {
     let app = h.state();
     let sh = app.session.doc().unwrap().wb.active().unwrap();
     let a = sh.charts.iter().find(|c| c.id == id).unwrap().anchor;
-    let f = gridcraft_ui_egui::chartview::frame_of(sh, &a);
+    let f = cella_ui_egui::chartview::frame_of(sh, &a);
     (f.x, f.y, f.w, f.h)
 }
 
 /// Where a handle sits on screen.
-fn handle_pos(h: &Harness, id: u32, want: gridcraft_ui_egui::chartview::Handle) -> egui::Pos2 {
-    use gridcraft_ui_egui::chartview::{Handle::*, handle_centres};
+fn handle_pos(h: &Harness, id: u32, want: cella_ui_egui::chartview::Handle) -> egui::Pos2 {
+    use cella_ui_egui::chartview::{Handle::*, handle_centres};
     let app = h.state();
     let sh = app.session.doc().unwrap().wb.active().unwrap();
     let geo = Geo::new(sh, app.grid.rect.unwrap(), app.view().scroll);
@@ -80,7 +80,7 @@ fn handle_pos(h: &Harness, id: u32, want: gridcraft_ui_egui::chartview::Handle) 
 }
 
 fn select_chart(h: &mut Harness, id: u32) {
-    let inside = handle_pos(h, id, gridcraft_ui_egui::chartview::Handle::Nw) + vec2(40.0, 40.0);
+    let inside = handle_pos(h, id, cella_ui_egui::chartview::Handle::Nw) + vec2(40.0, 40.0);
     h.input_mut().events.push(Event::PointerMoved(inside));
     h.run_steps(2);
     button(h, inside, true);
@@ -89,7 +89,7 @@ fn select_chart(h: &mut Harness, id: u32) {
 }
 
 /// Drags `handle` of the selected chart by `delta` screen points, in `moves` steps, and releases.
-fn drag(h: &mut Harness, id: u32, handle: gridcraft_ui_egui::chartview::Handle, delta: egui::Vec2, moves: usize, modifiers: Modifiers) {
+fn drag(h: &mut Harness, id: u32, handle: cella_ui_egui::chartview::Handle, delta: egui::Vec2, moves: usize, modifiers: Modifiers) {
     let start = handle_pos(h, id, handle);
     h.input_mut().events.push(Event::PointerMoved(start));
     h.run_steps(2);
@@ -114,7 +114,7 @@ fn drag(h: &mut Harness, id: u32, handle: gridcraft_ui_egui::chartview::Handle, 
 
 #[test]
 fn every_handle_resizes_the_edges_it_grabs() {
-    use gridcraft_ui_egui::chartview::Handle::*;
+    use cella_ui_egui::chartview::Handle::*;
     // (handle, left moves, top moves, right moves, bottom moves) as seen in logical sheet space.
     for (handle, l, t, r, b) in [
         (Nw, true, true, false, false),
@@ -157,7 +157,7 @@ fn a_drag_is_one_undo_step() {
     select_chart(&mut h, id);
     let before = frame(&h, id);
     let undo0 = h.state().session.active().map(|d| d.undo.len()).unwrap_or(0);
-    drag(&mut h, id, gridcraft_ui_egui::chartview::Handle::Se, vec2(120.0, 60.0), 6, Modifiers::NONE);
+    drag(&mut h, id, cella_ui_egui::chartview::Handle::Se, vec2(120.0, 60.0), 6, Modifiers::NONE);
     let after = frame(&h, id);
     assert!(after.2 > before.2 && after.3 > before.3, "the chart grew {before:?} -> {after:?}");
     assert_eq!(h.state().session.active().map(|d| d.undo.len()), Some(undo0 + 1), "one drag, one undo entry");
@@ -173,7 +173,7 @@ fn shift_keeps_the_aspect_ratio() {
     let (_, _, w0, h0) = frame(&h, id);
     let ratio = w0 / h0;
     // A wide, flat drag: without Shift the height would not follow.
-    drag(&mut h, id, gridcraft_ui_egui::chartview::Handle::Se, vec2(120.0, 0.0), 4, Modifiers::SHIFT);
+    drag(&mut h, id, cella_ui_egui::chartview::Handle::Se, vec2(120.0, 0.0), 4, Modifiers::SHIFT);
     let (_, _, w1, h1) = frame(&h, id);
     assert!(w1 > w0 + 50.0, "the width followed the pointer {w0} -> {w1}");
     assert!((w1 / h1 - ratio).abs() < 0.01, "the shape is kept: {ratio} -> {}", w1 / h1);
@@ -184,16 +184,16 @@ fn a_chart_never_shrinks_past_the_minimum_size() {
     let (mut h, id) = fixture();
     select_chart(&mut h, id);
     let (x0, y0, _, _) = frame(&h, id);
-    drag(&mut h, id, gridcraft_ui_egui::chartview::Handle::Se, vec2(-500.0, -400.0), 5, Modifiers::NONE);
+    drag(&mut h, id, cella_ui_egui::chartview::Handle::Se, vec2(-500.0, -400.0), 5, Modifiers::NONE);
     let (x1, y1, w1, h1) = frame(&h, id);
-    assert_eq!((w1, h1), (gridcraft_ui_egui::chartview::OBJECT_MIN_SIZE, gridcraft_ui_egui::chartview::OBJECT_MIN_SIZE));
+    assert_eq!((w1, h1), (cella_ui_egui::chartview::OBJECT_MIN_SIZE, cella_ui_egui::chartview::OBJECT_MIN_SIZE));
     assert_eq!((x1, y1), (x0, y0), "the top-left corner stays put");
     // The opposite handles shrink towards the top-left too.
     let (mut h, id) = fixture();
     select_chart(&mut h, id);
-    drag(&mut h, id, gridcraft_ui_egui::chartview::Handle::Nw, vec2(500.0, 400.0), 5, Modifiers::NONE);
+    drag(&mut h, id, cella_ui_egui::chartview::Handle::Nw, vec2(500.0, 400.0), 5, Modifiers::NONE);
     let (_, _, w2, h2) = frame(&h, id);
-    assert_eq!((w2, h2), (gridcraft_ui_egui::chartview::OBJECT_MIN_SIZE, gridcraft_ui_egui::chartview::OBJECT_MIN_SIZE));
+    assert_eq!((w2, h2), (cella_ui_egui::chartview::OBJECT_MIN_SIZE, cella_ui_egui::chartview::OBJECT_MIN_SIZE));
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn escape_cancels_a_drag() {
     select_chart(&mut h, id);
     let before = frame(&h, id);
     let undo0 = h.state().session.active().map(|d| d.undo.len()).unwrap_or(0);
-    let start = handle_pos(&h, id, gridcraft_ui_egui::chartview::Handle::Se);
+    let start = handle_pos(&h, id, cella_ui_egui::chartview::Handle::Se);
     h.input_mut().events.push(Event::PointerMoved(start));
     h.run_steps(2);
     button(&mut h, start, true);
@@ -251,7 +251,7 @@ fn arrow_keys_move_and_resize_the_selected_chart() {
 fn a_resized_chart_keeps_its_size_across_save_and_reopen() {
     let (mut h, id) = fixture();
     select_chart(&mut h, id);
-    drag(&mut h, id, gridcraft_ui_egui::chartview::Handle::Se, vec2(90.0, 45.0), 3, Modifiers::NONE);
+    drag(&mut h, id, cella_ui_egui::chartview::Handle::Se, vec2(90.0, 45.0), 3, Modifiers::NONE);
     let (x, y, w, hh) = frame(&h, id);
     let bytes = h.state_mut().session.run("file.saveBytes", json!({"format": "xlsx"})).unwrap_or_default();
     let b64 = bytes.get("base64").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
@@ -260,7 +260,7 @@ fn a_resized_chart_keeps_its_size_across_save_and_reopen() {
     s.execute("file.open", json!({"name": "resized.xlsx", "base64": b64})).unwrap();
     let sh = s.doc().unwrap().wb.active().unwrap().clone();
     let a = sh.charts.iter().find(|c| c.id == id).map(|c| c.anchor).expect("the chart came back");
-    let f = gridcraft_ui_egui::chartview::frame_of(&sh, &a);
+    let f = cella_ui_egui::chartview::frame_of(&sh, &a);
     assert!((f.w - w).abs() < 0.5 && (f.h - hh).abs() < 0.5, "size {w}x{hh} came back as {}x{}", f.w, f.h);
     assert!((f.x - x).abs() < 0.5 && (f.y - y).abs() < 0.5, "position {x},{y} came back as {},{} ", f.x, f.y);
 }

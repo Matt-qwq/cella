@@ -1,11 +1,11 @@
-//! Floating objects on the sheet: charts (rendered by `gridcraft-chart` into primitives that
+//! Floating objects on the sheet: charts (rendered by `cella-chart` into primitives that
 //! we paint with egui), pictures and shapes.
 
+use cella_chart::{HAlign, Prim, VAlign};
+use cella_engine::core::CellRef;
+use cella_engine::model::{Anchor, ShapeKind, Sheet, Workbook};
 use egui::epaint::{PathShape, PathStroke};
 use egui::{Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
-use gridcraft_chart::{HAlign, Prim, VAlign};
-use gridcraft_engine::core::CellRef;
-use gridcraft_engine::model::{Anchor, ShapeKind, Sheet, Workbook};
 
 use crate::SheetApp;
 use crate::grid::Geo;
@@ -23,7 +23,7 @@ struct EguiMeasure<'a> {
     text: Option<&'a crate::text::GridText>,
 }
 
-impl gridcraft_chart::Measure for EguiMeasure<'_> {
+impl cella_chart::Measure for EguiMeasure<'_> {
     fn text_width(&self, text: &str, size: f32, bold: bool) -> f32 {
         let font = if bold { theme::ui_bold(size * self.z) } else { theme::ui_font(size * self.z) };
         let w = match self.text {
@@ -36,23 +36,16 @@ impl gridcraft_chart::Measure for EguiMeasure<'_> {
 
 /// Paints `chart` (not necessarily on the sheet: the Recommended Charts preview) scaled to fit
 /// `rect`.
-pub fn paint_chart(
-    p: &Painter,
-    rect: Rect,
-    wb: &Workbook,
-    sheet: usize,
-    chart: &gridcraft_engine::model::Chart,
-    text: Option<&crate::text::GridText>,
-) {
+pub fn paint_chart(p: &Painter, rect: Rect, wb: &Workbook, sheet: usize, chart: &cella_engine::model::Chart, text: Option<&crate::text::GridText>) {
     let (w, h) = (chart.anchor.width.max(1.0), chart.anchor.height.max(1.0));
     let z = (rect.width() / w).min(rect.height() / h);
     if !(z.is_finite() && z > 0.0) {
         return;
     }
     let origin = rect.center() - vec2(w * z, h * z) / 2.0;
-    let data = gridcraft_chart::resolve(wb, sheet, chart);
+    let data = cella_chart::resolve(wb, sheet, chart);
     let m = EguiMeasure { painter: p, z, text };
-    let prims = gridcraft_chart::render(chart, &data, w, h, &m);
+    let prims = cella_chart::render(chart, &data, w, h, &m);
     paint_prims(&p.with_clip_rect(rect.intersect(p.clip_rect())), origin, &prims, z, text);
 }
 
@@ -66,12 +59,12 @@ pub fn element_at(
     p: &Painter,
     wb: &Workbook,
     sheet: usize,
-    chart: &gridcraft_engine::model::Chart,
+    chart: &cella_engine::model::Chart,
     rect: Rect,
     at: Pos2,
     text: Option<&crate::text::GridText>,
-    hits: Option<&[gridcraft_chart::HitRegion]>,
-) -> Option<gridcraft_chart::Hit> {
+    hits: Option<&[cella_chart::HitRegion]>,
+) -> Option<cella_chart::Hit> {
     if !rect.contains(at) {
         return None;
     }
@@ -85,12 +78,12 @@ pub fn element_at(
     let origin = rect.center() - vec2(w * z, h * z) / 2.0;
     let (x, y) = ((at.x - origin.x) / z, (at.y - origin.y) / z);
     if let Some(hits) = hits {
-        return gridcraft_chart::hit_at(hits, x, y);
+        return cella_chart::hit_at(hits, x, y);
     }
-    let data = gridcraft_chart::resolve(wb, sheet, chart);
+    let data = cella_chart::resolve(wb, sheet, chart);
     let m = EguiMeasure { painter: p, z, text };
-    let laid_out = gridcraft_chart::render_hits(chart, &data, w, h, &m);
-    gridcraft_chart::hit_at(&laid_out, x, y)
+    let laid_out = cella_chart::render_hits(chart, &data, w, h, &m);
+    cella_chart::hit_at(&laid_out, x, y)
 }
 
 /// Paints chart primitives at `origin`, scaled by `z`.
@@ -252,7 +245,7 @@ fn area_mesh(v: &[Pos2], col: Color32) -> egui::Mesh {
 /// A shape's text with its formatting: size, bold/italic, typeface, colour, outline, horizontal
 /// alignment and vertical anchor. Shapes other than text boxes default to white text centred in
 /// the shape; text boxes to black text at the top left.
-fn paint_shape_text(p: &Painter, wb: &Workbook, sp: &gridcraft_engine::model::Shape, r: Rect, z: f32, text: Option<&crate::text::GridText>) {
+fn paint_shape_text(p: &Painter, wb: &Workbook, sp: &cella_engine::model::Shape, r: Rect, z: f32, text: Option<&crate::text::GridText>) {
     paint_box_text(p, wb, &sp.text, matches!(sp.kind, ShapeKind::TextBox | ShapeKind::WordArt), &sp.format, r, z, text);
 }
 
@@ -263,12 +256,12 @@ fn paint_box_text(
     wb: &Workbook,
     body: &str,
     text_box: bool,
-    f: &gridcraft_engine::model::ShapeFormat,
+    f: &cella_engine::model::ShapeFormat,
     r: Rect,
     z: f32,
     text: Option<&crate::text::GridText>,
 ) {
-    use gridcraft_engine::model::{ShapeTextAlign, ShapeTextAnchor};
+    use cella_engine::model::{ShapeTextAlign, ShapeTextAnchor};
     let align = f.align.unwrap_or(if text_box { ShapeTextAlign::Left } else { ShapeTextAlign::Center });
     let anchor = f.anchor.unwrap_or(if text_box { ShapeTextAnchor::Top } else { ShapeTextAnchor::Middle });
     let default_color = if text_box { Color32::BLACK } else { Color32::WHITE };
@@ -558,7 +551,7 @@ pub(crate) struct PaintedObject {
 /// Ctrl+6 (Options › Advanced › "For objects, show: Nothing"): objects are neither drawn nor
 /// clickable. Placeholders, which Excel no longer offers, show the objects.
 pub(crate) fn objects_hidden(wb: &Workbook) -> bool {
-    wb.show_objects == gridcraft_engine::model::ShowObjects::None
+    wb.show_objects == cella_engine::model::ShowObjects::None
 }
 
 pub(crate) fn paint_objects(
@@ -611,9 +604,9 @@ pub(crate) fn paint_objects(
                 p.add(PathShape::convex_polygon(vec![pos2(r.center().x, r.top()), r.right_bottom(), r.left_bottom()], fill, Stroke::new(1.0, line)));
             }
             ShapeKind::Ink => {
-                let w = gridcraft_engine::cmd::draw::ink_width(sp) * geo.z;
+                let w = cella_engine::cmd::draw::ink_width(sp) * geo.z;
                 let pts: Vec<Pos2> =
-                    gridcraft_engine::cmd::draw::ink_points(sp).iter().map(|q| pos2(r.left() + q[0] * geo.z, r.top() + q[1] * geo.z)).collect();
+                    cella_engine::cmd::draw::ink_points(sp).iter().map(|q| pos2(r.left() + q[0] * geo.z, r.top() + q[1] * geo.z)).collect();
                 if pts.len() >= 2 {
                     let col = if w > 8.0 { line.gamma_multiply(0.45) } else { line };
                     p.add(PathShape::line(pts, PathStroke::new(w, col)));
@@ -660,9 +653,9 @@ pub(crate) fn paint_objects(
         }
         if !eq.source.is_empty() {
             // Centred in its box, as Excel lays an equation out.
-            let format = gridcraft_engine::model::ShapeFormat {
-                align: Some(gridcraft_engine::model::ShapeTextAlign::Center),
-                anchor: Some(gridcraft_engine::model::ShapeTextAnchor::Middle),
+            let format = cella_engine::model::ShapeFormat {
+                align: Some(cella_engine::model::ShapeTextAlign::Center),
+                anchor: Some(cella_engine::model::ShapeTextAnchor::Middle),
                 ..Default::default()
             };
             paint_box_text(p, wb, &eq.source, true, &format, r, geo.z, Some(&app.text));
@@ -716,9 +709,9 @@ pub(crate) fn paint_objects(
         // changes.
         let size = (w.to_bits(), h.to_bits());
         if cache.chart_stale(i, size) {
-            let data = gridcraft_chart::resolve(wb, si, ch);
+            let data = cella_chart::resolve(wb, si, ch);
             let m = EguiMeasure { painter: p, z, text: Some(&app.text) };
-            let drawing = gridcraft_chart::draw(ch, &data, w, h, &m);
+            let drawing = cella_chart::draw(ch, &data, w, h, &m);
             cache.put_chart(i, size, drawing);
         }
         if let Some(drawing) = cache.chart(i) {
@@ -738,7 +731,7 @@ pub(crate) fn paint_objects(
         if app.selected_chart == Some(ch.id) {
             // Highlight the source data like Excel does.
             for s in &ch.series {
-                if let Ok(gridcraft_engine::formula::Expr::Ref(rf)) = gridcraft_engine::formula::parse(&s.values)
+                if let Ok(cella_engine::formula::Expr::Ref(rf)) = cella_engine::formula::parse(&s.values)
                     && rf.sheet_name().is_none_or(|n| n.eq_ignore_ascii_case(&sh.name))
                 {
                     let rr = geo.range_rect(sh, rf.range());
@@ -796,7 +789,7 @@ fn paint_slicers(app: &SheetApp, p: &Painter, geo: &Geo, wb: &Workbook, si: usiz
         if !r.intersects(p.clip_rect()) {
             continue;
         }
-        let items = gridcraft_engine::cmd::slicer::slicer_items(wb, si, sl);
+        let items = cella_engine::cmd::slicer::slicer_items(wb, si, sl);
         let lay = slicer_layout(r, geo.z, items.len(), sl.columns);
         let radius = 4.0 * geo.z;
         // Card + soft shadow.
@@ -846,7 +839,7 @@ pub fn slicer_click(geo: &Geo, sh: &Sheet, wb: &Workbook, si: usize, p: Pos2) ->
         if !r.contains(p) {
             continue;
         }
-        let items = gridcraft_engine::cmd::slicer::slicer_items(wb, si, sl);
+        let items = cella_engine::cmd::slicer::slicer_items(wb, si, sl);
         let lay = slicer_layout(r, geo.z, items.len(), sl.columns);
         if lay.clear.contains(p) {
             return Some((sl.id, SlicerAction::Clear));
@@ -1033,14 +1026,14 @@ mod tests {
     }
 
     use super::EguiMeasure;
-    use gridcraft_chart::Measure;
+    use cella_chart::Measure;
 
     /// A chart label is measured by the shaped engine when one is handed in, so the layout that
     /// places it and the galley that draws it agree; without an engine the old epaint measure is
     /// kept (the Recommended Charts preview's and the tests' path).
     #[test]
     fn a_label_is_measured_with_the_shaped_engine() {
-        let Some(file) = gridcraft_engine::core::fonts::resolve_for_char('م').ok() else {
+        let Some(file) = cella_engine::core::fonts::resolve_for_char('م').ok() else {
             eprintln!("skipped: no installed Arabic face (set CRAFT_FONTS_DIR to test it)");
             return;
         };

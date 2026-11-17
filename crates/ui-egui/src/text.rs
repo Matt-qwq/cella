@@ -1,7 +1,7 @@
 //! Shaped cell text: the one text engine the UI owns, the deliberate unshaped fast path, and the
 //! measurements and caret geometry the grid and the in-cell editor need.
 //!
-//! [`gridcraft_engine::core::text`] does the Unicode work (bidi levels and reordering, Arabic
+//! [`cella_engine::core::text`] does the Unicode work (bidi levels and reordering, Arabic
 //! joining, Indic reordering, Thai mark positioning, Latin ligatures). This module is the wiring:
 //! it owns the one [`TextEngine`], registers the very font faces egui draws cells with — read from
 //! the active [`egui::FontDefinitions`], so both engines shape the same bytes, at the same size —
@@ -44,8 +44,8 @@ use egui::emath::GuiRounding as _;
 use egui::{Color32, Context, FontData, FontId, Galley, Painter, Pos2};
 
 use crate::fonts::Synthesis;
-use gridcraft_engine::core::text::{Direction, FaceId, FontSize, ShapedText, TextEngine};
-use gridcraft_engine::model;
+use cella_engine::core::text::{Direction, FaceId, FontSize, ShapedText, TextEngine};
+use cella_engine::model;
 
 /// How far egui's own layout of a run may differ from the engine's advance for it before the
 /// shaped line is abandoned. Both shape the same bytes with HarfBuzz, so the sum matches exactly in
@@ -152,7 +152,7 @@ impl Inner {
     }
 }
 
-/// GridCraft's text engine and the faces egui draws cells with.
+/// Cella's text engine and the faces egui draws cells with.
 ///
 /// One per app ([`crate::SheetApp::text`]): the shaped lines the grid paints, the measures AutoFit
 /// and the `####` test use, and the cluster maps the in-cell editor's caret moves through all come
@@ -646,7 +646,7 @@ impl GridText {
     }
 
     /// What the cache holds right now, for tests and for the control channel.
-    pub fn cache_stats(&self) -> gridcraft_engine::core::text::CacheStats {
+    pub fn cache_stats(&self) -> cella_engine::core::text::CacheStats {
         self.lock().engine.cache_stats()
     }
 }

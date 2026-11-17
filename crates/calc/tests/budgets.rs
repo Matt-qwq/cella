@@ -10,10 +10,10 @@
 //! where commands and recalculation run: a guard proved on a roomy test thread proves nothing
 //! about that one.
 
-use gridcraft_calc::Calc;
-use gridcraft_calc::eval::{Evaluator, Host, NameTarget};
-use gridcraft_core::{CellError, CellRef, Value};
-use gridcraft_model::{Cell, DefinedName, Formula, Workbook};
+use cella_calc::Calc;
+use cella_calc::eval::{Evaluator, Host, NameTarget};
+use cella_core::{CellError, CellRef, Value};
+use cella_model::{Cell, DefinedName, Formula, Workbook};
 
 /// Runs `f` on a 1 MiB stack, the main thread's stack on Windows. A formula that overflows it
 /// aborts the whole process, so the join is the assertion that nothing did.
@@ -42,7 +42,7 @@ impl T {
         let cell = if input.starts_with('=') {
             Cell::formula(Formula::new(input))
         } else {
-            Cell::value(gridcraft_core::parse::parse_input(input, self.wb.date_system).value)
+            Cell::value(cella_core::parse::parse_input(input, self.wb.date_system).value)
         };
         let at = CellRef::parse(at).expect("cell address");
         if let Some(sh) = self.wb.sheet_mut(0) {
@@ -196,7 +196,7 @@ impl Host for NoRoom {
 
 #[test]
 fn the_stack_guard_answers_an_error_before_recursing_further() {
-    let expr = gridcraft_formula::parse("1+2").expect("formula");
+    let expr = cella_formula::parse("1+2").expect("formula");
     let at = CellRef::parse("A1").expect("cell address");
     let mut host = NoRoom { wb: Workbook::new(), exhausted: false };
     let v = Evaluator::new(&mut host, 0, at).value(&expr);

@@ -1,9 +1,9 @@
-# GridCraft performance budgets — `cargo xtask perf` fails when a scenario is slower than its
+# Cella performance budgets — `cargo xtask perf` fails when a scenario is slower than its
 # budget. What each scenario measures is in docs/performance.md.
 #
 # Recorded with `cargo xtask perf --update` (best of three passes × 2, never below 1 ms) on the
 # dev machine, release build: a scenario must be TWICE as slow as this to fail. A slower or shared
-# machine: GRIDCRAFT_PERF_SCALE=2 cargo xtask perf. Re-record only for an intended change.
+# machine: CELLA_PERF_SCALE=2 cargo xtask perf. Re-record only for an intended change.
 #
 # Format: <scenario> <rows> <budget ms>
 aggregate       100000  200

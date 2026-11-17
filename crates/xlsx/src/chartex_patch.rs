@@ -13,7 +13,7 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_model::{AxisOptions, Chart, LabelFont, LabelOptions, LabelPosition, PointFormat, QuartileMethod, Series, Workbook};
+use cella_model::{AxisOptions, Chart, LabelFont, LabelOptions, LabelPosition, PointFormat, QuartileMethod, Series, Workbook};
 
 use crate::chart::label_position_file;
 use crate::chart_patch::{MAX_PATCH_BYTES, Plan, SPPR_ORDER, attr, child, scan};
@@ -265,11 +265,11 @@ pub fn patch_chartex(xml: &str, then: &Chart, now: &Chart, wb: &Workbook, _si: u
     }
     if then.legend != now.legend || then.legend_overlay != now.legend_overlay {
         let pos = match now.legend {
-            gridcraft_model::LegendPos::None => None,
-            gridcraft_model::LegendPos::Bottom => Some("b"),
-            gridcraft_model::LegendPos::Top => Some("t"),
-            gridcraft_model::LegendPos::Left => Some("l"),
-            gridcraft_model::LegendPos::Right => Some("r"),
+            cella_model::LegendPos::None => None,
+            cella_model::LegendPos::Bottom => Some("b"),
+            cella_model::LegendPos::Top => Some("t"),
+            cella_model::LegendPos::Left => Some("l"),
+            cella_model::LegendPos::Right => Some("r"),
         };
         match (child(chart, "legend"), pos) {
             // A chartex legend's position and overlay are both attributes, so patching either
@@ -326,7 +326,7 @@ pub fn patch_chartex(xml: &str, then: &Chart, now: &Chart, wb: &Workbook, _si: u
         if then_ser.color != now_ser.color {
             patch_series_fill(&mut plan, ser, now_ser, i, wb)?;
         }
-        if then_ser.quartiles != now_ser.quartiles && now.kind == gridcraft_model::ChartKind::BoxWhisker {
+        if then_ser.quartiles != now_ser.quartiles && now.kind == cella_model::ChartKind::BoxWhisker {
             let lp = child(ser, "layoutPr")?;
             let st = child(lp, "statistics")?;
             let method = match now_ser.quartiles {
@@ -430,7 +430,7 @@ fn is_own_sp_pr(n: &crate::chart_patch::Node) -> bool {
 }
 
 /// Patches each point's own `cx:dataPt`: only a point whose fill or outline changed is touched, so
-/// the parts of the element GridCraft does not model stay.
+/// the parts of the element Cella does not model stay.
 fn patch_points(plan: &mut Plan, xml: &str, ser: &crate::chart_patch::Node, then: &[PointFormat], now: &[PointFormat], wb: &Workbook) {
     let index = |n: &crate::chart_patch::Node| attr(xml, n, "idx").and_then(|v| v.trim().parse::<u32>().ok());
     let nodes: Vec<(&crate::chart_patch::Node, u32)> =

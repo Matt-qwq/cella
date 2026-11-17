@@ -6,8 +6,8 @@
 
 use std::cmp::Ordering;
 
-use gridcraft_core::parse::parse_number_text;
-use gridcraft_core::{CellError, Value, compare_numbers, compare_text};
+use cella_core::parse::parse_number_text;
+use cella_core::{CellError, Value, compare_numbers, compare_text};
 
 /// Longest text criterion COUNTIF and its relatives accept, in UTF-16 code units as Excel
 /// counts them (😀 is two units); a longer one is `#VALUE!`.
@@ -401,7 +401,7 @@ pub(crate) fn lookup_equal(needle: &Value, hay: &Value, wild: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gridcraft_core::Array;
+    use cella_core::Array;
 
     use super::*;
 

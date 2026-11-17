@@ -5,8 +5,8 @@
 //! Every fixture is assembled here from the [MS-XLS] (and, for the hyperlink object, [MS-OSHARED])
 //! structures; no Excel-produced file is used.
 
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::{
+use cella_core::{CellRef, RangeRef};
+use cella_model::{
     AnchorMode, Cell, CfOperator, CfRule, CfValueKind, Color, CondFormat, ErrorStyle, Fill, Font, Hyperlink, Style, Validation, ValidationKind,
     Workbook,
 };
@@ -556,7 +556,7 @@ fn cf12_rules_read_excels_encoding() {
         &rec(0x0203, &cat(&[&cell(0, 0, 0), &7.0f64.to_le_bytes()])),
     ]);
     let (wb, report) = read_xls(&book(&[], &records)).unwrap();
-    assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), gridcraft_core::Value::Number(7.0));
+    assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), cella_core::Value::Number(7.0));
     let rules = &wb.sheets[0].cond_formats;
     assert_eq!(rules.len(), 3, "{:?}", report.warnings);
     assert!(!report.warnings.iter().any(|w| w.contains("CF12") || w.contains("Colour scales")), "{:?}", report.warnings);
@@ -594,7 +594,7 @@ fn cf12_rules_read_excels_encoding() {
 fn a_broken_cf12_rule_warns_and_the_file_still_opens() {
     let records = cat(&[&condfmt12(1, &[(0, 9, 0, 0)]), &rec(0x087A, &[0u8; 40]), &rec(0x0203, &cat(&[&cell(0, 0, 0), &7.0f64.to_le_bytes()]))]);
     let (wb, report) = read_xls(&book(&[], &records)).unwrap();
-    assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), gridcraft_core::Value::Number(7.0));
+    assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), cella_core::Value::Number(7.0));
     assert!(wb.sheets[0].cond_formats.is_empty());
     assert!(report.warnings.iter().any(|w| w.contains("conditional format")), "{:?}", report.warnings);
 }
@@ -733,8 +733,8 @@ fn hyperlinks_match_the_xlsx_reader() {
     let (wb, report) = read_xls(&hyperlink_xls()).unwrap();
     assert_eq!(wb.sheets[0].hyperlinks, want.sheets[0].hyperlinks);
     // The display text is the cell's text, as in `.xlsx`.
-    assert_eq!(wb.sheets[0].value(CellRef::new(1, 0)), gridcraft_core::Value::from("Example"));
-    assert_eq!(wb.sheets[0].value(CellRef::new(3, 0)), gridcraft_core::Value::Empty);
+    assert_eq!(wb.sheets[0].value(CellRef::new(1, 0)), cella_core::Value::from("Example"));
+    assert_eq!(wb.sheets[0].value(CellRef::new(3, 0)), cella_core::Value::Empty);
     let a2 = wb.sheets[0].hyperlinks.get(&CellRef::new(1, 0)).unwrap();
     assert_eq!((a2.target.as_str(), a2.tooltip.as_deref(), a2.external), ("https://example.com/", Some("Web"), true));
     let a3 = wb.sheets[0].hyperlinks.get(&CellRef::new(2, 0)).unwrap();
@@ -755,7 +755,7 @@ fn a_hyperlink_with_a_bogus_length_warns_and_the_file_still_opens() {
     let records = cat(&[&rec(0x01B8, &p), &rec(0x0203, &cat(&[&cell(0, 0, 0), &7.0f64.to_le_bytes()]))]);
     let (wb, report) = read_xls(&book(&[], &records)).unwrap();
     assert!(wb.sheets[0].hyperlinks.is_empty());
-    assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), gridcraft_core::Value::Number(7.0));
+    assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), cella_core::Value::Number(7.0));
     assert!(report.warnings.iter().any(|w| w.contains("hyperlink record")), "{:?}", report.warnings);
 }
 
@@ -801,7 +801,7 @@ fn a_truncated_pane_record_warns_and_leaves_the_sheet_unfrozen() {
     for payload in [&[][..], &[1u8][..], &[1u8, 0, 2, 0][..], &[1u8, 0, 2, 0, 3, 0, 2][..]] {
         let (wb, report) = read_xls(&pane_xls(&window2, &rec(0x0041, payload))).unwrap();
         assert_eq!(wb.sheets[0].freeze, None);
-        assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), gridcraft_core::Value::Number(7.0));
+        assert_eq!(wb.sheets[0].value(CellRef::new(0, 0)), cella_core::Value::Number(7.0));
         assert!(report.warnings.iter().any(|w| w.contains("Pane") || w.contains("pane")), "{:?}", report.warnings);
     }
 }

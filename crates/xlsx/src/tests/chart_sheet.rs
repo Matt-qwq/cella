@@ -5,8 +5,8 @@
 use std::io::Read;
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, Value};
-use gridcraft_model::{Anchor, Chart, ChartKind, LegendPos, Series, Sheet, SheetKind, Visibility, Workbook};
+use cella_core::{CellRef, Value};
+use cella_model::{Anchor, Chart, ChartKind, LegendPos, Series, Sheet, SheetKind, Visibility, Workbook};
 
 use crate::testing::check_package;
 use crate::{read_xlsx, write_xlsx};
@@ -228,7 +228,7 @@ fn a_chart_sheets_page_setup_and_header_are_kept() {
     // <sheetPr> is the model's, as it is for a worksheet.
     let mut wb = back.clone();
     let mut cs = (*wb.sheets[1]).clone();
-    cs.tab_color = gridcraft_model::Color::from_hex("00FF00");
+    cs.tab_color = cella_model::Color::from_hex("00FF00");
     wb.sheets[1] = Arc::new(cs);
     let out = write_xlsx(&wb).unwrap();
     check_package(&out).expect("the package with a chart sheet tab colour is valid");

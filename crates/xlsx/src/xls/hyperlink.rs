@@ -4,8 +4,8 @@
 //!
 //! The display text has no model field: in both formats it is the cell's own text.
 
-use gridcraft_core::RangeRef;
-use gridcraft_model::Hyperlink;
+use cella_core::RangeRef;
+use cella_model::Hyperlink;
 
 use super::records::Cursor;
 use super::{invalid, ref8};

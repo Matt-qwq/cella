@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use gridcraft_core::{CellError, CellRef, RangeRef, Value};
+use cella_core::{CellError, CellRef, RangeRef, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, Formula};
@@ -67,7 +67,7 @@ const SPILL_MAX_THREADS: usize = 8;
 /// scrolling burst at the export's density, without letting a full-sheet scan grow the working set
 /// back to the live model.
 const PAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
-/// The bounds [`enable_paging`](CellStore::enable_paging) applies to `GRIDCRAFT_PAGE_CACHE_MB`.
+/// The bounds [`enable_paging`](CellStore::enable_paging) applies to `CELLA_PAGE_CACHE_MB`.
 /// Only the non-wasm environment reader uses them; wasm keeps the default.
 #[cfg(not(target_arch = "wasm32"))]
 const PAGE_CACHE_MIN_MB: usize = 8;
@@ -343,7 +343,7 @@ struct RowExtras {
     /// `(column, formula)`, sorted by column.
     formulas: Vec<(u32, Arc<Formula>)>,
     /// `(column, array value)`, sorted by column.
-    arrays: Vec<(u32, Arc<gridcraft_core::Array>)>,
+    arrays: Vec<(u32, Arc<cella_core::Array>)>,
     /// Payloads too wide for the `u16` array, in the order their cells reached for them. Only a
     /// band with more than 65,535 distinct numbers ever has one.
     wide: Vec<u64>,
@@ -417,7 +417,7 @@ impl BandRow {
         self.extras.as_ref().map_or(&[], |e| e.formulas.as_slice())
     }
 
-    fn arrays(&self) -> &[(u32, Arc<gridcraft_core::Array>)] {
+    fn arrays(&self) -> &[(u32, Arc<cella_core::Array>)] {
         self.extras.as_ref().map_or(&[], |e| e.arrays.as_slice())
     }
 
@@ -535,7 +535,7 @@ impl BandRow {
         }
     }
 
-    fn set_array(&mut self, col: u32, array: Option<&Arc<gridcraft_core::Array>>) {
+    fn set_array(&mut self, col: u32, array: Option<&Arc<cella_core::Array>>) {
         match array {
             Some(a) => {
                 let e = Arc::make_mut(self.extras.get_or_insert_with(Default::default));
@@ -751,7 +751,7 @@ impl Band {
                 .row_extras
                 .saturating_add(size_of::<RowExtras>())
                 .saturating_add(extras.formulas.capacity() * size_of::<(u32, Arc<Formula>)>())
-                .saturating_add(extras.arrays.capacity() * size_of::<(u32, Arc<gridcraft_core::Array>)>());
+                .saturating_add(extras.arrays.capacity() * size_of::<(u32, Arc<cella_core::Array>)>());
             m.wide = m.wide.saturating_add(extras.wide.capacity() * size_of::<u64>());
             for (_, f) in &extras.formulas {
                 formulas.push((Arc::as_ptr(f) as usize, f.text.len()));
@@ -783,7 +783,7 @@ impl Band {
         // report that must stay O(bands) into a per-cell walk.
         arrays.sort_unstable();
         arrays.dedup();
-        m.arrays = m.arrays.saturating_add(arrays.len() * size_of::<gridcraft_core::Array>());
+        m.arrays = m.arrays.saturating_add(arrays.len() * size_of::<cella_core::Array>());
         m
     }
 
@@ -1150,7 +1150,7 @@ impl Band {
 
     /// Rebuilds the row's wide table with one entry per distinct value its cells still use, so the
     /// index a payload stores always fits a `u16`. A row holds at most
-    /// [`gridcraft_core::MAX_COLS`] cells, so the rebuilt table always fits.
+    /// [`cella_core::MAX_COLS`] cells, so the rebuilt table always fits.
     fn compact_wide(&mut self, at: usize) {
         let cells = self.rows[at].cells as usize;
         let len = self.rows[at].extras.as_ref().map_or(0, |e| e.wide.len());
@@ -1321,7 +1321,7 @@ impl Band {
         let (kinds_at, styles_at) = (self.kinds.len() as u32, self.styles.len() as u32);
         self.bits.resize(self.bits.len() + words as usize, 0);
         let mut formulas: Vec<(u32, Arc<Formula>)> = Vec::new();
-        let mut arrays: Vec<(u32, Arc<gridcraft_core::Array>)> = Vec::new();
+        let mut arrays: Vec<(u32, Arc<cella_core::Array>)> = Vec::new();
         let mut wide: Vec<u64> = Vec::new();
         let mut stored = 0u32;
         for (col, cell) in cells.drain(..) {
@@ -1520,7 +1520,7 @@ struct RowMap {
 
 impl Default for RowMap {
     fn default() -> Self {
-        RowMap { identity: true, segments: Vec::new(), by_physical: Vec::new(), next_physical: gridcraft_core::MAX_ROWS }
+        RowMap { identity: true, segments: Vec::new(), by_physical: Vec::new(), next_physical: cella_core::MAX_ROWS }
     }
 }
 
@@ -1542,7 +1542,7 @@ impl RowMap {
     }
 
     fn map(&self, logical: u32) -> Option<u32> {
-        if logical >= gridcraft_core::MAX_ROWS {
+        if logical >= cella_core::MAX_ROWS {
             return None;
         }
         if self.identity {
@@ -1556,7 +1556,7 @@ impl RowMap {
 
     fn inverse(&self, physical: u32) -> Option<u32> {
         if self.identity {
-            return (physical < gridcraft_core::MAX_ROWS).then_some(physical);
+            return (physical < cella_core::MAX_ROWS).then_some(physical);
         }
         let index = self.by_physical.partition_point(|s| s.physical <= physical).checked_sub(1)?;
         let segment = self.by_physical.get(index)?;
@@ -1567,7 +1567,7 @@ impl RowMap {
     fn ensure(&mut self) {
         if self.identity {
             self.identity = false;
-            self.segments = vec![RowSegment { logical: 0, physical: 0, len: gridcraft_core::MAX_ROWS }];
+            self.segments = vec![RowSegment { logical: 0, physical: 0, len: cella_core::MAX_ROWS }];
             self.rebuild();
         }
     }
@@ -1579,7 +1579,7 @@ impl RowMap {
         if let Some(physical) = self.map(logical) {
             return Some(physical);
         }
-        if logical >= gridcraft_core::MAX_ROWS {
+        if logical >= cella_core::MAX_ROWS {
             return None;
         }
         self.ensure();
@@ -1593,7 +1593,7 @@ impl RowMap {
 
     /// The segments intersecting a logical row range, clipped to it, in logical order.
     fn segments_in(&self, r0: u32, r1: u32) -> Vec<RowSegment> {
-        let (r0, r1) = (r0.min(gridcraft_core::MAX_ROWS.saturating_sub(1)), r1.min(gridcraft_core::MAX_ROWS.saturating_sub(1)));
+        let (r0, r1) = (r0.min(cella_core::MAX_ROWS.saturating_sub(1)), r1.min(cella_core::MAX_ROWS.saturating_sub(1)));
         if r0 > r1 {
             return Vec::new();
         }
@@ -1620,8 +1620,8 @@ impl RowMap {
         if delta == 0 {
             return;
         }
-        let from = from.min(gridcraft_core::MAX_ROWS);
-        let count = delta.unsigned_abs().min(u64::from(gridcraft_core::MAX_ROWS)) as u32;
+        let from = from.min(cella_core::MAX_ROWS);
+        let count = delta.unsigned_abs().min(u64::from(cella_core::MAX_ROWS)) as u32;
         if count == 0 {
             return;
         }
@@ -1629,7 +1629,7 @@ impl RowMap {
         let mut out: Vec<RowSegment> = Vec::new();
         for s in &self.segments {
             let a = s.logical;
-            let b = s.logical_end().min(gridcraft_core::MAX_ROWS);
+            let b = s.logical_end().min(cella_core::MAX_ROWS);
             if a >= b {
                 continue;
             }
@@ -1643,8 +1643,8 @@ impl RowMap {
                 if b > from {
                     let start = a.max(from);
                     let new_logical = start.saturating_add(count);
-                    if new_logical < gridcraft_core::MAX_ROWS {
-                        let end = b.saturating_add(count).min(gridcraft_core::MAX_ROWS);
+                    if new_logical < cella_core::MAX_ROWS {
+                        let end = b.saturating_add(count).min(cella_core::MAX_ROWS);
                         if new_logical < end {
                             out.push(RowSegment { logical: new_logical, physical: s.physical.saturating_add(start - a), len: end - new_logical });
                         }
@@ -1688,13 +1688,13 @@ impl RowMap {
         if self.segments.len() != 1 || segment.logical != 0 || segment.physical != 0 || segment.len == 0 {
             return;
         }
-        if !reset_prefix && segment.len < gridcraft_core::MAX_ROWS {
+        if !reset_prefix && segment.len < cella_core::MAX_ROWS {
             return;
         }
         self.identity = true;
         self.segments.clear();
         self.by_physical.clear();
-        self.next_physical = gridcraft_core::MAX_ROWS;
+        self.next_physical = cella_core::MAX_ROWS;
     }
 
     /// Merges adjacent logical/physical runs and refreshes the inverse view.
@@ -1782,7 +1782,7 @@ impl ColMap {
             return;
         }
         self.identity = false;
-        let width = physical_max.saturating_add(1).min(gridcraft_core::MAX_COLS);
+        let width = physical_max.saturating_add(1).min(cella_core::MAX_COLS);
         self.next_physical = width;
         if width > 0 {
             self.segments = vec![ColSegment { logical: 0, physical: 0, len: width }];
@@ -1791,7 +1791,7 @@ impl ColMap {
     }
 
     fn map(&self, logical: u32) -> Option<u32> {
-        if logical >= gridcraft_core::MAX_COLS {
+        if logical >= cella_core::MAX_COLS {
             return None;
         }
         if self.identity {
@@ -1805,7 +1805,7 @@ impl ColMap {
 
     fn inverse(&self, physical: u32) -> Option<u32> {
         if self.identity {
-            return (physical < gridcraft_core::MAX_COLS).then_some(physical);
+            return (physical < cella_core::MAX_COLS).then_some(physical);
         }
         let index = self.by_physical.partition_point(|s| s.physical <= physical).checked_sub(1)?;
         let segment = self.by_physical.get(index)?;
@@ -1817,11 +1817,11 @@ impl ColMap {
         if let Some(physical) = self.map(logical) {
             return Some(physical);
         }
-        if logical >= gridcraft_core::MAX_COLS {
+        if logical >= cella_core::MAX_COLS {
             return None;
         }
         if self.identity {
-            self.ensure_with(self.next_physical.min(gridcraft_core::MAX_COLS.saturating_sub(1)));
+            self.ensure_with(self.next_physical.min(cella_core::MAX_COLS.saturating_sub(1)));
         }
         let physical = if let Some(physical) = self.free.pop() {
             physical
@@ -1837,7 +1837,7 @@ impl ColMap {
     }
 
     fn segments_in(&self, c0: u32, c1: u32) -> Vec<ColSegment> {
-        let (c0, c1) = (c0.min(gridcraft_core::MAX_COLS.saturating_sub(1)), c1.min(gridcraft_core::MAX_COLS.saturating_sub(1)));
+        let (c0, c1) = (c0.min(cella_core::MAX_COLS.saturating_sub(1)), c1.min(cella_core::MAX_COLS.saturating_sub(1)));
         if c0 > c1 {
             return Vec::new();
         }
@@ -1860,8 +1860,8 @@ impl ColMap {
         if delta == 0 {
             return;
         }
-        let from = from.min(gridcraft_core::MAX_COLS);
-        let count = delta.unsigned_abs().min(u64::from(gridcraft_core::MAX_COLS)) as u32;
+        let from = from.min(cella_core::MAX_COLS);
+        let count = delta.unsigned_abs().min(u64::from(cella_core::MAX_COLS)) as u32;
         if count == 0 {
             return;
         }
@@ -1869,7 +1869,7 @@ impl ColMap {
         let mut out: Vec<ColSegment> = Vec::new();
         for s in &self.segments {
             let a = s.logical;
-            let b = s.logical_end().min(gridcraft_core::MAX_COLS);
+            let b = s.logical_end().min(cella_core::MAX_COLS);
             if a >= b {
                 continue;
             }
@@ -1883,8 +1883,8 @@ impl ColMap {
                 if b > from {
                     let start = a.max(from);
                     let new_logical = start.saturating_add(count);
-                    if new_logical < gridcraft_core::MAX_COLS {
-                        let end = b.saturating_add(count).min(gridcraft_core::MAX_COLS);
+                    if new_logical < cella_core::MAX_COLS {
+                        let end = b.saturating_add(count).min(cella_core::MAX_COLS);
                         if new_logical < end {
                             out.push(ColSegment { logical: new_logical, physical: s.physical.saturating_add(start - a), len: end - new_logical });
                         }
@@ -1937,7 +1937,7 @@ impl ColMap {
         if self.segments.len() != 1 || segment.logical != 0 || segment.physical != 0 || segment.len == 0 {
             return;
         }
-        if !reset_prefix && segment.len < gridcraft_core::MAX_COLS {
+        if !reset_prefix && segment.len < cella_core::MAX_COLS {
             return;
         }
         self.identity = true;
@@ -2029,7 +2029,7 @@ pub struct PageCacheStats {
 /// on Windows it is created with `FILE_FLAG_DELETE_ON_CLOSE`, and [`CellStore`] dropping the file
 /// removes whatever is left. On those platforms even a crash leaves nothing behind.
 ///
-/// `GRIDCRAFT_SPILL` overrides the policy: `temp` never tries the document's directory (a
+/// `CELLA_SPILL` overrides the policy: `temp` never tries the document's directory (a
 /// sync-hostile folder, a network share), `off` never pages at all and the store stays live.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SpillOptions<'a> {
@@ -2038,7 +2038,7 @@ pub struct SpillOptions<'a> {
     /// The document's stem, sanitized to `[A-Za-z0-9_-]` (at most 32 bytes, empty → `book`) and
     /// used in the file's name. No full path and no sheet name reaches the name.
     pub name: Option<&'a str>,
-    /// The decoded-band cache budget in bytes; `None` reads `GRIDCRAFT_PAGE_CACHE_MB`.
+    /// The decoded-band cache budget in bytes; `None` reads `CELLA_PAGE_CACHE_MB`.
     pub cache_bytes: Option<usize>,
     /// The directory tried after `dir`; `None` is the system temp directory. Tests pin it so both
     /// candidates can be made unusable without touching the process-global environment.
@@ -2750,7 +2750,7 @@ impl CellStore {
     /// logical after a column edit without loading pages or walking every column.
     fn logical_col_span(&self, physical_first: u32, physical_last: u32) -> Option<(u32, u32)> {
         if self.col_map.is_identity() {
-            return (physical_first < gridcraft_core::MAX_COLS).then(|| (physical_first, physical_last.min(gridcraft_core::MAX_COLS - 1)));
+            return (physical_first < cella_core::MAX_COLS).then(|| (physical_first, physical_last.min(cella_core::MAX_COLS - 1)));
         }
         let mut lo = u32::MAX;
         let mut hi = 0u32;
@@ -2800,7 +2800,7 @@ impl CellStore {
     ///
     /// The file goes in the system temp directory; [`enable_paging_with`](Self::enable_paging_with)
     /// is the version that also says where else it may live. The decoded-band cache is created
-    /// with the file and takes its budget from `GRIDCRAFT_PAGE_CACHE_MB` (clamped to 8..=512 MiB,
+    /// with the file and takes its budget from `CELLA_PAGE_CACHE_MB` (clamped to 8..=512 MiB,
     /// default 64 MiB). The budget belongs to the file, so clones and undo snapshots share it and a
     /// later `enable_paging` keeps it.
     ///
@@ -3540,7 +3540,7 @@ impl CellStore {
         }
         // A serialized band may carry a row outside the sheet grid; keep it physical so `rebuild`
         // can find and report it rather than silently losing it (#1008).
-        let physical = if row >= gridcraft_core::MAX_ROWS {
+        let physical = if row >= cella_core::MAX_ROWS {
             row
         } else {
             let Some(physical) = self.physical_row_for_write(row) else { return };
@@ -3839,12 +3839,12 @@ impl CellStore {
                 None
             } else {
                 match &cell.value {
-                    gridcraft_core::Value::Number(n) => Some(Packed::Number(*n)),
-                    gridcraft_core::Value::Text(t) => Some(Packed::Text(t.as_ref())),
-                    gridcraft_core::Value::Bool(b) => Some(Packed::Bool(*b)),
-                    gridcraft_core::Value::Error(e) => Some(Packed::Error(*e)),
-                    gridcraft_core::Value::Array(_) => None,
-                    gridcraft_core::Value::Empty => continue,
+                    cella_core::Value::Number(n) => Some(Packed::Number(*n)),
+                    cella_core::Value::Text(t) => Some(Packed::Text(t.as_ref())),
+                    cella_core::Value::Bool(b) => Some(Packed::Bool(*b)),
+                    cella_core::Value::Error(e) => Some(Packed::Error(*e)),
+                    cella_core::Value::Array(_) => None,
+                    cella_core::Value::Empty => continue,
                 }
             };
             if !f(at, packed) {
@@ -4637,7 +4637,7 @@ impl CellStore {
             }
             // An identity column map maps every column in the grid; only a cell past the last grid
             // column can be orphaned, so the per-cell walk is skipped for a row that stops short.
-            let scan = !cols.is_identity() || row.column_span(band).is_some_and(|(_, last)| last >= gridcraft_core::MAX_COLS);
+            let scan = !cols.is_identity() || row.column_span(band).is_some_and(|(_, last)| last >= cella_core::MAX_COLS);
             if !scan {
                 continue;
             }
@@ -4672,7 +4672,7 @@ impl CellStore {
         let moved = self.take_pred(|c| (r0..=r1).contains(&c.row) && c.col >= from);
         for (c, cell) in moved {
             let nc = c.col as i64 + delta;
-            if (0..gridcraft_core::MAX_COLS as i64).contains(&nc) {
+            if (0..cella_core::MAX_COLS as i64).contains(&nc) {
                 self.set(CellRef::new(c.row, nc as u32), cell);
             }
         }
@@ -4683,7 +4683,7 @@ impl CellStore {
         let moved = self.take_pred(|c| c.row >= from && (c0..=c1).contains(&c.col));
         for (c, cell) in moved {
             let nr = c.row as i64 + delta;
-            if (0..gridcraft_core::MAX_ROWS as i64).contains(&nr) {
+            if (0..cella_core::MAX_ROWS as i64).contains(&nr) {
                 self.set(CellRef::new(nr as u32, c.col), cell);
             }
         }
@@ -4781,7 +4781,7 @@ impl<'de> Deserialize<'de> for CellStore {
 mod packed_tests {
     use super::*;
     use crate::Cell;
-    use gridcraft_core::{CellRef, RangeRef, Value};
+    use cella_core::{CellRef, RangeRef, Value};
 
     fn plain(n: u32) -> Cell {
         Cell::value(Value::Number(n as f64))
@@ -4998,7 +4998,7 @@ mod page {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
-    use gridcraft_core::{CellError, CellRef, RangeRef, Value};
+    use cella_core::{CellError, CellRef, RangeRef, Value};
 
     use super::{Band, BandRow, ERRORS, Formula, PageCacheStats, RowExtras, StyleId, error_code};
 
@@ -5580,7 +5580,7 @@ mod page {
         Vec::new()
     }
 
-    /// What `GRIDCRAFT_SPILL` asks for; unset (or anything unrecognized) means beside the document.
+    /// What `CELLA_SPILL` asks for; unset (or anything unrecognized) means beside the document.
     #[cfg(not(target_arch = "wasm32"))]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(super) enum SpillPolicy {
@@ -5594,7 +5594,7 @@ mod page {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn spill_policy() -> SpillPolicy {
-        parse_spill_policy(std::env::var("GRIDCRAFT_SPILL").ok().as_deref())
+        parse_spill_policy(std::env::var("CELLA_SPILL").ok().as_deref())
     }
 
     /// [`spill_policy`]'s rule, without the environment: tests pin the policy this way because the
@@ -5635,14 +5635,14 @@ mod page {
         stem
     }
 
-    /// `.gridcraft-spill-{stem}-{nonce}.bin`, with the pid before the nonce in the temp fallback (a
+    /// `.cella-spill-{stem}-{nonce}.bin`, with the pid before the nonce in the temp fallback (a
     /// stale file there is conceivable, and it must not collide with another process). The leading
     /// dot hides it on Unix and `.bin` stops a shell or an Office handler from treating it as a
     /// document.
     pub(super) fn spill_file_name(stem: &str, pid: Option<u32>, nonce: u64) -> String {
         match pid {
-            Some(pid) => format!(".gridcraft-spill-{stem}-{pid}-{nonce}.bin"),
-            None => format!(".gridcraft-spill-{stem}-{nonce}.bin"),
+            Some(pid) => format!(".cella-spill-{stem}-{pid}-{nonce}.bin"),
+            None => format!(".cella-spill-{stem}-{nonce}.bin"),
         }
     }
 
@@ -5679,7 +5679,7 @@ mod page {
     }
 
     /// The cache budget [`enable_paging`](super::CellStore::enable_paging) creates a page file
-    /// with. Read once: `GRIDCRAFT_PAGE_CACHE_MB`, clamped to 8..=512 MiB, default 64 MiB. Tests
+    /// with. Read once: `CELLA_PAGE_CACHE_MB`, clamped to 8..=512 MiB, default 64 MiB. Tests
     /// pin a budget through [`enable_paging_with_cache`](super::CellStore::enable_paging_with_cache)
     /// instead, because the environment is process-global and the model tests run in parallel.
     pub(super) fn default_cache_bytes() -> usize {
@@ -5687,14 +5687,14 @@ mod page {
         *BUDGET.get_or_init(|| requested_cache_bytes().unwrap_or(super::PAGE_CACHE_BYTES))
     }
 
-    /// `GRIDCRAFT_PAGE_CACHE_MB` in bytes, or `None` when it is unset or not a number.
+    /// `CELLA_PAGE_CACHE_MB` in bytes, or `None` when it is unset or not a number.
     #[cfg(not(target_arch = "wasm32"))]
     fn requested_cache_bytes() -> Option<usize> {
-        let mb = std::env::var("GRIDCRAFT_PAGE_CACHE_MB").ok()?.trim().parse::<usize>().ok()?;
+        let mb = std::env::var("CELLA_PAGE_CACHE_MB").ok()?.trim().parse::<usize>().ok()?;
         Some(cache_bytes_for_mb(mb))
     }
 
-    /// A `GRIDCRAFT_PAGE_CACHE_MB` value in bytes, clamped so a typo cannot ask for a gigabyte or
+    /// A `CELLA_PAGE_CACHE_MB` value in bytes, clamped so a typo cannot ask for a gigabyte or
     /// for a cache too small to hold one band. The clamp happens before the multiply, so an absurd
     /// value cannot overflow the budget.
     #[cfg(not(target_arch = "wasm32"))]
@@ -5845,7 +5845,7 @@ mod page {
                 for _ in 0..len {
                     data.push(decode_value(input, depth.saturating_add(1))?);
                 }
-                Some(Value::Array(Arc::new(gridcraft_core::Array { rows, cols, data })))
+                Some(Value::Array(Arc::new(cella_core::Array { rows, cols, data })))
             }
             _ => None,
         }
@@ -5977,7 +5977,7 @@ mod page {
                     for _ in 0..len {
                         data.push(decode_value(input, 0)?);
                     }
-                    arrays.push((col, Arc::new(gridcraft_core::Array { rows, cols, data })));
+                    arrays.push((col, Arc::new(cella_core::Array { rows, cols, data })));
                 }
                 arrays.sort_unstable_by_key(|(c, _)| *c);
                 arrays.dedup_by_key(|(c, _)| *c);
@@ -6147,8 +6147,8 @@ mod page {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridcraft_core::Value;
-    use gridcraft_formula::{Shape, ShapeTable};
+    use cella_core::Value;
+    use cella_formula::{Shape, ShapeTable};
 
     fn c(r: u32, col: u32) -> CellRef {
         CellRef::new(r, col)
@@ -6160,7 +6160,7 @@ mod tests {
 
     /// A formula of `text` entered at `at`, sharing `shapes` with every cell of the same fill.
     fn shaped(shapes: &mut ShapeTable, text: &str, at: CellRef) -> Formula {
-        let tree = gridcraft_formula::parse(text).expect("the test formula parses");
+        let tree = cella_formula::parse(text).expect("the test formula parses");
         Formula::from_expr_at(tree, at, shapes, false)
     }
 
@@ -6339,7 +6339,7 @@ mod tests {
             let path = s.page_file_path().expect("the store pages").to_path_buf();
             assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()), "no directory given, so the temp directory");
             let name = path.file_name().and_then(|n| n.to_str()).expect("a file name");
-            assert!(name.starts_with(".gridcraft-spill-book-") && name.ends_with(".bin"), "{name}");
+            assert!(name.starts_with(".cella-spill-book-") && name.ends_with(".bin"), "{name}");
             // Unix removes the name as soon as the file is open, so a crash leaves nothing; the
             // handle keeps the pages readable. Windows keeps the name, delete-on-close.
             #[cfg(unix)]
@@ -6358,7 +6358,7 @@ mod tests {
     /// leaves nothing behind when the store goes.
     #[test]
     fn a_spill_beside_the_document_goes_in_its_folder() {
-        let dir = std::env::temp_dir().join(format!("gridcraft-model-spill-{}-{}", std::process::id(), page_stem_nonce()));
+        let dir = std::env::temp_dir().join(format!("cella-model-spill-{}-{}", std::process::id(), page_stem_nonce()));
         std::fs::create_dir(&dir).expect("a temp directory for the test");
         let path = {
             let mut s = CellStore::new();
@@ -6368,7 +6368,7 @@ mod tests {
             assert!(s.enable_paging_with(SpillOptions { dir: Some(&dir), name: Some("Q3 report.v2"), ..SpillOptions::default() }));
             let path = s.page_file_path().expect("the store pages").to_path_buf();
             assert_eq!(path.parent(), Some(dir.as_path()), "the document's folder was used");
-            assert_eq!(path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(".gridcraft-spill-Q3reportv2-")), Some(true), "{path:?}");
+            assert_eq!(path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(".cella-spill-Q3reportv2-")), Some(true), "{path:?}");
             assert!(s.paged_band_count() > 0, "the bands were spilled");
             assert_eq!(s.get(c(1, 0)).map(|cell| cell.value), Some(Value::Number(1.0)));
             assert_eq!(s.get(c(199, 0)).map(|cell| cell.value), Some(Value::Number(199.0)), "a paged band still reads");
@@ -6383,7 +6383,7 @@ mod tests {
     /// paging: the temp directory is tried next, and the store pages.
     #[test]
     fn an_unusable_document_folder_falls_back_to_temp() {
-        let base = std::env::temp_dir().join(format!("gridcraft-model-fallback-{}-{}", std::process::id(), page_stem_nonce()));
+        let base = std::env::temp_dir().join(format!("cella-model-fallback-{}-{}", std::process::id(), page_stem_nonce()));
         std::fs::create_dir(&base).expect("a temp directory for the test");
         let not_there = base.join("missing");
         let a_file = base.join("a-file");
@@ -6402,12 +6402,12 @@ mod tests {
         std::fs::remove_dir_all(&base).expect("clean up the test directory");
     }
 
-    /// Two unusable directories leave the store live, exactly as `GRIDCRAFT_SPILL=off` does: no
+    /// Two unusable directories leave the store live, exactly as `CELLA_SPILL=off` does: no
     /// page file, nothing refused, every cell still there. The option pins both so the test does
     /// not touch the process-global environment.
     #[test]
     fn paging_stays_off_when_no_directory_can_hold_the_spill() {
-        let base = std::env::temp_dir().join(format!("gridcraft-model-off-{}-{}", std::process::id(), page_stem_nonce()));
+        let base = std::env::temp_dir().join(format!("cella-model-off-{}-{}", std::process::id(), page_stem_nonce()));
         std::fs::create_dir(&base).expect("a temp directory for the test");
         let missing = base.join("missing");
         let mut s = CellStore::new();
@@ -6424,7 +6424,7 @@ mod tests {
         std::fs::remove_dir_all(&base).expect("clean up the test directory");
     }
 
-    /// `GRIDCRAFT_SPILL` parsing, without touching the environment: `off` never pages, `temp`
+    /// `CELLA_SPILL` parsing, without touching the environment: `off` never pages, `temp`
     /// skips the document's folder, and anything else keeps the default.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -6475,9 +6475,9 @@ mod tests {
         assert_eq!(page::spill_stem(None), "book");
         assert_eq!(page::spill_stem(Some(&"x".repeat(100))).len(), page::SPILL_STEM_MAX);
         let beside = page::spill_file_name("book", None, 3);
-        assert_eq!(beside, ".gridcraft-spill-book-3.bin");
+        assert_eq!(beside, ".cella-spill-book-3.bin");
         let temp = page::spill_file_name("book", Some(7), 3);
-        assert_eq!(temp, format!(".gridcraft-spill-book-7-3.bin"));
+        assert_eq!(temp, format!(".cella-spill-book-7-3.bin"));
     }
 
     /// The first write failure latches the file shut: later bands are not retried against the same
@@ -6637,11 +6637,11 @@ mod tests {
             s.set(c(row, 5), Cell::value(Value::Text(Arc::from(format!("r{row}").as_str()))));
         }
         // One row spanning every column the grid has.
-        let mut wide: Vec<(u32, Cell)> = (0..gridcraft_core::MAX_COLS).map(|col| (col, Cell::value(Value::Number(f64::from(col))))).collect();
+        let mut wide: Vec<(u32, Cell)> = (0..cella_core::MAX_COLS).map(|col| (col, Cell::value(Value::Number(f64::from(col))))).collect();
         s.set_row(250, &mut wide);
         s.set(c(251, 0), Cell { value: Value::Number(3.0), formula: Some(Arc::new(Formula::new("=1+2"))), style: StyleId(2) });
         let live: Vec<(CellRef, Cell)> = s.iter_range(RangeRef::all()).collect();
-        assert!(live.iter().any(|(at, _)| at.col == gridcraft_core::MAX_COLS - 1), "the wide row is in the walk");
+        assert!(live.iter().any(|(at, _)| at.col == cella_core::MAX_COLS - 1), "the wide row is in the walk");
         assert_eq!(s.iter_scan(RangeRef::all()).collect::<Vec<_>>(), live, "a live store scans like it walks");
 
         let mut paged = s.clone();
@@ -6747,7 +6747,7 @@ mod tests {
         assert!(s.get(c(64, 0)).is_some());
     }
 
-    /// The `GRIDCRAFT_PAGE_CACHE_MB` value is clamped before it becomes bytes; the environment
+    /// The `CELLA_PAGE_CACHE_MB` value is clamped before it becomes bytes; the environment
     /// itself is never touched by a test, since it is process-global and these run in parallel.
     #[test]
     fn the_cache_budget_knob_is_clamped_to_its_bounds() {
@@ -6860,7 +6860,7 @@ mod tests {
 
     #[test]
     fn a_band_round_trips_through_a_page() {
-        use gridcraft_core::Array;
+        use cella_core::Array;
         let mut batch = BandBatch::new();
         let mut cells = vec![
             (0, Cell { value: Value::Number(1.25), formula: None, style: StyleId(3) }),
@@ -7461,9 +7461,9 @@ mod tests {
         s.take_range(RangeRef::cols(10, 13));
         s.shift_cols(14, -4);
         assert_eq!(s.get(c(15, 8)).and_then(|x| x.formula).map(|f| f.text.clone()), Some("1/0".to_string()));
-        let mut values = vec![(c(15, 8), Value::Error(gridcraft_core::CellError::Div0))];
+        let mut values = vec![(c(15, 8), Value::Error(cella_core::CellError::Div0))];
         s.set_values(&mut values);
-        assert_eq!(s.get(c(15, 8)).map(|x| x.value), Some(Value::Error(gridcraft_core::CellError::Div0)));
+        assert_eq!(s.get(c(15, 8)).map(|x| x.value), Some(Value::Error(cella_core::CellError::Div0)));
     }
 
     #[test]
@@ -7473,8 +7473,8 @@ mod tests {
         s.set(c(15, 10), Cell::value(Value::Number(1.0)));
         s.shift_cols(10, 4);
         assert_eq!(s.get(c(15, 8)).and_then(|x| x.formula).map(|f| f.text.clone()), Some("1/0".to_string()));
-        assert!(s.set_value(c(15, 8), &Value::Error(gridcraft_core::CellError::Div0)), "the mapped formula cell takes a value");
-        assert_eq!(s.get(c(15, 8)).map(|x| x.value), Some(Value::Error(gridcraft_core::CellError::Div0)));
+        assert!(s.set_value(c(15, 8), &Value::Error(cella_core::CellError::Div0)), "the mapped formula cell takes a value");
+        assert_eq!(s.get(c(15, 8)).map(|x| x.value), Some(Value::Error(cella_core::CellError::Div0)));
     }
 
     /// The owned-cell gate answers the same on a mapped and a paged store, and a band whose page
@@ -7687,7 +7687,7 @@ mod tests {
         let mut dynamic = Formula::new("=A1:A2*2");
         dynamic.array = Some(Box::new(RangeRef::parse("C4:D5").expect("range")));
         dynamic.dynamic = true;
-        let array = Value::Array(Arc::new(gridcraft_core::Array::row(vec![Value::Number(1.0), Value::Number(2.0)])));
+        let array = Value::Array(Arc::new(cella_core::Array::row(vec![Value::Number(1.0), Value::Number(2.0)])));
         s.set(c(3, 2), Cell { value: array, formula: Some(Arc::new(dynamic)), style: StyleId(9) });
         let before = s.len();
         assert_eq!(before, 12);
@@ -8001,11 +8001,11 @@ mod tests {
         }
         // A cell in the last row of the grid: deleting that row leaves one contiguous run from the
         // origin and puts the cell at physical `MAX_ROWS - 1` in a page of its own with no inverse.
-        s.set(c(gridcraft_core::MAX_ROWS - 1, 0), Cell::value(Value::Number(7.0)));
+        s.set(c(cella_core::MAX_ROWS - 1, 0), Cell::value(Value::Number(7.0)));
         assert!(s.enable_paging());
         let pages = s.paged_band_count();
         assert_eq!(pages, 5);
-        s.shift_rows(gridcraft_core::MAX_ROWS, -1);
+        s.shift_rows(cella_core::MAX_ROWS, -1);
         let visible: Vec<(CellRef, Cell)> = s.iter().collect();
         assert_eq!(visible.len(), 200);
         assert_eq!(s.len(), 201);
@@ -8319,7 +8319,7 @@ mod tests {
         let mut shapes = ShapeTable::default();
         for col in 1..=1000u32 {
             let at = c(0, col);
-            let text = gridcraft_formula::parse("$A$1+1").expect("parses");
+            let text = cella_formula::parse("$A$1+1").expect("parses");
             s.set(
                 at,
                 Cell { value: Value::Empty, formula: Some(Arc::new(Formula::from_expr_at(text, at, &mut shapes, false))), style: StyleId::DEFAULT },
@@ -8333,7 +8333,7 @@ mod tests {
         let formula = std::mem::size_of::<Formula>();
         assert!(text >= 1000 * formula, "{text} bytes of formula text for 1000 formulas");
         assert!(text <= 2 * 1000 * (formula + 8), "{text} bytes is not more than the struct and its text");
-        let one_shape = Shape::from_expr(gridcraft_formula::parse("$A$1+1").expect("parses"), c(0, 1)).bytes as usize;
+        let one_shape = Shape::from_expr(cella_formula::parse("$A$1+1").expect("parses"), c(0, 1)).bytes as usize;
         assert!(one_shape > 0, "the formula parses into a tree");
         assert_eq!(trees, one_shape, "the one shape a thousand formulas share is charged once");
         assert!(extras > 0, "the row gained a side table");
@@ -8359,7 +8359,7 @@ mod tests {
     #[test]
     fn a_shape_two_cells_share_is_charged_once() {
         let mut shapes = ShapeTable::default();
-        let tree = gridcraft_formula::parse("A1+1").expect("parses");
+        let tree = cella_formula::parse("A1+1").expect("parses");
         let one = Formula::from_expr_at(tree, c(0, 0), &mut shapes, false);
         let two = one.copied_to(c(0, 0), c(1, 0)).expect("the shape fits one row down");
         assert!(two.shape().is_some_and(|s| Arc::ptr_eq(&s, &one.shape().expect("a shape"))), "the shape is shared");

@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** major (upstream-adoption round: 492 registered + 35 special forms; the counts in the body were corrected against the registry after they had drifted - see the 2026-11-16 revision row. Earlier: GETPIVOTDATA added, 515 functions, 514 of Microsoft's 523 by name, 505 working) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
-Excel's worksheet functions, category by category, against GridCraft's function library. Part of
+Excel's worksheet functions, category by category, against Cella's function library. Part of
 [target-app-parity.md](target-app-parity.md); gaps feed [gaps.md](gaps.md).
 
 ## How this is measured
@@ -12,8 +12,8 @@ Excel's worksheet functions, category by category, against GridCraft's function 
   them), plus 14 text functions the page lists under combined entries (FIND/FINDB, LEFT/LEFTB,
   LEN/LENB, MID/MIDB, REPLACE/REPLACEB, RIGHT/RIGHTB, SEARCH/SEARCHB), BETA.INV, and COPILOT and
   PY (Microsoft 365 functions not on that page when fetched).
-- **Ours (515):** every function spec in the library (`gridcraft_functions::all()`, counted with
-  `gridcraft-cli functions --json`), which includes the evaluator's special forms in
+- **Ours (515):** every function spec in the library (`cella_functions::all()`, counted with
+  `cella-cli functions --json`), which includes the evaluator's special forms in
   `crates/calc/src/eval.rs` (`SPECIAL_FUNCTIONS`: IF, IFS, CHOOSE, OFFSET, INDIRECT,
   GETPIVOTDATA, INDEX, SUBTOTAL, AGGREGATE, TEXT, LET, LAMBDA, MAP, REDUCE, SCAN, BYROW, BYCOL,
   MAKEARRAY, TRIMRANGE…),
@@ -49,7 +49,7 @@ Excel's worksheet functions, category by category, against GridCraft's function 
 | AI and Python | 2 | 0 | 0 | 0% | COPILOT, PY |
 | **Total** | **523** | **515** | **505** | **96.6%** | 9 missing by name, 9 stubs |
 
-The category counts are ours as the library registers them (`gridcraft-cli functions --json`);
+The category counts are ours as the library registers them (`cella-cli functions --json`);
 Microsoft's are the page's. Where a name sits in a different category on either side (a legacy
 `FORECAST` or `CEILING` reads as Compatibility here and Math there), the row's two "Ours"/"Excel"
 numbers differ while the total is right. The **missing** column is the verified list: every other
@@ -91,9 +91,9 @@ This improves series preparation; it does not change the model-fitting or season
 | Implicit intersection `@`, legacy CSE array formulas | done, the entered range filled (PR #156) |
 | Trim references `A1:.E10` (trailing), `A1.:E10` (leading), `A1.:.E10` (both), also on whole rows/columns (`A:.A`) | done; evaluated as `TRIMRANGE(range, code, code)`, adjusted on insert/delete; files store `_xlfn.TRIMRANGE(range,code,code)` (Excel's own file spelling unconfirmed in public docs), `_xlfn._TRO_ALL/_TRO_LEADING/_TRO_TRAILING(...)` read too |
 | LET, LAMBDA, named LAMBDAs, ISOMITTED, MAP/REDUCE/SCAN/BYROW/BYCOL/MAKEARRAY | done |
-| `MEASURE(name, ["Table[Column]", value]…)` — GridCraft's own | done (11-14, N3.3): reads a data-model measure in a cell, `Table[Column]` filters narrow it through the model's relationships, and the cell recalculates whenever the model changes (the function is treated as volatile, because the rows behind it live outside the cell graph) |
+| `MEASURE(name, ["Table[Column]", value]…)` — Cella's own | done (11-14, N3.3): reads a data-model measure in a cell, `Table[Column]` filters narrow it through the model's relationships, and the cell recalculates whenever the model changes (the function is treated as volatile, because the rows behind it live outside the cell graph) |
 
-| Iterative calculation for circular references | done: with Enable Iterative Calculation on (`formulas.calculationOptions` `{iterative, maxIterations, maxChange}`, saved as `<calcPr iterate iterateCount iterateDelta>`), loops are evaluated again from their previous values (blank = 0) until no cell on a loop changes by Maximum Change or Maximum Iterations is reached; off, cycles give `#CIRC!`. Differences: no Options dialog yet (command only); GridCraft recalculates on open, so a loop that never settles (`=A1+1`) advances again each time the file is opened |
+| Iterative calculation for circular references | done: with Enable Iterative Calculation on (`formulas.calculationOptions` `{iterative, maxIterations, maxChange}`, saved as `<calcPr iterate iterateCount iterateDelta>`), loops are evaluated again from their previous values (blank = 0) until no cell on a loop changes by Maximum Change or Maximum Iterations is reached; off, cycles give `#CIRC!`. Differences: no Options dialog yet (command only); Cella recalculates on open, so a loop that never settles (`=A1+1`) advances again each time the file is opened |
 | 15-significant-digit comparison semantics | done (#57): `=0.1+0.2=0.3` is TRUE, and MATCH and COUNTIF compare the same way. Arithmetic keeps full precision, as Excel does — `=(0.1+0.2)-0.3` is 5.55E-17 |
 | External workbook references (`[Book.xlsx]Sheet1!A1`) | parsed; links dropped on open, no update |
 | Localized function names and `;` separators | **missing** (#45); en-US only |
@@ -111,7 +111,7 @@ XIRR, YIELD) are the highest-risk for last-digit differences.
 
 **Documentation-derived oracle suite (2026-10-30).** `crates/calc/tests/formula_oracle.rs`
 transcribes 595 worked examples for 275 distinct functions from Microsoft's published function
-reference and runs each through `gridcraft_calc::evaluate`, so the parser, names, references,
+reference and runs each through `cella_calc::evaluate`, so the parser, names, references,
 special forms, array results and spills are exercised, not just the function body. It includes
 regression rows for #57, #133, #139, #140 and #134. This is a **documentation-derived, not
 Excel-computed** oracle: expected values are the numbers the pages print, compared at their printed
@@ -143,7 +143,7 @@ workbooks; results checked in as data, not Excel files) and fixing what it finds
 | 2026-11-02 | minor | Coverage re-measured from the library (514 functions, 513 of Microsoft's 523 by name, 504 working): PERCENTOF and TRIMRANGE are present, so the stale per-category "Ours"/"Missing" columns are corrected and the ten genuinely missing names listed |
 | 2026-10-30 | minor | Documentation-derived formula oracle suite: 595 worked examples for 275 functions through the evaluator, with #57/#133/#139/#140/#134 regressions (not an Excel-computed corpus) |
 | 2026-10-21 | minor | SUBTOTAL and AGGREGATE charge every argument against the evaluator's 16-million-cell limit before scanning; a value in XFD1048576 no longer makes `SUBTOTAL(9,A:XFD)` read the whole sheet (#2175) |
-| 2026-10-19 | minor | LET and LAMBDA names compare case-insensitively in any script, as in Excel: `=LET(dług,100,DŁUG*2)` is 200 (was #NAME?); also LET-bound lambdas called or passed by name (`żar(2)`, `MAP(…,Λ)`), `ISOMITTED`, and formula-bar alias translation (one shared `gridcraft_formula::same_name`, which matches `ß` with `ẞ` and keeps dotless `ı` apart from `i`) |
+| 2026-10-19 | minor | LET and LAMBDA names compare case-insensitively in any script, as in Excel: `=LET(dług,100,DŁUG*2)` is 200 (was #NAME?); also LET-bound lambdas called or passed by name (`żar(2)`, `MAP(…,Λ)`), `ISOMITTED`, and formula-bar alias translation (one shared `cella_formula::same_name`, which matches `ß` with `ẞ` and keeps dotless `ı` apart from `i`) |
 | 2026-10-19 | minor | Long flat operator chains (#916): 4,096 operands (Excel's 8,192-character limit) no longer overflow the stack when entered, filled, adjusted or saved; chains past 64 operands are no longer saved as dynamic-array formulas; Spanish entry no longer refuses chains past 256 operands |
 | 2026-10-17 | minor | 15-significant-digit comparison moved from missing to done (#57), and the resolved caveats on the 3-D reference, dynamic-array and legacy-array rows cleared (#140, #133, #139, #156) |
 | 2026-10-16 | minor | FORECAST.ETS gap interpolation uses a forward-only known-point scan instead of rescanning each gap for every missing value; numerical behavior and missing-point limits are preserved (#1042) |
@@ -155,7 +155,7 @@ workbooks; results checked in as data, not Excel files) and fixing what it finds
 | 2026-10-11 | minor | TEXT / number formats fixed against Excel-cached results: fraction literals and zero fractions, `0` denominators zero padded, `?` pads the thousands separator, booleans use the text section (226 mismatches → 0 in 352 TEXT cells) |
 | 2026-10-11 | minor | Iterative calculation: circular references iterate up to Maximum Iterations / Maximum Change when enabled |
 | 2026-10-11 | minor | Trim-reference operators (`:.`, `.:`, `.:.`) and unbracketed `[[#This Row],Col]` done; dropped the stale "Scope of what's missing" rows for TRIMRANGE, PERCENTOF, BAHTTEXT and the trim references |
-| 2026-10-11 | minor | Fixes from the cached-value oracle (`gridcraft-cli check`): MODE / MODE.SNGL / MODE.MULT give `#VALUE!` for text in a direct argument or single-cell reference; `VALUE("")` is `#VALUE!`; SUMPRODUCT with a text scalar argument is `#VALUE!`; ADDRESS leaves `[Book]Sheet` unquoted; VLOOKUP / HLOOKUP / LOOKUP / MATCH approximate match bisect like Excel on unsorted mixed-type data; XLOOKUP / XMATCH binary search compares across types in sort order; SUBTOTAL leaves out filtered rows for every function number (table and sheet AutoFilters) |
+| 2026-10-11 | minor | Fixes from the cached-value oracle (`cella-cli check`): MODE / MODE.SNGL / MODE.MULT give `#VALUE!` for text in a direct argument or single-cell reference; `VALUE("")` is `#VALUE!`; SUMPRODUCT with a text scalar argument is `#VALUE!`; ADDRESS leaves `[Book]Sheet` unquoted; VLOOKUP / HLOOKUP / LOOKUP / MATCH approximate match bisect like Excel on unsorted mixed-type data; XLOOKUP / XMATCH binary search compares across types in sort order; SUBTOTAL leaves out filtered rows for every function number (table and sheet AutoFilters) |
 | 2026-10-11 | minor | ODDFPRICE, ODDFYIELD, ODDLPRICE, ODDLYIELD added: Financial 55 / 55; 505 / 523 by name, 496 working |
 | 2026-10-11 | minor | PERCENTOF and EUROCONVERT added: 503 / 523 by name, 494 working |
 | 2026-10-11 | minor | BAHTTEXT added: 502 / 523 by name, 493 working |

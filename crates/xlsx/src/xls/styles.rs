@@ -11,10 +11,8 @@
 
 use std::collections::HashMap;
 
-use gridcraft_model::style::Protection;
-use gridcraft_model::{
-    Alignment, BorderLine, BorderStyle, Borders, Color, Fill, Font, HAlign, NumFmt, PatternType, Style, Underline, VAlign, VertAlign,
-};
+use cella_model::style::Protection;
+use cella_model::{Alignment, BorderLine, BorderStyle, Borders, Color, Fill, Font, HAlign, NumFmt, PatternType, Style, Underline, VAlign, VertAlign};
 
 use super::records::Cursor;
 use crate::IoError;

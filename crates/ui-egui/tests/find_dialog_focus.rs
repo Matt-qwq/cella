@@ -1,8 +1,8 @@
 //! Opening Find and Replace puts the cursor in "Find what", so the user can type at once.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
 use egui::{Event, Key, Modifiers};
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

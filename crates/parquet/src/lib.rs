@@ -28,8 +28,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellError, CellRef, RangeRef, Value, number_to_text};
-use gridcraft_model::{Cell, Sheet};
+use cella_core::{CellError, CellRef, RangeRef, Value, number_to_text};
+use cella_model::{Cell, Sheet};
 use parquet::basic::{Compression, LogicalType, Repetition, Type as PhysicalType};
 use parquet::data_type::{BoolType, ByteArrayType, DoubleType, Int64Type};
 use parquet::file::properties::WriterProperties;
@@ -186,7 +186,7 @@ pub fn export_sheet(sheet: &Sheet, opts: Options) -> Result<(Vec<u8>, Report), E
 fn plan_range(sheet: &Sheet, opts: Options) -> Option<(RangeRef, bool)> {
     let range = opts.range.or_else(|| sheet.used_range())?;
     // Clamp to the grid so a hostile range cannot make the loops run past the sheet.
-    let end = CellRef::new(range.end.row.min(gridcraft_core::MAX_ROWS - 1), range.end.col.min(gridcraft_core::MAX_COLS - 1));
+    let end = CellRef::new(range.end.row.min(cella_core::MAX_ROWS - 1), range.end.col.min(cella_core::MAX_COLS - 1));
     if range.start.row > end.row || range.start.col > end.col {
         return None;
     }

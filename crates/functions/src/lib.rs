@@ -1,4 +1,4 @@
-//! GridCraft worksheet function library.
+//! Cella worksheet function library.
 //!
 //! Every function is described by a [`FnSpec`] (name, arity, category, which parameters take
 //! scalars, a signature and a one-line description) and implemented as a plain Rust function over
@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use gridcraft_core::{Array, CellError, DateSystem, Value};
+use cella_core::{Array, CellError, DateSystem, Value};
 
 /// Builds a [`FnSpec`] whose implementation returns `Result<Value, CellError>`.
 ///
@@ -34,7 +34,7 @@ macro_rules! f {
             signature: $sig,
             description: $desc,
             imp: {
-                fn w(a: &[$crate::Arg], c: &mut dyn $crate::Ctx) -> gridcraft_core::Value {
+                fn w(a: &[$crate::Arg], c: &mut dyn $crate::Ctx) -> cella_core::Value {
                     $crate::util::finish(($imp)(a, c))
                 }
                 w
@@ -53,7 +53,7 @@ macro_rules! f {
             signature: $sig,
             description: $desc,
             imp: {
-                fn w(a: &[$crate::Arg], c: &mut dyn $crate::Ctx) -> gridcraft_core::Value {
+                fn w(a: &[$crate::Arg], c: &mut dyn $crate::Ctx) -> cella_core::Value {
                     $crate::util::finish(($imp)(a, c))
                 }
                 w
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn regexreplace_bounds_its_result() {
         use crate::util::testutil::*;
-        use gridcraft_core::CellError;
+        use cella_core::CellError;
         let many = "a".repeat(32_767);
         assert_eq!(ev("REGEXREPLACE", vec![t(&many), t("."), t(&"b".repeat(32_767))]), Value::Error(CellError::Value));
         assert_eq!(ev("REGEXREPLACE", vec![t(&many), t("a"), t("b")]), Value::text("b".repeat(32_767)));
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn hostile_inputs_never_panic() {
         use crate::util::testutil::*;
-        use gridcraft_core::{Array, CellError};
+        use cella_core::{Array, CellError};
         let mixed = Value::from(
             Array::new(2, 3, vec![Value::Number(1.0), Value::from("x"), Value::Empty, Value::Bool(true), Value::Number(-1e300), Value::Number(0.5)])
                 .unwrap(),

@@ -62,7 +62,7 @@ fn reads_a_primitive_shape_without_a_fragment() {
     let (wb, _) = read_xls(&file).unwrap();
     let shapes = &wb.sheets[0].shapes;
     assert_eq!(shapes.len(), 1);
-    assert_eq!(shapes[0].kind, gridcraft_model::ShapeKind::Ellipse);
+    assert_eq!(shapes[0].kind, cella_model::ShapeKind::Ellipse);
     assert!(shapes[0].anchor.width > 0.0 && shapes[0].anchor.height > 0.0);
     assert_eq!(shapes[0].id, 1);
 }
@@ -75,9 +75,9 @@ fn reads_a_shape_from_its_drawingml_fragment() {
     let shapes = &wb.sheets[0].shapes;
     assert_eq!(shapes.len(), 1);
     let shape = &shapes[0];
-    assert_eq!(shape.kind, gridcraft_model::ShapeKind::TextBox);
+    assert_eq!(shape.kind, cella_model::ShapeKind::TextBox);
     assert_eq!(shape.text, "Hi");
-    assert_eq!(shape.fill, gridcraft_model::Color::rgb(255, 0, 0));
+    assert_eq!(shape.fill, cella_model::Color::rgb(255, 0, 0));
 }
 
 #[test]

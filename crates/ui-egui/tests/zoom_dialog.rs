@@ -1,10 +1,10 @@
 //! The Zoom dialog stores the Magnification the user picks.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::control::{Outcome, handle};
 use egui::vec2;
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::control::{Outcome, handle};
 use serde_json::{Value as Json, json};
 
 fn harness() -> egui_kittest::Harness<'static, SheetApp> {

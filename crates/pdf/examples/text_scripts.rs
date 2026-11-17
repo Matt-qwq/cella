@@ -2,7 +2,7 @@
 //! platform provides, for checking the writer's shaped output with an independent extractor:
 //!
 //! ```text
-//! cargo run -p gridcraft-pdf --example text_scripts -- target/pdf-text
+//! cargo run -p cella-pdf --example text_scripts -- target/pdf-text
 //! pdftotext -enc UTF-8 target/pdf-text/arabic.pdf -
 //! ```
 //!
@@ -13,8 +13,8 @@
 use std::error::Error;
 use std::path::PathBuf;
 
-use gridcraft_core::fonts::{self, Script};
-use gridcraft_pdf::{Direction, Face, Font, PdfDoc};
+use cella_core::fonts::{self, Script};
+use cella_pdf::{Direction, Face, Font, PdfDoc};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "target/pdf-text".to_string()));
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         let mut doc = PdfDoc::new();
         doc.set_font(face);
-        doc.info.title = format!("GridCraft {name} sample");
+        doc.info.title = format!("Cella {name} sample");
         let page = doc.add_page(420.0, 100.0);
         page.text(20.0, 55.0, 20.0, Font::Helvetica, [0, 0, 0], sample);
         let path = dir.join(format!("{name}.pdf"));

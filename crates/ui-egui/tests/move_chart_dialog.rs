@@ -1,11 +1,11 @@
 //! Chart Design ▸ Move Chart: the dialog Excel opens from Location. Its two choices put a floating
 //! chart on a chart sheet of its own or a chart sheet's chart back on a worksheet as an object.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::control::{Outcome, handle};
 use egui::{Event, Key, Modifiers, accesskit::Role, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::control::{Outcome, handle};
 use serde_json::{Value as Json, json};
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

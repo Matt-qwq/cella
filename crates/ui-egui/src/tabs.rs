@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use cella_engine::model::{Sheet, Visibility};
 use egui::{Align2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use gridcraft_engine::model::{Sheet, Visibility};
 use serde_json::json;
 
 use crate::SheetApp;
@@ -47,7 +47,7 @@ fn accessibility_status(app: &mut SheetApp) -> (String, usize) {
 /// selected cell, so its answer is cached per (document uid, revision, sheet) and selection — a
 /// repaint reads the cache, an edit or a selection change recomputes once. The key carries the
 /// revision *and* the selection: a stale Sum is a wrong answer, worse than the stall it saves.
-fn selection_stats(app: &mut SheetApp) -> Option<gridcraft_engine::display::Stats> {
+fn selection_stats(app: &mut SheetApp) -> Option<cella_engine::display::Stats> {
     let d = app.session.active()?;
     if d.selection.is_single_cell() {
         return None;
@@ -63,7 +63,7 @@ fn selection_stats(app: &mut SheetApp) -> Option<gridcraft_engine::display::Stat
     {
         return Some(st.clone());
     }
-    let st = gridcraft_engine::display::stats(d.wb.active()?, &d.selection.ranges);
+    let st = cella_engine::display::stats(d.wb.active()?, &d.selection.ranges);
     app.grid.stats = Some((key, d.selection.clone(), st.clone()));
     Some(st)
 }
@@ -343,10 +343,10 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
         |ui| {
             ui.horizontal_centered(|ui| {
                 let mode = match app.session.mode {
-                    gridcraft_engine::Mode::Ready => "Ready",
-                    gridcraft_engine::Mode::Enter => "Enter",
-                    gridcraft_engine::Mode::Edit => "Edit",
-                    gridcraft_engine::Mode::Point => "Point",
+                    cella_engine::Mode::Ready => "Ready",
+                    cella_engine::Mode::Enter => "Enter",
+                    cella_engine::Mode::Edit => "Edit",
+                    cella_engine::Mode::Point => "Point",
                 };
                 ui.label(egui::RichText::new(app.ui.language.tr(mode)).font(theme::ui_font(12.5)).color(t.text_dim));
                 if let Some(d) = app.session.active() {
@@ -356,7 +356,7 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
                             egui::RichText::new(crate::widgets::tr(ui, "Macros preserved (not executed)")).font(theme::ui_font(12.5)).color(t.danger),
                         );
                     }
-                    if d.wb.calc.mode == gridcraft_engine::model::CalcMode::Manual {
+                    if d.wb.calc.mode == cella_engine::model::CalcMode::Manual {
                         ui.add_space(12.0);
                         ui.label(egui::RichText::new(app.ui.language.tr("Calculate")).font(theme::ui_font(12.5)).color(t.text_dim));
                     }
@@ -436,10 +436,7 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
                         let fmt = |v: f64| {
                             let code = d.wb.styles.get(sh.style_id(d.selection.active)).num_fmt.as_str().to_string();
                             let code = if code == "General" { "#,##0.##########".to_string() } else { code };
-                            gridcraft_engine::display::format(&gridcraft_engine::core::Value::Number(v), &code, &d.wb)
-                                .text
-                                .trim_end_matches('.')
-                                .to_string()
+                            cella_engine::display::format(&cella_engine::core::Value::Number(v), &code, &d.wb).text.trim_end_matches('.').to_string()
                         };
                         let mut parts = Vec::new();
                         if st.numeric > 0 {
@@ -466,13 +463,13 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
 mod tests {
     use super::{activate_sheet, drop_copies_sheet, navigator_items, rename_needs_focus, tab_drop};
     use crate::SheetApp;
+    use cella_engine::model::{Sheet, Visibility};
     use egui::Modifiers;
-    use gridcraft_engine::model::{Sheet, Visibility};
     use serde_json::json;
     use std::sync::Arc;
 
     fn workbook_abc() -> SheetApp {
-        let mut session = gridcraft_engine::Session::default();
+        let mut session = cella_engine::Session::default();
         session.new_workbook();
         let mut app = SheetApp::new(session, Default::default());
         app.run("home.insertSheet", json!({})).unwrap();
@@ -533,7 +530,7 @@ mod tests {
 
     #[test]
     fn a_rejected_commit_keeps_the_sheet_and_the_edit() {
-        let mut session = gridcraft_engine::Session::new();
+        let mut session = cella_engine::Session::new();
         session.new_workbook();
         session.execute("home.insertSheet", json!({})).unwrap();
         session.execute("sheet.activate", json!({"sheet": 0})).unwrap();
@@ -547,7 +544,7 @@ mod tests {
         app.editor.as_mut().unwrap().text = "7".into();
         activate_sheet(&mut app, 1);
         assert_eq!(app.session.active().unwrap().wb.active_sheet, 1, "the corrected value commits and the sheet changes");
-        let a1 = gridcraft_engine::core::CellRef::parse("A1").unwrap();
+        let a1 = cella_engine::core::CellRef::parse("A1").unwrap();
         assert!(app.session.active().unwrap().wb.sheet(0).unwrap().cell(a1).is_some(), "the value lands on the first sheet");
     }
 }
@@ -559,7 +556,7 @@ mod status_stats_tests {
     use serde_json::json;
 
     fn app_with_values() -> SheetApp {
-        let mut session = gridcraft_engine::Session::default();
+        let mut session = cella_engine::Session::default();
         session.new_workbook();
         let mut app = SheetApp::new(session, Default::default());
         app.run("sheet.rename", json!({"sheet": 0, "name": "Data"})).unwrap();
@@ -622,7 +619,7 @@ mod status_stats_tests {
         assert_eq!(app.session.active().unwrap().revision, revision, "a recalculation is not an edit");
         let fresh = {
             let d = app.session.active().unwrap();
-            gridcraft_engine::display::stats(d.wb.active().unwrap(), &d.selection.ranges)
+            cella_engine::display::stats(d.wb.active().unwrap(), &d.selection.ranges)
         };
         assert_ne!(fresh.sum, before.sum, "B1 waited for the calculation: the scenario is stale on purpose");
         let st = selection_stats(&mut app).unwrap();
@@ -651,7 +648,7 @@ mod a11y_status_tests {
     use serde_json::json;
 
     fn app_with_sheets() -> SheetApp {
-        let mut session = gridcraft_engine::Session::default();
+        let mut session = cella_engine::Session::default();
         session.new_workbook();
         SheetApp::new(session, Default::default())
     }

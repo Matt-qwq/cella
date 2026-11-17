@@ -1,10 +1,10 @@
 //! A list validation's input message must not cover the dropdown it describes (#505).
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::{SheetApp, grid};
 use egui::{Event, Key, Modifiers, PointerButton};
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::{SheetApp, grid};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

@@ -590,7 +590,7 @@ impl Face {
 
     /// A minimal `name` table: family and full font name, UTF-16BE for Windows and MacRoman.
     fn build_name(&self) -> Vec<u8> {
-        let family = self.family_name().unwrap_or_else(|| "GridCraft Embedded".to_string());
+        let family = self.family_name().unwrap_or_else(|| "Cella Embedded".to_string());
         let full = self.postscript_name().unwrap_or_else(|| family.clone());
         let clip = |s: &str| -> String { s.chars().take(120).collect() };
         let (family, full) = (clip(&family), clip(&full));

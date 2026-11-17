@@ -205,14 +205,14 @@ fn step_json(command: &str, params: &Json) -> Json {
 
 /// `selection.set`'s parameters for `sel`: every area as A1 text, with the active cell.
 fn selection_params(sel: &Selection) -> Json {
-    let ranges: Vec<String> = sel.ranges.iter().map(gridcraft_core::RangeRef::a1).collect();
+    let ranges: Vec<String> = sel.ranges.iter().map(cella_core::RangeRef::a1).collect();
     json!({ "range": ranges.join(","), "active": sel.active.a1() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridcraft_core::{CellRef, RangeRef};
+    use cella_core::{CellRef, RangeRef};
 
     #[test]
     fn the_filter_list() {
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn the_sheet_and_selection_a_command_ran_with_become_steps() {
-        let mut d = crate::DocState::new(gridcraft_model::Workbook::new(), None, "book".into());
+        let mut d = crate::DocState::new(cella_model::Workbook::new(), None, "book".into());
         d.uid = 1;
         let start = d.selection.clone();
         let mut rec = Recorder::new(&d);
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn the_step_cap_and_the_filter_are_counted() {
-        let d = crate::DocState::new(gridcraft_model::Workbook::new(), None, "book".into());
+        let d = crate::DocState::new(cella_model::Workbook::new(), None, "book".into());
         let mut rec = Recorder::new(&d);
         let sel = d.selection.clone();
         let doc = rec.doc();

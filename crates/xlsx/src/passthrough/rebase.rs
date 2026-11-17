@@ -26,7 +26,7 @@ impl<'a> SheetKept<'a> {
         SheetKept { p: Some(p), names, ids }
     }
 
-    /// The sheet `<ext>` children GridCraft does not model, relationship ids rewritten.
+    /// The sheet `<ext>` children Cella does not model, relationship ids rewritten.
     pub fn ext_elements(&self) -> String {
         let Some(p) = self.p else { return String::new() };
         p.elements.iter().filter(|e| e.slot == EXT_SLOT).filter_map(|e| remap(&e.xml, &self.ids)).collect()
@@ -42,14 +42,14 @@ impl<'a> SheetKept<'a> {
         }
     }
 
-    /// The number GridCraft's own VML shapes start after when they join the kept drawing
+    /// The number Cella's own VML shapes start after when they join the kept drawing
     /// ([`SheetKept::notes_vml`] numbers them `base + 1`, `base + 2`…); `None` without one.
     pub fn shape_base(&self) -> Option<u64> {
         let vml = self.vml()?;
         Some(first_free_block(&String::from_utf8_lossy(&vml.data)).saturating_mul(1024))
     }
 
-    /// GridCraft's notes and form controls VML for part `name`, merged with the kept control and
+    /// Cella's notes and form controls VML for part `name`, merged with the kept control and
     /// object shapes.
     pub fn notes_vml(&self, ours: String, name: &str, out: &mut Out) -> String {
         let Some(vml) = self.vml() else { return ours };
@@ -81,7 +81,7 @@ impl<'a> SheetKept<'a> {
         remap(&xml, &self.ids)
     }
 
-    /// The kept sheet elements, in schema order, with GridCraft's own form control entries
+    /// The kept sheet elements, in schema order, with Cella's own form control entries
     /// (`controls`, see `controls::write`) in the sheet's one `<controls>` element.
     pub fn elements(&self, controls: &str) -> String {
         let mut s = String::new();
@@ -109,7 +109,7 @@ impl<'a> SheetKept<'a> {
         s
     }
 }
-/// Where GridCraft's control entries go in a kept `<controls>` fragment: just before the close
+/// Where Cella's control entries go in a kept `<controls>` fragment: just before the close
 /// tag of the `<controls>` element the reader reads (`controls::controls_of`), whatever its
 /// namespace prefix. In an `mc:AlternateContent` with separate `<controls>` elements in its
 /// Choice and Fallback branches that is the Choice's, the one an application that knows the

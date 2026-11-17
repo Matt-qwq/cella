@@ -1,8 +1,8 @@
 //! Form controls: the three parts written for each control agree, they read back, a file's own
 //! unmodelled controls stay kept beside the modelled ones, and odd values give valid controls.
 
-use gridcraft_core::CellRef;
-use gridcraft_model::{Anchor, AnchorMode, Comment, ControlAction, ControlKind, FormControl, MacroInput, Sheet, Workbook};
+use cella_core::CellRef;
+use cella_model::{Anchor, AnchorMode, Comment, ControlAction, ControlKind, FormControl, MacroInput, Sheet, Workbook};
 
 use super::minimal;
 use crate::package::Package;
@@ -301,7 +301,7 @@ fn hostile_form_controls_are_capped_and_repaired() {
         assert!(x.check_numbers().is_ok(), "{x:?}");
         assert!(x.value >= x.min && x.value <= x.max, "{x:?}");
         assert!(x.name.chars().count() <= 255 && x.link.is_none(), "{x:?}");
-        assert!(x.anchor.width >= 1.0 && x.anchor.height >= 1.0 && x.anchor.cell.row < gridcraft_core::MAX_ROWS, "{x:?}");
+        assert!(x.anchor.width >= 1.0 && x.anchor.height >= 1.0 && x.anchor.cell.row < cella_core::MAX_ROWS, "{x:?}");
     }
     // Written back and read again, the kept controls stay valid.
     let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();

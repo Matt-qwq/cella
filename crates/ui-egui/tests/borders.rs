@@ -1,11 +1,11 @@
 //! Border menu and dialog behavior through real egui controls.
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, Value};
+use cella_engine::model::{BorderLine, BorderStyle, Borders, Color};
+use cella_ui_egui::SheetApp;
 use egui::{Color32, Shape, vec2};
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_engine::model::{BorderLine, BorderStyle, Borders, Color};
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 fn harness() -> egui_kittest::Harness<'static, SheetApp> {

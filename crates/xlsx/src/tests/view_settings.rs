@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::CellRef;
-use gridcraft_model::{Alignment, ReadingOrder, Sheet, Style, StyleId, Workbook, WorkbookView};
+use cella_core::CellRef;
+use cella_model::{Alignment, ReadingOrder, Sheet, Style, StyleId, Workbook, WorkbookView};
 
 use crate::package::Package;
 use crate::{read_xlsx, write_xlsx};

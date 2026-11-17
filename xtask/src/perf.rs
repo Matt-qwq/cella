@@ -13,7 +13,7 @@
 //!
 //! A scenario that is over budget is measured once more before the run fails: a build that started
 //! on the same machine is a slow pass, not a regression, and a real one stays over budget twice.
-//! - `--budgets=PATH` — a different budget file; `--scale=F` (or `GRIDCRAFT_PERF_SCALE`)
+//! - `--budgets=PATH` — a different budget file; `--scale=F` (or `CELLA_PERF_SCALE`)
 //!   multiplies every budget, for a slower or shared machine
 //!
 //! It is deliberately **not** part of `cargo xtask ci`: a release build of the engine is not part
@@ -60,12 +60,12 @@ pub enum Verdict {
 }
 
 const HEADER: &str = "\
-# GridCraft performance budgets — `cargo xtask perf` fails when a scenario is slower than its
+# Cella performance budgets — `cargo xtask perf` fails when a scenario is slower than its
 # budget. What each scenario measures is in docs/performance.md.
 #
 # Recorded with `cargo xtask perf --update` (best of three passes × 2, never below 1 ms) on the
 # dev machine, release build: a scenario must be TWICE as slow as this to fail. A slower or shared
-# machine: GRIDCRAFT_PERF_SCALE=2 cargo xtask perf. Re-record only for an intended change.
+# machine: CELLA_PERF_SCALE=2 cargo xtask perf. Re-record only for an intended change.
 #
 # Format: <scenario> <rows> <budget ms>
 ";
@@ -225,7 +225,7 @@ fn keep_min(measured: &mut [Measured], again: &[Measured]) {
 }
 
 fn env_scale() -> f64 {
-    std::env::var("GRIDCRAFT_PERF_SCALE").ok().and_then(|s| s.trim().parse().ok()).filter(|s| *s > 0.0).unwrap_or(1.0)
+    std::env::var("CELLA_PERF_SCALE").ok().and_then(|s| s.trim().parse().ok()).filter(|s| *s > 0.0).unwrap_or(1.0)
 }
 
 pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
@@ -348,7 +348,7 @@ fn fmt_time(ms: f64) -> String {
 fn measure(args: &Args, only: Option<&[String]>) -> Result<Vec<Measured>, String> {
     let retry = only.is_some();
     let mut cmd = crate::cargo();
-    cmd.args(["run", "--release", "-q", "-p", "gridcraft-engine", "--example", "perf", "--", "--json"]);
+    cmd.args(["run", "--release", "-q", "-p", "cella-engine", "--example", "perf", "--", "--json"]);
     cmd.arg(format!("--rows={}", args.rows.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
     if let Some(ids) = only.or(args.only.as_deref()) {
         cmd.arg(format!("--scenario={}", ids.join(",")));
@@ -400,7 +400,7 @@ mod tests {
         let text = render_budgets(&[b("sort.desc", 1_000_000, 14_250.0), b("fill.values", 100_000, 800.0)]);
         let parsed = parse_budgets(&text).expect("parse what we rendered");
         assert_eq!(parsed, vec![b("fill.values", 100_000, 800.0), b("sort.desc", 1_000_000, 14_250.0)], "sorted: rows, then id");
-        assert!(text.starts_with("# GridCraft performance budgets"), "{text}");
+        assert!(text.starts_with("# Cella performance budgets"), "{text}");
     }
 
     #[test]

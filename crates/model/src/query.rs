@@ -3,15 +3,15 @@
 //!
 //! The types here are **document data only**: they are what a workbook stores and what the file
 //! writer round-trips. The interpreter that turns a source into rows and runs the steps lives in
-//! `gridcraft-query` (the same split as `Table` in this crate and the pivot engine in
-//! `gridcraft-calc`).
+//! `cella-query` (the same split as `Table` in this crate and the pivot engine in
+//! `cella-calc`).
 //!
 //! A query is deliberately not "the data": without a cache, a reopened workbook shows the table
 //! its last run wrote onto a sheet (see [`QueryLoad`]). That is Excel's own model — *load to*
 //! is what materialises a query, and a query that was never loaded has nothing to show but its
 //! steps.
 
-use gridcraft_core::RangeRef;
+use cella_core::RangeRef;
 use serde::{Deserialize, Serialize};
 
 /// What a URL serves, as the table it becomes.

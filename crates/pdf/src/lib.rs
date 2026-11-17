@@ -1,8 +1,8 @@
-//! A tiny, self-contained PDF 1.7 writer for GridCraft's print and PDF export.
+//! A tiny, self-contained PDF 1.7 writer for Cella's print and PDF export.
 //!
 //! - The 14 standard fonts with WinAnsiEncoding, plus approximate width tables ([`text_width`]) so
 //!   callers can measure, align and wrap text.
-//! - **Shaped text** ([`gridcraft_core::text`]): text the standard fonts cannot set is shaped with
+//! - **Shaped text** ([`cella_core::text`]): text the standard fonts cannot set is shaped with
 //!   the document's embedded face, so Arabic joins, Devanagari is reordered, Thai marks are
 //!   positioned and bidi runs come out in visual order. Glyph advances and marks are written as
 //!   `TJ` adjustments and `Ts` rises, so the pen follows the shaper without moving the text
@@ -28,7 +28,7 @@
 //! - Coordinates are points with a **top-left origin** (y grows down); text `y` is the baseline.
 //!
 //! Streams are written uncompressed (images use the trivial RunLengthDecode filter). The crate's
-//! only dependencies are the shared L0 text engine ([`gridcraft_core`]) and `log`; it does not
+//! only dependencies are the shared L0 text engine ([`cella_core`]) and `log`; it does not
 //! touch a UI toolkit, so the writer stays usable from the CLI, the web build and tests.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
@@ -45,8 +45,8 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub use gridcraft_core::text::Direction;
-use gridcraft_core::text::{FaceId, FontSize, Glyph, ShapedText, TextEngine};
+pub use cella_core::text::Direction;
+use cella_core::text::{FaceId, FontSize, Glyph, ShapedText, TextEngine};
 pub use truetype::{Error as FontError, Face, Subset};
 
 /// RGB colour, 0–255 per channel.
@@ -399,7 +399,7 @@ impl FontUse {
     /// writes the unshaped runs (a warning says why).
     fn shape(&mut self, text: &str, direction: Direction, size: f32) -> Option<Arc<ShapedText>> {
         let face = self.shaped?;
-        if text.len() > gridcraft_core::text::MAX_TEXT_BYTES {
+        if text.len() > cella_core::text::MAX_TEXT_BYTES {
             log::warn!("PDF export: {} bytes of text is over the shape limit; writing it in stored order", text.len());
             return None;
         }
@@ -1845,8 +1845,8 @@ impl PdfDoc {
         objects.push((1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()));
         let kids_s: Vec<String> = kids.iter().map(|k| format!("{k} 0 R")).collect();
         objects.push((2, format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids_s.join(" "), kids.len()).into_bytes()));
-        let creator = if self.info.creator.is_empty() { "GridCraft" } else { &self.info.creator };
-        let mut info = format!("<< /Producer {} /Creator {}", pdf_text_string("GridCraft PDF"), pdf_text_string(creator));
+        let creator = if self.info.creator.is_empty() { "Cella" } else { &self.info.creator };
+        let mut info = format!("<< /Producer {} /Creator {}", pdf_text_string("Cella PDF"), pdf_text_string(creator));
         if !self.info.title.is_empty() {
             let _ = write!(info, " /Title {}", pdf_text_string(&self.info.title));
         }

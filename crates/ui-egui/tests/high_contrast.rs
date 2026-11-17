@@ -1,10 +1,10 @@
 //! View ▸ Show ▸ High Contrast: the switch changes the chrome palette and survives a restart.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::theme::Tokens;
 use egui::Color32;
 use egui::vec2;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::theme::Tokens;
 use serde_json::json;
 
 use egui_kittest::kittest::Queryable as _;

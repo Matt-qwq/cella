@@ -1,9 +1,9 @@
 //! Overflowing text stays visible in its empty neighbours when its own cell is scrolled out (#1613).
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::{SheetApp, grid::Geo};
 use egui::{Rect, Shape};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

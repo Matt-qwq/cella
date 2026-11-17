@@ -33,9 +33,9 @@ commands:
                   only if docs/parity-checklist.md exists)
   assets          check that every icon/image/font/sample file is attributed in ATTRIBUTION.md
   layers          enforce the crate dependency layering (AGENTS.md \"Layering\")
-  wasm            cargo check --target wasm32-unknown-unknown for the L0-L5 crates (+ gridcraft-web)
+  wasm            cargo check --target wasm32-unknown-unknown for the L0-L5 crates (+ cella-web)
   parity [--check] [--out PATH]
-                  write docs/parity-checklist.md from gridcraft_engine::catalog (implemented vs missing ids)
+                  write docs/parity-checklist.md from cella_engine::catalog (implemented vs missing ids)
   oracle [--fixture=NAME] [--no-app] [--keep]
                   read the sample workbooks back through foreign implementations (openpyxl; an
                   independent application through COM on Windows) — see docs/oracle.md
@@ -51,7 +51,7 @@ commands:
   perf [--update] [--rows=N,N] [--scenario=ID,...] [--repeat=N] [--budgets=PATH] [--scale=F]
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
                   1M rows and compare it with xtask/perf-budgets.txt (--update records the current
-                  numbers; GRIDCRAFT_PERF_SCALE slackens every budget for a slower machine).
+                  numbers; CELLA_PERF_SCALE slackens every budget for a slower machine).
                   NOT part of `ci` — run it before a release (see docs/performance.md)
   version [set X.Y.Z[-pre]]
                   print or set the workspace version ([workspace.package] in Cargo.toml)
@@ -159,13 +159,13 @@ fn cmd_layers() -> Result<(), String> {
 }
 
 /// Workspace packages that must build for wasm32: every L0–L5 crate, plus the web app once it
-/// exists (`apps/gridcraft-web`).
+/// exists (`apps/cella-web`).
 fn wasm_set() -> Result<Vec<String>, String> {
     let crates = layers::from_metadata(&metadata()?)?;
     Ok(crates
         .into_iter()
         .filter(|c| match layers::classify(&c.name) {
-            Some(layers::Class::Layer(l)) => l <= 5 || c.name == "gridcraft-web",
+            Some(layers::Class::Layer(l)) => l <= 5 || c.name == "cella-web",
             _ => false,
         })
         .map(|c| c.name)
@@ -219,8 +219,8 @@ fn cmd_ci() -> Result<(), String> {
                 // sockets), so their tests need the feature named or they would never run — the
                 // one place in the gate that asks for a feature on purpose.
                 let mut c = cargo();
-                c.args(["test", "-p", "gridcraft-engine", "--features", "connectors", "--test", "connectors"]);
-                run(c, "cargo test -p gridcraft-engine --features connectors --test connectors")
+                c.args(["test", "-p", "cella-engine", "--features", "connectors", "--test", "connectors"]);
+                run(c, "cargo test -p cella-engine --features connectors --test connectors")
             }),
         ),
         ("assets", Box::new(|| assets::run(&root()))),

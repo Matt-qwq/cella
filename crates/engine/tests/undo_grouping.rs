@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_engine::core::CellRef;
-use gridcraft_engine::display::cell_text;
-use gridcraft_engine::{EngineError, Result, Session, register_test_command};
+use cella_engine::core::CellRef;
+use cella_engine::display::cell_text;
+use cella_engine::{EngineError, Result, Session, register_test_command};
 use serde_json::json;
 
 fn cell(row: u32, col: u32) -> CellRef {
@@ -31,7 +31,7 @@ fn session() -> Session {
 }
 
 fn set(s: &mut Session, c: CellRef, input: &str) {
-    let a1 = gridcraft_engine::core::col_to_letters(c.col) + &(c.row + 1).to_string();
+    let a1 = cella_engine::core::col_to_letters(c.col) + &(c.row + 1).to_string();
     s.execute("cell.set", json!({"cell": a1, "input": input})).expect("cell.set");
 }
 

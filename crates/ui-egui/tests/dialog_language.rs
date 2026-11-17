@@ -6,12 +6,12 @@
 //! palette's menu path ("Home › Editing › Find & Select"), whose group names live in the engine's
 //! command specs and are drawn by `dialogs::command_search`.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::control::{Outcome, handle};
+use cella_ui_egui::i18n::Language;
 use egui::vec2;
 use egui_kittest::kittest::{NodeT, Queryable};
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::control::{Outcome, handle};
-use gridcraft_ui_egui::i18n::Language;
 use serde_json::{Value as Json, json};
 
 fn harness(language: Language) -> egui_kittest::Harness<'static, SheetApp> {
@@ -152,7 +152,7 @@ fn format_cells_terms_are_keyed_by_their_context() {
 #[test]
 fn every_command_palette_menu_segment_reads_chinese() {
     let mut untranslated = Vec::new();
-    for spec in gridcraft_engine::cmd::command_specs() {
+    for spec in cella_engine::cmd::command_specs() {
         for segment in spec.menu.iter().copied() {
             if Language::Zh.tr(segment) == segment {
                 untranslated.push(segment);

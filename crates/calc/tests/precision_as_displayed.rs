@@ -4,9 +4,9 @@
 //! The expected values were observed in Excel (COM, `Workbook.PrecisionAsDisplayed = True`) with
 //! the same synthetic formulas; upstream's pass host rounds in `compute` as ours does.
 
-use gridcraft_calc::Calc;
-use gridcraft_core::{CellError, CellRef, Value};
-use gridcraft_model::{Cell, Formula, NumFmt, Style, Workbook};
+use cella_calc::Calc;
+use cella_core::{CellError, CellRef, Value};
+use cella_model::{Cell, Formula, NumFmt, Style, Workbook};
 
 fn c(s: &str) -> CellRef {
     match CellRef::parse(s) {
@@ -28,7 +28,7 @@ impl T {
         let cell = if input.starts_with('=') {
             Cell::formula(Formula::new(input))
         } else {
-            Cell::value(gridcraft_core::parse::parse_input(input, self.wb.date_system).value)
+            Cell::value(cella_core::parse::parse_input(input, self.wb.date_system).value)
         };
         if let Some(sh) = self.wb.sheet_mut(0) {
             sh.cells.set(c(at), cell);

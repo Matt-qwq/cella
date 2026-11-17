@@ -1,17 +1,17 @@
 [package]
-name = "gridcraft-model"
+name = "cella-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft document model: workbooks, sheets, cells, styles, tables, charts"
+description = "Cella document model: workbooks, sheets, cells, styles, tables, charts"
 
 [lints]
 workspace = true
 
 [dependencies]
-gridcraft-core = { workspace = true }
+cella-core = { workspace = true }
 sha2 = { workspace = true }
-gridcraft-formula = { workspace = true }
+cella-formula = { workspace = true }
 flate2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

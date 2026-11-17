@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use gridcraft_calc::recalc::CalcMemory;
-use gridcraft_model::{Sheet, StoreMemory, Workbook, btree_index_bytes, hash_index_bytes};
+use cella_calc::recalc::CalcMemory;
+use cella_model::{Sheet, StoreMemory, Workbook, btree_index_bytes, hash_index_bytes};
 
 use crate::{DocState, Session, history_retained_bytes};
 
@@ -82,7 +82,7 @@ impl WorkbookMemory {
 /// a shape's text, a picture's bytes, a pivot cache, a preserved (unmodelled) file part (a VBA
 /// blob's bytes are counted, its contents are not decoded anywhere); the `Value`s inside an
 /// `Arc<Array>` (see [`StoreMemory`]); and the expression trees the graph's nodes point at,
-/// which the cells own and charge (see [`gridcraft_calc::recalc::GraphMemory`]).
+/// which the cells own and charge (see [`cella_calc::recalc::GraphMemory`]).
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct MemoryReport {
     pub sheets: Vec<SheetMemory>,
@@ -106,7 +106,7 @@ impl Session {
     ///
     /// Costs: one pass over the bands of every sheet, one over each page, and one over the entries
     /// of the live sheet's metadata (see [`StoreMemory`] and
-    /// [`gridcraft_calc::recalc::GraphMemory`]); no cell is visited, so this is cheap on a
+    /// [`cella_calc::recalc::GraphMemory`]); no cell is visited, so this is cheap on a
     /// million-row workbook.
     pub fn memory_report(&self) -> MemoryReport {
         self.active().map_or_else(MemoryReport::default, |doc| report(doc, self.journal_bytes))
@@ -147,7 +147,7 @@ fn retained(history: &[crate::HistoryEntry], live: &Workbook) -> usize {
 }
 
 fn names_bytes(wb: &Workbook) -> usize {
-    let mut bytes = wb.names.capacity().saturating_mul(size_of::<gridcraft_model::DefinedName>());
+    let mut bytes = wb.names.capacity().saturating_mul(size_of::<cella_model::DefinedName>());
     for name in &wb.names {
         bytes = bytes.saturating_add(name.name.len()).saturating_add(name.formula.len()).saturating_add(name.comment.len());
     }

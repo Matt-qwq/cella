@@ -2,7 +2,7 @@
 //! `check_current`): the report's cells must still be what the definition computes, or the
 //! records handed back would be another cell's.
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::{Value as Json, json};
 
 fn run(s: &mut Session, command: &str, params: Json) -> Json {

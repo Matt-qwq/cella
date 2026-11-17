@@ -1,7 +1,7 @@
 //! Get & Transform end to end: a source, a step pipeline, a loaded table — and what happens when
 //! a step does not fit, a file moves, or the workbook is saved and reopened.
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::{Value, json};
 
 fn session() -> Session {
@@ -19,7 +19,7 @@ fn grid(s: &Session, sheet: &str) -> Vec<Vec<String>> {
     let d = s.doc().expect("doc");
     let sh = d.wb.sheet_index(sheet).and_then(|i| d.wb.sheet(i)).unwrap_or_else(|| panic!("no sheet {sheet}"));
     let Some(u) = sh.used_range() else { return Vec::new() };
-    (u.start.row..=u.end.row).map(|r| (u.start.col..=u.end.col).map(|c| sh.value(gridcraft_core::CellRef::new(r, c)).display()).collect()).collect()
+    (u.start.row..=u.end.row).map(|r| (u.start.col..=u.end.col).map(|c| sh.value(cella_core::CellRef::new(r, c)).display()).collect()).collect()
 }
 
 /// The cells of a table object's own range, rows of display text: a table's shape is its range,
@@ -31,7 +31,7 @@ fn table_grid(s: &Session, table: &str) -> Vec<Vec<String>> {
     let sh = d.wb.sheet(si).expect("sheet");
     let r = sh.tables.get(ti).expect("table").range;
     (r.start.row..=r.end.row)
-        .map(|row| (r.start.col..=r.end.col).map(|col| sh.value(gridcraft_core::CellRef::new(row, col)).display()).collect())
+        .map(|row| (r.start.col..=r.end.col).map(|col| sh.value(cella_core::CellRef::new(row, col)).display()).collect())
         .collect()
 }
 
@@ -166,7 +166,7 @@ fn a_query_and_its_table_survive_undo_and_redo() {
 fn a_query_and_its_loaded_table_survive_save_and_reopen() {
     let mut s = session();
     run(&mut s, "data.query.add", json!({"name": "Sales", "source": {"kind": "csv", "text": CSV}, "steps": ["PromoteHeaders"]}));
-    let path = std::env::temp_dir().join("gridcraft_query_roundtrip.xlsx");
+    let path = std::env::temp_dir().join("cella_query_roundtrip.xlsx");
     let p = path.to_string_lossy().to_string();
     run(&mut s, "file.saveAs", json!({"path": p}));
 
@@ -216,7 +216,7 @@ fn refresh_all_refreshes_the_queries_as_well_as_the_reports() {
 
 #[test]
 fn a_folder_source_stacks_every_matching_file_and_names_it() {
-    let dir = std::env::temp_dir().join("gridcraft_folder_query");
+    let dir = std::env::temp_dir().join("cella_folder_query");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     std::fs::write(dir.join("jan.csv"), "Region,Amount\nWest,10\n").expect("write");
@@ -244,7 +244,7 @@ fn a_folder_source_stacks_every_matching_file_and_names_it() {
 
 #[test]
 fn a_folder_with_nothing_matching_says_so() {
-    let dir = std::env::temp_dir().join("gridcraft_folder_empty");
+    let dir = std::env::temp_dir().join("cella_folder_empty");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     let mut s = session();
@@ -257,7 +257,7 @@ fn a_folder_with_nothing_matching_says_so() {
 
 #[test]
 fn files_of_different_widths_are_refused_by_name() {
-    let dir = std::env::temp_dir().join("gridcraft_folder_mixed");
+    let dir = std::env::temp_dir().join("cella_folder_mixed");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     std::fs::write(dir.join("a.csv"), "Region,Amount\nWest,10\n").expect("write");

@@ -1,9 +1,9 @@
 //! Slicers and timelines: on-sheet widgets that filter by clicking value tiles.
 //!
-//! Two kinds live side by side. A **table slicer** ([`gridcraft_model::Slicer`]) is a thin
+//! Two kinds live side by side. A **table slicer** ([`cella_model::Slicer`]) is a thin
 //! front-end over the sheet's [`AutoFilter`]: its selection is written as a
 //! [`FilterCriterion::Values`] and [`super::data::apply_filter`] hides the rows. A **PivotTable
-//! slicer** ([`gridcraft_model::PivotSlicer`]) is Excel's Insert ▸ Slicer: it owns a slicer cache,
+//! slicer** ([`cella_model::PivotSlicer`]) is Excel's Insert ▸ Slicer: it owns a slicer cache,
 //! is saved in the file, and filters every PivotTable that shares its cache by writing the
 //! field's item selection into the PivotTable's own filter and re-rendering it. A timeline is the
 //! same for a date field, with the time unit it groups by.
@@ -13,8 +13,8 @@
 
 use std::collections::HashSet;
 
-use gridcraft_core::{CellRef, DateSystem, RangeRef, Value};
-use gridcraft_model::*;
+use cella_core::{CellRef, DateSystem, RangeRef, Value};
+use cella_model::*;
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -225,7 +225,7 @@ fn source_items(src: &pv::Source, col: usize) -> Vec<SlicerItem> {
 /// A cell to the right of a PivotTable's report, where Excel would put a new slicer.
 fn beside_pivot(pt: &PivotTable) -> CellRef {
     let r = pt.last_range.unwrap_or_else(|| RangeRef::new(pt.anchor, pt.anchor));
-    CellRef::new(r.start.row, r.end.col.saturating_add(2).min(gridcraft_core::MAX_COLS - 1))
+    CellRef::new(r.start.row, r.end.col.saturating_add(2).min(cella_core::MAX_COLS - 1))
 }
 
 /// A slicer name unique in the workbook (the file's slicer parts are named by it).
@@ -581,7 +581,7 @@ fn insert_slicer(s: &mut Session, p: &Json) -> Result<Json> {
     };
     let table = t.name.clone();
     let at = cell_param_on(s, p, "at", sheet)?
-        .unwrap_or_else(|| CellRef::new(t.range.start.row, t.range.end.col.saturating_add(2).min(gridcraft_core::MAX_COLS - 1)));
+        .unwrap_or_else(|| CellRef::new(t.range.start.row, t.range.end.col.saturating_add(2).min(cella_core::MAX_COLS - 1)));
     let columns = u32_param(p, "columns").unwrap_or(1).clamp(1, 10);
     let width = f64_param(p, "width").unwrap_or(168.0).clamp(60.0, 10000.0) as f32;
     let height = f64_param(p, "height").unwrap_or(200.0).clamp(60.0, 10000.0) as f32;
@@ -804,7 +804,7 @@ fn date_param(cmd: &str, name: &str, v: Option<&Json>, sys: DateSystem) -> Resul
     match v {
         None | Some(Json::Null) => Ok(None),
         Some(Json::String(s)) => {
-            let parsed = gridcraft_core::parse::parse_input(s, sys);
+            let parsed = cella_core::parse::parse_input(s, sys);
             match parsed.value {
                 Value::Number(n) if n.is_finite() && parsed.format.is_some_and(|f| f.contains('y')) => Ok(Some(n)),
                 _ => Err(bad(cmd, format!("`{name}` is not a date with a year (e.g. \"2024-01-31\"): `{s}`"))),
@@ -816,7 +816,7 @@ fn date_param(cmd: &str, name: &str, v: Option<&Json>, sys: DateSystem) -> Resul
 
 /// A date as the command reports it: `2024-01-31`, with the time when the date has one.
 fn iso_text(wb: &Workbook, serial: f64) -> Option<String> {
-    let d = gridcraft_core::date::datetime_from_serial(wb.date_system, serial)?;
+    let d = cella_core::date::datetime_from_serial(wb.date_system, serial)?;
     Some(if d.hour == 0 && d.minute == 0 && d.second == 0 {
         format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)
     } else {
@@ -831,7 +831,7 @@ fn field_bounds(wb: &Workbook, src: &pv::Source, col: usize) -> Option<(f64, f64
     let mut hi = f64::NEG_INFINITY;
     for row in &src.rows {
         let Some(Value::Number(n)) = row.get(col).map(|v| v.scalar()) else { continue };
-        if !n.is_finite() || gridcraft_core::date::datetime_from_serial(wb.date_system, n).is_none() {
+        if !n.is_finite() || cella_core::date::datetime_from_serial(wb.date_system, n).is_none() {
             continue;
         }
         lo = lo.min(n);

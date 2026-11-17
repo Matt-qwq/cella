@@ -15,10 +15,10 @@
 //! cache does not carry.
 //!
 //! Clean room: the style *names* are file-format identifiers (Excel writes them and matches them
-//! to its own built-in looks); the looks themselves are drawn by GridCraft's own code, never
+//! to its own built-in looks); the looks themselves are drawn by Cella's own code, never
 //! copied from a theme part.
 
-use gridcraft_core::{Value, number_to_text};
+use cella_core::{Value, number_to_text};
 use serde::{Deserialize, Serialize};
 
 use crate::features::{Anchor, AnchorMode};
@@ -28,7 +28,7 @@ use crate::features::{Anchor, AnchorMode};
 pub const DEFAULT_SLICER_STYLE: &str = "SlicerStyleLight1";
 
 /// The slicer styles a command accepts. These are the names the format defines; how each looks is
-/// GridCraft's own drawing code (the UI crate), not a copy of Excel's theme XML.
+/// Cella's own drawing code (the UI crate), not a copy of Excel's theme XML.
 pub const SLICER_STYLES: &[&str] = &[
     "SlicerStyleLight1",
     "SlicerStyleLight2",
@@ -194,7 +194,7 @@ impl TimeUnit {
 /// A slicer bound to a PivotTable's cache: the value tiles of one cache field.
 ///
 /// `cache` is the slicer cache's name (the `cache` attribute of the slicer part and the `name` of
-/// the cache definition). Two slicers of the same field share it in Excel; GridCraft writes one
+/// the cache definition). Two slicers of the same field share it in Excel; Cella writes one
 /// cache per distinct name. `pivot_cache_id` is the workbook pivot cache the cache reads shared
 /// items from; on a save it is recomputed from the first PivotTable in `pivot_tables`, and a
 /// slicer whose PivotTables are all gone is not written (it goes with them, like the kept path).
@@ -236,7 +236,7 @@ impl Default for PivotSlicer {
             style: DEFAULT_SLICER_STYLE.into(),
             columns: 1,
             sort: SlicerSort::Ascending,
-            anchor: Anchor { cell: gridcraft_core::CellRef::default(), dx: 4.0, dy: 4.0, width: 168.0, height: 200.0, mode: AnchorMode::MoveOnly },
+            anchor: Anchor { cell: cella_core::CellRef::default(), dx: 4.0, dy: 4.0, width: 168.0, height: 200.0, mode: AnchorMode::MoveOnly },
         }
     }
 }
@@ -344,7 +344,7 @@ impl Default for PivotTimeline {
             style: String::new(),
             unit: TimeUnit::Months,
             range: None,
-            anchor: Anchor { cell: gridcraft_core::CellRef::default(), dx: 4.0, dy: 4.0, width: 240.0, height: 96.0, mode: AnchorMode::MoveOnly },
+            anchor: Anchor { cell: cella_core::CellRef::default(), dx: 4.0, dy: 4.0, width: 240.0, height: 96.0, mode: AnchorMode::MoveOnly },
         }
     }
 }

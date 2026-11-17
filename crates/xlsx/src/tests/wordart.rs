@@ -1,7 +1,7 @@
 //! A WordArt is a shape whose drawing part says so: a text body with the non-warping text warp
 //! 'textNoShape' on an unfilled rectangle. It round-trips as a WordArt, not as a text box.
 
-use gridcraft_model::{Color, ShapeKind};
+use cella_model::{Color, ShapeKind};
 
 use super::minimal;
 use crate::{read_xlsx, write_xlsx};
@@ -96,7 +96,7 @@ fn a_word_art_with_no_text_still_writes_its_marker() {
 /// A WordArt the engine wrote (not read from a file) is a WordArt when it comes back.
 #[test]
 fn a_written_word_art_reopens_as_one() {
-    use gridcraft_model::{Anchor, Shape, ShapeFormat, ShapeTextAlign, ShapeTextAnchor, Sheet, Workbook};
+    use cella_model::{Anchor, Shape, ShapeFormat, ShapeTextAlign, ShapeTextAnchor, Sheet, Workbook};
     let mut wb = Workbook::new();
     // Replace the default sheet so the WordArt is the only thing on the first one.
     wb.sheets.clear();
@@ -120,7 +120,7 @@ fn a_written_word_art_reopens_as_one() {
         anchor: Anchor { width: 240.0, height: 80.0, ..Default::default() },
         fill: Color::Auto,
         line: Color::Auto,
-        text: "GridCraft".into(),
+        text: "Cella".into(),
         alt: None,
         format: format.clone(),
     });
@@ -129,7 +129,7 @@ fn a_written_word_art_reopens_as_one() {
     let again = read_xlsx(&bytes).unwrap().0;
     let art = &again.sheet(0).unwrap().shapes[0];
     assert_eq!(art.kind, ShapeKind::WordArt);
-    assert_eq!(art.text, "GridCraft");
+    assert_eq!(art.text, "Cella");
     // Every run property survives (the size is written in hundredths of a point, so it comes back
     // as it went in).
     assert_eq!(art.format, format);

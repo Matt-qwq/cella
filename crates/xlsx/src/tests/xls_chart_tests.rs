@@ -85,9 +85,9 @@ fn reads_an_embedded_column_chart() {
     let sheet = &wb.sheets[0];
     assert_eq!(sheet.charts.len(), 1, "{:?}", report.warnings);
     let chart = &sheet.charts[0];
-    assert_eq!(chart.kind, gridcraft_model::ChartKind::ColumnClustered);
+    assert_eq!(chart.kind, cella_model::ChartKind::ColumnClustered);
     assert_eq!(chart.title.as_deref(), Some("Chart Title"));
-    assert_eq!(chart.legend, gridcraft_model::LegendPos::Bottom);
+    assert_eq!(chart.legend, cella_model::LegendPos::Bottom);
     assert!(chart.gridlines);
     assert_eq!(chart.series.len(), 1);
     let s = &chart.series[0];
@@ -103,12 +103,12 @@ fn reads_a_doughnut_chart() {
     let pie = rec(0x1019, &[0, 0, 50, 0, 0, 0]);
     let file = compound("Workbook", &chart_file(pie, false));
     let (wb, _) = read_xls(&file).unwrap();
-    assert_eq!(wb.sheets[0].charts[0].kind, gridcraft_model::ChartKind::Doughnut);
+    assert_eq!(wb.sheets[0].charts[0].kind, cella_model::ChartKind::Doughnut);
 
     let pie = rec(0x1019, &[0, 0, 0, 0, 0, 0]);
     let file = compound("Workbook", &chart_file(pie, false));
     let (wb, _) = read_xls(&file).unwrap();
-    assert_eq!(wb.sheets[0].charts[0].kind, gridcraft_model::ChartKind::Pie);
+    assert_eq!(wb.sheets[0].charts[0].kind, cella_model::ChartKind::Pie);
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn a_three_d_chart_is_skipped_with_a_warning_not_read_as_a_column_chart() {
     assert!(wb.sheets[0].charts.is_empty());
     assert!(report.warnings.iter().any(|w| w.contains("chart")), "{:?}", report.warnings);
     // The sheet itself still opens.
-    assert_eq!(wb.sheets[0].value(gridcraft_core::CellRef::parse("A1").unwrap()), gridcraft_core::Value::Number(1.0));
+    assert_eq!(wb.sheets[0].value(cella_core::CellRef::parse("A1").unwrap()), cella_core::Value::Number(1.0));
 }
 
 #[test]

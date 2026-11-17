@@ -1,9 +1,9 @@
 //! Formula text conversion between the model (canonical text, no `=`) and files (`_xlfn.`
 //! prefixes for newer functions).
 
-use gridcraft_core::CellRef;
-use gridcraft_formula::{Expr, ShapeTable};
-use gridcraft_model::Formula;
+use cella_core::CellRef;
+use cella_formula::{Expr, ShapeTable};
+use cella_model::Formula;
 
 /// Formula text for a file, for the formula of the cell at `at`.
 ///
@@ -67,10 +67,10 @@ pub fn needs_file_rewrite(e: &Expr) -> bool {
     e.walk(&mut |x| match x {
         // `LET`/`LAMBDA` declare parameters its calls reference, so the scope has to be built.
         Expr::Call(name, _) if name == "LET" || name == "LAMBDA" || crate::tables::file_function_name(name).is_some() => need = true,
-        Expr::Unary(gridcraft_formula::UnOp::Spill | gridcraft_formula::UnOp::At | gridcraft_formula::UnOp::Trim(_), _) => need = true,
+        Expr::Unary(cella_formula::UnOp::Spill | cella_formula::UnOp::At | cella_formula::UnOp::Trim(_), _) => need = true,
         // Only the `[@Col]` shorthand prints differently: every other structured reference is
         // already written the long way (see `printer::struct_ref_file`).
-        Expr::Struct(s) if s.specifiers.len() == 1 && s.specifiers.first() == Some(&gridcraft_formula::StructItem::ThisRow) => need = true,
+        Expr::Struct(s) if s.specifiers.len() == 1 && s.specifiers.first() == Some(&cella_formula::StructItem::ThisRow) => need = true,
         _ => {}
     });
     need
@@ -79,7 +79,7 @@ pub fn needs_file_rewrite(e: &Expr) -> bool {
 /// Arbitrary formula text (names, CF, validation) for a file. Unparseable text is kept.
 pub fn text_to_file(text: &str) -> String {
     let body = text.strip_prefix('=').unwrap_or(text);
-    match gridcraft_formula::parse(body) {
+    match cella_formula::parse(body) {
         Ok(e) => expr_to_file(e),
         Err(_) => body.to_string(),
     }
@@ -156,23 +156,23 @@ fn expr_to_file(e: Expr) -> String {
         },
         // Files have no `#` operator: Excel writes `A1#` as `_xlfn.ANCHORARRAY(A1)`, and a spill
         // reference that became `#REF!` (its cell was deleted) as plain `#REF!`.
-        Expr::Unary(gridcraft_formula::UnOp::Spill, r) if matches!(*r, Expr::Error(_)) => *r,
-        Expr::Unary(gridcraft_formula::UnOp::Spill, r) => Expr::Call("_xlfn.ANCHORARRAY".into(), vec![*r]),
+        Expr::Unary(cella_formula::UnOp::Spill, r) if matches!(*r, Expr::Error(_)) => *r,
+        Expr::Unary(cella_formula::UnOp::Spill, r) => Expr::Call("_xlfn.ANCHORARRAY".into(), vec![*r]),
         // Nor an `@` operator: Excel writes `@x` as `_xlfn.SINGLE(x)`.
-        Expr::Unary(gridcraft_formula::UnOp::At, x) => Expr::Call("_xlfn.SINGLE".into(), vec![*x]),
+        Expr::Unary(cella_formula::UnOp::At, x) => Expr::Call("_xlfn.SINGLE".into(), vec![*x]),
         // Nor the `[@Col]` shorthand: files spell it `[[#This Row],[Col]]`, or Excel repairs
         // the file and drops the table. Carried as a name, which prints verbatim.
-        Expr::Struct(st) => Expr::Name(gridcraft_formula::printer::struct_ref_file(&st)),
+        Expr::Struct(st) => Expr::Name(cella_formula::printer::struct_ref_file(&st)),
         // Nor trim-reference operators: written as the equivalent `TRIMRANGE(range,n,n)`, which
         // every Excel with trim references reads. (Excel's own file spelling of `A1:.E10` is
         // not publicly documented; the `_xlfn._TRO_*` call forms are accepted on read.)
-        Expr::Unary(gridcraft_formula::UnOp::Trim(mode), x) => {
+        Expr::Unary(cella_formula::UnOp::Trim(mode), x) => {
             let code = Expr::Number(f64::from(mode.code()));
             Expr::Call("_xlfn.TRIMRANGE".into(), vec![*x, code.clone(), code])
         }
         other => other,
     });
-    gridcraft_formula::print(&e)
+    cella_formula::print(&e)
 }
 
 /// `_xlpm.x` → `x` (any case, as the parser upper-cases function names).
@@ -193,7 +193,7 @@ fn strip_param_prefix(n: String) -> String {
 /// again.
 pub fn formula_from_file_at(text: &str, at: CellRef, shapes: &mut ShapeTable) -> Formula {
     let body = text.strip_prefix('=').unwrap_or(text);
-    match gridcraft_formula::parse(body) {
+    match cella_formula::parse(body) {
         Ok(e) => {
             let e = strip_param_prefixes(e);
             // A save must not resolve a tree to find this out: the `_xlfn.` table is this crate's,
@@ -208,8 +208,8 @@ pub fn formula_from_file_at(text: &str, at: CellRef, shapes: &mut ShapeTable) ->
 /// Formula text read from a file → model text (strips prefixes when it parses).
 pub fn from_file(text: &str) -> String {
     let body = text.strip_prefix('=').unwrap_or(text);
-    match gridcraft_formula::parse(body) {
-        Ok(e) => gridcraft_formula::print(&strip_param_prefixes(e)),
+    match cella_formula::parse(body) {
+        Ok(e) => cella_formula::print(&strip_param_prefixes(e)),
         Err(_) => body.to_string(),
     }
 }
@@ -223,7 +223,7 @@ fn strip_param_prefixes(e: Expr) -> Expr {
 }
 
 /// The worksheet functions the evaluator can calculate, for reading (#2871). A Google Sheets
-/// export wrapper is unwrapped only when every function inside it is one, so a formula GridCraft
+/// export wrapper is unwrapped only when every function inside it is one, so a formula Cella
 /// would show as `#NAME?` keeps the wrapper and the file's cached value instead.
 ///
 /// Only a predicate that lives for the whole program can be given (a plain `fn`, as the engine
@@ -265,9 +265,9 @@ pub(crate) fn unwrap_google_sheets(text: &str, known: &dyn Fn(&str) -> bool) -> 
     if !mentions_dummy_function(text) {
         return None;
     }
-    let e = gridcraft_formula::parse(text.strip_prefix('=').unwrap_or(text)).ok()?;
+    let e = cella_formula::parse(text.strip_prefix('=').unwrap_or(text)).ok()?;
     let unwrapped = unwrap_dummy_functions(e, known)?;
-    Some(gridcraft_formula::print(&strip_param_prefixes(unwrapped)))
+    Some(cella_formula::print(&strip_param_prefixes(unwrapped)))
 }
 
 /// The original formula inside Google Sheets' export wrapper
@@ -287,11 +287,11 @@ fn dummy_function_inner(e: &Expr, known: &dyn Fn(&str) -> bool) -> Option<Expr> 
     let [Expr::Text(src)] = inner.as_slice() else { return None };
     // The text came out of a formula within the length limit, so it is within it too; check
     // anyway rather than rely on that.
-    if src.len() > gridcraft_formula::MAX_FORMULA_LEN && src.chars().count() > gridcraft_formula::MAX_FORMULA_LEN {
+    if src.len() > cella_formula::MAX_FORMULA_LEN && src.chars().count() > cella_formula::MAX_FORMULA_LEN {
         return None;
     }
-    let parsed = gridcraft_formula::parse(src).ok()?;
-    // A function GridCraft can't calculate would show `#NAME?` where Excel shows the cached
+    let parsed = cella_formula::parse(src).ok()?;
+    // A function Cella can't calculate would show `#NAME?` where Excel shows the cached
     // value; a wrapper inside the text is one too, so only one level is ever unwrapped.
     let mut all_known = true;
     parsed.walk(&mut |x| {
@@ -338,7 +338,7 @@ fn unwrap_dummy_functions(e: Expr, known: &dyn Fn(&str) -> bool) -> Option<Expr>
     if !found {
         return None;
     }
-    gridcraft_formula::parse(&gridcraft_formula::print(&rewritten)).ok()?;
+    cella_formula::parse(&cella_formula::print(&rewritten)).ok()?;
     Some(rewritten)
 }
 
@@ -388,7 +388,7 @@ mod tests {
         ] {
             let one = formula_from_file_at(text, at, &mut shapes);
             let model_text = from_file(text);
-            let rewrite = gridcraft_formula::parse(&model_text).is_ok_and(|e| needs_file_rewrite(&e));
+            let rewrite = cella_formula::parse(&model_text).is_ok_and(|e| needs_file_rewrite(&e));
             let two = Formula::new_at(&model_text, at, &mut shapes, rewrite);
             assert_eq!(one.text, two.text, "{text:?}");
             assert_eq!(one.shape.is_some(), two.shape.is_some(), "{text:?}");

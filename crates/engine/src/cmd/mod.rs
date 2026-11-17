@@ -30,9 +30,9 @@ pub mod view;
 pub mod whatif;
 pub mod wordart;
 
-use gridcraft_calc::Key;
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::Workbook;
+use cella_calc::Key;
+use cella_core::{CellRef, RangeRef};
+use cella_model::Workbook;
 use serde::Serialize;
 use serde_json::Value as Json;
 
@@ -229,25 +229,25 @@ pub(crate) fn u32_param(p: &Json, key: &str) -> Option<u32> {
 
 /// An object anchor mode from Excel's wording or the model's: `"moveAndSize"`/`"twoCell"`,
 /// `"moveOnly"`/`"oneCell"`, `"absolute"`/`"don't move or size"` (case-insensitive).
-pub(crate) fn anchor_mode_param(p: &Json) -> Option<gridcraft_model::AnchorMode> {
+pub(crate) fn anchor_mode_param(p: &Json) -> Option<cella_model::AnchorMode> {
     parse_anchor_mode(str_param(p, "mode").or_else(|| str_param(p, "anchorMode"))?)
 }
 
-pub(crate) fn parse_anchor_mode(s: &str) -> Option<gridcraft_model::AnchorMode> {
+pub(crate) fn parse_anchor_mode(s: &str) -> Option<cella_model::AnchorMode> {
     match s.to_ascii_lowercase().replace([' ', '-', '_', '\''], "").as_str() {
-        "moveandsize" | "moveandsizeandcells" | "twocell" => Some(gridcraft_model::AnchorMode::MoveAndSize),
-        "moveonly" | "movebutdontsize" | "movebutdontsizewithcells" | "onecell" => Some(gridcraft_model::AnchorMode::MoveOnly),
-        "absolute" | "dontmoveorsize" | "dontmoveorsizewithcells" | "none" => Some(gridcraft_model::AnchorMode::Absolute),
+        "moveandsize" | "moveandsizeandcells" | "twocell" => Some(cella_model::AnchorMode::MoveAndSize),
+        "moveonly" | "movebutdontsize" | "movebutdontsizewithcells" | "onecell" => Some(cella_model::AnchorMode::MoveOnly),
+        "absolute" | "dontmoveorsize" | "dontmoveorsizewithcells" | "none" => Some(cella_model::AnchorMode::Absolute),
         _ => None,
     }
 }
 
 /// The wire name of an anchor mode (matches the `mode` param of [`anchor_mode_param`]).
-pub(crate) fn anchor_mode_name(m: gridcraft_model::AnchorMode) -> &'static str {
+pub(crate) fn anchor_mode_name(m: cella_model::AnchorMode) -> &'static str {
     match m {
-        gridcraft_model::AnchorMode::MoveAndSize => "moveAndSize",
-        gridcraft_model::AnchorMode::MoveOnly => "moveOnly",
-        gridcraft_model::AnchorMode::Absolute => "absolute",
+        cella_model::AnchorMode::MoveAndSize => "moveAndSize",
+        cella_model::AnchorMode::MoveOnly => "moveOnly",
+        cella_model::AnchorMode::Absolute => "absolute",
     }
 }
 pub(crate) fn ok() -> Result<Json> {
@@ -325,7 +325,7 @@ pub(crate) fn worksheet_only(s: &Session, i: usize) -> Result<usize> {
 
 /// What an edit put on a chart sheet, if anything: the file format has nowhere to keep cells or
 /// objects on one, so a save would drop it. `None` for a chart sheet that is just its chart.
-fn chart_sheet_content(sh: &gridcraft_model::Sheet) -> Option<&'static str> {
+fn chart_sheet_content(sh: &cella_model::Sheet) -> Option<&'static str> {
     [
         (!sh.cells.is_empty()).then_some("cells"),
         (!sh.cell_pictures.is_empty()).then_some("a cell picture"),
@@ -366,7 +366,7 @@ fn check_chart_sheets(old: &Workbook, wb: &Workbook) -> Result<()> {
     Ok(())
 }
 
-pub(crate) use gridcraft_core::split_sheet;
+pub(crate) use cella_core::split_sheet;
 
 /// A single-cell parameter. Absent or null is `Ok(None)` (callers default it); a value that is not
 /// a cell reference, or that names a sheet other than the active one, is an error rather than a
@@ -436,10 +436,10 @@ pub(crate) fn edit<R>(s: &mut Session, f: impl FnOnce(&mut Ctx) -> Result<R>) ->
 }
 
 pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
-    // `GRIDCRAFT_PROFILE` timing. Read the clock only when profiling, and never on wasm: there
+    // `CELLA_PROFILE` timing. Read the clock only when profiling, and never on wasm: there
     // `Instant::now` traps (`RuntimeError: unreachable`), which broke every edit in the web app.
     #[allow(clippy::disallowed_methods)]
-    let t0 = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("GRIDCRAFT_PROFILE").map(|_| std::time::Instant::now()) };
+    let t0 = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
     let mut sel = d.selection.clone();
     let mut ctx = Ctx {
         wb: (*d.wb).clone(),
@@ -504,7 +504,7 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
 /// recalculation rounds them. A structural edit recalculates everything anyway, so it only rounds
 /// its constants (a sheet the edit created, for one, holds written numbers).
 fn round_edited_as_displayed(old: &Workbook, wb: &mut Workbook, changed: &mut Vec<Key>, structural: bool) {
-    let mut prec = gridcraft_calc::DisplayedPrecision::new();
+    let mut prec = cella_calc::DisplayedPrecision::new();
     for si in 0..wb.sheets.len() {
         let Some(after) = wb.sheets.get(si) else { continue };
         // Sheets are matched by name. A sheet the edit created has no earlier version, so all of
@@ -539,7 +539,7 @@ fn round_edited_as_displayed(old: &Workbook, wb: &mut Workbook, changed: &mut Ve
         }
         let Some(sh) = wb.sheet_mut(si) else { continue };
         for (c, r) in updates {
-            sh.cells.set_value(c, &gridcraft_core::Value::Number(r));
+            sh.cells.set_value(c, &cella_core::Value::Number(r));
             if !structural {
                 changed.push((si, c));
             }
@@ -551,7 +551,7 @@ fn round_edited_as_displayed(old: &Workbook, wb: &mut Workbook, changed: &mut Ve
 /// format, permanently (Excel warns "Data will permanently lose accuracy"). Formulas are rounded
 /// by the recalculation that follows.
 pub(crate) fn round_all_constants_as_displayed(wb: &mut Workbook) {
-    let mut prec = gridcraft_calc::DisplayedPrecision::new();
+    let mut prec = cella_calc::DisplayedPrecision::new();
     for si in 0..wb.sheets.len() {
         let Some(sh) = wb.sheets.get(si) else { continue };
         let updates = displayed_updates(&mut prec, wb, si, sh.cells.iter().map(|(c, _)| c));
@@ -560,7 +560,7 @@ pub(crate) fn round_all_constants_as_displayed(wb: &mut Workbook) {
         }
         let Some(sh) = wb.sheet_mut(si) else { continue };
         for (c, r) in updates {
-            sh.cells.set_value(c, &gridcraft_core::Value::Number(r));
+            sh.cells.set_value(c, &cella_core::Value::Number(r));
         }
     }
 }
@@ -569,7 +569,7 @@ pub(crate) fn round_all_constants_as_displayed(wb: &mut Workbook) {
 /// values. A locked constant on a protected sheet keeps its value: protection keeps its content,
 /// and rounding it by its format would change the content that the sheet protects.
 fn displayed_updates(
-    prec: &mut gridcraft_calc::DisplayedPrecision,
+    prec: &mut cella_calc::DisplayedPrecision,
     wb: &Workbook,
     si: usize,
     cells: impl Iterator<Item = CellRef>,
@@ -580,7 +580,7 @@ fn displayed_updates(
         .filter_map(|c| {
             let cell = sh.cell(c)?;
             match cell.value {
-                gridcraft_core::Value::Number(n) if cell.formula.is_none() => {
+                cella_core::Value::Number(n) if cell.formula.is_none() => {
                     let r = prec.round(wb, si, c, n);
                     (r.to_bits() != n.to_bits()).then_some((c, r))
                 }
@@ -593,7 +593,7 @@ fn displayed_updates(
 /// Sheets whose used range the edit moved, among those holding a formula that reads a reference
 /// through it (a whole column or row): the formula has to be evaluated again even though none of
 /// the cells it names changed. Sheets without such a formula are skipped without walking the store.
-pub(crate) fn used_range_changes(calc: &gridcraft_calc::Calc, before: &Workbook, after: &Workbook, changed: &[Key]) -> Vec<usize> {
+pub(crate) fn used_range_changes(calc: &cella_calc::Calc, before: &Workbook, after: &Workbook, changed: &[Key]) -> Vec<usize> {
     let mut sheets: Vec<usize> = changed.iter().map(|(si, _)| *si).collect();
     sheets.sort_unstable();
     sheets.dedup();
@@ -636,7 +636,7 @@ fn check_protection(old: &Workbook, new: &Workbook, unlocked: &[(String, String)
 ///
 /// Cell edits are guarded separately, by whether the cell is locked (`locked_cell_error`): these
 /// permissions are the ones that are not about one cell's contents.
-pub(crate) fn refuse_unless_allowed(s: &Session, sheet: usize, what: &str, pick: fn(&gridcraft_model::SheetProtection) -> bool) -> Result<()> {
+pub(crate) fn refuse_unless_allowed(s: &Session, sheet: usize, what: &str, pick: fn(&cella_model::SheetProtection) -> bool) -> Result<()> {
     if s.doc()?.wb.sheet(sheet).is_some_and(|sh| sh.protection.as_ref().is_some_and(|pr| !pick(pr))) {
         return Err(EngineError::Other(format!("{what} isn't allowed on this protected sheet (Review › Unprotect Sheet).")));
     }
@@ -645,7 +645,7 @@ pub(crate) fn refuse_unless_allowed(s: &Session, sheet: usize, what: &str, pick:
 
 /// Whether a locked cell on a protected sheet stays locked: `None` when it's in an Allow Edit
 /// Range without a password or one unlocked in this session, else the message to show.
-pub(crate) fn locked_cell_error(sh: &gridcraft_model::Sheet, c: CellRef, unlocked: &[(String, String)]) -> Option<String> {
+pub(crate) fn locked_cell_error(sh: &cella_model::Sheet, c: CellRef, unlocked: &[(String, String)]) -> Option<String> {
     let mut needs_password = None;
     for r in sh.edit_ranges.iter().filter(|r| r.contains(c)) {
         if r.password.is_none() || unlocked.iter().any(|(s, t)| *s == sh.name && *t == r.title) {
@@ -718,8 +718,8 @@ fn check_arrays(old: &Workbook, new: &Workbook) -> Result<()> {
 }
 
 /// Two cells hold the same value or formula (formats aside).
-fn same_content(a: Option<gridcraft_model::Cell>, b: Option<gridcraft_model::Cell>) -> bool {
-    let empty = |c: &Option<gridcraft_model::Cell>| c.as_ref().is_none_or(|c| c.formula.is_none() && c.value.is_empty());
+fn same_content(a: Option<cella_model::Cell>, b: Option<cella_model::Cell>) -> bool {
+    let empty = |c: &Option<cella_model::Cell>| c.as_ref().is_none_or(|c| c.formula.is_none() && c.value.is_empty());
     match (&a, &b) {
         (Some(a), Some(b)) => match (&a.formula, &b.formula) {
             (Some(x), Some(y)) => x.text == y.text && x.array == y.array,
@@ -782,9 +782,9 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
     }
     let default = sh.default_row_height;
     // Fast path: rows of default-size, unwrapped content keep the default height.
-    let plain = sh.cells.row(row, 0, gridcraft_core::MAX_COLS - 1).all(|(_, cell)| {
+    let plain = sh.cells.row(row, 0, cella_core::MAX_COLS - 1).all(|(_, cell)| {
         let st = wb.styles.get(cell.style);
-        st.font.size <= gridcraft_model::DEFAULT_FONT_SIZE && !st.align.wrap
+        st.font.size <= cella_model::DEFAULT_FONT_SIZE && !st.align.wrap
     });
     if plain {
         if sh.rows.get(&row).is_some_and(|i| i.size.is_some())
@@ -793,7 +793,7 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
         {
             {
                 e.size = None;
-                if *e == gridcraft_model::LineInfo::default() {
+                if *e == cella_model::LineInfo::default() {
                     shm.rows.remove(&row);
                 }
             }
@@ -801,7 +801,7 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
         return;
     }
     let mut need: f32 = default;
-    for (c, cell) in sh.cells.row(row, 0, gridcraft_core::MAX_COLS - 1) {
+    for (c, cell) in sh.cells.row(row, 0, cella_core::MAX_COLS - 1) {
         // Merged cells never auto-fit their rows, like Excel (column autofit skips them too).
         if sh.merge_at(CellRef::new(row, c)).is_some_and(|m| !m.is_single()) {
             continue;
@@ -810,7 +810,7 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
         let size = st.font.size;
         // Scaled from an 11pt row's height, not the sheet's default: a sheet whose default
         // already fits a bigger font (21pt rows for 16pt text) would otherwise scale it twice.
-        let line = (size * 1.8).round().max(gridcraft_model::DEFAULT_ROW_HEIGHT * size / gridcraft_model::DEFAULT_FONT_SIZE);
+        let line = (size * 1.8).round().max(cella_model::DEFAULT_ROW_HEIGHT * size / cella_model::DEFAULT_FONT_SIZE);
         let mut lines = 1.0f32;
         if !cell.value.is_empty() || cell.formula.is_some() {
             // Only a wrapping cell is laid out over several lines: each explicit line break
@@ -820,7 +820,7 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
                 let w = sh.col_width(c).max(1.0) - 6.0;
                 lines = text.lines().map(|l| wrapped_line_count(l, w.max(1.0), size, st.font.bold)).sum::<f32>().max(1.0);
             }
-        } else if st.font.size <= gridcraft_model::DEFAULT_FONT_SIZE {
+        } else if st.font.size <= cella_model::DEFAULT_FONT_SIZE {
             continue;
         }
         let h = if lines > 1.0 { (size * 96.0 / 72.0 * 1.22 * lines + 5.0).ceil() } else { line };
@@ -829,7 +829,7 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
     let Some(shm) = wb.sheet_mut(si) else { return };
     let e = shm.rows.entry(row).or_default();
     e.size = if (need - default).abs() < 0.5 { None } else { Some(need) };
-    if *e == gridcraft_model::LineInfo::default() {
+    if *e == cella_model::LineInfo::default() {
         shm.rows.remove(&row);
     }
 }
@@ -838,7 +838,7 @@ impl Ctx<'_> {
     pub fn sheet_index(&self) -> usize {
         self.wb.active_sheet
     }
-    pub fn sheet_mut(&mut self, i: usize) -> Result<&mut gridcraft_model::Sheet> {
+    pub fn sheet_mut(&mut self, i: usize) -> Result<&mut cella_model::Sheet> {
         self.wb.sheet_mut(i).ok_or_else(|| EngineError::Other("no such sheet".into()))
     }
     pub fn touch(&mut self, sheet: usize, c: CellRef) {

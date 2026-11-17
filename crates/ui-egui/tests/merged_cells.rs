@@ -1,10 +1,10 @@
 //! Merged-cell edits must read and write the visible, top-left cell.
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, Value};
+use cella_ui_egui::{SheetApp, grid::Geo};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

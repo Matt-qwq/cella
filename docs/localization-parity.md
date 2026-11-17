@@ -30,7 +30,7 @@ right-to-left sheets and full complex-script support. Part of
   (a ratchet — the number may only fall), and `cargo xtask i18n` in CI, which lists every
   user-visible string that skips `tr()` against a committed baseline.
   The checker found that the leakage is **not** unwrapped literals — there are two, both the
-  `GridCraft` brand — but catalog coverage: strings handed to helpers as keys and translated one
+  `Cella` brand — but catalog coverage: strings handed to helpers as keys and translated one
   frame down. So the remaining work is entries, not plumbing.
 - **en-US formulas and formats, by decision.** Function names, the `,` argument separator, the `.`
   decimal separator and en-US number/date formats (`crates/numfmt`) stay canonical, and files keep
@@ -48,7 +48,7 @@ right-to-left sheets and full complex-script support. Part of
   fallback face (`sys-devanagari`: Nirmala UI / Mangal on Windows, Kohinoor and Devanagari Sangam MN
   on macOS, Noto Sans Devanagari / Lohit / FreeSerif on Linux) joins them, so a Hindi cell draws
   instead of boxes. **Complex-script rendering on the grid and in the cell editor landed in M14**
-  (`crates/ui-egui/src/text.rs` over `gridcraft_core::text`): Arabic joins with its contextual
+  (`crates/ui-egui/src/text.rs` over `cella_core::text`): Arabic joins with its contextual
   forms, Devanagari reorders and merges clusters, Thai marks are positioned, the Unicode
   bidirectional algorithm puts Latin and digit islands back in left-to-right order inside Hebrew
   or Arabic, general right-to-left cell text aligns right, neutral text on a right-to-left sheet
@@ -68,17 +68,17 @@ right-to-left sheets and full complex-script support. Part of
   the whole box is not re-anchored, and the sheet tabs, horizontal scrollbar and printing/PDF are
   not mirrored yet.
   Text boxes and shapes keep their paragraphs' right-to-left direction (`a:pPr rtl`) through XLSX
-  save, though GridCraft still draws that text left to right. IME input goes
+  save, though Cella still draws that text left to right. IME input goes
   through egui/winit and is unverified for Chinese, Japanese and Korean.
 - **Names in any script.** Defined names (Define Name, Create from Selection) are limited to
   255 characters, counted as characters rather than UTF-8 bytes, so a 255-letter Arabic name is
   accepted as in Excel. Sheet names already counted characters (31).
 - **PDF export** (M14) embeds a subset of a real TrueType font for text the 14 standard PDF fonts
-  cannot encode, and shapes it with `gridcraft_core::text` (the shared L0 engine):
+  cannot encode, and shapes it with `cella_core::text` (the shared L0 engine):
   Arabic joins, Devanagari is reordered, Thai marks are positioned and bidirectional text is laid
   out in visual order, with `TJ` adjustments and `Ts` rises on a single text matrix. `ToUnicode`
   maps each drawn glyph to its whole source cluster, so a ligature or conjunct extracts as all of
-  its characters. The face is found through `gridcraft_core::fonts` (`CRAFT_FONTS_DIR`, then the
+  its characters. The face is found through `cella_core::fonts` (`CRAFT_FONTS_DIR`, then the
   platform's font directories) or an explicit `fontPath`, and the matrix below says which script
   works and what still goes wrong. WinAnsi-only text keeps its old bytes; the grid/editor text and
   mirrored printing for right-to-left sheets are still unshaped.
@@ -97,11 +97,11 @@ preference intact, and `app.language.set` refuses a removed code by name.
 | Simplified Chinese | `zh` | 1,813 | 362 of 362 | function help: every catalog function's description and argument names (a test keeps it); developer-facing protocol text stays English on purpose |
 
 Guards, both in CI:
-- a test that enumerates `gridcraft_engine::cmd::command_specs()` and fails when a label arrives
+- a test that enumerates `cella_engine::cmd::command_specs()` and fails when a label arrives
   without its Chinese entry or a translation is lost — a **ratchet**, the untranslated count may
   only fall (0 since 11-14);
 - `cargo xtask i18n`, which lists every user-visible string that skips `tr()` against a committed
-  baseline (`xtask/i18n-baseline.txt`: 2 rows, both the `GridCraft` brand).
+  baseline (`xtask/i18n-baseline.txt`: 2 rows, both the `Cella` brand).
 
 **Remaining: 20–35 h**, and it is translation, not engineering: the plumbing exists and is gated.
 Localized function names, `;` separators and per-locale number/date formats are **out of scope by
@@ -112,7 +112,7 @@ formula syntax, so a Chinese workbook is read and written byte-identically to an
 
 `file.exportPdf` and `file.print` take an optional `fontPath` (a `.ttf`/`.ttc` file, or a family
 name) and, when any printed string falls outside WinAnsiEncoding, embed a **subset** of that face —
-or, without `fontPath`, of the first face `gridcraft_core::fonts` finds that covers the script
+or, without `fontPath`, of the first face `cella_core::fonts` finds that covers the script
 (`CRAFT_FONTS_DIR`, then `%WINDIR%\Fonts` / `/System/Library/Fonts` / `/usr/share/fonts` and the
 per-user font folders, scanned with plain `read_dir`; no fontconfig).
 
@@ -199,7 +199,7 @@ Decisions and limits, also stated in the code:
 2. Locale-aware formulas: localized function-name tables and separators at the formula-bar
    boundary only (files keep en-US invariant names), locale number and date formats, list
    separators in CSV.
-3. Text shaping and fallback: the shared `gridcraft_core::text` engine shapes cell text on the grid,
+3. Text shaping and fallback: the shared `cella_core::text` engine shapes cell text on the grid,
    in the in-cell editor and in PDF export (Arabic, Devanagari, Thai, bidi, cluster-exact extraction).
    Remaining: CJK system font fallback for every script, right-to-left sheet tabs and mirrored
    printing, a shaped PDF `text_width`, and per-run fallback.
@@ -210,14 +210,14 @@ Decisions and limits, also stated in the code:
 |---|---|---|
 | 2026-11-16 | minor | **504 labels** in Simplified Chinese (from 499) after the upstream-adoption round's new commands: fourteen labels from the straggler and solver batches (`窗口`, `拖放`, `分级显示设置`, `粘贴名称…`, `数据透视表选项`, `保存模型`/`装入模型`/`全部重置`, the four `显示…` view toggles, `追踪错误`, `选择区域的下一角`), seven macro labels (`录制宏`, `运行宏`, `宏列表`, `获取宏`, `删除宏`, `重命名宏`, `单步执行`), the chart data table's section and the `控件` menu group. `cargo xtask i18n --check` passes with the three accepted English literals |
 | 2026-11-02 | minor | Word-wrapped cell text and chart labels are shaped: each paragraph is measured once from its shaped clusters, broken at spaces/hyphens/CJK boundaries, and each line is shaped and aligned on its own (RTL General text aligns right). Printable ASCII keeps the unshaped wrap bit for bit. Text boxes and the PDF's `text_width` remain unshaped |
-| 2026-10-30 | major | PDF text is shaped with `gridcraft_core::text`: Arabic joins, Devanagari reorders, Thai marks are positioned and bidi runs are laid out in visual order (`TJ`/`Ts` on one text matrix); `ToUnicode` follows the glyph's whole cluster and a `CIDToGIDMap` is written only when one glyph must extract differently, so WinAnsi text stays byte-identical |
-| 2026-10-30 | minor | Cell text on the grid and in the in-cell editor is shaped and bidi-ordered (`crates/ui-egui/src/text.rs`, one `gridcraft_core::text` engine per app, the faces egui paints with): Arabic joins, Devanagari reorders and merges clusters, Thai marks take zero advance, mixed runs draw in visual order and the caret walks visual clusters; a Devanagari fallback face makes Hindi cells draw |
-| 2026-10-30 | major | PDF export embeds subset TrueType fonts (`crates/pdf/src/truetype.rs`, `gridcraft_core::fonts`): Cyrillic, Greek, Hebrew, CJK, Korean and the glyphs of Arabic, Devanagari and Thai now reach the PDF (unshaped, left to right) with `ToUnicode` so the text stays copyable; `file.exportPdf`/`file.print` take `fontPath`; a WinAnsi-only document's bytes are unchanged |
+| 2026-10-30 | major | PDF text is shaped with `cella_core::text`: Arabic joins, Devanagari reorders, Thai marks are positioned and bidi runs are laid out in visual order (`TJ`/`Ts` on one text matrix); `ToUnicode` follows the glyph's whole cluster and a `CIDToGIDMap` is written only when one glyph must extract differently, so WinAnsi text stays byte-identical |
+| 2026-10-30 | minor | Cell text on the grid and in the in-cell editor is shaped and bidi-ordered (`crates/ui-egui/src/text.rs`, one `cella_core::text` engine per app, the faces egui paints with): Arabic joins, Devanagari reorders and merges clusters, Thai marks take zero advance, mixed runs draw in visual order and the caret walks visual clusters; a Devanagari fallback face makes Hindi cells draw |
+| 2026-10-30 | major | PDF export embeds subset TrueType fonts (`crates/pdf/src/truetype.rs`, `cella_core::fonts`): Cyrillic, Greek, Hebrew, CJK, Korean and the glyphs of Arabic, Devanagari and Thai now reach the PDF (unshaped, left to right) with `ToUnicode` so the text stays copyable; `file.exportPdf`/`file.print` take `fontPath`; a WinAnsi-only document's bytes are unchanged |
 | 2026-10-21 | minor | Romanian interface (`ro`, Română): 970 labels covering every key of the other catalogs (`crates/ui-egui/src/i18n/ro.rs`), `ro-*` system locales, the View-tab switcher and `app.language.set`; context keys show no prefix (File › Options test). English formulas and formats; AI-assisted draft pending native-speaker review |
 | 2026-10-20 | minor | Japanese: furigana (`rPh` phonetic runs and `<phoneticPr>` in `xl/sharedStrings.xml`) is no longer deleted by an open + save; it is kept on the workbook and written back (a `<phoneticPr>` without runs is kept too, while duplicate texts with different readings keep only the first, reported on open). Display of the readings is still missing (`crates/xlsx/src/tests/phonetic_tests.rs`) |
 | 2026-10-20 | minor | Japanese catalog (`i18n/ja.rs`) covers every key the Brazilian Portuguese catalog translates: the 398-label shared core moved verbatim plus 545 dialog, message, Backstage and menu strings — 943 keys, ~12% → ~43%. A test parses `pt.rs`'s source, so the two catalogs can't drift apart again. Portuguese re-measured at 943 (was 923) |
 | 2026-10-20 | minor | Dutch (nl) interface catalog (`i18n/nl.rs`, 518 labels, ~24%): the shared key set every language must cover (ribbon, context menus, File view, dialog titles, Options page), matching the German, French and Czech catalogs; `nl-NL`, `nl-BE` locale tags resolve to Dutch |
-| 2026-10-20 | minor | XLSX: a theme's per-script typefaces (`<a:font script="Arab">`, Hebr, Jpan…) are kept through open + save, so Arabic Excel's theme fonts for shapes, charts and theme-font cells survive a GridCraft save |
+| 2026-10-20 | minor | XLSX: a theme's per-script typefaces (`<a:font script="Arab">`, Hebr, Jpan…) are kept through open + save, so Arabic Excel's theme fonts for shapes, charts and theme-font cells survive a Cella save |
 | 2026-10-20 | trivial | XLSX: a workbook theme's major/minor East Asian (`<a:ea>`) and complex-script (`<a:cs>`) typefaces are kept through open + save, so a Japanese workbook keeps its theme's East Asian font; rendering does not resolve them yet (follow-up) |
 | 2026-10-19 | minor | XLSX fonts retain charset and family metadata so systems can select a substitute font with the intended script when the named font is unavailable |
 | 2026-10-19 | minor | Arabic CSV and text imports decode Windows-1256 text; Arabic shaping and bidirectional UI remain unsupported |

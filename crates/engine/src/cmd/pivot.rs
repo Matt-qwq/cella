@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::*;
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::*;
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -362,21 +362,21 @@ fn source_kind_name(k: PivotSourceKind) -> &'static str {
     }
 }
 
-/// Whether the report is one carried from a file that GridCraft does not compute: it says why it
+/// Whether the report is one carried from a file that Cella does not compute: it says why it
 /// is read-only, and it keeps the values the file cached.
 ///
 /// A report built on a model table has `source_kind` `DataModel` too — its records are the
-/// model's, not a sheet's — but it carries no reason, because GridCraft does compute it (through
+/// model's, not a sheet's — but it carries no reason, because Cella does compute it (through
 /// [`pv::read_source_kind`]). That is the whole difference between the two.
 fn is_carried(pt: &PivotTable) -> bool {
     pt.is_read_only() && pt.read_only_reason.is_some()
 }
 
-/// The error a command that would recompute or reshape a report GridCraft does not compute
+/// The error a command that would recompute or reshape a report Cella does not compute
 /// returns, naming the reason the report is read-only.
 fn read_only_error(pt: &PivotTable) -> EngineError {
     let why = match pt.read_only_text() {
-        "" => "its source is one GridCraft does not query".to_string(),
+        "" => "its source is one Cella does not query".to_string(),
         t => format!("it is {t}"),
     };
     other(format!("PivotTable \"{}\" is read-only: {why}. Its cached values are left as they are.", pt.name))
@@ -669,7 +669,7 @@ fn remove_from_area(cmd: &str, pt: &mut PivotTable, field: &str, area: &str) -> 
 fn update(s: &mut Session, p: &Json, f: impl FnOnce(&mut PivotTable, &pv::Source, &Workbook) -> Result<Json>) -> Result<Json> {
     let (si, pi) = find_pivot(s, p)?;
     // Every command here changes the report and has it recomputed from its source. A report
-    // GridCraft does not compute has no source to read here: refusing keeps its cached values
+    // Cella does not compute has no source to read here: refusing keeps its cached values
     // intact instead of overwriting them from a range that isn't there.
     {
         let d = s.doc()?;
@@ -770,7 +770,7 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let source = source_param(s, p)?;
     let active = s.doc()?.wb.active_sheet;
-    // What the source names: a sheet block GridCraft reads cell by cell, or one of the model's
+    // What the source names: a sheet block Cella reads cell by cell, or one of the model's
     // tables (see `pv::source_kind_of`; a sheet name wins where both would answer).
     let kind = pv::source_kind_of(&s.doc()?.wb, &source, active);
     // Validate the source now (header names, size).
@@ -978,7 +978,7 @@ fn fields(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc()?;
     let pt = d.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).ok_or_else(|| other("There's no such PivotTable."))?;
     let mut out = pivot_json(&d.wb, si, pt);
-    // A report GridCraft does not compute has no source to read: its fields are the ones the file
+    // A report Cella does not compute has no source to read: its fields are the ones the file
     // says it is built on, without record counts or samples. `kind`/`readOnlyReason` say why.
     if is_carried(pt) {
         let list = read_only_fields(pt);
@@ -1060,7 +1060,7 @@ fn fields(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(out)
 }
 
-/// The fields a report GridCraft does not compute names, with the area each is in. The source
+/// The fields a report Cella does not compute names, with the area each is in. The source
 /// itself is never read, so there are no samples and no record count.
 fn read_only_fields(pt: &PivotTable) -> Vec<Json> {
     let mut names: Vec<&str> = Vec::new();
@@ -1262,7 +1262,7 @@ fn calculated_item(s: &mut Session, p: &Json) -> Result<Json> {
             return Err(other(format!("There's already an item named `{name}` in `{canon}`.")));
         }
         let formula = formula.clone().unwrap_or_default();
-        let compiled = gridcraft_model::pivot_item::compile(&canon, &formula).map_err(|e| bad(C, e))?;
+        let compiled = cella_model::pivot_item::compile(&canon, &formula).map_err(|e| bad(C, e))?;
         for n in compiled.items() {
             if !labels.iter().any(|l| l.eq_ignore_ascii_case(n.trim())) {
                 return Err(other(format!("`{n}` isn't an item of `{canon}`; a calculated item can only use its field's own items.")));
@@ -1882,7 +1882,7 @@ fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
                 let pivot = cx.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).cloned();
                 let Some(pt) = pivot else { continue };
                 let name = pt.name.clone();
-                // A report GridCraft does not compute has no source to read: it is left as it is,
+                // A report Cella does not compute has no source to read: it is left as it is,
                 // and said so rather than counted as refreshed.
                 if is_carried(&pt) {
                     skipped.push(json!({"pivot": name, "reason": pt.read_only_text()}));
@@ -1914,7 +1914,7 @@ fn prune_calc_items(wb: &Workbook, src: &pv::Source, pt: &mut PivotTable) {
                 l
             }
         };
-        let Ok(compiled) = gridcraft_model::pivot_item::compile(&c.field, &c.formula) else { continue };
+        let Ok(compiled) = cella_model::pivot_item::compile(&c.field, &c.formula) else { continue };
         if compiled.items().iter().all(|n| list.iter().any(|l| l.eq_ignore_ascii_case(n.trim()))) {
             keep.push(c);
         }
@@ -1934,7 +1934,7 @@ fn change_source(s: &mut Session, p: &Json) -> Result<Json> {
     update(s, p, move |pt, _, wb| {
         pt.source = source.clone();
         pt.source_kind = kind;
-        // A report GridCraft computes from now on holds no reason to be read-only; one that came
+        // A report Cella computes from now on holds no reason to be read-only; one that came
         // from a model table is computed like any other.
         pt.read_only_reason = None;
         let mut dropped: Vec<String> = vec![];
@@ -2091,7 +2091,7 @@ fn chart_pivot(s: &Session, p: &Json) -> Result<(usize, usize)> {
         let (sheet, addr) = match t.rsplit_once('!') {
             Some((sh, a)) => {
                 let sh = sh.trim();
-                let sh = gridcraft_core::unquote_sheet(sh);
+                let sh = cella_core::unquote_sheet(sh);
                 (d.wb.sheet_index(&sh), a)
             }
             None => (Some(d.wb.active_sheet), t),
@@ -2117,8 +2117,7 @@ fn insert_pivot_chart(s: &mut Session, p: &Json) -> Result<Json> {
     let series = pv::chart_series(&sh.name, area.start, &out);
     let t = str_param(p, "type").unwrap_or("column");
     let kind = super::insert::chart_kind(t, str_param(p, "subtype").unwrap_or(""));
-    let at =
-        cell_param(s, p, "at")?.unwrap_or_else(|| CellRef::new(area.start.row, area.end.col.saturating_add(2).min(gridcraft_core::MAX_COLS - 1)));
+    let at = cell_param(s, p, "at")?.unwrap_or_else(|| CellRef::new(area.start.row, area.end.col.saturating_add(2).min(cella_core::MAX_COLS - 1)));
     let title = match p.get("title") {
         Some(Json::String(t)) => Some(t.clone()),
         Some(Json::Null) => None,
@@ -2298,7 +2297,7 @@ fn show_details(s: &mut Session, p: &Json) -> Result<Json> {
         let wb = &d.wb;
         let sh = wb.sheet(si).ok_or(EngineError::NoDocument)?;
         let pt = sh.pivots.get(pi).ok_or_else(|| other("There's no such PivotTable."))?;
-        // Show Details needs the records behind a cell, and a report GridCraft does not compute has
+        // Show Details needs the records behind a cell, and a report Cella does not compute has
         // no source to read them from. A report over a model table does have one: its table's.
         if is_carried(pt) {
             return Err(read_only_error(pt));
@@ -2392,7 +2391,7 @@ fn generate_get_pivot_data(s: &mut Session, p: &Json) -> Result<Json> {
 }
 #[cfg(test)]
 mod tests {
-    use gridcraft_core::{CellError, CellRef, Value};
+    use cella_core::{CellError, CellRef, Value};
     use serde_json::{Value as Json, json};
 
     use crate::Session;
@@ -2428,7 +2427,7 @@ mod tests {
     fn text(s: &Session, a: &str) -> String {
         val(s, a).display()
     }
-    fn pt(s: &Session) -> gridcraft_model::PivotTable {
+    fn pt(s: &Session) -> cella_model::PivotTable {
         s.doc().unwrap().wb.active().unwrap().pivots.last().unwrap().clone()
     }
     /// Finds the row (0-based) whose first report column holds `label`.
@@ -2570,10 +2569,10 @@ mod tests {
         // it is a report filter, and it keeps its row above the table.
         {
             let sh = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).sheet_mut(0).unwrap();
-            sh.pivots[0].filters = vec![gridcraft_model::PivotFilter {
+            sh.pivots[0].filters = vec![cella_model::PivotFilter {
                 source_col: "Product".into(),
                 selected: Some(vec!["Apples".into()]),
-                area: gridcraft_model::PivotFilterArea::Page,
+                area: cella_model::PivotFilterArea::Page,
             }];
         }
         s.execute("pivot.refresh", json!({})).unwrap();
@@ -2585,10 +2584,10 @@ mod tests {
         s.execute("insert.pivotTable", json!({"rows": ["Product"], "values": ["Sales"]})).unwrap();
         {
             let sh = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).sheet_mut(0).unwrap();
-            sh.pivots[0].filters = vec![gridcraft_model::PivotFilter {
+            sh.pivots[0].filters = vec![cella_model::PivotFilter {
                 source_col: "Product".into(),
                 selected: Some(vec!["Apples".into()]),
-                area: gridcraft_model::PivotFilterArea::Axis,
+                area: cella_model::PivotFilterArea::Axis,
             }];
         }
         s.execute("pivot.refresh", json!({})).unwrap();
@@ -2859,12 +2858,12 @@ mod tests {
         s.execute("pivot.refresh", json!({"pivot": "PivotTable1"})).unwrap();
     }
 
-    fn pivot_chart(s: &Session) -> gridcraft_model::Chart {
+    fn pivot_chart(s: &Session) -> cella_model::Chart {
         s.doc().unwrap().wb.active().unwrap().charts.last().unwrap().clone()
     }
     fn plotted(s: &Session) -> Vec<Vec<Option<f64>>> {
         let d = s.doc().unwrap();
-        let data = gridcraft_chart::resolve(&d.wb, d.wb.active_sheet, &pivot_chart(s));
+        let data = cella_chart::resolve(&d.wb, d.wb.active_sheet, &pivot_chart(s));
         data.series.into_iter().map(|x| x.values).collect()
     }
 
@@ -2896,7 +2895,7 @@ mod tests {
         assert_eq!(pts[0].iter().flatten().sum::<f64>(), TOTAL);
         // Survives an XLSX round trip as a PivotChart.
         let wb = (*s.doc().unwrap().wb).clone();
-        let (back, _) = gridcraft_xlsx::read_xlsx(&gridcraft_xlsx::write_xlsx(&wb).unwrap()).unwrap();
+        let (back, _) = cella_xlsx::read_xlsx(&cella_xlsx::write_xlsx(&wb).unwrap()).unwrap();
         let si = back.sheet_index("Sheet2").unwrap();
         assert_eq!(back.sheet(si).unwrap().charts.first().and_then(|c| c.pivot.clone()).as_deref(), Some("Sheet2!PivotTable1"));
         // Renaming the sheet keeps the link; a refresh still rebinds.
@@ -2922,7 +2921,7 @@ mod tests {
         let r = s.execute("insert.pivotChart", json!({"pivot": "PivotTable1", "type": "line", "title": null})).unwrap();
         assert_eq!(r["series"], 1);
         let ch = pivot_chart(&s);
-        assert_eq!(ch.kind, gridcraft_model::ChartKind::Line);
+        assert_eq!(ch.kind, cella_model::ChartKind::Line);
         assert_eq!(ch.title, None);
         // One undo step.
         s.execute("edit.undo", json!({})).unwrap();
@@ -3502,7 +3501,7 @@ mod tests {
         assert_eq!(detail.rows.len(), 2);
         assert_eq!(detail.skipped, 2);
         // The command's own cap: 12,000,000 cells, and never more rows than a sheet has.
-        assert_eq!(crate::pivot::detail_row_cap(4, crate::pivot::MAX_DETAIL_CELLS), gridcraft_core::MAX_ROWS as u64 - 1);
+        assert_eq!(crate::pivot::detail_row_cap(4, crate::pivot::MAX_DETAIL_CELLS), cella_core::MAX_ROWS as u64 - 1);
         assert_eq!(crate::pivot::detail_row_cap(160, crate::pivot::MAX_DETAIL_CELLS), 75_000);
     }
 
@@ -3636,9 +3635,9 @@ mod tests {
         assert_eq!(before[1][2], "Pears");
     }
 
-    // ------------------------------------------------ reports GridCraft does not compute
+    // ------------------------------------------------ reports Cella does not compute
 
-    /// A report carried from a file: its cached values on the sheet, and a source GridCraft does
+    /// A report carried from a file: its cached values on the sheet, and a source Cella does
     /// not query (a data model). What the reader builds for a Power Pivot PivotTable.
     fn carried() -> Session {
         let mut s = sales();
@@ -3650,8 +3649,8 @@ mod tests {
             let sh = std::sync::Arc::make_mut(&mut wb.sheets[si]);
             let p = &mut sh.pivots[0];
             p.source = String::new();
-            p.source_kind = gridcraft_model::PivotSourceKind::DataModel;
-            p.read_only_reason = Some("built on the workbook's data model (Power Pivot), which GridCraft keeps but does not query".into());
+            p.source_kind = cella_model::PivotSourceKind::DataModel;
+            p.read_only_reason = Some("built on the workbook's data model (Power Pivot), which Cella keeps but does not query".into());
         }
         s
     }
@@ -3701,7 +3700,7 @@ mod tests {
         // The cached values are still exactly the file's: nothing was recomputed over a source
         // that isn't there, and nothing was reshaped.
         assert_eq!(report_cells(&s), before);
-        assert_eq!(pt(&s).read_only_text(), "built on the workbook's data model (Power Pivot), which GridCraft keeps but does not query");
+        assert_eq!(pt(&s).read_only_text(), "built on the workbook's data model (Power Pivot), which Cella keeps but does not query");
     }
 
     #[test]
@@ -3780,8 +3779,8 @@ mod tests {
         // relationship where `Sales` is the many side.
         assert_eq!(r["fields"], json!(["Sales[RegionId]", "Sales[Amount]", "Region[Id]", "Region[Name]"]));
         let p = pt(&s);
-        assert_eq!(p.source_kind, gridcraft_model::PivotSourceKind::DataModel);
-        assert_eq!(p.read_only_reason, None, "a report GridCraft computes has no reason to be read-only");
+        assert_eq!(p.source_kind, cella_model::PivotSourceKind::DataModel);
+        assert_eq!(p.read_only_reason, None, "a report Cella computes has no reason to be read-only");
         // Nothing reads a cell from a model source: it has no sheet and no range to read.
         assert_eq!(p.source, "Sales");
         let list = s.execute("pivot.list", json!({})).unwrap();
@@ -3909,7 +3908,7 @@ mod tests {
             let d = s.doc_mut().unwrap();
             let wb = std::sync::Arc::make_mut(&mut d.wb);
             // A hand-written document can hold a formula the editor would have refused.
-            wb.model.measures.push(gridcraft_model::Measure {
+            wb.model.measures.push(cella_model::Measure {
                 name: "Broken".into(),
                 table: "Sales".into(),
                 formula: "SUM(Nowhere[Amount])".into(),

@@ -1,4 +1,4 @@
-//! Pass-through of package content GridCraft does not model, so that open → edit → save keeps it.
+//! Pass-through of package content Cella does not model, so that open → edit → save keeps it.
 //!
 //! On read, the raw bytes of unmodelled parts are kept with their content type and their
 //! relationship graph, per owner: the package root (custom document properties, ribbon
@@ -9,21 +9,21 @@
 //! printer settings, with the sheet's `<picture>`, `<oleObjects>` and `<controls>` XML, the `r:id`
 //! of `<pageSetup>`, the legacy VML shapes those controls need and the pictures of the headers and
 //! footers, `&G`, with their `<legacyDrawingHF>`; and the sheet's unmodelled `<extLst>` children,
-//! such as a timeline) and the parts GridCraft rewrites (a table's `<extLst>` and the query table
+//! such as a timeline) and the parts Cella rewrites (a table's `<extLst>` and the query table
 //! attached to it, a PivotTable's `<extLst>` — the slicer cache reference among them — and the
 //! `<extLst>` of its cache definition). The workbook also keeps its `<fileVersion>` and the
 //! calcFeatures extension, which Excel needs to trust the saved values.
 //!
 //! On write, kept parts get fresh part names where needed and new relationship ids; the `r:id`s in
 //! kept XML are rewritten to match. Kept content is conservative:
-//! - Anything whose relationship graph reaches a part GridCraft reads and rewrites (worksheets,
+//! - Anything whose relationship graph reaches a part Cella reads and rewrites (worksheets,
 //!   drawings, charts, tables, PivotTables, comments…) is not kept: it would point at content that
 //!   no longer exists in the same form. Slicers, slicer caches, timelines and timeline caches are
 //!   not rewritten, so their graphs are kept whole — they are never edited (gap #8).
-//! - Extensions GridCraft writes itself are never kept from the source: the calc-features
+//! - Extensions Cella writes itself are never kept from the source: the calc-features
 //!   extension, the worksheet's data bars, sparklines and x14 validations, and the PivotTable's own
 //!   x14 extensions are written from the model, once.
-//! - Content a part GridCraft rewrites owns hangs off that owner's name (`table:<name>`,
+//! - Content a part Cella rewrites owns hangs off that owner's name (`table:<name>`,
 //!   `pivot:<name>`, `pivotcache:<name>`), stored in the owning sheet's or workbook's kept content;
 //!   its relationships carry the key in their id (see `KS`). A table or PivotTable that is
 //!   deleted, renamed or replaced therefore takes its extensions and the parts only they reach
@@ -39,7 +39,7 @@
 //!   Cell and sheet references inside kept parts (a control's linked cell, a query table's range, a
 //!   cell mapped to an XML element, a slicer cache's `pivotCacheId`) are kept as they were, not
 //!   adjusted to inserted or deleted rows or reordered sheets.
-//! - A PivotTable GridCraft reads but does not compute (a data-model or OLAP cache) is carried
+//! - A PivotTable Cella reads but does not compute (a data-model or OLAP cache) is carried
 //!   whole: its own part, its cache definition, its records and the data model behind them, byte
 //!   for byte, keyed to the report's name. The workbook's data model (`xl/model/*`) is kept with
 //!   the workbook on its own, so it survives even every report built on it being deleted. The
@@ -53,7 +53,7 @@ use crate::package::{self, normalize};
 use crate::read::Ctx;
 use crate::write::{NS_REL, Out, Rels, XML_DECL};
 use crate::xml::{self, esc_attr};
-use gridcraft_model::{PivotTable, Preserved, PreservedPart, PreservedRel, PreservedSheet, PreservedXml, Sheet, Visibility, Workbook};
+use cella_model::{PivotTable, Preserved, PreservedPart, PreservedRel, PreservedSheet, PreservedXml, Sheet, Visibility, Workbook};
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::QName;
@@ -96,7 +96,7 @@ const MAX_EXTS_BYTES: usize = 8 * 1024 * 1024;
 /// Separator between an owner key and the source relationship id in [`PreservedRel::id`]. XML 1.0
 /// forbids it in a part, so it can't come out of a file and can't be confused with a real id.
 const KS: char = '\u{1}';
-/// The slot of an `extLst` child of the workbook or a worksheet that GridCraft does not model.
+/// The slot of an `extLst` child of the workbook or a worksheet that Cella does not model.
 const EXT_SLOT: &str = "ext";
 /// The slot of the workbook's calc-features extension (written by [`workbook_elements`]).
 pub(crate) const CALC_SLOT: &str = "calcFeatures";
@@ -129,12 +129,12 @@ const PACKAGE_ROOTS: &[&str] = &["custom-properties", "extensibility", "webexten
 const WORKBOOK_ROOTS: &[&str] = &["customXml", "connections", "xmlMaps"];
 /// Workbook relationship kinds whose parts are kept even when no XML element names them.
 const WORKBOOK_CACHES: &[&str] = &["slicerCache", "timelineCache"];
-/// Relationship kinds a table part owns that GridCraft doesn't write (its query table).
+/// Relationship kinds a table part owns that Cella doesn't write (its query table).
 const TABLE_OWNED: &[&str] = &["queryTable"];
 /// The relationship type that ties a pivot cache definition to the workbook's data model
-/// (Power Pivot), and the model part to the workbook when GridCraft keeps it on its own.
+/// (Power Pivot), and the model part to the workbook when Cella keeps it on its own.
 const POWER_PIVOT_KINDS: &[&str] = &["powerPivotData"];
-/// The relationships inside a PivotTable's kept content. GridCraft writes these parts from the
+/// The relationships inside a PivotTable's kept content. Cella writes these parts from the
 /// model, so they are normally rewritten; a report it does not compute is carried whole instead,
 /// and the walk goes through them to the cache, its records and the data model behind them.
 const PIVOT_GRAPH: &[&str] = &["pivotTable", "pivotCacheDefinition", "pivotCacheRecords", "powerPivotData"];
@@ -147,17 +147,17 @@ const FILE_VERSION_ATTRS: &[&str] = &["appName", "lastEdited", "lowestEdited", "
 /// The workbook extension listing the calculation features the saved values were computed with.
 const CALC_FEATURES_URI: &str = "{B58B0392-4F1F-4190-BB64-5DF3571DCE5F}";
 const NS_CALC_FEATURES: &str = "http://schemas.microsoft.com/office/spreadsheetml/2018/calcfeatures";
-/// Worksheet extensions GridCraft models and writes itself (solid data bars, sparklines, the
+/// Worksheet extensions Cella models and writes itself (solid data bars, sparklines, the
 /// validations of Excel 2010, and the id that links a data bar to its rule): keeping the source
 /// ones too would duplicate them or contradict the model.
 const MODELED_SHEET_EXTS: &[&str] =
     &["{78C0D931-6437-407d-A8A1-0F90B4350D7D}", "{05C60535-1F16-4fd2-B633-F4F36F0B64E0}", "{B025F937-C7B1-47D3-B67F-A62EFF666E3E}"];
 const MODELED_SHEET_EXT_ELEMENTS: &[&str] = &["conditionalFormattings", "sparklineGroups", "dataValidations"];
-/// The PivotTable extensions GridCraft writes itself (the show-values-as rank, `hideValuesRow`).
+/// The PivotTable extensions Cella writes itself (the show-values-as rank, `hideValuesRow`).
 const MODELED_PIVOT_EXTS: &[&str] = &[crate::pivot::EXT_X14_DATA_FIELD, crate::pivot::EXT_X14_PIVOT_TABLE];
 /// Whether a worksheet `<ext>` holds something the model has no room for. Read with the sheet, so
 /// the pass-through only reads the part again (it is the biggest part of the file) when there is
-/// something to keep there. The list is the one `keep_exts` uses: the same extensions GridCraft
+/// something to keep there. The list is the one `keep_exts` uses: the same extensions Cella
 /// writes itself are skipped on the way back.
 pub(crate) fn sheet_ext_unknown(ext: &xml::El) -> bool {
     let uri = ext.attr("uri").unwrap_or("");
@@ -168,7 +168,7 @@ pub(crate) fn sheet_ext_unknown(ext: &xml::El) -> bool {
 }
 /// Kept sheet elements, in schema order (all after `<legacyDrawing>`, before `<tableParts>`).
 const SHEET_SLOTS: &[&str] = &["legacyDrawingHF", "picture", "oleObjects", "controls"];
-/// Relationship kinds GridCraft reads and rewrites, or that depend on content it rewrites:
+/// Relationship kinds Cella reads and rewrites, or that depend on content it rewrites:
 /// kept content whose graph reaches one of them is dropped.
 const REWRITTEN: &[&str] = &[
     "officedocument",
@@ -211,7 +211,7 @@ const REWRITTEN: &[&str] = &[
 /// Relationship kinds a chart sheet reaches that are otherwise rewritten: its drawing, chart and
 /// their style, colour and shape parts are kept byte for byte (the chart sheet is not modelled).
 const CHART_SHEET_GRAPH: &[&str] = &["chartsheet", "drawing", "chart", "chartex", "chartstyle", "chartcolorstyle", "chartusershapes"];
-/// Part-name prefixes (lower case) GridCraft's writer never produces: kept parts there keep their
+/// Part-name prefixes (lower case) Cella's writer never produces: kept parts there keep their
 /// original names. Anything else is renamed so it can't collide with written parts.
 const OWN_DIRS: &[&str] = &[
     "customxml/",
@@ -246,7 +246,7 @@ pub(crate) fn rels_part_name(part: &str) -> String {
     let (dir, file) = package::split_dir(part);
     if dir.is_empty() { format!("_rels/{file}.rels") } else { format!("{dir}/_rels/{file}.rels") }
 }
-/// The key of a part GridCraft rewrites whose kept extras hang off its name (a table, PivotTable
+/// The key of a part Cella rewrites whose kept extras hang off its name (a table, PivotTable
 /// or pivot cache), or `None` when the name can't be used as one.
 fn owner_key(kind: &str, name: &str) -> Option<String> {
     let name = name.trim();

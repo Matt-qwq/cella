@@ -1,10 +1,10 @@
 //! Double-clicking a PivotTable value is Excel's Show Details: the source rows behind that number
 //! land in a sheet of their own. A label cell keeps the ordinary double-click behaviour.
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, Value};
+use cella_ui_egui::{SheetApp, grid::Geo};
 use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -33,7 +33,7 @@ fn harness() -> Harness {
 }
 
 /// The report's area, from the pivot that wrote it.
-fn report(h: &Harness) -> gridcraft_engine::core::RangeRef {
+fn report(h: &Harness) -> cella_engine::core::RangeRef {
     let app = h.state();
     let sh = app.session.active().expect("a document").wb.active().expect("a sheet");
     sh.pivots.first().and_then(|p| p.last_range).expect("the pivot wrote a report")

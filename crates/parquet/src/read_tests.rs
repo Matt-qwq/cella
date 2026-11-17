@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellError, CellRef, Value};
-use gridcraft_model::{Cell, Sheet, Workbook};
+use cella_core::{CellError, CellRef, Value};
+use cella_model::{Cell, Sheet, Workbook};
 use parquet::basic::{BrotliLevel, Compression, GzipLevel, LogicalType, Repetition, Type as PhysicalType, ZstdLevel};
 use parquet::data_type::{FixedLenByteArray, Int32Type, Int64Type, Int96, Int96Type};
 use parquet::file::properties::WriterProperties;

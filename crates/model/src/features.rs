@@ -1,7 +1,7 @@
 //! Sheet features beyond cells: tables, conditional formatting, data validation, comments,
 //! hyperlinks, charts, images, autofilter, print settings.
 
-use gridcraft_core::{CellRef, RangeRef};
+use cella_core::{CellRef, RangeRef};
 use serde::{Deserialize, Serialize};
 
 use crate::style::{Color, Style};
@@ -622,7 +622,7 @@ pub struct LabelOptions {
     pub separator: Option<String>,
     /// Number format of the label text; `None` follows the plotted values.
     ///
-    /// Only a classic part stores one (`c:numFmt`): GridCraft writes no `cx:numFmt`, so this is
+    /// Only a classic part stores one (`c:numFmt`): Cella writes no `cx:numFmt`, so this is
     /// not written to a chartex part.
     pub number_format: Option<String>,
     /// No labels at all for this series (`c:dLbls/c:delete`): Excel hides one series' labels
@@ -767,7 +767,7 @@ impl PointLabel {
     }
 }
 
-/// The chart part a chart was read from, kept so that everything GridCraft does not model in it
+/// The chart part a chart was read from, kept so that everything Cella does not model in it
 /// survives an open → save. Opaque to the model (not part of the JSON format); the xlsx crate
 /// writes it back byte for byte while the chart still matches what was read.
 #[derive(Clone, PartialEq)]
@@ -1063,7 +1063,7 @@ pub struct Chart {
     /// the chart's options reach a chartex chart by being written into each series' own record.
     #[serde(default)]
     pub labels: LabelOptions,
-    /// The chart part as read from a file, for options GridCraft does not model. Not serialized.
+    /// The chart part as read from a file, for options Cella does not model. Not serialized.
     #[serde(skip)]
     pub part: Option<Box<ChartPart>>,
 }
@@ -1198,7 +1198,7 @@ pub enum ShapeKind {
     Line,
     Arrow,
     TextBox,
-    /// An icon from GridCraft's own icon set; `Shape::text` holds the icon name.
+    /// An icon from Cella's own icon set; `Shape::text` holds the icon name.
     Icon,
     /// A freehand ink stroke; `Shape::text` holds the points as `x,y;x,y;…` relative to the
     /// anchor (sheet points), `Shape::line` the ink colour and `fill` unused.
@@ -1540,7 +1540,7 @@ pub struct SheetProtection {
     /// password itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<crate::PasswordHash>,
-    /// The internal hash older GridCraft JSON workbooks stored ([`password_hash`]); still
+    /// The internal hash older Cella JSON workbooks stored ([`password_hash`]); still
     /// verified when unprotecting, never written for new passwords.
     #[serde(rename = "password_hash", default, skip_serializing_if = "Option::is_none")]
     pub legacy_password_hash: Option<u64>,
@@ -1575,7 +1575,7 @@ impl EditRange {
     }
 }
 
-/// The non-cryptographic password hash older GridCraft versions stored for sheet protection
+/// The non-cryptographic password hash older Cella versions stored for sheet protection
 /// (only verified now, see [`SheetProtection::legacy_password_hash`]).
 pub fn password_hash(pw: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325 ^ 0x5348_4545_5443;
@@ -1918,14 +1918,14 @@ impl PivotValueFilter {
     }
 }
 
-/// What a PivotTable's records come from, and whether GridCraft can compute the report.
+/// What a PivotTable's records come from, and whether Cella can compute the report.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PivotSourceKind {
-    /// A cell range (`Sheet1!$A$1:$E$200`), a table or a defined name: GridCraft reads the records
+    /// A cell range (`Sheet1!$A$1:$E$200`), a table or a defined name: Cella reads the records
     /// and recomputes the report.
     #[default]
     Range,
-    /// A data model (Power Pivot) or an OLAP cube: GridCraft carries the report and the values the
+    /// A data model (Power Pivot) or an OLAP cube: Cella carries the report and the values the
     /// file cached, and never queries the source, so it never recomputes the report. The seam an
     /// OLAP engine plugs into: what it has to fill in is the records.
     DataModel,
@@ -1939,12 +1939,12 @@ pub struct PivotTable {
     pub id: u32,
     pub name: String,
     /// Source: range formula text (`Sheet1!$A$1:$E$200`), a table name or a defined name. Empty
-    /// for a report GridCraft does not compute (see `source_kind`).
+    /// for a report Cella does not compute (see `source_kind`).
     pub source: String,
-    /// What the report is built on: a range GridCraft computes, or a data model / OLAP source it
+    /// What the report is built on: a range Cella computes, or a data model / OLAP source it
     /// only carries.
     pub source_kind: PivotSourceKind,
-    /// Why a report GridCraft does not compute is read-only, in words for the user. `None` for a
+    /// Why a report Cella does not compute is read-only, in words for the user. `None` for a
     /// range source.
     pub read_only_reason: Option<String>,
     /// Top-left of the output body on the pivot's sheet.
@@ -2013,13 +2013,13 @@ pub struct PivotCalcItem {
 }
 
 impl PivotTable {
-    /// Whether GridCraft computes this report from its source. A report it does not compute keeps
+    /// Whether Cella computes this report from its source. A report it does not compute keeps
     /// the values the file cached; refreshing it or moving its fields is refused.
     pub fn is_read_only(&self) -> bool {
         self.source_kind != PivotSourceKind::Range
     }
 
-    /// Why the report is read-only, as shown to the user. Empty for a report GridCraft computes.
+    /// Why the report is read-only, as shown to the user. Empty for a report Cella computes.
     pub fn read_only_text(&self) -> &str {
         self.read_only_reason.as_deref().unwrap_or("").trim()
     }

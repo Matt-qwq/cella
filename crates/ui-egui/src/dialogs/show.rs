@@ -210,7 +210,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                                 app.toast =
                                     Some((crate::widgets::tr(ui, "Saved {n} steps as a script").replace("{n}", &n.to_string()), crate::now_ms()));
                             }
-                            Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                            Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
                         }
                     }
                 });
@@ -238,7 +238,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                     } else {
                         d.values.remove("path");
                         d.values.insert("alt".into(), json!(name));
-                        d.values.insert("base64".into(), json!(gridcraft_engine::io::base64_encode(&bytes)));
+                        d.values.insert("base64".into(), json!(cella_engine::io::base64_encode(&bytes)));
                     }
                 }
                 if app.services.pick_picture_async.is_some() {
@@ -287,9 +287,9 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                         let a = doc.selection.active;
                         let mut seen = std::collections::BTreeSet::new();
                         let mut r = a.row;
-                        while r > 0 && !sh.value(gridcraft_engine::core::CellRef::new(r - 1, a.col)).is_empty() {
+                        while r > 0 && !sh.value(cella_engine::core::CellRef::new(r - 1, a.col)).is_empty() {
                             r -= 1;
-                            seen.insert(sh.value(gridcraft_engine::core::CellRef::new(r, a.col)).display());
+                            seen.insert(sh.value(cella_engine::core::CellRef::new(r, a.col)).display());
                         }
                         Some(seen.into_iter().collect())
                     })
@@ -372,7 +372,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                         app.run_or_alert("file.new", json!({}));
                         open = false;
                     }
-                    for (n, t) in gridcraft_engine::sample::SAMPLES {
+                    for (n, t) in cella_engine::sample::SAMPLES {
                         if ui.button(crate::widgets::tr(ui, t)).clicked() {
                             app.run_or_alert("file.new", json!({"sample": n}));
                             open = false;
@@ -433,7 +433,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                 }
             }
             // Data Analysis asks before replacing data in its output range.
-            Err(e) if d.name == "analysisToolPak" && e.contains(gridcraft_engine::cmd::analysis::OVERWRITE_ERROR) => {
+            Err(e) if d.name == "analysisToolPak" && e.contains(cella_engine::cmd::analysis::OVERWRITE_ERROR) => {
                 d.values.insert("askOverwrite".into(), json!(true));
             }
             // A wrong password: say so, clear the field and stay open for another try.

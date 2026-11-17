@@ -4,8 +4,8 @@
 //! view is the one every command reads, so a command run after Switch Windows acts where that window
 //! is looking, while a document-wide command reaches the whole workbook whichever window is active.
 
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_engine::{Session, WindowId};
+use cella_engine::core::{CellRef, Value};
+use cella_engine::{Session, WindowId};
 use serde_json::{Value as Json, json};
 
 /// A workbook with two sheets: Sheet1 and Sheet2.
@@ -80,7 +80,7 @@ fn each_window_keeps_its_own_active_sheet_and_selection() {
 
     // A window swap is view state, never an edit: switching back and forth changes nothing that
     // would have to be saved, and the undo history is the shared one.
-    let path = std::env::temp_dir().join(format!("gridcraft-window-views-{}.xlsx", std::process::id()));
+    let path = std::env::temp_dir().join(format!("cella-window-views-{}.xlsx", std::process::id()));
     run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
     for _ in 0..3 {
         run(&mut s, "window.activate", json!({"index": 1}));
@@ -201,7 +201,7 @@ fn a_document_wide_command_reaches_the_workbook_whichever_window_is_active() {
 #[test]
 fn a_new_window_shares_the_undo_history_and_the_save() {
     let mut s = session();
-    let path = std::env::temp_dir().join(format!("gridcraft-window-shared-{}.xlsx", std::process::id()));
+    let path = std::env::temp_dir().join(format!("cella-window-shared-{}.xlsx", std::process::id()));
     run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
     let first = s.active_window().expect("a window");
     let second = new_window(&mut s);

@@ -9,8 +9,8 @@
 //! and finds their expression trees lazily, which the report shows.
 //!
 //! ```text
-//! cargo run --release -p gridcraft-engine --example memory                # 100k and 1M rows
-//! cargo run --release -p gridcraft-engine --example memory -- 1000000     # one row count
+//! cargo run --release -p cella-engine --example memory                # 100k and 1M rows
+//! cargo run --release -p cella-engine --example memory -- 1000000     # one row count
 //! ```
 //!
 //! The report counts live heap bytes by allocation class (see [MemoryReport]); it is arithmetic on
@@ -19,7 +19,7 @@
 
 use std::process::ExitCode;
 
-use gridcraft_engine::{MemoryReport, Session, SheetMemory};
+use cella_engine::{MemoryReport, Session, SheetMemory};
 use serde_json::{Value, json};
 
 /// Rows measured when none are given on the command line: the two sizes the perf gate uses.
@@ -77,7 +77,7 @@ fn measure(rows: usize) -> Result<(), String> {
     let mut session = build(rows)?;
     let live = session.memory_report();
     println!();
-    println!("GridCraft memory — {rows} rows x 6 columns{}", if cfg!(debug_assertions) { " (debug build)" } else { "" });
+    println!("Cella memory — {rows} rows x 6 columns{}", if cfg!(debug_assertions) { " (debug build)" } else { "" });
     print_report("as built (built by the perf scenario's three fills)", &live);
     print_shapes(&session);
 

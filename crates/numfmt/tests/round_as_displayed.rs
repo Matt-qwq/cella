@@ -2,7 +2,7 @@
 //! adoption; the expected values were observed in Excel (COM, `Workbook.PrecisionAsDisplayed = True`)
 //! with synthetic values.
 
-use gridcraft_numfmt::NumberFormat;
+use cella_numfmt::NumberFormat;
 
 #[test]
 fn round_as_displayed_matches_excel() {

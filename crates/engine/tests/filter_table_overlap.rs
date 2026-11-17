@@ -3,7 +3,7 @@
 //! ones. Found by the command-sequence fuzz (seed 4, sample budget), which is why the round trip is
 //! asserted here directly.
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::json;
 
 fn session() -> Session {
@@ -37,8 +37,8 @@ fn a_filtered_sheets_hidden_rows_survive_save_and_reload() {
     s.execute("data.filterBy", json!({"column": "A", "custom": {"op": "<", "value": "5"}})).unwrap();
     let before = rows_hidden_by_filter(&s);
     assert_eq!(before, vec![2], "the row with 9 is hidden");
-    let bytes = gridcraft_xlsx::write_xlsx(&s.doc().expect("doc").wb).unwrap();
-    let (wb, _) = gridcraft_xlsx::read_xlsx(&bytes).unwrap();
+    let bytes = cella_xlsx::write_xlsx(&s.doc().expect("doc").wb).unwrap();
+    let (wb, _) = cella_xlsx::read_xlsx(&bytes).unwrap();
     let sh = wb.sheet(0).expect("sheet");
     let after: Vec<u32> = (0..10u32).filter(|r| sh.filter_hidden.contains(*r)).collect();
     assert_eq!(after, before, "a hidden row stays filter-hidden, not hand-hidden");

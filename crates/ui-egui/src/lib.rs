@@ -1,5 +1,5 @@
-//! GridCraft's egui frontend: an Excel-style window (title bar with Quick Access Toolbar,
-//! ribbon, formula bar, grid, sheet tabs, status bar) over `gridcraft-engine`.
+//! Cella's egui frontend: an Excel-style window (title bar with Quick Access Toolbar,
+//! ribbon, formula bar, grid, sheet tabs, status bar) over `cella-engine`.
 //!
 //! The UI is thin: it reads engine state and acts through [`SheetApp::run`] (engine commands by
 //! id). Everything it can do is also reachable over the control channel ([`control`]).
@@ -46,8 +46,8 @@ pub use window_ui::WindowUi;
 
 use std::collections::HashMap;
 
-use gridcraft_engine::core::{CellRef, RangeRef};
-use gridcraft_engine::{Session, UiRequest, WindowId};
+use cella_engine::core::{CellRef, RangeRef};
+use cella_engine::{Session, UiRequest, WindowId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -168,7 +168,7 @@ pub enum NoticeKind {
 }
 
 /// A dismissible bar under the ribbon, in the spirit of Excel's message bar. Used to tell the
-/// user what an opened file carried that GridCraft handled differently (e.g. preserved macros).
+/// user what an opened file carried that Cella handled differently (e.g. preserved macros).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
     pub text: String,
@@ -201,7 +201,7 @@ pub struct Services {
     pub paste_html: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Read the system clipboard's plain text for the ribbon and menu Paste commands (Cmd/Ctrl+V
     /// gets it from egui's `Event::Paste`). `None` from the host, or no service (web), pastes
-    /// GridCraft's own clipboard.
+    /// Cella's own clipboard.
     pub paste_text: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Web: deliver a file to the user (name, bytes).
     pub download: Option<Box<dyn Fn(&str, &[u8])>>,
@@ -303,11 +303,11 @@ pub struct SheetApp {
     pub selected_chart: Option<u32>,
     /// What the Format pane is editing: the chart area, an axis or one series.
     pub format_selection: chart_format::Selection,
-    /// The system clipboard's text when GridCraft last copied without publishing to it (a
+    /// The system clipboard's text when Cella last copied without publishing to it (a
     /// control-channel or MCP `edit.copy`/`edit.cut`). While the system clipboard still holds this
-    /// text, GridCraft's copy is the newer one and Paste uses it.
+    /// text, Cella's copy is the newer one and Paste uses it.
     clipboard_text_at_copy: Option<String>,
-    /// The system clipboard's text right after GridCraft's last cut (the published text, or the
+    /// The system clipboard's text right after Cella's last cut (the published text, or the
     /// text noted for an unpublished cut); `None` after a copy, or once the clipboard is seen
     /// holding other text. Once the cut has been pasted, Paste leaves this text alone.
     cut_text: Option<String>,
@@ -343,7 +343,7 @@ pub struct SheetApp {
     window_close_handled: std::collections::HashSet<WindowId>,
     /// Whether the frame the title bar assumes has been asked for (see [`chrome`]): asked once.
     frame_asked: bool,
-    /// Whether GRIDCRAFT_FONT_DEBUG has been served for this font set.
+    /// Whether CELLA_FONT_DEBUG has been served for this font set.
     fonts_dump_written: bool,
 }
 
@@ -413,7 +413,7 @@ impl SheetApp {
     pub fn setup_context(ctx: &egui::Context, dark: bool) {
         // The catalog of installed fonts is what makes a workbook's own face (宋体, 仿宋…) render
         // with its real bold and italic. Reading the machine's font folders is the host's decision,
-        // not a library one: the desktop app calls this (see apps/gridcraft) and so does the
+        // not a library one: the desktop app calls this (see apps/cella) and so does the
         // snapshot example; a headless test keeps its own font state untouched.
         fonts::start_scan();
         Self::setup_context_for_language(ctx, dark, i18n::Language::En);
@@ -441,7 +441,7 @@ impl SheetApp {
     }
 
     /// The workbook theme's East Asian typeface (`script="Hans"` → 宋体 in a Chinese Excel file):
-    /// Excel draws the Chinese in a Calibri cell with it, and so does GridCraft (see
+    /// Excel draws the Chinese in a Calibri cell with it, and so does Cella (see
     /// [`theme::font_definitions_with`]).
     pub fn ea_fonts(&self) -> Vec<String> {
         let Some(d) = self.session.active() else { return Vec::new() };
@@ -452,7 +452,7 @@ impl SheetApp {
     pub fn run(&mut self, id: &str, params: Json) -> Result<Json, String> {
         let r = self.run_command(id, params);
         // This copy leaves the system clipboard alone: note what it holds, so Paste can tell
-        // that GridCraft's copy is newer while that text is still there.
+        // that Cella's copy is newer while that text is still there.
         if matches!(id, "edit.copy" | "edit.cut") && r.is_ok() {
             self.clipboard_text_at_copy = self.system_clipboard_text();
             self.cut_text = if id == "edit.cut" { self.clipboard_text_at_copy.clone() } else { None };
@@ -539,8 +539,8 @@ impl SheetApp {
     /// Paste text that came from the system clipboard (Cmd/Ctrl+V, or the ribbon and menu Paste),
     /// with the clipboard's HTML flavour when the host can read it.
     ///
-    /// Excel pastes a cut once: after GridCraft's cut has been pasted, the system clipboard text
-    /// that came with it is not pasted again over the moved block; GridCraft's own (empty)
+    /// Excel pastes a cut once: after Cella's cut has been pasted, the system clipboard text
+    /// that came with it is not pasted again over the moved block; Cella's own (empty)
     /// clipboard is pasted instead, which reports "Nothing to paste.". Other text means the
     /// clipboard has moved on, so the cut's text is forgotten and pastes normally later.
     pub fn paste_external(&mut self, text: String) {
@@ -560,8 +560,8 @@ impl SheetApp {
     }
 
     /// Ribbon and menu Paste: paste the text on the system clipboard, as Cmd/Ctrl+V does. With no
-    /// text there, no host clipboard (web), or the text that was there when GridCraft last copied
-    /// without publishing, GridCraft's own clipboard is pasted.
+    /// text there, no host clipboard (web), or the text that was there when Cella last copied
+    /// without publishing, Cella's own clipboard is pasted.
     pub fn paste_from_clipboard(&mut self) {
         match self.system_clipboard_text() {
             Some(text) if self.session.clipboard.is_none() || self.clipboard_text_at_copy.as_ref() != Some(&text) => self.paste_external(text),
@@ -593,7 +593,7 @@ impl SheetApp {
             return;
         }
         if let Some(dl) = &self.services.download
-            && let Some(b) = result.get("base64").and_then(Json::as_str).and_then(gridcraft_engine::io::base64_decode)
+            && let Some(b) = result.get("base64").and_then(Json::as_str).and_then(cella_engine::io::base64_decode)
         {
             let title = self.session.active().map(|d| d.display_title()).unwrap_or_else(|| "Book1".into());
             dl(&std::path::Path::new(&title).with_extension("pdf").to_string_lossy(), &b);
@@ -664,7 +664,7 @@ impl SheetApp {
         if e.contains("is not available right now") {
             self.toast = Some((e, now_ms()));
         } else {
-            self.message = Some(("GridCraft".into(), clean_error(&e)));
+            self.message = Some(("Cella".into(), clean_error(&e)));
         }
     }
 
@@ -683,7 +683,7 @@ impl SheetApp {
         }
         let pdf = self.run("file.print", params)?;
         let encoded = pdf.get("base64").and_then(Json::as_str).ok_or("The print command did not produce a PDF.")?;
-        let bytes = gridcraft_engine::io::base64_decode(encoded).ok_or("Couldn't decode the generated PDF.")?;
+        let bytes = cella_engine::io::base64_decode(encoded).ok_or("Couldn't decode the generated PDF.")?;
         let len = bytes.len();
         if let Some(submit) = &self.services.print_native {
             self.printing.begin(submit(bytes, self.printing.settings.clone())).map_err(|_| "A print job is already being submitted.".to_owned())?;
@@ -825,7 +825,7 @@ impl SheetApp {
         for req in self.session.take_ui_requests() {
             match req {
                 UiRequest::Dialog(name, params) => self.open_dialog(&name, params),
-                UiRequest::Message(m) => self.message = Some(("GridCraft".into(), m)),
+                UiRequest::Message(m) => self.message = Some(("Cella".into(), m)),
                 UiRequest::EditCell(text) => {
                     let text = text.map(|text| {
                         self.session
@@ -902,7 +902,7 @@ impl SheetApp {
                 } else if self.services.download.is_some()
                     && let Ok(r) = self.run("file.saveBytes", json!({"format": "xlsx"}))
                     && let Some(dl) = &self.services.download
-                    && let Some(b) = r.get("base64").and_then(Json::as_str).and_then(gridcraft_engine::io::base64_decode)
+                    && let Some(b) = r.get("base64").and_then(Json::as_str).and_then(cella_engine::io::base64_decode)
                 {
                     let name = r.get("name").and_then(Json::as_str).unwrap_or("Book.xlsx").to_string();
                     dl(&name, &b);
@@ -937,8 +937,8 @@ impl SheetApp {
         match self.run("file.open", json!({"path": path})) {
             Ok(r) => self.after_open(Some(path), &r),
             // A password-protected workbook: ask for the password; the dialog opens it.
-            Err(e) if e.contains(gridcraft_engine::io::PASSWORD_REQUIRED) => self.open_dialog("openPassword", json!({"path": path})),
-            Err(e) => self.message = Some(("GridCraft".into(), clean_error(&e))),
+            Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => self.open_dialog("openPassword", json!({"path": path})),
+            Err(e) => self.message = Some(("Cella".into(), clean_error(&e))),
         }
         self.after_engine();
     }
@@ -977,7 +977,7 @@ impl SheetApp {
             let text = if dropped {
                 "This workbook's VBA macros could not be loaded and were dropped, so they will not be in the saved file. Keep the original file."
             } else {
-                "This workbook contains VBA macros. GridCraft keeps them when you save as .xlsm, but does not run them."
+                "This workbook contains VBA macros. Cella keeps them when you save as .xlsm, but does not run them."
             };
             self.notice = Some(Notice { text: text.into(), kind: NoticeKind::Warning, action: Some(("What this means".into(), "macros".into())) });
         } else {
@@ -1034,7 +1034,7 @@ impl SheetApp {
     /// The view a sheet opens with: scrolled to the file's saved first visible cell (`topLeftCell`).
     fn saved_view(&self) -> SheetView {
         let Some(sh) = self.session.active().and_then(|d| d.wb.active()) else { return SheetView::default() };
-        if sh.view != gridcraft_engine::model::SheetViewMode::Normal {
+        if sh.view != cella_engine::model::SheetViewMode::Normal {
             return SheetView::default();
         }
         let (fr, fc) = sh.freeze.unwrap_or((0, 0));
@@ -1057,7 +1057,7 @@ impl SheetApp {
                 if window != Some(window_of) {
                     continue;
                 }
-                let Some(sh) = d.wb.sheets.get(si).filter(|sh| sh.view == gridcraft_engine::model::SheetViewMode::Normal) else {
+                let Some(sh) = d.wb.sheets.get(si).filter(|sh| sh.view == cella_engine::model::SheetViewMode::Normal) else {
                     continue;
                 };
                 let (fr, fc) = sh.freeze.unwrap_or((0, 0));
@@ -1098,7 +1098,7 @@ impl SheetApp {
         } else {
             match sh.cell(at) {
                 Some(c) if c.formula.is_some() => formula_locale::display(&c.input_text(), locale, &d.wb, d.wb.active_sheet),
-                _ => gridcraft_engine::display::edit_text(&d.wb, sh, at),
+                _ => cella_engine::display::edit_text(&d.wb, sh, at),
             }
         };
         let (text, replace) = match text {
@@ -1111,13 +1111,13 @@ impl SheetApp {
             ed.completion = editor::column_completion(sh, at, &ed.text);
         }
         self.editor = Some(ed);
-        self.session.mode = if replace { gridcraft_engine::Mode::Enter } else { gridcraft_engine::Mode::Edit };
+        self.session.mode = if replace { cella_engine::Mode::Enter } else { cella_engine::Mode::Edit };
     }
 
     /// Commits the edit; `then` moves the selection (dr, dc) afterwards.
     pub fn commit_edit(&mut self, dr: i64, dc: i64, array: bool, fill_selection: bool) -> bool {
         let Some(ed) = self.editor.take() else { return true };
-        self.session.mode = gridcraft_engine::Mode::Ready;
+        self.session.mode = cella_engine::Mode::Ready;
         let text = match &ed.completion {
             Some(full) if full.to_lowercase().starts_with(&ed.text.to_lowercase()) => full.clone(),
             _ => ed.text.clone(),
@@ -1125,22 +1125,22 @@ impl SheetApp {
         let text = match self.session.active().map(|d| formula_locale::canonical(&text, ed.locale, &d.wb, ed.sheet, ed.cell)) {
             Some(Ok(text)) => text,
             Some(Err(error)) => {
-                self.message = Some(("GridCraft".into(), error.to_string()));
+                self.message = Some(("Cella".into(), error.to_string()));
                 self.editor = Some(ed);
-                self.session.mode = gridcraft_engine::Mode::Edit;
+                self.session.mode = cella_engine::Mode::Edit;
                 return false;
             }
             None => text,
         };
         // Data validation.
         if let Some(d) = self.session.active()
-            && let Some((dv, msg)) = gridcraft_engine::cmd::data::check_validation(&d.wb, ed.sheet, ed.cell, &text)
+            && let Some((dv, msg)) = cella_engine::cmd::data::check_validation(&d.wb, ed.sheet, ed.cell, &text)
         {
-            if dv.error_style == gridcraft_engine::model::ErrorStyle::Stop {
-                let title = if dv.error_title.is_empty() { "GridCraft".to_string() } else { dv.error_title.clone() };
+            if dv.error_style == cella_engine::model::ErrorStyle::Stop {
+                let title = if dv.error_title.is_empty() { "Cella".to_string() } else { dv.error_title.clone() };
                 self.message = Some((title, msg));
                 self.editor = Some(ed);
-                self.session.mode = gridcraft_engine::Mode::Edit;
+                self.session.mode = cella_engine::Mode::Edit;
                 return false;
             }
             self.toast = Some((msg, now_ms()));
@@ -1149,9 +1149,9 @@ impl SheetApp {
         if self.session.active().is_some_and(|d| d.wb.active_sheet != ed.sheet)
             && let Err(e) = self.session.run("sheet.activate", json!({"sheet": ed.sheet}))
         {
-            self.message = Some(("GridCraft".into(), clean_error(&e)));
+            self.message = Some(("Cella".into(), clean_error(&e)));
             self.editor = Some(ed);
-            self.session.mode = gridcraft_engine::Mode::Edit;
+            self.session.mode = cella_engine::Mode::Edit;
             return false;
         }
         // Committing nothing into an empty cell changes nothing: no undo step (#1855, Backspace has
@@ -1163,7 +1163,7 @@ impl SheetApp {
                 .session
                 .active()
                 .and_then(|d| d.wb.sheet(ed.sheet))
-                .is_some_and(|sh| sh.cell(ed.cell).is_none_or(|c| c.formula.is_none() && c.value == gridcraft_engine::core::Value::Empty));
+                .is_some_and(|sh| sh.cell(ed.cell).is_none_or(|c| c.formula.is_none() && c.value == cella_engine::core::Value::Empty));
         let r = if unchanged {
             Ok(json!({}))
         } else if fill_selection {
@@ -1180,9 +1180,9 @@ impl SheetApp {
                 true
             }
             Err(e) => {
-                self.message = Some(("GridCraft".into(), clean_error(&e)));
+                self.message = Some(("Cella".into(), clean_error(&e)));
                 self.editor = Some(ed);
-                self.session.mode = gridcraft_engine::Mode::Edit;
+                self.session.mode = cella_engine::Mode::Edit;
                 false
             }
         }
@@ -1199,7 +1199,7 @@ impl SheetApp {
 
     pub fn cancel_edit(&mut self) {
         self.editor = None;
-        self.session.mode = gridcraft_engine::Mode::Ready;
+        self.session.mode = cella_engine::Mode::Ready;
     }
 
     /// Enter/Tab move inside a multi-cell selection, otherwise to the next cell.
@@ -1337,12 +1337,12 @@ impl SheetApp {
                 }
             }
         }
-        // GRIDCRAFT_FONT_DEBUG=<path>: write what the font set bound and what it has to fake.
+        // CELLA_FONT_DEBUG=<path>: write what the font set bound and what it has to fake.
         // "bold does nothing" is a question about these two lists, and they only exist in a
         // running app (the scan and the workbook's fonts are process state).
         if self.fonts_ready
             && !self.fonts_dump_written
-            && let Some(path) = std::env::var_os("GRIDCRAFT_FONT_DEBUG")
+            && let Some(path) = std::env::var_os("CELLA_FONT_DEBUG")
         {
             let used = self.used_fonts();
             let mut out = String::new();
@@ -1390,7 +1390,7 @@ impl SheetApp {
         // The palette lookups only get a context, so the preference is published for the frame.
         crate::theme::set_high_contrast(ctx, self.ui.high_contrast);
         // Interface size: the preference owns the zoom factor, so egui's own Ctrl/Cmd +/-/0 zoom
-        // keys stay off (they would also swallow GridCraft's shortcuts).
+        // keys stay off (they would also swallow Cella's shortcuts).
         if ctx.options(|o| o.zoom_with_keyboard) {
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
         }
@@ -1415,18 +1415,18 @@ impl SheetApp {
             .map(|i| std::mem::take(&mut *i.lock().unwrap_or_else(std::sync::PoisonError::into_inner)))
             .unwrap_or_default();
         for (name, bytes) in arrived {
-            let b64 = gridcraft_engine::io::base64_encode(&bytes);
+            let b64 = cella_engine::io::base64_encode(&bytes);
             match self.run("file.open", json!({"name": &name, "base64": &b64})) {
                 // A file picked from File › Open (web) arrives here: show it, not the Backstage.
                 Ok(r) => {
                     self.backstage = None;
                     self.show_open_warnings(&r);
                 }
-                Err(e) if e.contains(gridcraft_engine::io::PASSWORD_REQUIRED) => {
+                Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => {
                     self.backstage = None;
                     self.open_dialog("openPassword", json!({"name": name, "base64": b64}));
                 }
-                Err(e) => self.message = Some(("GridCraft".into(), clean_error(&e))),
+                Err(e) => self.message = Some(("Cella".into(), clean_error(&e))),
             }
             self.after_engine();
         }
@@ -1535,7 +1535,7 @@ impl SheetApp {
         }
         // Each window has widgets of its own: an id salt per window keeps their state apart (a
         // scroll area, a popup, the ribbon's menus).
-        ui.push_id(("gridcraft.window", window.map_or(0, |w| w.0)), |ui| {
+        ui.push_id(("cella.window", window.map_or(0, |w| w.0)), |ui| {
             if self.chrome.title_bar {
                 // The strip is the window's caption where the platform has none of its own; ask
                 // for that frame once, before drawing it.
@@ -1630,7 +1630,7 @@ impl SheetApp {
                     .with_title(title)
                     .with_inner_size([1200.0, 800.0])
                     .with_min_inner_size([640.0, 420.0])
-                    .with_app_id("ai.storyteller.gridcraft"),
+                    .with_app_id("io.github.matt-qwq.cella"),
             );
             ctx.show_viewport_immediate(window_viewport(id), builder, |ui, class| {
                 // A shell without separate windows (egui's `embed_viewports`: the browser build,
@@ -1727,7 +1727,7 @@ impl SheetApp {
                 // Reserved sequence: fires silently while its command is missing. When the
                 // command lands in the catalog it goes live with no table edit.
                 keytips::Action::Pending(id) => {
-                    if gridcraft_engine::find_command(id).is_some() {
+                    if cella_engine::find_command(id).is_some() {
                         self.run_or_alert(id, json!({}));
                     }
                 }
@@ -1750,7 +1750,7 @@ impl SheetApp {
             for n in &d.wb.names {
                 let target = n.formula.replace('$', "");
                 let (sheet, body) = match target.rsplit_once('!') {
-                    Some((s, b)) => (Some(gridcraft_engine::core::unquote_sheet(s)), b.to_string()),
+                    Some((s, b)) => (Some(cella_engine::core::unquote_sheet(s)), b.to_string()),
                     None => (None, target.clone()),
                 };
                 if sheet.as_deref().is_none_or(|s| s.eq_ignore_ascii_case(&sh.name)) && RangeRef::parse(&body) == Some(cur) {
@@ -1776,13 +1776,13 @@ pub fn clean_error(e: &str) -> String {
 }
 
 pub fn now_ms() -> f64 {
-    gridcraft_engine::core::date::unix_now_ms().unwrap_or(0.0)
+    cella_engine::core::date::unix_now_ms().unwrap_or(0.0)
 }
 
 /// The OS window (egui viewport) that shows an engine window: one per window of a document, and
 /// stable for as long as that window lives.
 pub fn window_viewport(window: WindowId) -> egui::ViewportId {
-    egui::ViewportId::from_hash_of(("gridcraft.window", window.0))
+    egui::ViewportId::from_hash_of(("cella.window", window.0))
 }
 
 pub fn cell(r: u32, c: u32) -> CellRef {
@@ -1798,7 +1798,7 @@ mod name_box_tests {
     /// "4 行 x 3 列" where an English one reads "4R x 3C".
     #[test]
     fn the_name_box_counts_rows_and_columns_in_the_interface_language() {
-        let mut session = gridcraft_engine::Session::new();
+        let mut session = cella_engine::Session::new();
         session.new_workbook();
         let mut app = SheetApp::new(session, Default::default());
         app.session.run("selection.set", json!({"range": "A1:C4"})).expect("the selection is set");

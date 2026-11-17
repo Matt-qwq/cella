@@ -1,8 +1,8 @@
 //! The interface's symbol characters must not render as empty boxes (#197, #54): the UI font often
 //! lacks arrows, check marks and geometric shapes, so a symbol face backs it up.
 
+use cella_ui_egui::theme;
 use egui::{Color32, FontFamily, FontId};
-use gridcraft_ui_egui::theme;
 
 /// Symbols the interface draws as text (buttons, menus, dialogs, tooltips, Insert › Symbol).
 const UI_SYMBOLS: &str = "▲▼▸▾✓✕←↑→↓↳↘↗⇧⌃⌘★•›≠≤≥∞";

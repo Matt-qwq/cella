@@ -1,9 +1,9 @@
 //! Insert › Text › WordArt: a floating decorative-text shape, edited by its own command and kept
 //! as a WordArt (not flattened into a text box) through an XLSX save and open.
 
-use gridcraft_engine::Session;
-use gridcraft_engine::cmd::wordart::{DEFAULT_TEXT, MAX_CHARS, STYLES};
-use gridcraft_engine::model::{Color, Shape, ShapeKind};
+use cella_engine::Session;
+use cella_engine::cmd::wordart::{DEFAULT_TEXT, MAX_CHARS, STYLES};
+use cella_engine::model::{Color, Shape, ShapeKind};
 use serde_json::json;
 
 fn workbook() -> Session {
@@ -37,7 +37,7 @@ fn insert_with_empty_params_gives_default_text_and_a_sane_size() {
     assert_eq!(shape.format.font_size, Some(36.0));
     assert!(shape.format.bold && !shape.format.italic);
     assert_eq!(shape.format.text_color, Some(STYLES[0].fill));
-    assert_eq!(shape.format.align, Some(gridcraft_engine::model::ShapeTextAlign::Center));
+    assert_eq!(shape.format.align, Some(cella_engine::model::ShapeTextAlign::Center));
     assert!(shape.format.no_line, "a WordArt has no box of its own");
     // Long enough for the text at that size, and never degenerate or unbounded.
     assert!(shape.anchor.width > 100.0 && shape.anchor.width < 4000.0, "width {}", shape.anchor.width);
@@ -50,7 +50,7 @@ fn insert_takes_a_style_a_text_and_a_place() {
     s.execute("insert.wordArt", json!({"style": "Ember", "text": "Sale", "at": "C3", "width": 200, "height": 80})).unwrap();
     let shape = word_art(&s);
     assert_eq!(shape.text, "Sale");
-    assert_eq!(shape.anchor.cell, gridcraft_core::CellRef::parse("C3").unwrap());
+    assert_eq!(shape.anchor.cell, cella_core::CellRef::parse("C3").unwrap());
     assert_eq!((shape.anchor.width, shape.anchor.height), (200.0, 80.0));
     let ember = STYLES.iter().find(|st| st.name == "Ember").unwrap();
     assert_eq!(shape.format.font_size, Some(ember.size));
@@ -128,14 +128,14 @@ fn the_commands_are_registered_with_a_ribbon_path() {
     assert!(!set.menu.is_empty(), "a format command still says where it lives");
     assert!(set.enabled);
     // Both are reachable through the same registry the control channel, CLI and MCP use.
-    assert_eq!(gridcraft_engine::find_command("insert.wordArt").map(|c| c.id), Some("insert.wordArt"));
-    assert_eq!(gridcraft_engine::find_command("wordArt.set").map(|c| c.id), Some("wordArt.set"));
+    assert_eq!(cella_engine::find_command("insert.wordArt").map(|c| c.id), Some("insert.wordArt"));
+    assert_eq!(cella_engine::find_command("wordArt.set").map(|c| c.id), Some("wordArt.set"));
 }
 
 #[test]
 fn a_wordart_keeps_its_kind_text_and_style_through_two_xlsx_saves() {
     let mut s = workbook();
-    s.execute("insert.wordArt", json!({"style": "Ink Stamp", "text": "GridCraft\nWordArt", "at": "B4"})).unwrap();
+    s.execute("insert.wordArt", json!({"style": "Ink Stamp", "text": "Cella\nWordArt", "at": "B4"})).unwrap();
     let id = word_art(&s).id;
     s.execute("wordArt.set", json!({"id": id, "outline": "#00FF00", "outlineWidth": 2.5})).unwrap();
     let expected = word_art(&s).clone();

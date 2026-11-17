@@ -5,8 +5,8 @@
 //! permanently and recalculates formulas; a number typed, pasted or reformatted while it is on is
 //! stored as its format shows it; General keeps full precision; the option is saved with the file.
 
-use gridcraft_core::{CellRef, Value};
-use gridcraft_engine::Session;
+use cella_core::{CellRef, Value};
+use cella_engine::Session;
 use serde_json::json;
 
 fn s() -> Session {

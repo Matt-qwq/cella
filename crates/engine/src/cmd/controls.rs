@@ -7,8 +7,8 @@
 //! that came with a workbook someone else made runs nothing until the workbook's scripts are
 //! trusted in this session.
 
-use gridcraft_core::{CellRef, col_to_letters, quote_sheet};
-use gridcraft_model::{
+use cella_core::{CellRef, col_to_letters, quote_sheet};
+use cella_model::{
     Anchor, AnchorMode, CONTROL_MAX, ControlAction, ControlKind, FormControl, MAX_CONTROLS, MAX_MACRO_NAME, MacroInput, Sheet, Workbook,
 };
 use serde_json::{Value as Json, json};
@@ -425,7 +425,7 @@ fn action_param(s: &Session, cmd: &str, p: &Json) -> Result<Option<ControlAction
             Some(t) if t.eq_ignore_ascii_case("selection") => MacroInput::Selection,
             Some(t) => {
                 let (_, body) = split_sheet(t);
-                if gridcraft_core::RangeRef::parse(body).is_none() {
+                if cella_core::RangeRef::parse(body).is_none() {
                     return Err(bad(cmd, format!("`input` must be \"selection\" or a range such as B2:D9, not `{t}`")));
                 }
                 MacroInput::Fixed(t.to_string())

@@ -15,7 +15,7 @@ pub(crate) fn tr<'a>(ui: &Ui, text: &'a str) -> &'a str {
 }
 
 /// Keyboard shortcuts shown after a ribbon tooltip's command name: Excel for Mac's on macOS,
-/// Excel for Windows' elsewhere (each one GridCraft binds). Only the name is translated.
+/// Excel for Windows' elsewhere (each one Cella binds). Only the name is translated.
 const TOOLTIP_SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Save", "⌘S", "Ctrl+S"),
     ("Undo", "⌘Z", "Ctrl+Z"),
@@ -239,7 +239,7 @@ pub fn remember_color(recent: &mut Vec<String>, hex: &str) {
 }
 
 fn recent_colors_id() -> egui::Id {
-    egui::Id::new("gridcraft.recent_colors")
+    egui::Id::new("cella.recent_colors")
 }
 
 /// The More Colors… picker's state while it is open in a palette.
@@ -334,7 +334,7 @@ fn palette(ui: &mut Ui, theme_colors: &[u32; 12], none_label: &str, more_colors:
     }
     let theme_hex = |base: u32, tint: f64| -> String {
         let rgb = [(base >> 16) as u8, (base >> 8) as u8, base as u8];
-        let c = gridcraft_engine::model::style::apply_tint(rgb, tint);
+        let c = cella_engine::model::style::apply_tint(rgb, tint);
         let (r0, r1, r2) = (c[0], c[1], c[2]);
         format!("#{r0:02X}{r1:02X}{r2:02X}")
     };
@@ -359,7 +359,7 @@ fn palette(ui: &mut Ui, theme_colors: &[u32; 12], none_label: &str, more_colors:
             for (col, &i) in order.iter().enumerate() {
                 let base = theme_colors.get(i).copied().unwrap_or(0);
                 let rgb = [(base >> 16) as u8, (base >> 8) as u8, base as u8];
-                let c = gridcraft_engine::model::style::apply_tint(rgb, *tint);
+                let c = cella_engine::model::style::apply_tint(rgb, *tint);
                 let col32 = Color32::from_rgb(c[0], c[1], c[2]);
                 let (r, resp) = ui.allocate_exact_size(vec2(16.0, 14.0), Sense::click());
                 ui.painter().rect_filled(r, 1.0, col32);
@@ -378,10 +378,8 @@ fn palette(ui: &mut Ui, theme_colors: &[u32; 12], none_label: &str, more_colors:
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (col, hex) in std_hex.iter().enumerate() {
-            let c = gridcraft_engine::model::Color::from_hex(hex)
-                .and_then(|c| c.resolve(&Default::default()))
-                .map(theme::color32)
-                .unwrap_or(Color32::BLACK);
+            let c =
+                cella_engine::model::Color::from_hex(hex).and_then(|c| c.resolve(&Default::default())).map(theme::color32).unwrap_or(Color32::BLACK);
             let (r, resp) = ui.allocate_exact_size(vec2(16.0, 14.0), Sense::click());
             ui.painter().rect_filled(r, 1.0, c);
             if resp.hovered() || cur == Some((ROWS - 1, col)) {

@@ -1,8 +1,8 @@
 //! Load/Save Model and Reset All: the model written on cells of its sheet, read back from them,
 //! and removed from the sheet.
 
-use gridcraft_core::{CellRef, RangeRef, Value, split_sheet};
-use gridcraft_model::{Cell, DefinedName, Formula, Sheet};
+use cella_core::{CellRef, RangeRef, Value, split_sheet};
+use cella_model::{Cell, DefinedName, Formula, Sheet};
 use serde_json::Value as Json;
 
 use crate::cmd::analysis::OVERWRITE_ERROR;
@@ -109,7 +109,7 @@ fn check_options_spill(sheet: &Sheet, anchor: CellRef, width: u32, ours: &[CellR
     if width <= 1 {
         return Ok(());
     }
-    let end = anchor.col.checked_add(width - 1).filter(|c| *c < gridcraft_core::MAX_COLS).ok_or_else(|| {
+    let end = anchor.col.checked_add(width - 1).filter(|c| *c < cella_core::MAX_COLS).ok_or_else(|| {
         EngineError::Other(format!(
             "The saved model's options need {width} cells to the right from {}; choose another place to save it.",
             anchor.a1()
@@ -179,7 +179,7 @@ fn abs_text(sheet_name: Option<&str>, cells: &str) -> String {
         .filter(|x| !x.is_empty())
         .filter_map(|part| {
             let r = RangeRef::parse(split_sheet(part).1.trim())?;
-            let abs = |c: CellRef| format!("${}${}", gridcraft_core::col_to_letters(c.col), c.row as u64 + 1);
+            let abs = |c: CellRef| format!("${}${}", cella_core::col_to_letters(c.col), c.row as u64 + 1);
             Some(if r.is_single() { format!("{q}{}", abs(r.start)) } else { format!("{q}{}:{}", abs(r.start), abs(r.end)) })
         })
         .collect::<Vec<_>>()
@@ -195,7 +195,7 @@ fn model_formulas(m: &Model) -> Result<Vec<String>> {
     rows.push(match m.goal {
         super::Goal::Max => format!("=MAX({obj})"),
         super::Goal::Min => format!("=MIN({obj})"),
-        super::Goal::Value(v) => format!("={obj}={}", gridcraft_core::number_to_text(v)),
+        super::Goal::Value(v) => format!("={obj}={}", cella_core::number_to_text(v)),
     });
     rows.push(format!("=COUNT({})", abs_text(None, &m.vars_text)));
     for c in &m.cons {
@@ -214,12 +214,12 @@ fn model_formulas(m: &Model) -> Result<Vec<String>> {
             (Rel::Int, _) => format!("=AND({lhs}=INT({lhs}))"),
             (Rel::Bin, _) => format!("=AND(({lhs}=0)+({lhs}=1))"),
             (rel, Rhs::Cells(_)) => format!("=AND({lhs}{}{})", rel.text(), abs_text(None, &c.rhs_text)),
-            (rel, Rhs::Const(v)) => format!("=AND({lhs}{}{})", rel.text(), gridcraft_core::number_to_text(*v)),
+            (rel, Rhs::Const(v)) => format!("=AND({lhs}{}{})", rel.text(), cella_core::number_to_text(*v)),
             (rel, Rhs::None) => format!("=AND({lhs}{}0)", rel.text()),
         });
     }
     let e = &m.evo;
-    let n = gridcraft_core::number_to_text;
+    let n = cella_core::number_to_text;
     let eng = match m.method {
         Method::Grg => 1,
         Method::Simplex => 2,
@@ -378,7 +378,7 @@ pub(super) fn save_model_cells(s: &mut Session, p: &Json) -> Result<Json> {
     let last = to
         .row
         .checked_add(count.saturating_sub(1))
-        .filter(|r| *r < gridcraft_core::MAX_ROWS)
+        .filter(|r| *r < cella_core::MAX_ROWS)
         .ok_or_else(|| EngineError::Other("The saved model doesn't fit below that cell.".into()))?;
     let range = RangeRef::new(to, CellRef::new(last, to.col));
     // The model's own cells are never overwritten.

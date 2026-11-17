@@ -7,10 +7,10 @@
 //! cached here (as Excel caches them in `xl/model/*`) so a reopened workbook shows numbers before
 //! anything is refreshed.
 //!
-//! The evaluation lives in `gridcraft-dax`; this module is only the shape of the data and the
+//! The evaluation lives in `cella-dax`; this module is only the shape of the data and the
 //! rules about what a valid relationship is.
 
-use gridcraft_core::Value;
+use cella_core::Value;
 use serde::{Deserialize, Serialize};
 
 /// Tables one workbook may hold in its model.

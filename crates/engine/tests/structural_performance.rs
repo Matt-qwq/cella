@@ -15,8 +15,8 @@
 
 use std::time::{Duration, Instant};
 
-use gridcraft_core::CellRef;
-use gridcraft_engine::Session;
+use cella_core::CellRef;
+use cella_engine::Session;
 use serde_json::json;
 
 fn session() -> Session {

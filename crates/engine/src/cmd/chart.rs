@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use gridcraft_model::{
+use cella_model::{
     Anchor, AnchorMode, AxisCrossing, AxisOptions, Chart, ChartKind, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines,
     LabelFont, LabelOptions, LabelPosition, LegendPos, PointFormat, PointLabel, Series, Sheet,
 };
@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Legend",
             ["Chart Design", "Chart Layouts"],
             None,
-            "{chart?, position?: none|bottom|top|left|right, overlay?: bool (draw the legend over the plot area instead of in a band of its own), deleteEntry?: series index, showEntry?: series index} (a legend entry is a series' entry; a pie-like chart's entries are its points and a waterfall's its totals, which GridCraft does not model)",
+            "{chart?, position?: none|bottom|top|left|right, overlay?: bool (draw the legend over the plot area instead of in a band of its own), deleteEntry?: series index, showEntry?: series index} (a legend entry is a series' entry; a pie-like chart's entries are its points and a waterfall's its totals, which Cella does not model)",
             has_doc,
             set_legend
         ),
@@ -218,7 +218,7 @@ fn set_legend(s: &mut Session, p: &Json) -> Result<Json> {
         let entry = delete.map(|i| (i, true)).or(show.map(|i| (i, false)));
         if let Some((i, deleted)) = entry {
             if !c.kind.legend_entries_are_series() {
-                return Err(bad(CMD, "this chart's legend entries are not series' entries, the only kind GridCraft can delete"));
+                return Err(bad(CMD, "this chart's legend entries are not series' entries, the only kind Cella can delete"));
             }
             let count = c.series.len();
             let se = c.series.get_mut(i as usize).ok_or_else(|| bad(CMD, format!("no series {i}: the chart has {count}")))?;
@@ -531,19 +531,19 @@ fn set_axis(s: &mut Session, p: &Json) -> Result<Json> {
             // axis carries only a gap width, and there is no crossing, display-unit or number-format
             // element at all.
             if !chartex_value_axis(c) {
-                return Err(bad(CMD, "this chart type has no value axis GridCraft can save"));
+                return Err(bad(CMD, "this chart type has no value axis Cella can save"));
             }
             if axis_sel != AxisSel::Y {
-                return Err(bad(CMD, "a chartex category axis has no options GridCraft can save"));
+                return Err(bad(CMD, "a chartex category axis has no options Cella can save"));
             }
             if crosses.is_some() {
                 return Err(bad(CMD, "a chartex value axis has no crossing point"));
             }
             if units.is_some() {
-                return Err(bad(CMD, "a chartex value axis has no display units GridCraft can save"));
+                return Err(bad(CMD, "a chartex value axis has no display units Cella can save"));
             }
             if number_format.is_some() {
-                return Err(bad(CMD, "a chartex value axis has no number format GridCraft can save"));
+                return Err(bad(CMD, "a chartex value axis has no number format Cella can save"));
             }
         }
         // A category axis of labels has no log scale, display units or axis-value crossing, and
@@ -636,7 +636,7 @@ fn supports_error_bars(c: &Chart) -> bool {
     use ChartKind::*;
     (0..c.series.len()).all(|i| {
         matches!(
-            gridcraft_chart::series_plot_kind(c, i),
+            cella_chart::series_plot_kind(c, i),
             ColumnClustered
                 | ColumnStacked
                 | ColumnStacked100
@@ -711,13 +711,13 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
             return Err(bad(cmd, "give either `point` or `deletePoint`/`showPoint`"));
         }
         if p.get("legendKey").is_some() {
-            return Err(bad(cmd, "a point's label has no legend key in GridCraft's model"));
+            return Err(bad(cmd, "a point's label has no legend key in Cella's model"));
         }
         if separator.is_some() {
-            return Err(bad(cmd, "a point's label has no separator of its own in GridCraft's model"));
+            return Err(bad(cmd, "a point's label has no separator of its own in Cella's model"));
         }
         if number_format.is_some() {
-            return Err(bad(cmd, "a point's label has no number format of its own in GridCraft's model"));
+            return Err(bad(cmd, "a point's label has no number format of its own in Cella's model"));
         }
     } else if text.is_some() {
         return Err(bad(cmd, "`text` needs `point`: it sets one point's label"));
@@ -1115,7 +1115,7 @@ fn format_point(s: &mut Session, p: &Json) -> Result<Json> {
         }
         if marker.is_some() || marker_size.is_some() {
             use ChartKind::*;
-            let plot = gridcraft_chart::series_plot_kind(c, si);
+            let plot = cella_chart::series_plot_kind(c, si);
             if !matches!(plot, Line | LineMarkers | LineStacked | Scatter | ScatterLines | Bubble | Radar) {
                 return Err(bad(cmd, "a marker colour or size applies to line, scatter, bubble and radar points only"));
             }
@@ -1186,7 +1186,7 @@ mod tests {
             assert!(cs.charts[0].series[0].values.contains("Sheet1!"));
             // The worksheet no longer holds it, and its cells are untouched.
             assert!(d.wb.sheet(0).unwrap().charts.is_empty());
-            assert_eq!(d.wb.sheet(0).unwrap().value(gridcraft_core::CellRef::new(1, 1)), gridcraft_core::Value::Number(48.0));
+            assert_eq!(d.wb.sheet(0).unwrap().value(cella_core::CellRef::new(1, 1)), cella_core::Value::Number(48.0));
         }
         // One undo step takes the whole move back.
         s.execute("edit.undo", json!({})).unwrap();
@@ -1213,7 +1213,7 @@ mod tests {
             assert_eq!(d.wb.active_sheet, 0);
         }
         s.execute("sheet.hide", json!({"sheet": 0})).unwrap();
-        assert_eq!(s.doc().unwrap().wb.sheets[0].visibility, gridcraft_model::Visibility::Hidden);
+        assert_eq!(s.doc().unwrap().wb.sheets[0].visibility, cella_model::Visibility::Hidden);
         // The last visible sheet cannot go (Excel's rule); unhide, then delete the chart sheet.
         s.execute("sheet.unhide", json!({"sheet": 0})).unwrap();
         s.execute("home.deleteSheet", json!({"sheet": 0})).unwrap();
@@ -1235,7 +1235,7 @@ mod tests {
             assert_eq!(d.wb.sheets.len(), 1);
             let sh = d.wb.sheet(0).unwrap();
             let ch = sh.charts.iter().find(|c| c.id == id).unwrap();
-            assert_eq!(ch.anchor.cell, gridcraft_core::CellRef::new(3, 5));
+            assert_eq!(ch.anchor.cell, cella_core::CellRef::new(3, 5));
             assert_eq!((ch.anchor.width, ch.anchor.height), (300.0, 180.0));
             assert!(!sh.is_chart_sheet());
         }
@@ -1295,7 +1295,7 @@ mod tests {
     /// one undo step, and a chart kind that has no table in Excel refuses one.
     #[test]
     fn the_data_table_element_toggles_the_chart_and_undoes() {
-        use gridcraft_model::ChartDataTable;
+        use cella_model::ChartDataTable;
 
         let (mut s, id) = session();
         let table = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts[0].data_table;
@@ -1344,7 +1344,7 @@ mod tests {
     /// chart still gets that default, so the command behaves as it always has for columns.
     #[test]
     fn a_bar_charts_secondary_axis_keeps_its_bars() {
-        use gridcraft_model::ChartKind;
+        use cella_model::ChartKind;
 
         let mut s = Session::new();
         s.new_workbook();

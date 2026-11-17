@@ -1,16 +1,16 @@
 //! The JSON workbook format: the versioned envelope, the fields an older build keeps for a newer
 //! one, the caps that refuse a damaged or hostile file, and the golden bytes of a small workbook.
 //!
-//! `GRIDCRAFT_BLESS_GOLDEN=1` rewrites `tests/golden/json_envelope_v1.json`. Only do that for a
+//! `CELLA_BLESS_GOLDEN=1` rewrites `tests/golden/json_envelope_v1.json`. Only do that for a
 //! deliberate format change (and bump `json_format::FORMAT_VERSION` when the change drops or
 //! renames a field, so an older build keeps the old one instead of losing it).
 
 use std::path::PathBuf;
 
-use gridcraft_engine::Session;
-use gridcraft_engine::io;
-use gridcraft_engine::json_format::{self, Limits};
-use gridcraft_engine::model::Workbook;
+use cella_engine::Session;
+use cella_engine::io;
+use cella_engine::json_format::{self, Limits};
+use cella_engine::model::Workbook;
 use serde_json::{Value, json};
 
 fn session() -> Session {
@@ -54,7 +54,7 @@ fn strip_crlf(bytes: &[u8]) -> Vec<u8> {
 
 fn check_golden(name: &str, actual: &[u8]) {
     let path = golden(name);
-    if std::env::var_os("GRIDCRAFT_BLESS_GOLDEN").is_some() {
+    if std::env::var_os("CELLA_BLESS_GOLDEN").is_some() {
         std::fs::write(&path, actual).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         return;
     }
@@ -65,7 +65,7 @@ fn check_golden(name: &str, actual: &[u8]) {
     assert!(
         expected == actual,
         "{name} changed: the writer gave {} bytes, the golden file has {}. If this is deliberate, bump \
-         json_format::FORMAT_VERSION and re-bless with GRIDCRAFT_BLESS_GOLDEN=1.",
+         json_format::FORMAT_VERSION and re-bless with CELLA_BLESS_GOLDEN=1.",
         actual.len(),
         expected.len()
     );
@@ -148,8 +148,8 @@ fn a_file_without_an_envelope_still_loads_and_is_upgraded_on_save() {
     assert_eq!(wb.sheets.len(), 1);
     assert_eq!(wb.sheets.first().map(|s| s.name.as_str()), Some("Sheet1"));
     assert_eq!(
-        wb.sheets.first().and_then(|s| s.cell(gridcraft_engine::core::CellRef::parse("A2").expect("A2"))).map(|c| c.value.clone()),
-        Some(gridcraft_engine::core::Value::Text("Äpfel ✓".into()))
+        wb.sheets.first().and_then(|s| s.cell(cella_engine::core::CellRef::parse("A2").expect("A2"))).map(|c| c.value.clone()),
+        Some(cella_engine::core::Value::Text("Äpfel ✓".into()))
     );
 
     // Saving it again writes version 1, keeping everything the old file held.
@@ -179,7 +179,7 @@ fn a_truncated_or_hostile_file_errors_instead_of_panicking() {
     ];
     for (what, bytes) in cases.drain(..) {
         let err = io::open_bytes("book.json", &bytes).expect_err(what).to_string();
-        assert!(err.starts_with("not a GridCraft JSON workbook"), "{what}: {err}");
+        assert!(err.starts_with("not a Cella JSON workbook"), "{what}: {err}");
     }
 }
 
@@ -192,7 +192,7 @@ fn a_file_over_the_cap_is_refused_with_a_clear_message() {
     let tight = Limits { max_bytes: 1024, max_string: json_format::DEFAULT_MAX_STRING };
     let err = json_format::read_with(&bytes, &tight).expect_err("over the cap").to_string();
     assert!(err.contains("over the 1024 bytes one file may be"), "{err}");
-    assert!(err.contains("GRIDCRAFT_MAX_JSON_MB"), "the message must say how to raise the cap: {err}");
+    assert!(err.contains("CELLA_MAX_JSON_MB"), "the message must say how to raise the cap: {err}");
 
     // One string far larger than the cap, in a file that is itself small enough.
     let long = json_format::write(&Workbook::new()).expect("write");

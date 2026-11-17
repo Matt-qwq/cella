@@ -8,8 +8,8 @@
 //! The plans are spelled out instead of the production thresholds: a fixture of a few hundred rows
 //! then exercises every cut, every window boundary and the `<sheetData>` bookkeeping around them.
 
-use gridcraft_core::Value;
-use gridcraft_model::{Sheet, Workbook};
+use cella_core::Value;
+use cella_model::{Sheet, Workbook};
 
 use super::minimal;
 use crate::read::read_xlsx_with;
@@ -145,7 +145,7 @@ fn a_shared_formula_finds_its_master_in_an_earlier_window() {
 
     let sheet = sheet_of(&body, streamed());
     let text = |a: &str| -> String {
-        let at = gridcraft_core::CellRef::parse(a).expect("address");
+        let at = cella_core::CellRef::parse(a).expect("address");
         sheet.cells.get(at).and_then(|c| c.formula).map(|f| f.text.clone()).unwrap_or_default()
     };
     assert_eq!(text("B3"), "A3*2");
@@ -168,7 +168,7 @@ fn a_part_without_a_closing_tag_keeps_the_rows_it_read() {
     let body = r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2"><v>2</v></c></row>"#;
     let sheet = sheet_of(body, streamed());
     assert_eq!(sheet.cells.len(), 2, "rows before the part ends");
-    let at = gridcraft_core::CellRef::parse("A2").expect("address");
+    let at = cella_core::CellRef::parse("A2").expect("address");
     assert_eq!(sheet.cells.get(at).map(|c| c.value.clone()), Some(Value::number(2.0)));
 }
 
@@ -181,7 +181,7 @@ fn an_inline_string_across_a_window_boundary_keeps_its_text() {
     // A window smaller than the string forces it to span windows.
     let plan = ReadPlan { stream_min: 0, window: 512, chunk_min: 256, paging: false, spill: None, known_function: Default::default() };
     let sheet = sheet_of(&body, plan);
-    let at = gridcraft_core::CellRef::parse("A1").expect("address");
+    let at = cella_core::CellRef::parse("A1").expect("address");
     let text = sheet.cells.get(at).and_then(|c| c.value.as_text().map(str::to_string)).unwrap_or_default();
     assert_eq!(text.len(), 1200, "inline string text");
 }
@@ -196,7 +196,7 @@ fn reading_a_file_matches_reading_its_bytes() {
     let bytes = minimal(body, &[("xl/sharedStrings.xml", strings)], rels, "");
     let (from_bytes, bytes_report) = crate::read_xlsx(&bytes).expect("read bytes");
 
-    let dir = std::env::temp_dir().join(format!("gridcraft-file-read-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cella-file-read-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("fixture.xlsx");
     std::fs::write(&path, &bytes).expect("write fixture");
@@ -217,7 +217,7 @@ fn reading_a_file_matches_reading_its_bytes() {
 /// rather than be dropped. The same rows are read whole, chunked and streamed.
 #[test]
 fn a_cell_reference_lands_where_the_file_says() {
-    use gridcraft_core::CellRef;
+    use cella_core::CellRef;
     let body = r#"<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="XFD1"><v>2</v></c><c r="B1048576"><v>3</v></c><c r="$C$2"><v>4</v></c></row></sheetData>"#;
     for plan in [whole(), chunked(), streamed()] {
         let sheet = sheet_of(body, plan);

@@ -5,10 +5,10 @@
 //! shaped line. These tests run the real widget through frames, so they cover the wiring and not
 //! just the map: the caret index the editor ends up with is the one egui is handed.
 
+use cella_engine::Session;
+use cella_engine::core::text::Direction;
+use cella_ui_egui::{SheetApp, grid::Geo, theme};
 use egui::{Color32, Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::text::Direction;
-use gridcraft_ui_egui::{SheetApp, grid::Geo, theme};
 
 fn frame(ctx: &Context, app: &mut SheetApp, time: f64, events: Vec<Event>) {
     let mut output = ctx.run_ui(
@@ -46,7 +46,7 @@ fn editing(text: &str) -> (Context, SheetApp, f64) {
 
 /// The shaped line and caret map the in-cell editor uses for `text`, or `None` when this machine's
 /// cell font cannot draw it (the editor then keeps its ordinary path and there is nothing to test).
-fn caret_geometry(ctx: &Context, app: &SheetApp, text: &str) -> Option<(gridcraft_ui_egui::text::Line, gridcraft_ui_egui::text::CaretMap)> {
+fn caret_geometry(ctx: &Context, app: &SheetApp, text: &str) -> Option<(cella_ui_egui::text::Line, cella_ui_egui::text::CaretMap)> {
     let d = app.session.active()?;
     let wb = &d.wb;
     let sh = wb.sheet(wb.active_sheet)?;
@@ -126,7 +126,7 @@ fn a_click_lands_on_the_cluster_under_the_pointer() {
     let wb = d.wb.clone();
     let sh = wb.active().expect("a sheet");
     let geo = Geo::new(sh, app.grid.rect.expect("the grid was painted"), egui::Vec2::ZERO);
-    let cell = geo.cell_rect(sh, gridcraft_engine::core::CellRef::new(0, 0));
+    let cell = geo.cell_rect(sh, cella_engine::core::CellRef::new(0, 0));
     let line_left = cell.left() + 2.0;
     // Click in the middle of the visually leftmost Hebrew cluster: the caret must land on its
     // first byte, not on the character egui's stored-order layout would put there.
@@ -180,7 +180,7 @@ fn typing_at_a_visual_caret_inserts_at_the_logical_offset() {
     time += 0.01;
     frame(&ctx, &mut app, time, vec![key(Key::Enter, Modifiers::NONE)]);
     let d = app.session.active().expect("a document");
-    let cell = d.wb.sheet(d.wb.active_sheet).expect("a sheet").cell(gridcraft_engine::core::CellRef::new(0, 0));
+    let cell = d.wb.sheet(d.wb.active_sheet).expect("a sheet").cell(cella_engine::core::CellRef::new(0, 0));
     assert_eq!(cell.map(|c| c.input_text()).unwrap_or_default(), "abc Xאבג");
 }
 

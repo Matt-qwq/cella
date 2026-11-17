@@ -1,10 +1,10 @@
 //! `ui.dialog.confirm` runs a dialog's command with the parameters its OK button sends (#1459).
 
+use cella_engine::Session;
+use cella_engine::model::CfRule;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::control::{Outcome, handle};
 use egui::vec2;
-use gridcraft_engine::Session;
-use gridcraft_engine::model::CfRule;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::control::{Outcome, handle};
 use serde_json::{Value as Json, json};
 
 fn harness() -> egui_kittest::Harness<'static, SheetApp> {

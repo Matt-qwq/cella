@@ -339,7 +339,7 @@ pub fn check_package(bytes: &[u8]) -> Result<(), String> {
     check_unpacked(&parts)
 }
 
-/// Parts GridCraft writes that no relationship names, on purpose: the workbook's Get & Transform
+/// Parts Cella writes that no relationship names, on purpose: the workbook's Get & Transform
 /// queries live in [`crate::queries::PART`], which the package declares a content type for.
 /// A relationship to a part Excel does not understand is what invites a repair prompt, so the
 /// orphan rule below has this one exception.

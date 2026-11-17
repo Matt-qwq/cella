@@ -1,9 +1,9 @@
 //! Insert tab: tables, charts, sparklines, pictures, shapes, hyperlinks, comments and notes,
 //! conditional formatting (Home › Styles) and symbols.
 
-use gridcraft_core::{CellRef, MAX_ROWS, RangeRef};
-use gridcraft_formula::adjust::{Axis, Edit};
-use gridcraft_model::*;
+use cella_core::{CellRef, MAX_ROWS, RangeRef};
+use cella_formula::adjust::{Axis, Edit};
+use cella_model::*;
 use serde_json::{Value as Json, json};
 
 use super::sheet::{rewrite, shift_cell_features};
@@ -278,7 +278,7 @@ fn chart_areas(s: &Session, p: &Json) -> Result<Vec<RangeRef>> {
 /// Would inserting one row at `r.start` inside `r`'s columns cut a merged area in two? The header
 /// row a table without headers needs is exactly such an insert, and a merge that straddles the
 /// table's columns cannot move with it, so the two halves would end up overlapping.
-fn cut_by_header_row(sh: &gridcraft_model::Sheet, r: RangeRef) -> bool {
+fn cut_by_header_row(sh: &cella_model::Sheet, r: RangeRef) -> bool {
     sh.merges.iter().any(|m| {
         if m.end.row < r.start.row {
             return false;
@@ -321,7 +321,7 @@ fn insert_table(s: &mut Session, p: &Json) -> Result<Json> {
             )));
         }
     }
-    let arrays = |sh: &gridcraft_model::Sheet| {
+    let arrays = |sh: &cella_model::Sheet| {
         sh.cells.iter().any(|(_, x)| x.formula.as_ref().and_then(|f| f.array.as_deref().copied()).is_some_and(|a| !a.is_single() && a.intersects(&r)))
     };
     if d.wb.sheet(sheet).is_some_and(arrays) {
@@ -344,7 +344,7 @@ fn insert_table(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(EngineError::Other("The name entered already exists. Enter a unique name.".into()));
     }
     // Without a header row, the data moves down a row to make room for one: never a table with it.
-    let moves_a_table = |sh: &gridcraft_model::Sheet| {
+    let moves_a_table = |sh: &cella_model::Sheet| {
         sh.tables.iter().any(|t| t.range.end.row >= r.start.row && t.range.start.col <= r.end.col && t.range.end.col >= r.start.col)
     };
     if !header && d.wb.sheet(sheet).is_some_and(moves_a_table) {
@@ -379,7 +379,7 @@ fn insert_table(s: &mut Session, p: &Json) -> Result<Json> {
             rewrite(&mut cx.wb, &name, &e);
             let sh = cx.sheet_mut(sheet)?;
             for (i, c) in (r.start.col..=r.end.col).enumerate() {
-                sh.set_value(CellRef::new(r.start.row, c), gridcraft_core::Value::text(format!("Column{}", i + 1)));
+                sh.set_value(CellRef::new(r.start.row, c), cella_core::Value::text(format!("Column{}", i + 1)));
             }
             cx.structural = true;
             RangeRef::new(r.start, CellRef::new((r.end.row + 1).min(MAX_ROWS - 1), r.end.col))
@@ -397,7 +397,7 @@ fn insert_table(s: &mut Session, p: &Json) -> Result<Json> {
         let names = crate::tables::header_names(&headers);
         // Headers are text.
         for (i, n) in names.iter().enumerate() {
-            sh.set_value(CellRef::new(r.start.row, r.start.col + i as u32), gridcraft_core::Value::text(n.as_str()));
+            sh.set_value(CellRef::new(r.start.row, r.start.col + i as u32), cella_core::Value::text(n.as_str()));
         }
         sh.tables.push(Table {
             id,
@@ -527,9 +527,9 @@ fn write_totals(sh: &mut Sheet, ti: usize) {
         let c = CellRef::new(row, t.range.start.col + i as u32);
         if let Some(code) = col.totals.subtotal_code() {
             let f = format!("=SUBTOTAL({code},{}[{}])", t.name, col.name);
-            sh.set_cell(c, Cell { formula: Some(std::sync::Arc::new(Formula::new(&f))), value: gridcraft_core::Value::Empty, style: sh.style_id(c) });
+            sh.set_cell(c, Cell { formula: Some(std::sync::Arc::new(Formula::new(&f))), value: cella_core::Value::Empty, style: sh.style_id(c) });
         } else if let Some(l) = &col.totals_label {
-            sh.set_value(c, gridcraft_core::Value::text(l.as_str()));
+            sh.set_value(c, cella_core::Value::text(l.as_str()));
         } else {
             sh.remove_cell(c);
         }
@@ -619,11 +619,11 @@ fn table_rename(s: &mut Session, p: &Json) -> Result<Json> {
             // the table.
             let shadowed = shadowed.get(sheet).copied().unwrap_or(false);
             let ne = e.map(&mut |x| match x {
-                gridcraft_formula::Expr::Struct(mut st) if st.table.eq_ignore_ascii_case(&old) => {
+                cella_formula::Expr::Struct(mut st) if st.table.eq_ignore_ascii_case(&old) => {
                     st.table = name.clone();
-                    gridcraft_formula::Expr::Struct(st)
+                    cella_formula::Expr::Struct(st)
                 }
-                gridcraft_formula::Expr::Name(n) if !shadowed && n.eq_ignore_ascii_case(&old) => gridcraft_formula::Expr::Name(name.clone()),
+                cella_formula::Expr::Name(n) if !shadowed && n.eq_ignore_ascii_case(&old) => cella_formula::Expr::Name(name.clone()),
                 o => o,
             });
             Some(ne)
@@ -688,17 +688,11 @@ pub fn chart_kind(t: &str, sub: &str) -> ChartKind {
 
 /// Builds series from a block: first row/column as names/categories when they're text.
 pub fn series_from_range(sh: &Sheet, r: RangeRef, by_rows: bool) -> Vec<Series> {
-    let q = gridcraft_formula::quote_sheet(&sh.name);
+    let q = cella_formula::quote_sheet(&sh.name);
     let abs = |r: RangeRef| {
-        format!(
-            "{q}!${}${}:${}${}",
-            gridcraft_core::col_to_letters(r.start.col),
-            r.start.row + 1,
-            gridcraft_core::col_to_letters(r.end.col),
-            r.end.row + 1
-        )
+        format!("{q}!${}${}:${}${}", cella_core::col_to_letters(r.start.col), r.start.row + 1, cella_core::col_to_letters(r.end.col), r.end.row + 1)
     };
-    let abs1 = |c: CellRef| format!("{q}!${}${}", gridcraft_core::col_to_letters(c.col), c.row + 1);
+    let abs1 = |c: CellRef| format!("{q}!${}${}", cella_core::col_to_letters(c.col), c.row + 1);
     let is_text = |c: CellRef| sh.value(c).is_text() || sh.value(c).is_empty();
     let header_row = r.height() > 1
         && (r.start.col..=r.end.col).any(|c| sh.value(CellRef::new(r.start.row, c)).is_text())
@@ -808,8 +802,8 @@ pub fn recommend_charts(s: &Session, p: &Json) -> Result<Vec<(&'static str, &'st
     let (_, by_rows, series) = series_from_areas(sh, &areas)?;
     let ranges: Vec<RangeRef> = series
         .iter()
-        .filter_map(|x| match gridcraft_formula::parse(&x.values) {
-            Ok(gridcraft_formula::Expr::Ref(rf)) => Some(rf.range()),
+        .filter_map(|x| match cella_formula::parse(&x.values) {
+            Ok(cella_formula::Expr::Ref(rf)) => Some(rf.range()),
             _ => None,
         })
         .collect();
@@ -882,7 +876,7 @@ pub fn build_chart(s: &Session, p: &Json) -> Result<(usize, Chart)> {
     let at = cell_param_on(s, p, "at", sheet)?.unwrap_or_else(|| CellRef::new(bounds.start.row, bounds.end.col + 2));
     let title = str_param(p, "title").map(str::to_string).or_else(|| {
         if series.len() == 1 {
-            series[0].name.as_ref().map(|n| gridcraft_calc::evaluate(&d.wb, sheet, at, n).display())
+            series[0].name.as_ref().map(|n| cella_calc::evaluate(&d.wb, sheet, at, n).display())
         } else {
             Some("Chart Title".into())
         }
@@ -906,7 +900,7 @@ pub fn build_chart(s: &Session, p: &Json) -> Result<(usize, Chart)> {
         style: if kind.is_chartex() { 2 } else { 1 },
         x_title: None,
         y_title: None,
-        source: (areas.len() == 1).then(|| format!("{}!{}", gridcraft_formula::quote_sheet(&sh.name), bounds.a1())),
+        source: (areas.len() == 1).then(|| format!("{}!{}", cella_formula::quote_sheet(&sh.name), bounds.a1())),
         by_rows,
         pivot: None,
         ..Chart::default()
@@ -968,8 +962,8 @@ fn chart_set(s: &mut Session, p: &Json) -> Result<Json> {
     let quartiles = p
         .get("quartiles")
         .map(|v| match v.as_str() {
-            Some("exclusive") => Ok(gridcraft_model::QuartileMethod::Exclusive),
-            Some("inclusive") => Ok(gridcraft_model::QuartileMethod::Inclusive),
+            Some("exclusive") => Ok(cella_model::QuartileMethod::Exclusive),
+            Some("inclusive") => Ok(cella_model::QuartileMethod::Inclusive),
             _ => Err(bad("quartiles", "expected exclusive or inclusive")),
         })
         .transpose()?;
@@ -1076,8 +1070,8 @@ fn series_block(series: &[Series]) -> Option<(String, bool)> {
     let mut rows = 0;
     for s in series {
         for (i, f) in [Some(&s.values), s.categories.as_ref(), s.name.as_ref()].into_iter().flatten().enumerate() {
-            let Ok(gridcraft_formula::Expr::Ref(r)) = gridcraft_formula::parse(f) else { return None };
-            let gridcraft_formula::SheetSel::Named(n) = &r.sheet else { return None };
+            let Ok(cella_formula::Expr::Ref(r)) = cella_formula::parse(f) else { return None };
+            let cella_formula::SheetSel::Named(n) = &r.sheet else { return None };
             if !sheet.get_or_insert_with(|| n.clone()).eq_ignore_ascii_case(n) {
                 return None;
             }
@@ -1088,7 +1082,7 @@ fn series_block(series: &[Series]) -> Option<(String, bool)> {
             bounds = Some(bounds.map_or(range, |b| b.union(&range)));
         }
     }
-    Some((format!("{}!{}", gridcraft_formula::quote_sheet(&sheet?), bounds?.a1()), rows > 0 && rows == series.len()))
+    Some((format!("{}!{}", cella_formula::quote_sheet(&sheet?), bounds?.a1()), rows > 0 && rows == series.len()))
 }
 
 fn chart_delete(s: &mut Session, p: &Json) -> Result<Json> {
@@ -1179,7 +1173,7 @@ fn insert_picture(s: &mut Session, p: &Json) -> Result<Json> {
             width: f64_param(p, "width").map(|v| v as f32).unwrap_or(w as f32 * scale),
             height: f64_param(p, "height").map(|v| v as f32).unwrap_or(h as f32 * scale),
             // Excel inserts pictures as "Move but don't size with cells" (`editAs="oneCell"`).
-            mode: anchor_mode_param(p).unwrap_or(gridcraft_model::AnchorMode::MoveOnly),
+            mode: anchor_mode_param(p).unwrap_or(cella_model::AnchorMode::MoveOnly),
         },
         data: data.into(),
         mime,
@@ -1907,7 +1901,7 @@ fn insert_link(s: &mut Session, p: &Json) -> Result<Json> {
         });
         let sh = cx.sheet_mut(sheet)?;
         if let Some(t) = text.clone().or_else(|| sh.value(at).is_empty().then(|| target.clone())) {
-            sh.set_cell(at, Cell { value: gridcraft_core::Value::text(t.as_str()), formula: None, style: link_style });
+            sh.set_cell(at, Cell { value: cella_core::Value::text(t.as_str()), formula: None, style: link_style });
         } else {
             sh.set_style(at, link_style);
         }
@@ -2129,14 +2123,14 @@ fn cf_style_json(st: &Json) -> Result<Json> {
 fn check_cf_formula(cmd: &str, what: &str, formula: &str) -> Result<()> {
     // Strip exactly one leading '=', the way the XLSX writer does: a value like '===A1'
     // only parses after several strips and would still be saved unparseable. (#1999 review)
-    if gridcraft_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).is_err() {
+    if cella_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).is_err() {
         return Err(bad(cmd, format!("invalid {what} formula `{formula}` — it does not parse; Excel would reject the saved file")));
     }
     Ok(())
 }
 
-fn check_cf_value(what: &str, v: &gridcraft_model::features::CfValueKind) -> Result<()> {
-    if let gridcraft_model::features::CfValueKind::Formula(f) = v {
+fn check_cf_value(what: &str, v: &cella_model::features::CfValueKind) -> Result<()> {
+    if let cella_model::features::CfValueKind::Formula(f) = v {
         check_cf_formula("home.conditionalFormat", what, f)?;
     }
     Ok(())
@@ -2219,7 +2213,7 @@ fn add_cf(s: &mut Session, p: &Json) -> Result<Json> {
             let quote = |v: String| {
                 // A number, a formula, or text already written as a string literal (`"Closed"`, as
                 // in the file and in openpyxl's `CellIsRule`) is kept; other text is quoted.
-                if gridcraft_core::parse::parse_number_text(&v).is_some() || v.starts_with('=') {
+                if cella_core::parse::parse_number_text(&v).is_some() || v.starts_with('=') {
                     v.trim_start_matches('=').to_string()
                 } else if is_string_literal(&v) {
                     v
@@ -2687,7 +2681,7 @@ mod tests {
     }
 
     /// The equation `id` on the active sheet.
-    fn equation_of(s: &Session, id: u32) -> gridcraft_model::Equation {
+    fn equation_of(s: &Session, id: u32) -> cella_model::Equation {
         s.doc().unwrap().wb.active().unwrap().equations.iter().find(|e| e.id == id).cloned().expect("the equation")
     }
 
@@ -2707,8 +2701,8 @@ mod tests {
         // Editing the text is what rewrites the markup: the file then holds plain runs of it.
         s.execute("equation.setText", json!({"id": id, "text": "x^2 < y"})).unwrap();
         assert_eq!(equation_of(&s, id).source, "x^2 < y");
-        let bytes = gridcraft_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
-        gridcraft_xlsx::testing::check_package(&bytes).expect("the package validates");
+        let bytes = cella_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
+        cella_xlsx::testing::check_package(&bytes).expect("the package validates");
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
         let mut part = String::new();
         std::io::Read::read_to_string(&mut zip.by_name("xl/drawings/drawing1.xml").unwrap(), &mut part).unwrap();
@@ -2716,7 +2710,7 @@ mod tests {
         assert!(part.contains("xmlns:a14=") && part.contains("xmlns:m="), "the math's namespaces are declared: {part}");
         assert!(part.contains("x^2 &lt; y"), "the text is escaped into the math: {part}");
         // The part parses and the equation reads back: the same text, held as its own markup now.
-        let back = gridcraft_xlsx::read_xlsx(&bytes).unwrap().0;
+        let back = cella_xlsx::read_xlsx(&bytes).unwrap().0;
         let sheet = back.sheet(0).unwrap();
         assert!(sheet.shapes.is_empty(), "an equation is not read back as a shape");
         let eq = &sheet.equations[0];
@@ -2740,7 +2734,7 @@ mod tests {
             }
         }
         // Untouched, the file's markup goes back byte for byte.
-        let kept = gridcraft_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
+        let kept = cella_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(kept)).unwrap();
         let mut part = String::new();
         std::io::Read::read_to_string(&mut zip.by_name("xl/drawings/drawing1.xml").unwrap(), &mut part).unwrap();
@@ -2748,7 +2742,7 @@ mod tests {
         // Edited, it is regenerated from the text.
         let id = u32::try_from(id).unwrap_or(0);
         s.execute("equation.setText", json!({"id": id, "text": "a half"})).unwrap();
-        let bytes = gridcraft_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
+        let bytes = cella_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let mut part = String::new();
         std::io::Read::read_to_string(&mut zip.by_name("xl/drawings/drawing1.xml").unwrap(), &mut part).unwrap();
@@ -2778,7 +2772,7 @@ mod tests {
         assert!(s.execute("equation.setText", json!({"id": id, "text": "x"})).is_err());
         // Deleting the last one takes the drawing's math with it: no orphan equation in the file.
         s.execute("object.delete", json!({"kind": "equation", "id": next})).unwrap();
-        let bytes = gridcraft_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
+        let bytes = cella_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let mut math = false;
         for i in 0..zip.len() {

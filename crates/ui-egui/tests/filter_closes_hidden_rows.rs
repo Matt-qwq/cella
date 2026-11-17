@@ -3,10 +3,10 @@
 //! the hidden state off one line info per row; with the filter bitmap it must ask the bitmap
 //! (a filtered million-row sheet drew blank before this).
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::grid;
 use egui::{Rect, pos2, vec2};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::grid;
 use serde_json::json;
 
 #[test]

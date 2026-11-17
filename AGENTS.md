@@ -1,6 +1,6 @@
-# GridCraft — instructions for agents
+# Cella — instructions for agents
 
-GridCraft is a clean-room, open-source, Rust-native spreadsheet targeting Microsoft Excel parity — and superiority (speed, openness, agent control). It runs natively on macOS, Windows, Linux and BSD, and on the web via WASM. Siblings with the same conventions: `../designcraft` (InDesign-class, the closest reference), `../photocraft` (Photoshop), `../vectorcraft` (Illustrator), `../pdfcraft` (Acrobat), `../filmcraft` (Premiere), `../lightcraft` (Lightroom), `../effectcraft` (After Effects).
+Cella is a clean-room, open-source, Rust-native spreadsheet targeting Microsoft Excel parity — and superiority (speed, openness, agent control). It runs natively on macOS, Windows, Linux and BSD, and on the web via WASM. Siblings with the same conventions: `../designcraft` (InDesign-class, the closest reference), `../photocraft` (Photoshop), `../vectorcraft` (Illustrator), `../pdfcraft` (Acrobat), `../filmcraft` (Premiere), `../lightcraft` (Lightroom), `../effectcraft` (After Effects).
 
 Standards and learnings shared across the crafting apps live in `../../craftrules` (checked out next to the craft apps, or `storytold/craftrules`). Read its `AGENTS.md` at the start of a session, follow its standards, and contribute reusable learnings back there. Never code: repos don't share code.
 
@@ -12,7 +12,7 @@ Standards and learnings shared across the crafting apps live in `../../craftrule
 
 ## Assets and iconography — absolute rule
 **No Microsoft, Adobe, Avid, Autodesk (or any other vendor's) iconography, images, artwork, fonts, templates, themes or sample files — ever.** This is the most important rule in this repository; breaking it is a serious failure.
-- Every asset in the repo is original work by GridCraft contributors, or public domain / CC0, or open source / Creative Commons that allows redistribution (or licensed open source by the contributor who created it).
+- Every asset in the repo is original work by Cella contributors, or public domain / CC0, or open source / Creative Commons that allows redistribution (or licensed open source by the contributor who created it).
 - Every asset file has a row in [`ATTRIBUTION.md`](ATTRIBUTION.md) (author, source, licence). `cargo xtask assets` enforces it. Adding an asset without a row is a bug.
 - Prefer art generated in code: the UI icon set (`crates/ui-egui/src/icons.rs`), table and cell style palettes, themes and sample workbooks are drawn/defined in code and original.
 - Never copy Office's icons, ribbon artwork, theme XML, table-style definitions, templates, clip art or wording beyond feature names. Excel feature *names* (menu labels, function names) are fine.
@@ -20,13 +20,13 @@ Standards and learnings shared across the crafting apps live in `../../craftrule
 - This repository carries **no third-party brand assets**. The ArtCraft marks that upstream ships in `docs/brand/` were removed when this tree became an independent product (upstream's brand licence requires a modified version to remove them); do not add them back, and do not present this software as an ArtCraft product. Attribution for the forked code lives in `NOTICE` and `ATTRIBUTION.md`.
 
 ## Never crash
-People trust GridCraft with their numbers; a crash loses their work. **This outranks feature work.** Standard: [`craftrules/standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).
+People trust Cella with their numbers; a crash loses their work. **This outranks feature work.** Standard: [`craftrules/standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).
 - **No panics in non-test code:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`, `unimplemented!`; no `unsafe` (`unsafe_code = "forbid"`).
 - **Errors are `Result<T, E>`** through the crate's error type and `?`.
 - **Input-derived numbers are hostile** (files, formulas, commands, MCP/control params): `get()` instead of indexing, checked/saturating arithmetic, cap input-sized allocations (huge ranges, `REPT`, `SEQUENCE`, whole-column references).
 - **Bound recursion** (formula nesting, dependency chains, names referring to names).
 - **Last-resort guard:** `Session::execute` catches escaped panics and restores the workbook. It's a safety net, not a licence.
-- **Prove it:** every crash fix lands with a regression test (`tests::every_command_survives_empty_params` fuzzes every command; `crates/engine/tests/command_sequence_fuzz.rs` fuzzes random command sequences against undo/redo, XLSX round-trip and full-recalc invariants; soak it with `GRIDCRAFT_FUZZ_SEEDS`/`GRIDCRAFT_FUZZ_STEPS`, replay with `GRIDCRAFT_FUZZ_REPLAY=<capture file>` (the durable form: a seed's sequence depends on the registered command set, so it is only valid at the commit that generated it) or `GRIDCRAFT_FUZZ_SEED`).
+- **Prove it:** every crash fix lands with a regression test (`tests::every_command_survives_empty_params` fuzzes every command; `crates/engine/tests/command_sequence_fuzz.rs` fuzzes random command sequences against undo/redo, XLSX round-trip and full-recalc invariants; soak it with `CELLA_FUZZ_SEEDS`/`CELLA_FUZZ_STEPS`, replay with `CELLA_FUZZ_REPLAY=<capture file>` (the durable form: a seed's sequence depends on the registered command set, so it is only valid at the commit that generated it) or `CELLA_FUZZ_SEED`).
 - Crates carry `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]`.
 
 ## Non-negotiables
@@ -53,16 +53,16 @@ Fixing one bug means proving **that bug** stays fixed, not running everything. T
 | not while iterating | `cargo tq` / `cargo test --workspace` / any `ui-egui` test | 161 s / >40 min / 146 s |
 
 - **Write the regression test first.** It is the "related functionality" you re-check after the fix; if the bug can be reproduced in a test, that test is the proof, and the neighbouring tests of the same module are the blast radius.
-- **Pick the crate by where the change is**, not by what might be affected: storage layout → `-p gridcraft-model`, a reader/writer → `-p gridcraft-xlsx`, a command → `-p gridcraft-engine`. Filter with a module path (`store::`, `sheet_read::`) to run one module instead of a crate.
+- **Pick the crate by where the change is**, not by what might be affected: storage layout → `-p cella-model`, a reader/writer → `-p cella-xlsx`, a command → `-p cella-engine`. Filter with a module path (`store::`, `sheet_read::`) to run one module instead of a crate.
 - **`ui-egui` holds 903 of the 2136 tests** and takes 146 s of the 161 s workspace run. Touch it only when the change is in the UI.
 - **Full suite at release, not per commit.** The gate is fmt + clippy -D warnings + the crates you touched while iterating; the 2136-test sweep (and wasm/assets/layers/parity) runs once when cutting a release. Shared value types (`Value`, `Cell`) and the command protocol's JSON shape are the cases where widening to the caller's crate is worth it.
 - **Say what you ran and what you skipped.** "Not run" is not "passing"; a perf or memory claim without a test run says so explicitly.
 
 ## Running and looking at the app
-- `cargo run --release -p gridcraft -- --sample sales --control 7979` (sample workbook + control channel).
+- `cargo run --release -p cella -- --sample sales --control 7979` (sample workbook + control channel).
 - Drive it: JSON lines on `127.0.0.1:7979`, e.g. `{"id":1,"method":"engine.execute","params":{"command":"cell.set","params":{"cell":"B2","input":"=SUM(A1:A9)"}}}` then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
-- **Offscreen UI render** (no window, from a source checkout): `cargo run -p gridcraft-ui-egui --example snapshot -- --sample sales out.png`.
-- Headless: `gridcraft-cli eval '=SUM(1,2,3)'`, `gridcraft-cli run --in book.xlsx --cmd 'home.bold={"range":"A1:C1"}' --out book.xlsx`, `gridcraft-cli mcp`.
+- **Offscreen UI render** (no window, from a source checkout): `cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png`.
+- Headless: `cella-cli eval '=SUM(1,2,3)'`, `cella-cli run --in book.xlsx --cmd 'home.bold={"range":"A1:C1"}' --out book.xlsx`, `cella-cli mcp`.
 - **For UI work, look at the result** (snapshot PNG) and compare with `plan/excel/observed-ui.md`.
 - Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`. macOS has no `timeout`; use `perl -e 'alarm 60; exec @ARGV' cmd`.
 - Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates you own; delete your target dir when done.

@@ -1,4 +1,4 @@
-//! GridCraft charts (layer L3, toolkit-free).
+//! Cella charts (layer L3, toolkit-free).
 //!
 //! - [`resolve`] pulls series names, categories and values out of a workbook,
 //! - [`render`] lays a chart out into a list of drawing primitives ([`Prim`]) that any UI
@@ -6,7 +6,7 @@
 //! - [`render_sparkline`] draws in-cell sparklines,
 //! - [`rasterize`] turns primitives into RGBA pixels for PNG export and tests.
 //!
-//! The look (palette, greys, spacing) is GridCraft's own design.
+//! The look (palette, greys, spacing) is Cella's own design.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
@@ -20,7 +20,7 @@ mod trend;
 #[cfg(test)]
 mod tests;
 
-pub use gridcraft_model::{
+pub use cella_model::{
     AxisCrossing, AxisOptions, Chart, ChartDataTable, ChartKind, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines, LabelFont,
     LabelOptions, LabelPosition, LegendPos, PointFormat, SparklineKind, Trendline, TrendlineKind,
 };

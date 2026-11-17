@@ -5,14 +5,14 @@
 //! draws bold); what these tests own is the path from the click: the widget, the parameters it
 //! sends and the state it reads back.
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_engine::model::{BorderLine, BorderStyle, Borders, Color, Fill, Style, Underline};
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::theme::Tokens;
 use egui::accesskit::{Role, Toggled};
 use egui::{Event, Modifiers, PointerButton, Shape, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable as _};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_engine::model::{BorderLine, BorderStyle, Borders, Color, Fill, Style, Underline};
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::theme::Tokens;
 use serde_json::{Value as Json, json};
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

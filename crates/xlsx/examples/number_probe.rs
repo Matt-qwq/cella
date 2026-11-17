@@ -1,4 +1,4 @@
-//! What a cell's value costs to read: `cargo run --release -p gridcraft-xlsx --example number_probe`.
+//! What a cell's value costs to read: `cargo run --release -p cella-xlsx --example number_probe`.
 //!
 //! A sheet stores numbers as text (`<v>17950607</v>`), so every numeric cell pays a parse. Rust's
 //! `f64` parser handles the general form; a spreadsheet's numbers are mostly short integers, which a

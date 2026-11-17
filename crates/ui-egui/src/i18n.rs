@@ -104,9 +104,9 @@ impl Language {
     /// The formula syntax this interface language reads and writes. Both shipped languages use
     /// the canonical English one — Chinese only translates the interface, and the engine, the
     /// files and the control channel always speak the canonical syntax.
-    pub fn formula_locale(self) -> gridcraft_engine::formula::FormulaLocale {
+    pub fn formula_locale(self) -> cella_engine::formula::FormulaLocale {
         match self {
-            Self::En | Self::Zh => gridcraft_engine::formula::FormulaLocale::En,
+            Self::En | Self::Zh => cella_engine::formula::FormulaLocale::En,
         }
     }
 
@@ -189,7 +189,7 @@ pub fn saved_language(ui_json: &serde_json::Value) -> Option<Language> {
 /// egui context-data key holding the language of the frame being drawn. Widgets that only get a
 /// `Ui` (not the app) read it to translate their labels; [`set_current`] writes it once per frame.
 fn lang_key() -> egui::Id {
-    egui::Id::new("gridcraft.language")
+    egui::Id::new("cella.language")
 }
 
 /// The language the current frame is drawing in. `En` when unset.
@@ -300,7 +300,7 @@ mod tests {
     fn function_help_is_sorted_and_keyed_by_current_catalog_text() {
         // Lookups binary-search the tables. A key that no longer matches the catalog (an English
         // description reworded, an argument renamed) would quietly show English again.
-        let catalog = gridcraft_engine::cmd::formulas::function_list();
+        let catalog = cella_engine::cmd::formulas::function_list();
         let descriptions: std::collections::HashSet<&str> = catalog.iter().filter_map(|f| f["description"].as_str()).collect();
         let arguments: std::collections::HashSet<&str> =
             catalog.iter().filter_map(|f| f["signature"].as_str()).flat_map(crate::formula_locale::argument_names).collect();
@@ -323,7 +323,7 @@ mod tests {
     /// description with no translation is how the help regressed before).
     #[test]
     fn every_function_and_argument_in_the_catalog_has_chinese_help() {
-        let catalog = gridcraft_engine::cmd::formulas::function_list();
+        let catalog = cella_engine::cmd::formulas::function_list();
         assert!(catalog.len() > 500, "the function catalog looks empty: {}", catalog.len());
         let mut untranslated: Vec<String> = Vec::new();
         for function in &catalog {
@@ -411,7 +411,7 @@ mod tests {
     /// with its Chinese label.
     #[test]
     fn every_engine_command_label_has_a_chinese_label() {
-        let specs = gridcraft_engine::cmd::command_specs();
+        let specs = cella_engine::cmd::command_specs();
         assert!(specs.len() > 300, "the command registry looks empty: {}", specs.len());
         let mut untranslated = Vec::new();
         for spec in specs {
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn language_commands_switch_and_persist() {
-        let mut app = crate::SheetApp::new(gridcraft_engine::Session::default(), Default::default());
+        let mut app = crate::SheetApp::new(cella_engine::Session::default(), Default::default());
         for language in Language::ALL {
             app.run("app.language.set", serde_json::json!({"language": language.code()})).unwrap();
             assert_eq!(app.ui.language, language);

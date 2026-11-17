@@ -44,7 +44,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gridcraft-xtask-eol-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cella-xtask-eol-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir.join(name)
     }

@@ -1,12 +1,12 @@
 //! A preorder walk of a formula tree that keeps its pending nodes on the stack.
 //!
-//! [`gridcraft_formula::Expr::walk`] allocates a vector per call, and building the dependency graph
+//! [`cella_formula::Expr::walk`] allocates a vector per call, and building the dependency graph
 //! walks every formula (twice: its precedents, and whether it may spill). On a million-formula
 //! sheet that is a million allocations for a tree of a handful of nodes. The pending nodes of a
 //! formula fit in an array here; only a tree nested past `INLINE` — a chain a machine wrote —
 //! spills to a vector, and then the cost is no worse than `Expr::walk`.
 
-use gridcraft_formula::Expr;
+use cella_formula::Expr;
 
 /// Pending nodes kept inline. A written formula has a few (the depth of its expression); a chain
 /// of ten thousand `+ A1` terms is the case that spills.

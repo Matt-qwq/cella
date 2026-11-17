@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::sync::Arc;
 
-use gridcraft_core::date::serial_from_ymd;
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::*;
+use cella_core::date::serial_from_ymd;
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::*;
 
 use super::minimal;
 use crate::xml;
@@ -20,7 +20,7 @@ fn rr(a: &str) -> RangeRef {
 }
 
 fn date(y: i64, m: i64, d: i64) -> f64 {
-    serial_from_ymd(gridcraft_core::DateSystem::D1900, y, m, d).unwrap()
+    serial_from_ymd(cella_core::DateSystem::D1900, y, m, d).unwrap()
 }
 
 fn field(name: &str) -> PivotField {
@@ -561,7 +561,7 @@ fn large_cache_is_written_without_records() {
 fn boolean_and_error_cache_flags_match_excel() {
     let mut wb = Workbook::new();
     let s = wb.sheet_mut(0).unwrap();
-    let na = || Value::Error(gridcraft_core::CellError::NA);
+    let na = || Value::Error(cella_core::CellError::NA);
     let cols: [(&str, [Value; 3]); 7] = [
         ("K", [Value::text("a"), Value::text("b"), Value::text("a")]),
         ("BoolOnly", [Value::Bool(true), Value::Bool(false), Value::Bool(true)]),
@@ -865,7 +865,7 @@ fn small_pivot(columns: &[(&str, Vec<Value>)], pt: impl FnOnce(&mut PivotTable))
         }
         rows = rows.max(vals.len());
     }
-    let last = format!("{}{}", gridcraft_core::col_to_letters(columns.len() as u32 - 1), rows + 1);
+    let last = format!("{}{}", cella_core::col_to_letters(columns.len() as u32 - 1), rows + 1);
     let mut table = PivotTable { id: 1, name: "PT".into(), source: format!("Data!$A$1:{last}"), anchor: at("A3"), ..PivotTable::default() };
     pt(&mut table);
     let mut report = Sheet::new("Report");
@@ -948,7 +948,7 @@ const MODEL_CACHE: &str = r#"<?xml version="1.0"?><pivotCacheDefinition xmlns="h
 
 const MODEL_RECORDS: &str = r#"<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" count="2"><r><s v="East"/><n v="100"/></r><r><s v="West"/><n v="50"/></r></pivotCacheRecords>"#;
 
-/// The workbook's data model: a part GridCraft never reads, only carries. Not XML on purpose.
+/// The workbook's data model: a part Cella never reads, only carries. Not XML on purpose.
 const MODEL_DATA: &[u8] = b"\x00\x01MODEL-DATA\x00\x02 the user's own measures\x00";
 
 const MODEL_WB_RELS: &str = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>"#;
@@ -980,7 +980,7 @@ fn data_model_package_with(slicer: bool) -> Vec<u8> {
         r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="{CT_PT}"/><Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="{CT_PCD}"/><Override PartName="/xl/pivotCache/pivotCacheRecords1.xml" ContentType="{CT_PCR}"/><Override PartName="/xl/model/item.data" ContentType="application/vnd.ms-excel.datamodel"/>{slicer_ct}</Types>"#
     );
     let wb = r#"<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets><pivotCaches><pivotCache cacheId="1" r:id="rId9"/></pivotCaches></workbook>"#;
-    // The report's cached values, as the file wrote them: GridCraft shows these cells as they are.
+    // The report's cached values, as the file wrote them: Cella shows these cells as they are.
     let sheet = r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData><row r="3"><c r="D3" t="inlineStr"><is><t>Row Labels</t></is></c><c r="E3" t="inlineStr"><is><t>Sum of Amount</t></is></c></row><row r="4"><c r="D4" t="inlineStr"><is><t>East</t></is></c><c r="E4"><v>100</v></c></row><row r="5"><c r="D5" t="inlineStr"><is><t>West</t></is></c><c r="E5"><v>50</v></c></row><row r="6"><c r="D6" t="inlineStr"><is><t>Grand Total</t></is></c><c r="E6"><v>150</v></c></row></sheetData></worksheet>"#;
     let sheet_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>"#;
     let mut bytes: Vec<(&str, &[u8])> = vec![
@@ -1095,7 +1095,7 @@ fn a_range_pivot_is_still_computed() {
 #[test]
 fn a_computed_report_and_a_carried_one_keep_separate_caches() {
     // Both kinds of report can live in one workbook. The carried one keeps the cache id it was
-    // written with (its part is carried byte for byte), so the report GridCraft computes takes
+    // written with (its part is carried byte for byte), so the report Cella computes takes
     // the next free one instead of colliding with it.
     let (mut wb, _) = read_xlsx(&data_model_package()).unwrap();
     {

@@ -2,12 +2,12 @@
 //! Increase/Decrease Decimal, the number-format dropdown's entries, and Format Cells Number tab.
 //! Each test asserts the stored format code and the text the grid draws for it.
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_engine::model::Style;
+use cella_ui_egui::SheetApp;
 use egui::{Shape, accesskit::Role};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_engine::model::Style;
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -89,7 +89,7 @@ fn percent_and_comma_style_reach_the_engine_and_are_drawn() {
 
     let mut h = harness("1234.5");
     click(&mut h, "Comma Style");
-    let comma = gridcraft_engine::cmd::format::format_code_for("Comma");
+    let comma = cella_engine::cmd::format::format_code_for("Comma");
     assert_eq!(code(&h), comma, "Comma Style sets the comma format code");
     assert!(shows(&h, "1,234.50"), "the cell shows 1,234.50: {:?}", painted(&h));
 }
@@ -164,7 +164,7 @@ fn the_number_format_dropdown_entries_apply_their_format_code() {
         }
         // The combo's face names the format's kind, which is the entry's name unless the kind
         // groups several entries ("m/d/yyyy" is the Date kind, shown as Date).
-        let face = format!("{:?}", gridcraft_engine::display::number_format(want).kind());
+        let face = format!("{:?}", cella_engine::display::number_format(want).kind());
         assert!(h.query_by_role_and_label(Role::Button, &face).is_some(), "the combo shows the kind {face} afterwards");
     }
 }

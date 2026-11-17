@@ -1,10 +1,10 @@
 //! Automate > Agent Control reads Chinese and says what it is: where an agent connects, not a chat
-//! box. GridCraft has no in-app assistant on purpose (decision 11-14).
+//! box. Cella has no in-app assistant on purpose (decision 11-14).
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::i18n::Language;
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::i18n::Language;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
 
@@ -41,7 +41,7 @@ fn the_agent_dialog_says_where_to_connect_and_what_to_send() {
     for label in [
         "Listening on 127.0.0.1:7979.",
         "MCP (this window)",
-        "gridcraft-cli mcp --connect 7979",
+        "cella-cli mcp --connect 7979",
         "MCP (headless)",
         "CLI, one command",
         "A control-channel request and its answer:",
@@ -53,7 +53,7 @@ fn the_agent_dialog_says_where_to_connect_and_what_to_send() {
 #[test]
 fn a_window_without_a_control_channel_says_how_to_start_one() {
     let h = harness(Language::En, false);
-    assert!(h.query_by_label("Not listening. Start GridCraft with --control 7979 to let agents in.").is_some(), "the hint");
+    assert!(h.query_by_label("Not listening. Start Cella with --control 7979 to let agents in.").is_some(), "the hint");
 }
 
 #[test]

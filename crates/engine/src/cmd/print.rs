@@ -3,15 +3,15 @@
 //! Sheets are paginated like Excel's default "down, then over": the print area (or the used
 //! range plus drawing objects) is split into bands of rows and columns that fit the printable
 //! area at the page scale, honouring manual breaks, repeated title rows/columns, headings, Fit
-//! To and centring. Each page is drawn into a PDF with `gridcraft-pdf`: fills, gridlines,
+//! To and centring. Each page is drawn into a PDF with `cella-pdf`: fills, gridlines,
 //! borders, formatted text (fonts mapped to the standard 14 PDF fonts), merged cells, wrapping,
 //! overflow into empty neighbours, conditional formats, table styles, charts, images, shapes and
 //! sparklines. Headers and footers support `&L`/`&C`/`&R` sections and the `&P &N &D &T &A &F &Z`
 //! codes.
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_model::*;
-use gridcraft_pdf::{Font, Page, PdfDoc, Rgb};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_model::*;
+use cella_pdf::{Font, Page, PdfDoc, Rgb};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -409,7 +409,7 @@ pub struct HfContext {
 
 /// Today's date and the current time as headers and footers show them (`&D`, `&T`).
 pub fn hf_date_time(wb: &Workbook) -> (String, String) {
-    let now = gridcraft_core::date::serial_in_system(wb.date_system, gridcraft_calc::now_serial());
+    let now = cella_core::date::serial_in_system(wb.date_system, cella_calc::now_serial());
     let date = crate::display::format(&Value::Number(now.floor()), "m/d/yyyy", wb).text;
     let time = crate::display::format(&Value::Number(now), "h:mm AM/PM", wb).text;
     (date, time)
@@ -700,7 +700,7 @@ struct PdfMeasure<'a> {
     m: &'a Metrics<'a>,
 }
 
-impl gridcraft_chart::Measure for PdfMeasure<'_> {
+impl cella_chart::Measure for PdfMeasure<'_> {
     fn text_width(&self, text: &str, size: f32, bold: bool) -> f32 {
         self.m.w(if bold { Font::HelveticaBold } else { Font::Helvetica }, size, text)
     }
@@ -710,7 +710,7 @@ impl gridcraft_chart::Measure for PdfMeasure<'_> {
 /// the standard font's table for the rest — the same rule the PDF writer draws with.
 #[derive(Clone, Copy)]
 struct Metrics<'a> {
-    face: Option<&'a gridcraft_pdf::Face>,
+    face: Option<&'a cella_pdf::Face>,
     /// The sheet set Black and white: every colour prints as a grey of its lightness.
     mono: bool,
     /// The sheet set Draft quality: charts, pictures and shapes stay off the page.
@@ -719,7 +719,7 @@ struct Metrics<'a> {
 
 impl Metrics<'_> {
     fn w(&self, font: Font, size: f32, text: &str) -> f32 {
-        gridcraft_pdf::text_width_with(self.face, font, size, text)
+        cella_pdf::text_width_with(self.face, font, size, text)
     }
 
     /// What the PDF writer has to fake for a cell in this style.
@@ -729,9 +729,9 @@ impl Metrics<'_> {
     /// otherwise. So a bold or italic cell in 宋体 needs the weight and slant synthesised on the
     /// page exactly as the grid synthesises them on screen; a face that already is bold or italic
     /// (an explicit `fontPath`) is printed as it is, so nothing is double-stroked or doubly
-    /// slanted. Text a standard font sets is unaffected either way (see `gridcraft_pdf::Synthesis`).
-    fn synthesis(&self, bold: bool, italic: bool) -> gridcraft_pdf::Synthesis {
-        gridcraft_pdf::Synthesis { bold: bold && self.face.is_none_or(|f| !f.is_bold()), italic: italic && self.face.is_none_or(|f| !f.is_italic()) }
+    /// slanted. Text a standard font sets is unaffected either way (see `cella_pdf::Synthesis`).
+    fn synthesis(&self, bold: bool, italic: bool) -> cella_pdf::Synthesis {
+        cella_pdf::Synthesis { bold: bold && self.face.is_none_or(|f| !f.is_bold()), italic: italic && self.face.is_none_or(|f| !f.is_italic()) }
     }
 }
 
@@ -753,8 +753,8 @@ impl Xf {
 }
 
 /// Draws chart primitives onto a page.
-fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf, m: &Metrics) {
-    use gridcraft_chart::{HAlign as H, Prim, VAlign as V};
+fn draw_prims(pg: &mut Page, prims: &[cella_chart::Prim], xf: Xf, m: &Metrics) {
+    use cella_chart::{HAlign as H, Prim, VAlign as V};
     let k = xf.k;
     let bl = |c: [u8; 4]| print_color(blend(c), m.mono);
     for p in prims {
@@ -1179,7 +1179,7 @@ fn draw_text(
     let avail = (w - 2.0 * pad - indent).max(0.0);
     let code = st.num_fmt.as_str();
     let formatted = crate::display::format(&v, code, wb);
-    let mut color = formatted.color.and_then(gridcraft_numfmt::FormatColor::rgb).or_else(|| rgb_of(st.font.color, wb)).unwrap_or([0, 0, 0]);
+    let mut color = formatted.color.and_then(cella_numfmt::FormatColor::rgb).or_else(|| rgb_of(st.font.color, wb)).unwrap_or([0, 0, 0]);
     if l.cf.as_ref().and_then(|x| x.style.as_ref()).is_some_and(|s| s.font.color != Color::Auto) {
         color = rgb_of(st.font.color, wb).unwrap_or(color);
     }
@@ -1193,7 +1193,7 @@ fn draw_text(
     {
         let digit = m.w(font, size, "0").max(0.1);
         let max_chars = (avail / digit).floor().max(1.0) as usize;
-        gridcraft_numfmt::format_general_fit(n, max_chars.min(11)).unwrap_or_else(|| "#".repeat(max_chars.min(255)))
+        cella_numfmt::format_general_fit(n, max_chars.min(11)).unwrap_or_else(|| "#".repeat(max_chars.min(255)))
     } else {
         // The look's code, which a conditional format can override (#1163).
         crate::display::value_text_as(wb, &v, code)
@@ -1380,14 +1380,14 @@ fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, 
         if !block.contains(sp.cell) {
             continue;
         }
-        let vals: Vec<Option<f64>> = match gridcraft_calc::evaluate(wb, si, sp.cell, &sp.source) {
+        let vals: Vec<Option<f64>> = match cella_calc::evaluate(wb, si, sp.cell, &sp.source) {
             Value::Array(a) => a.iter().take(10_000).map(Value::as_f64).collect(),
             v => vec![v.as_f64()],
         };
         let color = rgb_of(sp.color, wb).unwrap_or([0x15, 0x60, 0x82]);
         let (x, y, w, h) = b.rect(RangeRef::cell(sp.cell));
         let (wpx, hpx) = (w / b.k, h / b.k);
-        let prims = gridcraft_chart::render_sparkline(sp.kind, &vals, [color[0], color[1], color[2], 255], sp.markers, wpx, hpx);
+        let prims = cella_chart::render_sparkline(sp.kind, &vals, [color[0], color[1], color[2], 255], sp.markers, wpx, hpx);
         draw_prims(pg, &prims, Xf { ox: x, oy: y, k: b.k }, m);
     }
     for im in &sh.images {
@@ -1436,7 +1436,7 @@ fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, 
             }
         }
         if !shp.text.is_empty() {
-            use gridcraft_model::{ShapeTextAlign, ShapeTextAnchor};
+            use cella_model::{ShapeTextAlign, ShapeTextAnchor};
             let fm = &shp.format;
             let text_box = shp.kind == ShapeKind::TextBox;
             let size = fm.font_size.unwrap_or(11.0).clamp(1.0, 4000.0) * b.scale;
@@ -1485,8 +1485,8 @@ fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, 
             continue;
         }
         let (x, y, _, _) = place(r);
-        let data = gridcraft_chart::resolve(wb, si, ch);
-        let prims = gridcraft_chart::render(ch, &data, r.2 as f32, r.3 as f32, &PdfMeasure { m });
+        let data = cella_chart::resolve(wb, si, ch);
+        let prims = cella_chart::render(ch, &data, r.2 as f32, r.3 as f32, &PdfMeasure { m });
         draw_prims(pg, &prims, Xf { ox: x, oy: y, k: b.k }, m);
     }
     pg.restore();
@@ -1506,8 +1506,8 @@ fn draw_headings(pg: &mut Page, b: &Block, col_heads: bool, row_heads: bool, at:
             }
             pg.fill_rect(x0, y, x1 - x0, size.1, fill);
             pg.rect_stroke(x0, y, x1 - x0, size.1, lw, line);
-            let t = gridcraft_core::col_to_letters(col);
-            let tw = gridcraft_pdf::text_width(Font::Helvetica, fsize, &t);
+            let t = cella_core::col_to_letters(col);
+            let tw = cella_pdf::text_width(Font::Helvetica, fsize, &t);
             pg.text(x0 + (x1 - x0 - tw) / 2.0, y + size.1 / 2.0 + fsize * 0.35, fsize, Font::Helvetica, [0x40, 0x40, 0x40], &t);
         }
     }
@@ -1521,13 +1521,13 @@ fn draw_headings(pg: &mut Page, b: &Block, col_heads: bool, row_heads: bool, at:
             pg.fill_rect(x, y0, size.0, y1 - y0, fill);
             pg.rect_stroke(x, y0, size.0, y1 - y0, lw, line);
             let t = (row + 1).to_string();
-            let tw = gridcraft_pdf::text_width(Font::Helvetica, fsize, &t);
+            let tw = cella_pdf::text_width(Font::Helvetica, fsize, &t);
             pg.text(x + (size.0 - tw) / 2.0, y0 + (y1 - y0) / 2.0 + fsize * 0.35, fsize, Font::Helvetica, [0x40, 0x40, 0x40], &t);
         }
     }
 }
 
-fn draw_header_footer(pg: &mut Page, lay: &SheetLayout, which: gridcraft_model::HfPage, cx: &HfContext, m: &Metrics) {
+fn draw_header_footer(pg: &mut Page, lay: &SheetLayout, which: cella_model::HfPage, cx: &HfContext, m: &Metrics) {
     let [l, r, _, _, hm, fm] = lay.margins;
     let pw = lay.page_w;
     let ph = lay.page_h;
@@ -1541,7 +1541,7 @@ fn draw_header_footer(pg: &mut Page, lay: &SheetLayout, which: gridcraft_model::
                 continue;
             }
             let size = sec.size.unwrap_or(10.0).clamp(1.0, 72.0);
-            let font = Font::styled(gridcraft_pdf::Family::Sans, sec.bold, sec.italic);
+            let font = Font::styled(cella_pdf::Family::Sans, sec.bold, sec.italic);
             let lines: Vec<&str> = sec.text.split('\n').take(20).collect();
             let n = lines.len() as f32;
             for (j, line) in lines.iter().enumerate() {
@@ -1596,7 +1596,7 @@ fn seg_size(sh: &Sheet, seg: (u32, u32), rows: bool) -> f32 {
 
 /// Renders laid-out sheets to a PDF. `face` is the font embedded for text WinAnsiEncoding cannot
 /// set; `None` keeps the standard fonts (and their bytes) as they were.
-pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str, face: Option<&gridcraft_pdf::Face>) -> (Vec<u8>, usize) {
+pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str, face: Option<&cella_pdf::Face>) -> (Vec<u8>, usize) {
     let mut doc = PdfDoc::new();
     if let Some(f) = face {
         doc.set_font(f.clone());
@@ -1743,7 +1743,7 @@ fn collect_chars(out: &mut String, text: &str) {
             return;
         }
         // `win_ansi(c) == b'?'` is the writer's own test for "no WinAnsi byte for this".
-        if !c.is_control() && gridcraft_pdf::win_ansi(c) == b'?' {
+        if !c.is_control() && cella_pdf::win_ansi(c) == b'?' {
             out.push(c);
         }
     }
@@ -1752,13 +1752,13 @@ fn collect_chars(out: &mut String, text: &str) {
 /// Picks the face to embed: an explicit `fontPath`, else a system face that covers the text. A
 /// resolution failure is not fatal — the non-embedded CID font still sets the characters — but a
 /// `fontPath` that does not load is the caller's mistake and is reported.
-fn resolve_font(p: &Json, needed: &str, cmd: &str) -> Result<Option<(std::path::PathBuf, gridcraft_pdf::Face)>> {
+fn resolve_font(p: &Json, needed: &str, cmd: &str) -> Result<Option<(std::path::PathBuf, cella_pdf::Face)>> {
     if needed.is_empty() {
         return Ok(None);
     }
     let found = match str_param(p, "fontPath").map(str::trim).filter(|s| !s.is_empty()) {
-        Some(path) => gridcraft_core::fonts::load_named(path).map_err(|e| bad(cmd, format!("`fontPath`: {e}")))?,
-        None => match gridcraft_core::fonts::resolve_for_text(needed) {
+        Some(path) => cella_core::fonts::load_named(path).map_err(|e| bad(cmd, format!("`fontPath`: {e}")))?,
+        None => match cella_core::fonts::resolve_for_text(needed) {
             Ok(font) => font,
             Err(e) => {
                 log::warn!("PDF export: no embeddable font covers the text ({e}); using the CID fallback");
@@ -1766,7 +1766,7 @@ fn resolve_font(p: &Json, needed: &str, cmd: &str) -> Result<Option<(std::path::
             }
         },
     };
-    match gridcraft_pdf::Face::parse(found.data) {
+    match cella_pdf::Face::parse(found.data) {
         Ok(face) => Ok(Some((found.path, face))),
         Err(e) => {
             log::warn!("PDF export: {} does not parse ({e}); using the CID fallback", found.path.display());
@@ -1824,7 +1824,7 @@ fn print_preview(s: &mut Session, p: &Json) -> Result<Json> {
                 "sheet": name,
                 "range": r.a1(),
                 "rows": format!("{}:{}", rb.0 + 1, rb.1 + 1),
-                "columns": format!("{}:{}", gridcraft_core::col_to_letters(cb.0), gridcraft_core::col_to_letters(cb.1)),
+                "columns": format!("{}:{}", cella_core::col_to_letters(cb.0), cella_core::col_to_letters(cb.1)),
                 "scale": (lay.scale * 1000.0).round() / 10.0,
                 "paper": lay.settings.paper,
                 "orientation": if lay.settings.orientation == Orientation::Landscape { "landscape" } else { "portrait" },
@@ -1916,7 +1916,7 @@ fn page_setup(s: &mut Session, p: &Json) -> Result<Json> {
         let mut v: Vec<u32> = a
             .iter()
             .filter_map(|x| match x {
-                Json::String(t) => gridcraft_core::letters_to_col(t.trim().trim_start_matches('$')),
+                Json::String(t) => cella_core::letters_to_col(t.trim().trim_start_matches('$')),
                 Json::Number(n) => n.as_u64().filter(|c| *c >= 2 && *c <= MAX_COLS as u64).map(|c| c as u32 - 1),
                 _ => None,
             })
@@ -2211,7 +2211,7 @@ mod tests {
     fn header_footer_date_follows_the_workbook_date_system() {
         let mut wb = Workbook::new();
         let date_1900 = hf_date_time(&wb).0;
-        wb.date_system = gridcraft_core::DateSystem::D1904;
+        wb.date_system = cella_core::DateSystem::D1904;
         assert_eq!(hf_date_time(&wb).0, date_1900);
     }
 
@@ -2338,7 +2338,7 @@ mod tests {
         let id = wb.next_object_id();
         wb.sheet_mut(0).unwrap().images.push(Image {
             id,
-            anchor: Anchor { cell: CellRef::new(5, 5), dx: 0.0, dy: 0.0, width: 40.0, height: 40.0, mode: gridcraft_model::AnchorMode::MoveAndSize },
+            anchor: Anchor { cell: CellRef::new(5, 5), dx: 0.0, dy: 0.0, width: 40.0, height: 40.0, mode: cella_model::AnchorMode::MoveAndSize },
             data: png.into(),
             mime: "image/png".into(),
             alt: String::new(),
@@ -2419,7 +2419,7 @@ mod tests {
     /// used. Skipped honestly when the machine has no such face.
     #[test]
     fn pdf_embeds_a_font_for_cyrillic_and_greek() {
-        if gridcraft_core::fonts::resolve_for_char('Ж').is_err() {
+        if cella_core::fonts::resolve_for_char('Ж').is_err() {
             eprintln!("skipped: no Cyrillic face installed");
             return;
         }
@@ -2536,7 +2536,7 @@ mod tests {
     fn export_writes_file() {
         let mut s = s();
         s.execute("cell.set", json!({"cell": "B2", "input": "hello"})).unwrap();
-        let dir = std::env::temp_dir().join(format!("gridcraft-print-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cella-print-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("out.pdf");
         let r = s.execute("file.exportPdf", json!({"path": path.to_str().unwrap()})).unwrap();
@@ -2553,7 +2553,7 @@ mod tests {
     fn save_as_pdf_writes_a_pdf_and_keeps_the_workbook_file() {
         let mut s = s();
         s.execute("cell.set", json!({"cell": "B2", "input": "hello"})).unwrap();
-        let dir = std::env::temp_dir().join(format!("gridcraft-save-pdf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cella-save-pdf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Out.PDF");
         let r = s.execute("file.saveAs", json!({"path": path.to_str().unwrap()})).unwrap();
@@ -2599,7 +2599,7 @@ mod tests {
         let id = wb.next_object_id();
         wb.sheet_mut(0).unwrap().images.push(Image {
             id,
-            anchor: Anchor { cell: CellRef::new(5, 5), dx: 0.0, dy: 0.0, width: 40.0, height: 40.0, mode: gridcraft_model::AnchorMode::MoveAndSize },
+            anchor: Anchor { cell: CellRef::new(5, 5), dx: 0.0, dy: 0.0, width: 40.0, height: 40.0, mode: cella_model::AnchorMode::MoveAndSize },
             data: png.into(),
             mime: "image/png".into(),
             alt: String::new(),
@@ -2801,7 +2801,7 @@ mod tests {
         let m = Metrics { face: None, mono: false, draft: false };
         let w = wrap_lines("the quick brown fox jumps", Font::Helvetica, 10.0, 50.0, &m);
         assert!(w.len() >= 2);
-        assert!(w.iter().all(|l| gridcraft_pdf::text_width(Font::Helvetica, 10.0, l) <= 50.0 || !l.contains(' ')));
+        assert!(w.iter().all(|l| cella_pdf::text_width(Font::Helvetica, 10.0, l) <= 50.0 || !l.contains(' ')));
         let w = wrap_lines("Supercalifragilistic", Font::Helvetica, 10.0, 20.0, &m);
         assert!(w.len() > 2);
     }

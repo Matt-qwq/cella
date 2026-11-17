@@ -2,7 +2,7 @@
 //!
 //! A chart read from a file keeps its part (`Chart::part`). Writing it back unchanged is byte for
 //! byte; this module writes back an *edited* chart by patching only the elements the edit touched,
-//! so every option GridCraft has no field for (manual layout, 3-D walls, leader lines, title run
+//! so every option Cella has no field for (manual layout, 3-D walls, leader lines, title run
 //! formatting, `extLst`, print settings…) is still there afterwards. Only a change the part cannot
 //! express — a different chart kind, a different set of series — falls back to regenerating the
 //! part from the model.
@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use gridcraft_model::{AxisCrossing, AxisOptions, Chart, DisplayUnits, Gridlines, LabelOptions, PointFormat, PointLabel, Series, Workbook};
+use cella_model::{AxisCrossing, AxisOptions, Chart, DisplayUnits, Gridlines, LabelOptions, PointFormat, PointLabel, Series, Workbook};
 
 use crate::chart::{
     MAX_POINTS, cat_data, dlbls_xml, err_bars_children, label_children, num_data, point_xml, scaling_xml, series_sp_pr, series_tx_xml, title_xml,
@@ -683,7 +683,7 @@ fn display_unit_name(u: DisplayUnits) -> &'static str {
 }
 
 /// Patches one axis's gridlines: an absent element is off, as the schema spells it, and a new one
-/// is inserted at its schema position. Line formatting GridCraft does not model is written by the
+/// is inserted at its schema position. Line formatting Cella does not model is written by the
 /// writer as a plain element, so switching a set off and on again drops the file's own styling.
 fn patch_gridlines(plan: &mut Plan, a: Option<&Node>, then: Gridlines, now: Gridlines) {
     let Some(a) = a else { return };
@@ -876,7 +876,7 @@ fn patch_dlbls(
     match (existing, now) {
         (None, None) => {}
         (Some(d), None) => {
-            // Labels switched off: the element keeps what GridCraft does not model (leader lines,
+            // Labels switched off: the element keeps what Cella does not model (leader lines,
             // a callout's text) and hides them the way Excel does, instead of dropping them.
             let pe = plan.edits(d, DLBLS_ORDER);
             pe.set("delete", Some("<c:delete val=\"1\"/>".to_string()));
@@ -960,7 +960,7 @@ fn patch_point_labels(plan: &mut Plan, xml: &str, dlbls: &Node, then: &LabelStat
                     "dLblPos",
                     label
                         .map(|l| l.position)
-                        .filter(|p| *p != gridcraft_model::LabelPosition::Auto)
+                        .filter(|p| *p != cella_model::LabelPosition::Auto)
                         .map(|p| format!("<c:dLblPos val=\"{}\"/>", crate::chart::label_position_file(p))),
                 );
                 for (tag, value) in [
@@ -1136,8 +1136,8 @@ fn patch_err_bars(plan: &mut Plan, ser: &Node, then: &Series, now: &Series, wb: 
             for (tag, text) in err_bars_children(e, wb, si) {
                 pe.set(tag, text);
             }
-            if then.error_bars.as_ref().is_some_and(|b| matches!(b.kind, gridcraft_model::ErrorBarKind::Custom { .. }))
-                && !matches!(e.kind, gridcraft_model::ErrorBarKind::Custom { .. })
+            if then.error_bars.as_ref().is_some_and(|b| matches!(b.kind, cella_model::ErrorBarKind::Custom { .. }))
+                && !matches!(e.kind, cella_model::ErrorBarKind::Custom { .. })
             {
                 pe.set("plus", None);
                 pe.set("minus", None);

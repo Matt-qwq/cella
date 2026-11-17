@@ -328,7 +328,7 @@ mod tests {
     fn every_command_and_dialog_target_exists() {
         for (seq, entry) in SEQUENCES {
             if let Entry::Finish(Action::Command(id)) = entry {
-                assert!(gridcraft_engine::find_command(id).is_some(), "{seq:?} runs the missing command {id:?}");
+                assert!(cella_engine::find_command(id).is_some(), "{seq:?} runs the missing command {id:?}");
             }
             if let Entry::Finish(Action::Dialog(name)) = entry {
                 assert!(!name.is_empty(), "{seq:?} opens an unnamed dialog");

@@ -1,41 +1,41 @@
-//! What a cell costs to read: `cargo run --release -p gridcraft-xlsx --example cell_probe -- <part.xml>`.
+//! What a cell costs to read: `cargo run --release -p cella-xlsx --example cell_probe -- <part.xml>`.
 //!
 //! Three callbacks over the same sheet: nothing, then the work `decode_cell` does (an attribute
 //! parse, a number, a `Cell`), then that plus the band packing `pack_row` does. The difference
 //! says where the decode's time goes, which is what to attack next.
 #![allow(clippy::disallowed_methods)]
 
-use gridcraft_core::CellRef;
-use gridcraft_core::Value;
-use gridcraft_model::{BandBatch, Cell};
+use cella_core::CellRef;
+use cella_core::Value;
+use cella_model::{BandBatch, Cell};
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: cell_probe <part.xml>");
     let xml = std::fs::read(&path).expect("read");
     let mib = xml.len() as f64 / (1024.0 * 1024.0);
 
-    fn run(what: &str, xml: &[u8], mib: f64, mut cell: impl FnMut(&gridcraft_xlsx::rows::CellAttrs<'_>) -> Option<(u32, Cell)>, pack: bool) {
+    fn run(what: &str, xml: &[u8], mib: f64, mut cell: impl FnMut(&cella_xlsx::rows::CellAttrs<'_>) -> Option<(u32, Cell)>, pack: bool) {
         let t = std::time::Instant::now();
         let mut cells = 0u64;
         let mut pending: Vec<(u32, Cell)> = Vec::new();
         let mut batch = BandBatch::new();
         let mut row_no = 0u32;
         let mut col = 0u32;
-        gridcraft_xlsx::rows::parse(xml, &mut |item| {
+        cella_xlsx::rows::parse(xml, &mut |item| {
             match item {
-                gridcraft_xlsx::rows::Item::RowStart(a) => {
+                cella_xlsx::rows::Item::RowStart(a) => {
                     row_no = a.r.and_then(|r| r.parse().ok()).unwrap_or(row_no + 1);
                     col = 0;
                     pending.clear();
                 }
-                gridcraft_xlsx::rows::Item::Cell(c) => {
+                cella_xlsx::rows::Item::Cell(c) => {
                     col += 1;
                     if let Some(done) = cell(&c) {
                         cells += 1;
                         pending.push(done);
                     }
                 }
-                gridcraft_xlsx::rows::Item::RowEnd => {
+                cella_xlsx::rows::Item::RowEnd => {
                     if pack && !pending.is_empty() {
                         batch.set_row(row_no.saturating_sub(1), &mut pending);
                     }

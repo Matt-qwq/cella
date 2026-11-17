@@ -612,6 +612,254 @@ dependencies = [
 ]
 
 [[package]]
+name = "cella"
+version = "0.12.0"
+dependencies = [
+ "arboard",
+ "cella-engine",
+ "cella-ui-egui",
+ "craft-print",
+ "eframe",
+ "egui",
+ "fmv-macos-events",
+ "image",
+ "log",
+ "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "pollster 1.0.1",
+ "rfd",
+ "serde",
+ "serde_json",
+ "winresource",
+]
+
+[[package]]
+name = "cella-calc"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "cella-dax",
+ "cella-formula",
+ "cella-functions",
+ "cella-model",
+ "cella-numfmt",
+ "log",
+ "serde",
+]
+
+[[package]]
+name = "cella-chart"
+version = "0.12.0"
+dependencies = [
+ "cella-calc",
+ "cella-core",
+ "cella-model",
+ "cella-numfmt",
+ "serde",
+]
+
+[[package]]
+name = "cella-cli"
+version = "0.12.0"
+dependencies = [
+ "cella-engine",
+ "cella-mcp",
+ "log",
+ "quick-xml",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "cella-core"
+version = "0.12.0"
+dependencies = [
+ "epaint_default_fonts",
+ "js-sys",
+ "rustybuzz",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "unicode-bidi",
+]
+
+[[package]]
+name = "cella-dax"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "cella-model",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cella-engine"
+version = "0.12.0"
+dependencies = [
+ "cella-calc",
+ "cella-chart",
+ "cella-core",
+ "cella-dax",
+ "cella-formula",
+ "cella-functions",
+ "cella-model",
+ "cella-numfmt",
+ "cella-parquet",
+ "cella-pdf",
+ "cella-query",
+ "cella-xlsx",
+ "image",
+ "log",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "ureq",
+ "zip",
+]
+
+[[package]]
+name = "cella-formula"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cella-functions"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "regex",
+]
+
+[[package]]
+name = "cella-mcp"
+version = "0.12.0"
+dependencies = [
+ "cella-engine",
+ "log",
+ "serde_json",
+]
+
+[[package]]
+name = "cella-model"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "cella-formula",
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cella-numfmt"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+]
+
+[[package]]
+name = "cella-parquet"
+version = "0.12.0"
+dependencies = [
+ "bytes",
+ "cella-core",
+ "cella-model",
+ "parquet",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cella-pdf"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "epaint_default_fonts",
+ "log",
+ "skrifa",
+]
+
+[[package]]
+name = "cella-query"
+version = "0.12.0"
+dependencies = [
+ "cella-core",
+ "cella-model",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cella-ui-egui"
+version = "0.12.0"
+dependencies = [
+ "cella-chart",
+ "cella-engine",
+ "cella-xlsx",
+ "craft-ui",
+ "egui",
+ "egui_kittest",
+ "epaint_default_fonts",
+ "image",
+ "log",
+ "serde",
+ "serde_json",
+ "skrifa",
+ "sys-locale",
+ "toml",
+ "web-sys",
+ "zbus",
+]
+
+[[package]]
+name = "cella-web"
+version = "0.12.0"
+dependencies = [
+ "cella-engine",
+ "cella-ui-egui",
+ "eframe",
+ "egui",
+ "js-sys",
+ "log",
+ "rfd",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "cella-xlsx"
+version = "0.12.0"
+dependencies = [
+ "aes",
+ "cella-core",
+ "cella-formula",
+ "cella-model",
+ "cfb",
+ "crc32fast",
+ "flate2",
+ "getrandom 0.3.4",
+ "memchr",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
 name = "cfb"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1585,254 +1833,6 @@ dependencies = [
  "presser",
  "thiserror 2.0.21",
  "windows",
-]
-
-[[package]]
-name = "gridcraft"
-version = "0.12.0"
-dependencies = [
- "arboard",
- "craft-print",
- "eframe",
- "egui",
- "fmv-macos-events",
- "gridcraft-engine",
- "gridcraft-ui-egui",
- "image",
- "log",
- "muda",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "pollster 1.0.1",
- "rfd",
- "serde",
- "serde_json",
- "winresource",
-]
-
-[[package]]
-name = "gridcraft-calc"
-version = "0.12.0"
-dependencies = [
- "gridcraft-core",
- "gridcraft-dax",
- "gridcraft-formula",
- "gridcraft-functions",
- "gridcraft-model",
- "gridcraft-numfmt",
- "log",
- "serde",
-]
-
-[[package]]
-name = "gridcraft-chart"
-version = "0.12.0"
-dependencies = [
- "gridcraft-calc",
- "gridcraft-core",
- "gridcraft-model",
- "gridcraft-numfmt",
- "serde",
-]
-
-[[package]]
-name = "gridcraft-cli"
-version = "0.12.0"
-dependencies = [
- "gridcraft-engine",
- "gridcraft-mcp",
- "log",
- "quick-xml",
- "serde_json",
- "zip",
-]
-
-[[package]]
-name = "gridcraft-core"
-version = "0.12.0"
-dependencies = [
- "epaint_default_fonts",
- "js-sys",
- "rustybuzz",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "unicode-bidi",
-]
-
-[[package]]
-name = "gridcraft-dax"
-version = "0.12.0"
-dependencies = [
- "gridcraft-core",
- "gridcraft-model",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gridcraft-engine"
-version = "0.12.0"
-dependencies = [
- "gridcraft-calc",
- "gridcraft-chart",
- "gridcraft-core",
- "gridcraft-dax",
- "gridcraft-formula",
- "gridcraft-functions",
- "gridcraft-model",
- "gridcraft-numfmt",
- "gridcraft-parquet",
- "gridcraft-pdf",
- "gridcraft-query",
- "gridcraft-xlsx",
- "image",
- "log",
- "rayon",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.21",
- "ureq",
- "zip",
-]
-
-[[package]]
-name = "gridcraft-formula"
-version = "0.12.0"
-dependencies = [
- "gridcraft-core",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gridcraft-functions"
-version = "0.12.0"
-dependencies = [
- "gridcraft-core",
- "regex",
-]
-
-[[package]]
-name = "gridcraft-mcp"
-version = "0.12.0"
-dependencies = [
- "gridcraft-engine",
- "log",
- "serde_json",
-]
-
-[[package]]
-name = "gridcraft-model"
-version = "0.12.0"
-dependencies = [
- "flate2",
- "gridcraft-core",
- "gridcraft-formula",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gridcraft-numfmt"
-version = "0.12.0"
-dependencies = [
- "gridcraft-core",
-]
-
-[[package]]
-name = "gridcraft-parquet"
-version = "0.12.0"
-dependencies = [
- "bytes",
- "gridcraft-core",
- "gridcraft-model",
- "parquet",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gridcraft-pdf"
-version = "0.12.0"
-dependencies = [
- "epaint_default_fonts",
- "gridcraft-core",
- "log",
- "skrifa",
-]
-
-[[package]]
-name = "gridcraft-query"
-version = "0.12.0"
-dependencies = [
- "gridcraft-core",
- "gridcraft-model",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gridcraft-ui-egui"
-version = "0.12.0"
-dependencies = [
- "craft-ui",
- "egui",
- "egui_kittest",
- "epaint_default_fonts",
- "gridcraft-chart",
- "gridcraft-engine",
- "gridcraft-xlsx",
- "image",
- "log",
- "serde",
- "serde_json",
- "skrifa",
- "sys-locale",
- "toml",
- "web-sys",
- "zbus",
-]
-
-[[package]]
-name = "gridcraft-web"
-version = "0.12.0"
-dependencies = [
- "eframe",
- "egui",
- "gridcraft-engine",
- "gridcraft-ui-egui",
- "js-sys",
- "log",
- "rfd",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "gridcraft-xlsx"
-version = "0.12.0"
-dependencies = [
- "aes",
- "cfb",
- "crc32fast",
- "flate2",
- "getrandom 0.3.4",
- "gridcraft-core",
- "gridcraft-formula",
- "gridcraft-model",
- "memchr",
- "quick-xml",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "thiserror 2.0.21",
- "zip",
 ]
 
 [[package]]
@@ -5086,7 +5086,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.12.0"
 dependencies = [
- "gridcraft-engine",
+ "cella-engine",
  "serde_json",
 ]
 

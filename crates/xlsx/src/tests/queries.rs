@@ -1,21 +1,21 @@
 //! Get & Transform queries persist in a part of our own.
 //!
 //! Excel keeps its own queries in a DataMashup blob that a clean-room implementation cannot read or
-//! write, so GridCraft stores its queries in a part of its own. These tests hold the file format to
+//! write, so Cella stores its queries in a part of its own. These tests hold the file format to
 //! its promises: exact round trip (every step variant, both loads, non-ASCII), no part when the
 //! model has none, and a lenient read of a part that is junk.
 
 use std::io::Read;
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{Query, QueryAggregate, QueryColumnType, QueryFilterOp, QueryLoad, QuerySource, QueryStep, Workbook};
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::{Query, QueryAggregate, QueryColumnType, QueryFilterOp, QueryLoad, QuerySource, QueryStep, Workbook};
 
 use crate::tests::{ROOT_RELS, make_zip};
 use crate::{read_xlsx, write_xlsx};
 
 /// The part every test here is about. Spelled out rather than taken from the module: the file
 /// format's name is a promise, and a test that renames itself with the code proves nothing.
-const PART: &str = "xl/gridcraft/queries.json";
+const PART: &str = "xl/cella/queries.json";
 
 fn part_names(bytes: &[u8]) -> Vec<String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
@@ -80,7 +80,7 @@ fn queries() -> Vec<Query> {
         Query {
             id: 4,
             name: "Rates".into(),
-            source: QuerySource::Http { url: "https://example.invalid/rates.json?day=today".into(), format: gridcraft_model::HttpFormat::Json },
+            source: QuerySource::Http { url: "https://example.invalid/rates.json?day=today".into(), format: cella_model::HttpFormat::Json },
             steps: vec![QueryStep::PromoteHeaders],
             load: QueryLoad::Sheet { sheet: None },
             columns: vec![],

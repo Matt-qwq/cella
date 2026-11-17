@@ -30,8 +30,8 @@ mod validation;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_model::{
+use cella_core::{CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_model::{
     CalcMode, CalcSettings, Cell, CfRule, Comment, CondFormat, DefinedName, Formula, LineInfo, Sheet, Style, StyleId, StyleTable, Visibility,
     Workbook,
 };
@@ -77,7 +77,7 @@ pub(crate) fn invalid(msg: impl Into<String>) -> IoError {
 
 /// The message for an encrypted workbook (a FilePass record).
 const ENCRYPTED: &str =
-    "this .xls workbook is password-protected (encrypted). GridCraft can't open encrypted .xls files; remove the password in Excel and try again.";
+    "this .xls workbook is password-protected (encrypted). Cella can't open encrypted .xls files; remove the password in Excel and try again.";
 
 /// Whether the bytes are a compound file holding an Excel workbook stream (BIFF8 `Workbook`
 /// or BIFF5 `Book`).
@@ -223,7 +223,7 @@ pub(crate) fn read_xls_with(bytes: &[u8], mut budget: Budget) -> Result<(Workboo
         wb.sheets.push(Arc::new(sheet));
     }
     if wb.sheets.is_empty() {
-        return Err(invalid("the workbook has no worksheets GridCraft can read"));
+        return Err(invalid("the workbook has no worksheets Cella can read"));
     }
     wb.calc.precision_as_displayed = g.precision_as_displayed;
     defined_names(&g, &model_index, &mut wb, &mut report);
@@ -488,7 +488,7 @@ struct SheetState<'g> {
     scrolled_to: Option<(u16, u16)>,
     /// The shapes this sheet's formulas intern into (see `RowState::shapes` in `sheet_read`):
     /// one table for the sheet, `Weak` entries, gone with its last cell.
-    shapes: gridcraft_formula::ShapeTable,
+    shapes: cella_formula::ShapeTable,
 }
 
 impl SheetState<'_> {
@@ -527,14 +527,14 @@ impl SheetState<'_> {
     fn attach(&mut self, pos: CellRef, p: &Parsed, mode: Mode, array: Option<RangeRef>) {
         match decode(&p.rgce, &p.rgcb, pos, mode, &self.g.links) {
             Ok(e) => {
-                let text = gridcraft_formula::print(&e);
+                let text = cella_formula::print(&e);
                 // Parsing the text it just printed is the second parse of this formula (the RPN
                 // decode is the first); it is what proves the model's text reads back — the text is
                 // what a save writes — so it stays until the .xls reader is measured
                 // (SHAPE-SHARING.md §3.4.3). The shape keeps the tree, so nothing downstream parses
                 // it again.
-                if gridcraft_formula::parse(&text).is_err() {
-                    self.unsupported("syntax GridCraft can't parse yet");
+                if cella_formula::parse(&text).is_err() {
+                    self.unsupported("syntax Cella can't parse yet");
                     return;
                 }
                 let rewrite = crate::fmla::needs_file_rewrite(&e);
@@ -608,7 +608,7 @@ fn worksheet(
         cf12_group: None,
         cf12_left: 0,
         cf12_via_cfex: false,
-        shapes: gridcraft_formula::ShapeTable::default(),
+        shapes: cella_formula::ShapeTable::default(),
         drawing: vec![],
         chart_index: 0,
         chart_anchor_index: vec![],
@@ -1228,7 +1228,7 @@ fn defined_names(g: &Globals, model_index: &[Option<usize>], wb: &mut Workbook, 
     for lbl in &g.names {
         let Some(scope) = scope_of(lbl.itab) else { continue };
         let text = match decode(&lbl.rgce, &lbl.rgcb, CellRef::new(0, 0), Mode::Name, &g.links) {
-            Ok(e) => gridcraft_formula::print(&e),
+            Ok(e) => cella_formula::print(&e),
             Err(_) if lbl.rgce.is_empty() => continue,
             Err(Unsupported(why)) => {
                 report.warn(format!("Some defined names use {why} and were skipped."));

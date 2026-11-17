@@ -3,9 +3,9 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_core::{RangeRef, Value, category_levels};
-use gridcraft_formula::{Expr, SheetSel};
-use gridcraft_model::{
+use cella_core::{RangeRef, Value, category_levels};
+use cella_formula::{Expr, SheetSel};
+use cella_model::{
     AxisCrossing, AxisOptions, Chart, ChartDataTable, ChartKind, Color, DefinedName, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars,
     Gridlines, LabelFont, LabelOptions, LabelPosition, LegendPos, LineDash, PointFormat, PointLabel, Series, Trendline, TrendlineKind, Workbook,
 };
@@ -174,7 +174,7 @@ fn read_series(s: &El) -> Series {
         // A `dLbls` that only deletes points carries no options; keep `None` so an empty record
         // does not appear out of nowhere on the next save.
         labels: s.child("dLbls").map(read_labels).filter(|l| {
-            l.hidden || l.shows_anything() || l.position != gridcraft_model::LabelPosition::Auto || l.separator.is_some() || l.number_format.is_some()
+            l.hidden || l.shows_anything() || l.position != cella_model::LabelPosition::Auto || l.separator.is_some() || l.number_format.is_some()
         }),
         error_bars: s.child("errBars").and_then(read_error_bars),
         points,
@@ -469,7 +469,7 @@ fn read_axis(a: &El) -> AxisOptions {
     }
 }
 
-/// Whether every chart group in a classic part is a kind GridCraft models. A part with any other
+/// Whether every chart group in a classic part is a kind Cella models. A part with any other
 /// group (3-D bars, lines, areas or pies, a surface, a pie of pie or bar of pie) is kept as it was
 /// instead of being read into the 2-D model and written back as something else.
 pub fn is_modelled(root: &El) -> bool {
@@ -669,7 +669,7 @@ pub(crate) const MAX_POINTS: usize = 4096;
 
 /// The sheet and range a same-workbook reference (`Sheet1!$B$2:$B$9`) names.
 fn ref_target(wb: &Workbook, sheet_idx: usize, f: &str) -> Option<(usize, RangeRef)> {
-    let e = gridcraft_formula::parse(f).ok()?;
+    let e = cella_formula::parse(f).ok()?;
     let Expr::Ref(r) = e else { return None };
     let si = match &r.sheet {
         SheetSel::Current => sheet_idx,
@@ -699,14 +699,14 @@ pub(crate) fn ref_values(wb: &Workbook, sheet_idx: usize, f: &str) -> Option<Vec
 }
 
 fn is_ref(f: &str) -> bool {
-    matches!(gridcraft_formula::parse(f), Ok(Expr::Ref(_)))
+    matches!(cella_formula::parse(f), Ok(Expr::Ref(_)))
 }
 
 /// A chart reference that is a name: its sheet when qualified (`Sheet1!Sales`), the bare
 /// name, and the definition formulas would find from sheet `si` (none when undefined). `None`
 /// when it isn't a name, or names a sheet the workbook doesn't have.
 fn chart_name<'a>(wb: &'a Workbook, si: usize, f: &str) -> Option<(Option<usize>, String, Option<&'a DefinedName>)> {
-    let Ok(Expr::Name(n)) = gridcraft_formula::parse(f.trim()) else { return None };
+    let Ok(Expr::Name(n)) = cella_formula::parse(f.trim()) else { return None };
     match n.split_once('!') {
         Some((s, bare)) => {
             let i = wb.sheet_index(s.trim_matches('\''))?;
@@ -724,7 +724,7 @@ fn chart_name<'a>(wb: &'a Workbook, si: usize, f: &str) -> Option<(Option<usize>
 /// Microsoft 365). A workbook-scoped name is written `[0]!Name`, as Excel writes it, a
 /// sheet-scoped one `Sheet!Name`; an undefined name gets `[0]!`, as the file it came from had.
 fn chart_ref_to_file(wb: &Workbook, si: usize, f: &str) -> String {
-    let on_sheet = |i: usize, n: &str| wb.sheet(i).map(|sh| format!("{}!{n}", gridcraft_formula::quote_sheet(&sh.name)));
+    let on_sheet = |i: usize, n: &str| wb.sheet(i).map(|sh| format!("{}!{n}", cella_formula::quote_sheet(&sh.name)));
     match chart_name(wb, si, f) {
         Some((Some(i), n, _)) => on_sheet(i, &n).unwrap_or_else(|| crate::fmla::text_to_file(f)),
         Some((None, n, def)) => def.and_then(|d| d.scope).and_then(|i| on_sheet(i, &n)).unwrap_or_else(|| format!("{THIS_BOOK}{n}")),
@@ -1419,7 +1419,7 @@ pub struct ChartXml {
 pub fn write_chart(wb: &Workbook, si: usize, ch: &Chart, book_name: &str) -> ChartXml {
     // A part read from a file whose sheets still exist is written back from the file, not from the
     // model: unchanged it is byte-identical, and an edit is patched into it field by field so every
-    // option GridCraft does not model survives the edit too.
+    // option Cella does not model survives the edit too.
     if let Some((part, as_read)) = ch.kept_part()
         && part_sheet_names(part).iter().all(|n| wb.sheet_index(n).is_some())
     {

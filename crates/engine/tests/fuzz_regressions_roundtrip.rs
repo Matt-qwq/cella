@@ -14,11 +14,11 @@
 //!   two (the filter bitmap and the line map), and the reader moved the hidden bit into the bitmap
 //!   only when the row had nothing else — so the reloaded sheet hid that row by hand.
 
-use gridcraft_core::CellRef;
-use gridcraft_engine::Session;
-use gridcraft_engine::calc::Calc;
-use gridcraft_engine::io;
-use gridcraft_engine::model::{Sheet, Style, StyleId, Workbook};
+use cella_core::CellRef;
+use cella_engine::Session;
+use cella_engine::calc::Calc;
+use cella_engine::io;
+use cella_engine::model::{Sheet, Style, StyleId, Workbook};
 use serde_json::json;
 
 fn at(address: &str) -> CellRef {
@@ -29,7 +29,7 @@ fn at(address: &str) -> CellRef {
 fn reload(wb: &Workbook) -> Workbook {
     let bytes = io::save_bytes(wb, "regression.xlsx").expect("save");
     // Every save in these tests goes through the package validator.
-    gridcraft_xlsx::testing::check_package(&bytes).expect("a valid package");
+    cella_xlsx::testing::check_package(&bytes).expect("a valid package");
     let (mut back, _) = io::open_bytes("regression.xlsx", &bytes).expect("reload");
     Calc::new().recalc_all(&mut back);
     back
@@ -56,7 +56,7 @@ fn legacy_arrays(sheet: &Sheet) -> Vec<(String, String)> {
 
 /// The column properties a save and reload must give back, styles by content (the file renumbers
 /// them), the way the fuzz harness's `kept_lines` compares them.
-fn kept_cols(sheet: &Sheet, styles: &gridcraft_engine::model::StyleTable) -> Vec<(u32, bool, u8, bool, Option<Style>, Option<i64>)> {
+fn kept_cols(sheet: &Sheet, styles: &cella_engine::model::StyleTable) -> Vec<(u32, bool, u8, bool, Option<Style>, Option<i64>)> {
     sheet
         .cols
         .iter()
@@ -148,7 +148,7 @@ fn a_sheet_default_width_of_zero_keeps_its_columns_through_a_save() {
 /// The row properties a save and reload must give back, styles by content (the file renumbers
 /// them), the way kept_cols does for columns.
 #[allow(clippy::type_complexity)]
-fn kept_rows(sheet: &Sheet, styles: &gridcraft_engine::model::StyleTable) -> Vec<(u32, bool, u8, bool, bool, Option<Style>, Option<i64>)> {
+fn kept_rows(sheet: &Sheet, styles: &cella_engine::model::StyleTable) -> Vec<(u32, bool, u8, bool, bool, Option<Style>, Option<i64>)> {
     sheet
         .rows
         .iter()

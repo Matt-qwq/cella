@@ -2,11 +2,11 @@
 //! against real things — a database this test builds, and a server it runs on a socket — because a
 //! connector that is only tested against a mock proves nothing about SQLite's types or about HTTP.
 //!
-//! Runs with: cargo test -p gridcraft-engine --features connectors --test connectors
+//! Runs with: cargo test -p cella-engine --features connectors --test connectors
 
 #![cfg(feature = "connectors")]
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::{Value, json};
 
 fn session() -> Session {
@@ -36,7 +36,7 @@ fn make_db(path: &std::path::Path) {
 }
 
 fn temp_db(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("gridcraft-conn-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cella-conn-{tag}-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let db = dir.join(format!("{tag}.db"));
     let _ = std::fs::remove_file(&db);
@@ -56,7 +56,7 @@ fn a_sqlite_query_reads_the_statements_result_set() {
     assert_eq!(r["rows"], 3, "{r}");
     let d = s.doc().expect("doc");
     let sh = d.wb.sheet_index("Sales").and_then(|i| d.wb.sheet(i)).expect("loaded sheet");
-    let at = |a: &str| sh.value(gridcraft_core::CellRef::parse(a).expect("ref")).display();
+    let at = |a: &str| sh.value(cella_core::CellRef::parse(a).expect("ref")).display();
     // The columns are the statement's own: no PromoteHeaders step was needed.
     assert_eq!(at("A1"), "region");
     assert_eq!(at("B1"), "amount");
@@ -124,7 +124,7 @@ fn an_http_csv_source_is_a_table() {
     assert_eq!(r["rows"], 2, "two data rows; the header became the columns: {r}");
     let d = s.doc().expect("doc");
     let sh = d.wb.sheet_index("Web").and_then(|i| d.wb.sheet(i)).expect("sheet");
-    let at = |a: &str| sh.value(gridcraft_core::CellRef::parse(a).expect("ref")).display();
+    let at = |a: &str| sh.value(cella_core::CellRef::parse(a).expect("ref")).display();
     assert_eq!(at("A1"), "Region");
     assert_eq!(at("A2"), "West");
     assert_eq!(at("B2"), "10");

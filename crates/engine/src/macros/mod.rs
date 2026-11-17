@@ -1,8 +1,8 @@
-//! The macro engine under GridCraft's scripts: recording, running, step-through and the trust
+//! The macro engine under Cella's scripts: recording, running, step-through and the trust
 //! policy (adoption of upstream's `crates/engine/src/macros/`).
 //!
 //! **One product, not two.** Upstream keeps macros in `Workbook::macros`, edits them with
-//! `macro.save`, and runs them with `macro.run`. GridCraft's scripts are a list of
+//! `macro.save`, and runs them with `macro.run`. Cella's scripts are a list of
 //! `{command, params}` steps kept as JSON in the defined-name store (`_gc_scripts_<n>`), edited one
 //! step at a time by `automate.scriptSteps` / `automate.editStep` / `automate.appendStep` /
 //! `automate.removeStep`. This module brings upstream's *engine* — the recorder, the runner, the
@@ -48,7 +48,7 @@ pub mod policy;
 pub mod recorder;
 pub mod run;
 
-use gridcraft_model::Workbook;
+use cella_model::Workbook;
 use serde_json::Value as Json;
 
 /// The most steps one script runs: the number the editor keeps in a script

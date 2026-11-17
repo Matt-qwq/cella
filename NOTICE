@@ -1,4 +1,4 @@
-GridCraft
+Cella
 
 Copyright (c) 2026 ArtCraft Team and the GridCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
@@ -6,7 +6,7 @@ Licensed under the MIT License or the Apache License, Version 2.0, at your optio
 
 This repository is an independent, modified version of GridCraft (upstream:
 https://github.com/storytold/gridcraft), which is Copyright (c) 2026 the ArtCraft Team and the
-GridCraft contributors and is distributed under the MIT License or the Apache License, Version 2.0.
+Cella contributors and is distributed under the MIT License or the Apache License, Version 2.0.
 Modifications made in this repository are Copyright (c) 2026 its contributors and are distributed
 under the same terms.
 
@@ -23,5 +23,5 @@ Third-party material
 This product bundles third-party material under its own licenses, listed below. The per-file
 list (author, source, license) is in ATTRIBUTION.md.
 
-None: every bundled asset is original to GridCraft. Builds made with craft-fonts
+None: every bundled asset is original to Cella. Builds made with craft-fonts
 (CRAFT_FONTS_DIR) embed the fonts listed in ATTRIBUTION.md under the SIL Open Font License 1.1.

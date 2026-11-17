@@ -36,7 +36,7 @@ pub(super) fn formulas(app: &mut SheetApp, ui: &mut Ui) {
         egui::Popup::menu(&r).open_memory(popup_command(forced_c, r.clicked())).show(|ui| {
             ui.set_max_height(420.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for f in gridcraft_engine::cmd::formulas::function_list() {
+                for f in cella_engine::cmd::formulas::function_list() {
                     if f["category"].as_str() == Some(cat)
                         && let Some(n) = f["name"].as_str()
                     {

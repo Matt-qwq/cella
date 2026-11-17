@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{Array, CellError, CellRef, RangeRef, Value};
-use gridcraft_formula::{BinOp, Expr, RefKind, Reference, SheetSel, StructItem, StructRef, UnOp};
-use gridcraft_functions::Ctx;
-use gridcraft_model::Workbook;
+use cella_core::{Array, CellError, CellRef, RangeRef, Value};
+use cella_formula::{BinOp, Expr, RefKind, Reference, SheetSel, StructItem, StructRef, UnOp};
+use cella_functions::Ctx;
+use cella_model::Workbook;
 
 mod array;
 mod call;
@@ -126,7 +126,7 @@ pub trait Host {
     /// mentioning one name resolves and parses its definition once instead of once per cell.
     fn name_target(&mut self, sheet: usize, name: &str) -> NameTarget;
     /// The position of a text needle in a block the host has indexed (see
-    /// [`gridcraft_functions::Ctx::exact_text_position`]); `None` to scan instead.
+    /// [`cella_functions::Ctx::exact_text_position`]); `None` to scan instead.
     fn exact_text_position(&mut self, _hay: &Arc<Array>, _needle: &str, _reverse: bool) -> Option<Option<usize>> {
         None
     }
@@ -197,7 +197,7 @@ impl Ctx for FnCtx<'_, '_> {
     fn exact_text_position(&mut self, hay: &Arc<Array>, needle: &str, reverse: bool) -> Option<Option<usize>> {
         self.ev.host.exact_text_position(hay, needle, reverse)
     }
-    fn date_system(&self) -> gridcraft_core::DateSystem {
+    fn date_system(&self) -> cella_core::DateSystem {
         self.ev.host.workbook().date_system
     }
     fn now_serial(&self) -> f64 {
@@ -229,7 +229,7 @@ impl Ctx for FnCtx<'_, '_> {
         let (tree, base): (&Expr, Option<CellRef>) = match (&shape, record_at) {
             (Some(shape), Some(record_at)) => (shape.tree(), Some(record_at)),
             _ => {
-                shifted = gridcraft_formula::adjust::shift_relative(formula.expr_at(at)?, down, 0);
+                shifted = cella_formula::adjust::shift_relative(formula.expr_at(at)?, down, 0);
                 (&shifted, None)
             }
         };
@@ -521,7 +521,7 @@ impl<'h> Evaluator<'h> {
     }
 
     fn name(&mut self, n: &str) -> Ev {
-        if let Some((_, v)) = self.env.iter().rev().find(|(k, _)| gridcraft_formula::same_name(k, n)) {
+        if let Some((_, v)) = self.env.iter().rev().find(|(k, _)| cella_formula::same_name(k, n)) {
             return v.clone();
         }
         // The host resolves the name (and parses its definition) once per sheet, not once per
@@ -533,7 +533,7 @@ impl<'h> Evaluator<'h> {
             NameTarget::Relative(expr, scope) => {
                 // Relative references in a name are relative to A1: used here, they move by this
                 // cell's offset from it. The adjustment builds a tree, so the cached one stays.
-                let shifted = gridcraft_formula::adjust::shift_relative_wrapping((*expr).clone(), self.at.row as i64, self.at.col as i64);
+                let shifted = cella_formula::adjust::shift_relative_wrapping((*expr).clone(), self.at.row as i64, self.at.col as i64);
                 self.name_value(&shifted, scope)
             }
             // A table name alone means its data body.

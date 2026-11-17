@@ -1,6 +1,6 @@
 //! Read-only commands for agents: inspect the workbook, read ranges, cell details.
 
-use gridcraft_core::{CellRef, RangeRef, Value};
+use cella_core::{CellRef, RangeRef, Value};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -99,7 +99,7 @@ fn compact(s: &mut Session, p: &Json) -> Result<Json> {
 /// Compacts the sheets of `d` (`only`: one sheet, else all) with the view-state dirty idiom: a
 /// clean document stays clean and a dirty one stays dirty, because compaction never changes what a
 /// cell holds. Returns the totals so a caller can report them.
-pub(crate) fn compact_document(d: &mut DocState, only: Option<usize>) -> gridcraft_model::Compacted {
+pub(crate) fn compact_document(d: &mut DocState, only: Option<usize>) -> cella_model::Compacted {
     let targets: Vec<usize> = match only {
         Some(i) => vec![i],
         None => (0..d.wb.sheets.len()).collect(),
@@ -107,10 +107,10 @@ pub(crate) fn compact_document(d: &mut DocState, only: Option<usize>) -> gridcra
     // A sheet whose maps are the identity has nothing to reclaim, and copying the workbook just to
     // run that check would cost more than the compaction itself.
     if !targets.iter().any(|i| d.wb.sheets.get(*i).is_some_and(|sh| sh.cells.needs_compaction())) {
-        return gridcraft_model::Compacted::default();
+        return cella_model::Compacted::default();
     }
     let dirty = d.is_dirty();
-    let mut total = gridcraft_model::Compacted::default();
+    let mut total = cella_model::Compacted::default();
     let wb = std::sync::Arc::make_mut(&mut d.wb);
     for i in targets {
         let Some(sh) = wb.sheets.get_mut(i) else { continue };
@@ -296,7 +296,7 @@ fn what_changed(s: &mut Session, p: &Json) -> Result<Json> {
 
 /// Whether a cell is the same in both versions: its value **and** its formula text, because
 /// retyping =A1+1 as =1+A1 changes what a person sees in the bar without changing the number.
-fn same_cell(a: Option<&gridcraft_model::Cell>, b: Option<&gridcraft_model::Cell>) -> bool {
+fn same_cell(a: Option<&cella_model::Cell>, b: Option<&cella_model::Cell>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(x), Some(y)) => x.value == y.value && x.formula.as_ref().map(|f| &f.text) == y.formula.as_ref().map(|f| &f.text),
@@ -304,7 +304,7 @@ fn same_cell(a: Option<&gridcraft_model::Cell>, b: Option<&gridcraft_model::Cell
     }
 }
 
-fn changed_json(sheet: &str, at: CellRef, before: Option<&gridcraft_model::Cell>, after: Option<&gridcraft_model::Cell>) -> Json {
+fn changed_json(sheet: &str, at: CellRef, before: Option<&cella_model::Cell>, after: Option<&cella_model::Cell>) -> Json {
     json!({
         "sheet": sheet,
         "cell": at.a1(),

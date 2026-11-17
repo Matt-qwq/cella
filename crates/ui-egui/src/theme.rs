@@ -226,7 +226,7 @@ impl Tokens {
 /// The egui-memory key the app sets each frame and [`Tokens::get`] reads: the app owns the
 /// preference, the palette lookups (which only get a context) follow it.
 fn high_contrast_key() -> egui::Id {
-    egui::Id::new("gridcraft.high_contrast")
+    egui::Id::new("cella.high_contrast")
 }
 
 /// Whether the app asked for the high-contrast palette this frame.
@@ -386,7 +386,7 @@ fn resolve_cell_role(name: &str, bold: bool, italic: bool) -> (FontFamily, crate
 /// `exact` lays the text out (a galley kept until the end of the frame); otherwise the glyph
 /// advances are summed without kerning, which is cheap and never narrower. This takes the
 /// Context lock (`fonts_mut`): never call it, or run a command, while an egui lock is held.
-pub fn cell_text_width(ctx: &egui::Context, text: &str, font: &gridcraft_engine::model::Font, exact: bool) -> f32 {
+pub fn cell_text_width(ctx: &egui::Context, text: &str, font: &cella_engine::model::Font, exact: bool) -> f32 {
     let family = cell_family(&font.name, font.bold, font.italic);
     let id = FontId::new(font.size * 96.0 / 72.0, family);
     ctx.fonts_mut(|f| {
@@ -399,7 +399,7 @@ pub fn cell_text_width(ctx: &egui::Context, text: &str, font: &gridcraft_engine:
             }
         })
     })
-    .unwrap_or_else(|| gridcraft_engine::cmd::format::approx_text_width(text, font.size, font.bold))
+    .unwrap_or_else(|| cella_engine::cmd::format::approx_text_width(text, font.size, font.bold))
 }
 
 /// Whether epaint can open face `index` of this font file and it maps characters to glyphs.
@@ -637,7 +637,7 @@ pub fn font_definitions_for_language(language: crate::i18n::Language) -> FontDef
 /// families are recorded in [`crate::fonts`] so [`cell_family`] only names a family egui has.
 ///
 /// `ea` names the workbook's East Asian typeface (the theme's 宋体, see
-/// [`gridcraft_model::Theme::body_ea_font`]): its faces go behind every workbook family, so the
+/// [`cella_model::Theme::body_ea_font`]): its faces go behind every workbook family, so the
 /// Chinese in a Calibri cell is drawn in 宋体 the way Excel and WPS draw it.
 pub fn font_definitions_with(language: crate::i18n::Language, used: &[String], ea: &[String]) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
@@ -1444,7 +1444,7 @@ mod tests {
     #[test]
     fn try_load_skips_a_broken_candidate() {
         // A candidate that exists but is not a readable font must not win over a good one behind it.
-        let dir = std::env::temp_dir().join(format!("gridcraft-font-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cella-font-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let bad = dir.join("broken.ttf");
         let good = dir.join("good.ttf");
@@ -1463,7 +1463,7 @@ mod tests {
     fn interface_fonts_are_read_once_and_shared_with_egui() {
         // egui copies owned font bytes into its text engine and keeps the original too; borrowed
         // bytes it shares. A rebuild of the font set reuses the file read the first time.
-        let path = std::env::temp_dir().join(format!("gridcraft-font-shared-{}.ttf", std::process::id()));
+        let path = std::env::temp_dir().join(format!("cella-font-shared-{}.ttf", std::process::id()));
         std::fs::write(&path, epaint_default_fonts::UBUNTU_LIGHT).unwrap();
         let p = path.to_string_lossy().into_owned();
         let first = try_load(&[(p.as_str(), 0)]).unwrap();
@@ -1535,7 +1535,7 @@ mod tests {
         // The memo is keyed by the font set's generation, and the binding tests change that
         // generation: without the lock this test reads a set it did not start with.
         let _g = crate::fonts::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        const NAME: &str = "GridCraft Memo Test Face";
+        const NAME: &str = "Cella Memo Test Face";
         let slot = family_slot(NAME, true, false);
         // A generation of this test's own: the memo is keyed by one, so a test that names one does
         // not care what the rest of the binary has bound.

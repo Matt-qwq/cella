@@ -1,4 +1,4 @@
-//! The GridCraft JSON workbook: a versioned envelope around a [`Workbook`].
+//! The Cella JSON workbook: a versioned envelope around a [`Workbook`].
 //!
 //! ```json
 //! {"formatVersion": 1, "workbook": {"sheets": [ … ]}}
@@ -7,14 +7,14 @@
 //! * `formatVersion` names the schema of the object beside it. A file *without* `formatVersion`
 //!   is version 0: the bare workbook JSON every build before this one wrote, and still read
 //!   (an old file is never rejected, it is simply upgraded on its next save).
-//! * `workbook` holds the model. A file written by a newer GridCraft (or by a build that kept a
+//! * `workbook` holds the model. A file written by a newer Cella (or by a build that kept a
 //!   field this one dropped) may carry fields we do not model, at the envelope, in the workbook
 //!   object and in a sheet object. They are kept as they were read — see
-//!   [`gridcraft_model::JsonKept`] — and written back on save, so an older build never destroys
+//!   [`cella_model::JsonKept`] — and written back on save, so an older build never destroys
 //!   a newer file's data.
 //! * The reader caps the whole file and every string in it, so a damaged or hostile file is
 //!   refused with a message instead of exhausting memory. The whole-file cap can be raised with
-//!   `GRIDCRAFT_MAX_JSON_MB` for a workbook you trust; the writer does not enforce it (refusing to
+//!   `CELLA_MAX_JSON_MB` for a workbook you trust; the writer does not enforce it (refusing to
 //!   save would lose the user's work), so a file may be saved larger than this build would read
 //!   back without that variable.
 //!
@@ -24,7 +24,7 @@
 
 use std::sync::OnceLock;
 
-use gridcraft_model::Workbook;
+use cella_model::Workbook;
 use serde_json::{Map, Value};
 
 use crate::{EngineError, Result};
@@ -44,7 +44,7 @@ const RESERVED: &[&str] = &[VERSION_KEY, WORKBOOK_KEY];
 /// The largest file read by default: 512 MiB. A JSON workbook is the model written out, so it is
 /// several times the size of the same data as XLSX.
 pub const DEFAULT_MAX_BYTES: u64 = 512 << 20;
-/// The largest `GRIDCRAFT_MAX_JSON_MB` can ask for: a typo cannot turn the guard off.
+/// The largest `CELLA_MAX_JSON_MB` can ask for: a typo cannot turn the guard off.
 pub const MAX_MAX_BYTES: u64 = 4096 << 20;
 /// The longest single string read by default: 32 MiB. It covers a VBA project (base64 in JSON) and
 /// every cell text there is (Excel's own limit is 32,767 characters); anything longer is a guard
@@ -64,11 +64,11 @@ impl Default for Limits {
     }
 }
 
-/// `GRIDCRAFT_MAX_JSON_MB` in bytes, or [`DEFAULT_MAX_BYTES`]. Read once: the knob is a
+/// `CELLA_MAX_JSON_MB` in bytes, or [`DEFAULT_MAX_BYTES`]. Read once: the knob is a
 /// diagnostic (and a test hook), not something every open should re-parse.
 fn env_max_bytes() -> u64 {
     static LIMIT: OnceLock<u64> = OnceLock::new();
-    *LIMIT.get_or_init(|| match std::env::var("GRIDCRAFT_MAX_JSON_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+    *LIMIT.get_or_init(|| match std::env::var("CELLA_MAX_JSON_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
         // 0 (or a non-number) keeps the default: there is no way to turn the guard off.
         Some(mb) if mb > 0 => mb.saturating_mul(1 << 20).min(MAX_MAX_BYTES),
         _ => DEFAULT_MAX_BYTES,
@@ -120,14 +120,14 @@ pub fn read_with(bytes: &[u8], limits: &Limits) -> Result<(Workbook, Vec<String>
 pub fn too_large(size: u64, max: u64) -> EngineError {
     refused(format!(
         "it is {}, over the {} one file may be (a guard against damaged or malicious files). \
-         For a file you trust, raise the limit with the GRIDCRAFT_MAX_JSON_MB environment variable.",
+         For a file you trust, raise the limit with the CELLA_MAX_JSON_MB environment variable.",
         megabytes(size),
         megabytes(max)
     ))
 }
 
 /// Writes `wb` as the current envelope. Every field the model does not hold but the file it came
-/// from did (see [`gridcraft_model::JsonKept`]) is written back where it was.
+/// from did (see [`cella_model::JsonKept`]) is written back where it was.
 pub fn write(wb: &Workbook) -> Result<Vec<u8>> {
     let mut doc = Map::new();
     for (key, value) in wb.json_envelope.fields() {
@@ -149,7 +149,7 @@ fn from_value(value: Value) -> Result<Workbook> {
 }
 
 fn refused(why: impl std::fmt::Display) -> EngineError {
-    EngineError::Other(format!("not a GridCraft JSON workbook: {why}"))
+    EngineError::Other(format!("not a Cella JSON workbook: {why}"))
 }
 
 /// `formatVersion`'s number: a whole number that fits in 64 bits. `1.0` is accepted (some JSON
@@ -260,8 +260,8 @@ mod tests {
     /// boxed for its size, which serde does not see).
     #[test]
     fn an_array_formula_round_trips_without_a_version_bump() {
-        use gridcraft_core::{CellRef, RangeRef};
-        use gridcraft_model::{Cell, Formula};
+        use cella_core::{CellRef, RangeRef};
+        use cella_model::{Cell, Formula};
         let mut wb = Workbook::new();
         let mut f = Formula::new("=A1:A2*2");
         f.array = RangeRef::parse("C1:C2").map(Box::new);

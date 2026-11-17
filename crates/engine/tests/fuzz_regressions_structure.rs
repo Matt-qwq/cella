@@ -5,9 +5,9 @@
 //! The invariants are the fuzz harness's own, and so is the comparison ([`fuzz_common`]): undoing
 //! every step must give back the starting workbook, view state and the Watch Window list aside.
 
-use gridcraft_core::CellRef;
-use gridcraft_engine::Session;
-use gridcraft_engine::model::Workbook;
+use cella_core::CellRef;
+use cella_engine::Session;
+use cella_engine::model::Workbook;
 use serde_json::json;
 
 mod fuzz_common;

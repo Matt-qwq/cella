@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-11-03 · **Who:** the owner (or anyone with Excel 16 on their own machine).
 > **Why:** `cargo xtask oracle` covers what can be automated — Excel opens, refreshes every
-> PivotTable, recalculates, saves and GridCraft re-reads the copy, cell by cell, on five fixtures.
+> PivotTable, recalculates, saves and Cella re-reads the copy, cell by cell, on five fixtures.
 > This page covers what it cannot: the repair prompt on real workbooks, how the parts look in
 > Excel's own UI, and the things Excel only shows interactively.
 >
@@ -11,7 +11,7 @@
 > the copies identical. The checks below are the remaining fixture-level ones; the corpus section
 > adds how to point the same run at your own files.
 
-Nothing here needs a build of GridCraft except the fixtures: the oracle writes them.
+Nothing here needs a build of Cella except the fixtures: the oracle writes them.
 
 ## Get the fixtures
 
@@ -19,7 +19,7 @@ Nothing here needs a build of GridCraft except the fixtures: the oracle writes t
 cargo xtask oracle --keep
 ```
 
-That writes GridCraft's own files to `target/oracle/`:
+That writes Cella's own files to `target/oracle/`:
 
 | Fixture | What it holds |
 | --- | --- |
@@ -46,8 +46,8 @@ For each of the five `*.gc.xlsx` files:
 1. Open it in Excel (double-click). **Pass = no "We found a problem with some content" prompt** and
    no repair dialog.
 2. Look at the sheet: values, number formats, merges, frozen panes, the table, charts and
-   conditional formats should look as they do in GridCraft's own window (open the same file in
-   GridCraft side by side if convenient).
+   conditional formats should look as they do in Cella's own window (open the same file in
+   Cella side by side if convenient).
 3. `File ▸ Save As` a new `.xlsx` in the scratch directory (keep the name).
 4. With the five saved copies in one directory, run:
 
@@ -100,11 +100,11 @@ Report: `pivot | refresh? | East+West 116,320? | slicer? | notes`.
 
 `.xls` (Excel-authored files live only under `plan/excel/`, never in the repository):
 
-1. Open `plan/excel/excel_cf12b.xls` in **GridCraft** (it is an Excel-authored workbook with a
+1. Open `plan/excel/excel_cf12b.xls` in **Cella** (it is an Excel-authored workbook with a
    colour scale, data bars and icon sets, including reverse/icon-only variants). Compare with
    Excel's view of the same file: the colours, bars and icons should match in kind, position and
    order. **Pass = every rule is present and none is dropped.**
-2. Open `plan/excel/excel_pic2.xls` in GridCraft: the two pictures should sit in the same cells and
+2. Open `plan/excel/excel_pic2.xls` in Cella: the two pictures should sit in the same cells and
    at the same offsets as in Excel. **Pass = both pictures, right place, right size.**
 3. Encryption: save a workbook with `file.save` and a password (Agile and Standard are both
    written), then open the `.xlsx` in Excel with the password. **Pass = Excel asks for the password
@@ -117,7 +117,7 @@ Report: `cf12 | pictures | agile | standard | notes`.
 
 On the Windows GPU and macOS machines named in the issue (not the dev machine):
 
-1. Open `sales.gc.xlsx` and the GridCraft sample (`cargo run --release -p gridcraft -- --sample
+1. Open `sales.gc.xlsx` and the Cella sample (`cargo run --release -p cella -- --sample
    sales`), scroll to the bottom and back, zoom around, resize the window, and switch sheets.
 2. **Pass = no freeze, no "Issue executing", no error on close.**
 3. Record the driver and OS versions (`winver`, `system_profiler SPDisplaysDataType`).

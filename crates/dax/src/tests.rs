@@ -3,8 +3,8 @@
 //! The fixture is the smallest one that shows what a measure is for: a fact table with a blank in
 //! it, a lookup table with the names a person groups by, and the relationship between them.
 
-use gridcraft_core::Value;
-use gridcraft_model::{DataModel, Measure, ModelTable, Relationship};
+use cella_core::Value;
+use cella_model::{DataModel, Measure, ModelTable, Relationship};
 
 use crate::{Context, DaxError, MAX_FORMULA_LEN, evaluate, validate};
 

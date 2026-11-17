@@ -1,4 +1,4 @@
-//! `cargo xtask oracle`: read a GridCraft-written package back through *foreign* implementations.
+//! `cargo xtask oracle`: read a Cella-written package back through *foreign* implementations.
 //!
 //! A self round-trip proves our writer and our reader agree; it cannot prove that a part is
 //! well-formed enough for somebody else's consumer. These two probes each cover a different half
@@ -7,7 +7,7 @@
 //! * **readback** — openpyxl, a foreign reader, opens the file. Every cell, number format, merge,
 //!   table and defined name the model holds must be visible to it, and nothing may be invented.
 //! * **app** — an independent spreadsheet application opens the file, recalculates it and saves a
-//!   copy; GridCraft reads that copy back and the values must survive a foreign write.
+//!   copy; Cella reads that copy back and the values must survive a foreign write.
 //!
 //! Neither probe proves that Microsoft Excel opens the file without a repair prompt. Only Excel
 //! does, and Excel is not available here (see `docs/gaps.md` §1).
@@ -16,9 +16,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use gridcraft_engine::Session;
-use gridcraft_engine::core::Value;
-use gridcraft_engine::model::Workbook;
+use cella_engine::Session;
+use cella_engine::core::Value;
+use cella_engine::model::Workbook;
 use serde_json::{Value as Json, json};
 
 /// Written to the artifact directory so a failing run can be replayed by hand.
@@ -45,7 +45,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let mut failed = 0usize;
     for Fixture { name, wb, app_skips, app_text_skips } in &fixtures {
         let gc_path = dir.join(format!("{name}.gc.xlsx"));
-        let bytes = gridcraft_engine::io::save_bytes(wb, &gc_path.to_string_lossy()).map_err(|e| format!("{name}: our own save failed: {e}"))?;
+        let bytes = cella_engine::io::save_bytes(wb, &gc_path.to_string_lossy()).map_err(|e| format!("{name}: our own save failed: {e}"))?;
         std::fs::write(&gc_path, &bytes).map_err(|e| format!("can't write {}: {e}", gc_path.display()))?;
         println!("\n== {name} ==  {} ({} bytes)", gc_path.display(), bytes.len());
 
@@ -123,7 +123,7 @@ fn fixtures(only: Option<&str>) -> Result<Vec<Fixture>, String> {
         if only.is_some_and(|want| want != name) {
             continue;
         }
-        let wb = gridcraft_engine::sample::build(name).ok_or_else(|| format!("no sample named {name:?}"))?;
+        let wb = cella_engine::sample::build(name).ok_or_else(|| format!("no sample named {name:?}"))?;
         out.push(Fixture { name: name.to_string(), wb, app_skips: vec![], app_text_skips: vec![] });
     }
     if only.is_none_or(|want| want == "features") {
@@ -168,7 +168,7 @@ fn features_fixture() -> Result<Workbook, String> {
     exec(&mut s, "cell.set", json!({"cell": "A20", "input": 1234.5}))?;
     exec(&mut s, "home.numberFormat", json!({"range": "A20", "code": "#,##0.00 \"units\""}))?;
     exec(&mut s, "review.newNote", json!({"cell": "B20", "text": "a note the oracle puts in its own part"}))?;
-    exec(&mut s, "insert.link", json!({"cell": "C20", "target": "https://example.com/gridcraft", "text": "site"}))?;
+    exec(&mut s, "insert.link", json!({"cell": "C20", "target": "https://example.com/cella", "text": "site"}))?;
     exec(&mut s, "data.validation", json!({"range": "D20:D24", "type": "list", "formula1": "\"Yes,No\""}))?;
     exec(&mut s, "view.freezeTopRow", json!({}))?;
     exec(&mut s, "formulas.defineName", json!({"name": "OracleRange", "refersTo": format!("={sheet}!$A$1:$C$1"), "scope": "Workbook"}))?;
@@ -286,7 +286,7 @@ fn compare_with_model(wb: &Workbook, seen: &Json) -> Vec<String> {
             // A built-in format is identified by its id, not by its text: a reader may render a
             // built-in code its own way (openpyxl's table for id 44 is missing the `;` separators),
             // and the id is what the file actually carries.
-            let same_builtin = matches!((gridcraft_engine::numfmt::builtin_id(want_format), seen_id), (Some(a), Some(b)) if a == b);
+            let same_builtin = matches!((cella_engine::numfmt::builtin_id(want_format), seen_id), (Some(a), Some(b)) if a == b);
             if !same_builtin && seen_format != want_format {
                 issues.push(format!(
                     "{}!{} number format: model {:?}, the reader sees {:?} (id {})",
@@ -408,7 +408,7 @@ fn probe_app(
     }
     let bytes = std::fs::read(dst).map_err(|e| format!("can't read {}: {e}", dst.display()))?;
     let (reopened, _reports) =
-        gridcraft_engine::io::open_bytes("oracle.xlsx", &bytes).map_err(|e| format!("we cannot read the application's own copy: {e}"))?;
+        cella_engine::io::open_bytes("oracle.xlsx", &bytes).map_err(|e| format!("we cannot read the application's own copy: {e}"))?;
     Ok(Some(compare_values(wb, &reopened, skips, text_skips)))
 }
 
@@ -521,10 +521,10 @@ mod tests {
                     }
                     let value = match &cell.formula {
                         Some(f) => Json::String(format!("={}", f.text)),
-                        None => gridcraft_engine::cmd::inspect::value_json(&cell.value),
+                        None => cella_engine::cmd::inspect::value_json(&cell.value),
                     };
                     let format = wb.styles.get(sh.style_id(cell_ref)).num_fmt.as_str().to_string();
-                    let id = gridcraft_engine::numfmt::builtin_id(&format).unwrap_or(164);
+                    let id = cella_engine::numfmt::builtin_id(&format).unwrap_or(164);
                     cells.insert(cell_ref.a1(), json!({"v": value, "fmt": format, "fmtId": id}));
                 }
                 let tables: serde_json::Map<String, Json> = sh
@@ -555,7 +555,7 @@ mod tests {
     }
 
     fn sales() -> Workbook {
-        gridcraft_engine::sample::build("sales").unwrap()
+        cella_engine::sample::build("sales").unwrap()
     }
 
     #[test]
@@ -609,7 +609,7 @@ mod tests {
     fn a_builtin_id_agrees_even_when_a_reader_renders_the_code_its_own_way() {
         // openpyxl's table for built-in id 44 drops the `;` separators; the id is what the file
         // carries, so a rendering difference on the same id is not a defect.
-        let wb = gridcraft_engine::sample::build("budget").unwrap();
+        let wb = cella_engine::sample::build("budget").unwrap();
         let mut view = faithful_view(&wb);
         let cell = view["sheets"][0]["cells"]["C5"].as_object_mut().unwrap();
         let full = cell["fmt"].as_str().unwrap().to_string();

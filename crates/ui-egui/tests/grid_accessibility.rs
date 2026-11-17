@@ -1,10 +1,10 @@
 //! A screen reader walks a sheet: the cells on screen are AccessKit nodes under a grid.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
 use egui::accesskit::Role;
 use egui::vec2;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

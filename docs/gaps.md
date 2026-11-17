@@ -3,7 +3,7 @@
 > **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§2), three waves: byte accounting per part; the dependency graph compacted twice (dependents 478.2 → 142.6 MB, nodes 172 → 104.9, areas 201 → 125); the save build parallelised; formula **shape sharing** (2M formulas → 3 shapes, the per-cell tree deleted, `Formula` 48 B, `Node` 16 B); a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s); and an **undo that restores a paged store**, gated so it never costs the edit (a sort of a paged store used to take minutes and now takes the sheet back into memory). A 1M × 6 workbook is **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower: save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, rebuild 1.7 → 1.12 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
-using GridCraft for real work first). This is the work list: pick from the top, check the open
+using Cella for real work first). This is the work list: pick from the top, check the open
 PRs first (50 open on 2026-10-10; several already address entries here), and update the entry
 when you land work. Estimates are Opus 5.5 agent-hours. Area detail lives in the linked parity
 docs; the summary is in [target-app-parity.md](target-app-parity.md).
@@ -61,7 +61,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   workbooks was run through `cargo xtask corpus`: **3,084 readable workbooks opened, no reader
   failure on a valid file, and 635 save → reopen cycles with zero digest mismatches** (the digest
   now covers values, formula text, styles, merges, comments, links, validation/conditional-format
-  ranges, tables, names, charts, shapes and pictures). **Excel 16 reopened GridCraft's copies and
+  ranges, tables, names, charts, shapes and pictures). **Excel 16 reopened Cella's copies and
   found them identical**: 12 files compared every formula and constant, 4 more (in-cell picture,
   comments, external links, a 3.4M-cell workbook) matched sheet names/used ranges/cells, and all 37
   readable `.xls` files converted and compared equal in content (one differs only in
@@ -158,11 +158,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   by test); a worker panic fails the save instead of writing an empty part. The writer still holds
   every sheet's XML until layout, so per-sheet release (S4b) remains.
 - **Landed (10-29): spill beside the document.** A paging read creates the page file in the
-  document's folder (temp fallback), with `GRIDCRAFT_SPILL=temp|off`, a UNC skip, a sanitized name,
+  document's folder (temp fallback), with `CELLA_SPILL=temp|off`, a UNC skip, a sanitized name,
   Unix 0600 + unlink-after-open and Windows delete-on-close. A write failure latches spilling off
   while existing pages stay readable; no file means the workbook opens live with one warning.
 - **Landed (10-29): byte-budget page cache and uncached save scan.** The decoded-band cache is
-  64 MiB by default (`GRIDCRAFT_PAGE_CACHE_MB` clamped 8–512), shared per page file, charged at
+  64 MiB by default (`CELLA_PAGE_CACHE_MB` clamped 8–512), shared per page file, charged at
   decode with generation/`Weak` eviction and `PageCacheStats`. `iter_scan`/`visit_scan` decode one
   band at a time without touching it, and the XLSX writer uses that path: a save leaves the
   viewport's cache exactly unchanged and no longer collects a 16k-wide band.
@@ -318,7 +318,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   Reproduced in six steps from `file.new {"sample":"budget"}`:
   `insert.table` B10:E12 → `selection.set` D11:H15 → `data.filterBy` column H `>` 56486 →
   `home.deleteColumns` D:D → `data.filter` E14:H19 → `data.filterBy` column D top 4
-  (`GRIDCRAFT_FUZZ_SEED=97 GRIDCRAFT_FUZZ_STEPS=120 cargo test -p gridcraft-engine --test
+  (`CELLA_FUZZ_SEED=97 CELLA_FUZZ_STEPS=120 cargo test -p cella-engine --test
   command_sequence_fuzz`). The design question is which of the two filters owns the bitmap (2–4 h).
   The default soak budget (6 seeds × 40 steps) passes; 150 × 120 finds it at seed 97.
 - **Landed (10-30, fills and pastes):** a whole-row/whole-column fill narrowed its target to the
@@ -422,7 +422,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own marker now writes even when the series marker is switched off.
 - **Landed 11-02 (click-select):** a chart element is selected by clicking it, with the pane's
   dropdown reaching the same elements: the chart is laid out into its primitives **and the boxes a
-  click can land on** (`gridcraft_chart::draw` → `Drawing { prims, hits }`), so the hit test is the
+  click can land on** (`cella_chart::draw` → `Drawing { prims, hits }`), so the hit test is the
   drawing's own geometry and cannot drift from it. A bar, area band, marker, a line's data point,
   a pie/doughnut/sunburst slice (an exact wedge region), a legend entry or an axis label band names
   the series and, when one point was hit, that point; the first click on an unselected chart
@@ -453,14 +453,14 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - **Estimate:** 0–2 h for beta (30–45 h full). [chart-parity.md](chart-parity.md)
 
 ### 5. Text in non-Latin scripts doesn't render or export (L)
-- **Landed 10-29 (font discovery + PDF embedding):** `gridcraft-core::fonts` finds a font file
+- **Landed 10-29 (font discovery + PDF embedding):** `cella-core::fonts` finds a font file
   (`CRAFT_FONTS_DIR`, then the platform's font directories, plain `read_dir`, no fontconfig) and
-  answers per-character coverage from `cmap`; `gridcraft-pdf` reads TrueType, subsets it (composite
+  answers per-character coverage from `cmap`; `cella-pdf` reads TrueType, subsets it (composite
   closure, rebuilt tables) and embeds a `CIDFontType2` with `FontFile2`, `Identity-H`, `/W` and a
   `ToUnicode` CMap, so Latin Extended, Greek, Cyrillic, Hebrew, Arabic, Devanagari, Thai, CJK and
   Hangul text reaches the page instead of vanishing. ASCII/WinAnsi documents keep their previous
   bytes because the engine only resolves a font when a character falls outside WinAnsi.
-- **Landed 10-30 (shaping engine):** `gridcraft-core::text` resolves paragraph levels and reordering
+- **Landed 10-30 (shaping engine):** `cella-core::text` resolves paragraph levels and reordering
   (`unicode-bidi`) and shapes each run (`rustybuzz`), returning positioned glyphs in **visual order**
   with logical UTF-8 byte clusters, mark offsets and a bounded cache. Arabic joins and ligates,
   Devanagari reorders and merges conjuncts, Thai marks take zero advance, `fi` ligates and RTL
@@ -529,7 +529,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   rule nothing in memory had applied, which no undo can reach. One function owns the naming rule now and
   the whole header row is reconciled after a structural edit, so model, cells and file cannot disagree.
 - **Oracle suite (10-30):** `crates/calc/tests/formula_oracle.rs` runs **595 documented examples over
-  275 functions** through the real calc path (`gridcraft_calc::evaluate`), plus dedicated tests for
+  275 functions** through the real calc path (`cella_calc::evaluate`), plus dedicated tests for
   real spills, `#SPILL!` unblocking, the 1904 date system, 3-D references and qualified names. Each
   row cites the published example it comes from. It is **documentation-derived, not
   Excel-computed**, and it is labelled that way: it can say the documented behaviour holds, not that
@@ -678,7 +678,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   `insert.slicer` (pivot or table), `insert.timeline`, `slicer.setSelection`, `slicer.setStyle`,
   `slicer.move` and `slicer.delete` drive a real filter: `setSelection` writes the field's
   `PivotFilter` on every PivotTable in the cache list and refreshes, in one undo step, and the
-  selection survives save/reopen. Catalog 279 → 280 (94.9 %). Everything GridCraft cannot model (an
+  selection survives save/reopen. Catalog 279 → 280 (94.9 %). Everything Cella cannot model (an
   OLAP cache, item properties, an unknown attribute or relationship, a timeline's date range) stays
   byte-identical on the pass-through path, all-or-nothing per kind.
 - **Landed 10-30 (placement):** a written slicer or timeline is placed and wired the way [MS-XLSX]
@@ -836,7 +836,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - **Out of scope (11-14):** the machines these reports came from are not this repository's — they
   belong upstream — so this entry cannot be closed here and is not a beta gate for us. The local net
   is the soak (`crates/engine/tests/command_sequence_fuzz.rs`: 6 seeds × 40 steps by default for the
-  gate, `GRIDCRAFT_FUZZ_SEEDS=150 GRIDCRAFT_FUZZ_STEPS=120` for a real soak) plus the fuzz regression
+  gate, `CELLA_FUZZ_SEEDS=150 CELLA_FUZZ_STEPS=120` for a real soak) plus the fuzz regression
   files. What it finds is kept: the 10-26 round fixed four, and the 11-13 soak found three
   save-fidelity bugs in filtered sheets and one open case (§3).
 - **Evidence:** #120 (Intel UHD crash on Windows), #117 (error on close, macOS), #166 (freeze opening
@@ -847,7 +847,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   freeze); a table's total row could grow into the next table; `data.subtotal` took a dozen undo
   steps per group instead of one; a table column named with `!` was saved as a sheet-qualified
   formula and came back changed. The harness now ends an episode before the 128 MB undo budget
-  trims it, traces steps with `GRIDCRAFT_FUZZ_TRACE`, and names the differing sheet field.
+  trims it, traces steps with `CELLA_FUZZ_TRACE`, and names the differing sheet field.
 - **Fixed (10-26, same soak):** an array that spills over its own source (`=TRANSPOSE(J23:L28)`
   in J24) was laid out anyway, with some elements `#CIRC!`; it is now `#CIRC!` at the anchor, as a
   formula that reads a cell it writes. And two arrays whose areas overlap kept their cells across
@@ -869,7 +869,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   still refuses edits of its cells; Insert/Delete Cells that would cut a merged area in two is
   refused; the harness tells a byte-capped (trimmed) undo history from a real undo bug, and
   ignores view-only freeze in undo comparisons.
-- **Remaining caveat:** the file format cannot cache `#SPILL!`/`#CALC!` (GridCraft writes
+- **Remaining caveat:** the file format cannot cache `#SPILL!`/`#CALC!` (Cella writes
   `#VALUE!`, following the claim that Excel refuses those error codes; **needs verification on a
   licensed Excel**) or `#CIRC!` (written as 0). A *literal* `#SPILL!` pasted as a value therefore
   comes back `#VALUE!`; formulas and spilled values are recalculated and agree.
@@ -896,7 +896,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   (12,290 lines, verified by nobody) are gone; the enum is `Language::En | Zh`, an old `ui.json`
   saying `"ja"` loads as English with every other preference intact. Chinese covers **1,739 of
   ~2,200 strings** and **all 362 engine command labels**; every `tr()` key has an entry (437 of
-  them) and the only accepted English literals in the UI are the `GridCraft` brand. Formula syntax,
+  them) and the only accepted English literals in the UI are the `Cella` brand. Formula syntax,
   separators and number/date formats stay **en-US by decision** — Excel's own Simplified Chinese
   build does the same, so #45 as filed is closed by scope. Two CI guards hold it: a strict test over
   the engine's command specs, and `cargo xtask i18n` (unwrapped literals **and** wrapped keys with
@@ -940,7 +940,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   fit is rolled back rather than kept. Sources: CSV/TSV, JSON, XLSX, **Parquet (read; the reader is
   new)**, a table or range of the workbook. `range.setValues` gained `raw` so a loaded column keeps
   the type the pipeline gave it instead of being re-typed as a date on the way out. Persistence is
-  our own part, `xl/gridcraft/queries.json`, read leniently and dropped when the model has none —
+  our own part, `xl/cella/queries.json`, read leniently and dropped when the model has none —
   Excel ignores the part (and **drops it if it saves the file**: its own queries live in a
   proprietary `customXml` DataMashup blob, which clean-room rules put out of reach). Tests: 28 in
   the pipeline crate, 13 end-to-end through the engine (including save → reopen → refresh), 10 for
@@ -964,7 +964,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   measures (cycle- and depth-bounded). A filter context **propagates through relationships**, which
   is what makes two files mean something together: a filter on `Region[Name]` restricts `Sales`
   through `Sales[RegionId] → Region[Id]`. On the grid, `=MEASURE("Total", "Region[Name]", "West")`
-  (a GridCraft function, not Excel's) evaluates a measure in a cell and recalculates when the model
+  (a Cella function, not Excel's) evaluates a measure in a cell and recalculates when the model
   changes, because the function is treated as volatile — the rows it reads live outside the cell
   graph. **Adding or editing a measure validates its formula first** and rolls back a change that
   would never compute, the same rule a query step follows. Where the subset deliberately differs
@@ -991,13 +991,13 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - **Landed 11-14 (N3.4, the PivotTable over the model).** A report whose `source` is a **model
   table** is computed, not carried: rows come from the model, the field list is `Table[Column]`
   (the table's own columns plus one hop out along a relationship where it is the many side), and a
-  value field may be a **measure**, evaluated by `gridcraft-dax` per cell with the row and column
+  value field may be a **measure**, evaluated by `cella-dax` per cell with the row and column
   members as the filter context — so a measure answers per item, per subtotal and for the grand
   total in every layout, and a measure that cannot compute is one `#VALUE!` cell rather than a
   failed refresh. A measure is refused as a row, column or filter field (it carries its own
   aggregate) and refused altogether by a report over a worksheet range, with a message saying to
   build it on the model table. The definition is kept in a part of our own,
-  `xl/gridcraft/pivots.json` (a model report's cache would have to point at the binary
+  `xl/cella/pivots.json` (a model report's cache would have to point at the binary
   `xl/model/*`, which this implementation keeps but does not author), so it survives save → reopen
   → refresh; Excel sees the cells it wrote and no PivotTable, the same limitation the queries part
   has. The exit criterion is now measured: two CSV queries → model tables → relationship → measure
@@ -1039,7 +1039,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   covers instead of being left out of the context; and the **Filters area** narrows measure cells,
   which it did not before — a report filtered to West used to show the whole table's numbers, which
   is the worst kind of wrong because the report looked filtered. Both use a new "is one of these"
-  filter in `gridcraft-dax` (`Context::filter_any_of`); a bucket wider than 4,096 distinct members
+  filter in `cella-dax` (`Context::filter_any_of`); a bucket wider than 4,096 distinct members
   narrows nothing rather than costing seconds per cell.
 - **What is still not done:** `data.getData`/`data.fromTextCsv` remain one-shot imports (a table and
   no query) by design — the pane's button is the query path; adding a step from the pane is
@@ -1115,7 +1115,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 ### 15. Remaining functions and an oracle suite (F)
 - **9 missing by name** (514 of Microsoft's 523 present, 505 working): DETECTLANGUAGE, TRANSLATE,
   IMAGE, RTD, STOCKHISTORY, CALL, REGISTER.ID, COPILOT and PY; nine stubs (7 CUBE, WEBSERVICE,
-  FILTERXML). Measured 11-02 with `gridcraft-cli functions --json` (515 specs, one of them
+  FILTERXML). Measured 11-02 with `cella-cli functions --json` (515 specs, one of them
   USDOLLAR, which is not on Microsoft's list). No Excel-computed oracle corpus; #137, #138.
   **Estimate:** 13–22 h. [function-parity.md](function-parity.md)
 
@@ -1133,7 +1133,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   equation object (`model/src/equation.rs`), its OMML kept **verbatim** through a save, and
   `insert.equation` / `equation.setText` create and retype one (a retyped equation is written as
   plain `m:r/m:t` runs — the file's real math survives only while the text is untouched, which the
-  field docs say). GridCraft paints the **linear** text: full 2-D math layout is out of scope, and
+  field docs say). Cella paints the **linear** text: full 2-D math layout is out of scope, and
   the command is **command/control-channel only** until there is an equation editor to type into.
   Equations do not yet follow row/column inserts, are not in the z-order/Align/Arrange commands,
   and are not in the PDF export; the accessibility check lists one (it is named by its source).
@@ -1167,7 +1167,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   a frame) and the walk is capped at 2,000 cells a frame, so a reader scrolls for the rest as a
   sighted user does.
 - **Landed 11-02 (high contrast):** View ▸ Show ▸ **High Contrast** (`view.highContrast`, keytip
-  WVI — GridCraft's own, Excel takes it from the OS) turns the chrome into a black, white and
+  WVI — Cella's own, Excel takes it from the OS) turns the chrome into a black, white and
   yellow palette: black window, ribbon, tabs and status bar with white text and yellow separators,
   a yellow selection border and header highlight, cyan accents, and a white sheet page that keeps
   its own black text (as Excel's high-contrast themes do — the document is not the chrome). egui's
@@ -1291,7 +1291,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-16 | minor | §18/§17: the accessibility check lists every object without alternative text — **WordArt and equations included** — with the reason it is there and the name a screen reader reads (the object's own text when it carries one); the PDF export draws a WordArt's text outline (eight offset copies) and drop shadow (one) the way the grid paints them. Two tests, one per half |
-| 2026-11-03 | minor | §1: a local real-world corpus (9.6 GB, 3,199 workbooks) was run: 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches (digest now covers formula text, merges, comments, links, CF/DV, tables, names, charts, shapes, pictures), and Excel 16 found GridCraft's copies identical on 16 `.xlsx` files plus all 37 readable `.xls`. #1 is met for beta; 4 invalid files (openpyxl also refuses), 111 encrypted and 449 cloud placeholders were out of reach, and the pinned corpus remains for CI (0–1 h) |
+| 2026-11-03 | minor | §1: a local real-world corpus (9.6 GB, 3,199 workbooks) was run: 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches (digest now covers formula text, merges, comments, links, CF/DV, tables, names, charts, shapes, pictures), and Excel 16 found Cella's copies identical on 16 `.xlsx` files plus all 37 readable `.xls`. #1 is met for beta; 4 invalid files (openpyxl also refuses), 111 encrypted and 449 cloud placeholders were out of reach, and the pinned corpus remains for CI (0–1 h) |
 | 2026-11-03 | minor | §7: `.xls` autoshapes and text boxes are read — Excel 2007+'s DrawingML fragment when present (geometry, fill, line, text, formatting), otherwise the OfficeArt type and anchor — and verified in Excel 16 with five shapes (same text/fill/line/positions; a block arrow becomes the model's arrowheaded line). The reader now tolerates drawings split across records and a trailing shape stored in a text box's Continue records. #7 is met for beta; OLE objects and chart sheets are full scope |
 | 2026-11-03 | minor | §7: `.xls` charts are read (the chart substream: kind and variants, series `BRAI` ranges, cached names, title, legend, and the anchor from the `msosptChart` shape) and verified in Excel 16 — a five-kind workbook converts and reopens with the same kinds, titles and anchors. Shapes, OLE objects and chart sheets remain, so #7 falls to 1–3 h. RC4 is re-scoped: Excel refuses a hand-made RC4 `.xlsx` (ECMA-376 Standard requires AES), so encrypted `.xls` output waits for a `.xls` writer |
 | 2026-11-03 | minor | Beta-blocker bookkeeping after round 16: §1 loses the Excel half (Excel 16 verifies every fixture), §7's evidence no longer says encryption cannot be written, §8's slicer evidence is Excel-16-verified and its estimate drops to 0–1 h (the corpus is #1's), §9's object context menus landed, §14 and §18 are updated (the status-bar accessibility entry landed, print polish is what remains), and the beta blockers are down to the corpus, `.xls` charts/RC4 and the field machines. No score change |

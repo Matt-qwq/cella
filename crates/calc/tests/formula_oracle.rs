@@ -4,14 +4,14 @@
 //! written on, so the expected values here are transcribed from Microsoft's published function
 //! reference (learn.microsoft.com). They are *documentation-derived, not Excel-computed*: a page
 //! can be stale, locale-dependent, or show a value rounded for display, and none of this proves
-//! GridCraft matches the installed Excel. What it does prove is that the whole formula path
+//! Cella matches the installed Excel. What it does prove is that the whole formula path
 //! (parser, names, references, evaluator, function library, array results) reproduces examples
 //! Microsoft published.
 //!
 //! Every row names the function and the documentation example it comes from. A value that could
 //! not be attributed to a documented example was not added. Where the page prints a rounded value
 //! (-1,037.03) the row compares at that printed precision: the tolerance is half a unit in the
-//! last printed digit, never a tolerance chosen to fit what GridCraft returns. Rows the
+//! last printed digit, never a tolerance chosen to fit what Cella returns. Rows the
 //! documentation shows to more digits (or exact integers, text, booleans) compare at 1e-9
 //! relative or exactly.
 //!
@@ -30,9 +30,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_calc::{Calc, evaluate};
-use gridcraft_core::{CellError, CellRef, DateSystem, Value};
-use gridcraft_model::{Cell, DefinedName, Formula, Sheet, Workbook};
+use cella_calc::{Calc, evaluate};
+use cella_core::{CellError, CellRef, DateSystem, Value};
+use cella_model::{Cell, DefinedName, Formula, Sheet, Workbook};
 
 // ---------------------------------------------------------------------------------------------
 // Harness
@@ -96,7 +96,7 @@ fn workbook(fixtures: &[(&str, &str)]) -> Workbook {
         } else if let Some(e) = CellError::parse(input.trim()) {
             Cell::value(Value::Error(e))
         } else {
-            Cell::value(gridcraft_core::parse::parse_input(input, wb.date_system).value)
+            Cell::value(cella_core::parse::parse_input(input, wb.date_system).value)
         };
         if let Some(sh) = wb.sheet_mut(0) {
             sh.cells.set(at(a), cell);
@@ -164,7 +164,7 @@ fn documented_examples() {
         let got = evaluate(&wb, 0, at(case.at), case.formula);
         if !matches(case.want, &got, case.tol) {
             failures.push(format!(
-                "{}: {}\n    documented: {}\n    GridCraft:  {got:?}\n    source: {}",
+                "{}: {}\n    documented: {}\n    Cella:  {got:?}\n    source: {}",
                 case.id,
                 case.formula,
                 show(case.want),

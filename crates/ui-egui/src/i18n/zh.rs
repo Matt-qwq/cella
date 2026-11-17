@@ -289,7 +289,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Command\nPalette" => "命令\n面板",
         "Agent\nControl" => "智能体\n控制",
         "Action\nJournal" => "操作\n日志",
-        "About\nGridCraft" => "关于\nGridCraft",
+        "About\nCella" => "关于\nCella",
         "Share" => "分享",
         "Add Chart\nElement" => "添加图表\n元素",
         "Change\nChart Type" => "更改\n图表类型",
@@ -410,7 +410,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Options" => "选项",
         "Account" => "账户",
         "Product Information" => "产品信息",
-        "About GridCraft" => "关于 GridCraft",
+        "About Cella" => "关于 Cella",
         "Version" => "版本",
         "Platform" => "平台",
         "Licence" => "许可证",
@@ -735,7 +735,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Horizontal (Category) Axis Labels:" => "水平（分类）轴标签：",
         "Horizontal axis title:" => "水平轴标题：",
         "Household Budget" => "家庭预算",
-        "How agents drive GridCraft (MCP / control channel)" => "智能体如何驱动 GridCraft（MCP / 控制通道）",
+        "How agents drive Cella (MCP / control channel)" => "智能体如何驱动 Cella（MCP / 控制通道）",
         "Hypothesized Mean Difference:" => "假设平均差：",
         "Ignore blank" => "忽略空值",
         "Ignore Once" => "忽略一次",
@@ -1141,14 +1141,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "  OK  " => "  确定  ",
         " Close " => " 关闭 ",
         "A clean-room, open-source, Rust-native spreadsheet." => "一款净室实现、开源、Rust 原生的电子表格。",
-        "Based on GridCraft by the ArtCraft team." => "基于 ArtCraft 团队的 GridCraft 开发。",
+        "Based on Cella by the ArtCraft team." => "基于 ArtCraft 团队的 Cella 开发。",
         "A Date Occurring" => "发生日期",
         "A Date Occurring…" => "发生日期…",
         "Add Watch (active cell)" => "添加监视（活动单元格）",
         "Alt text" => "替换文字",
         "Apply" => "应用",
-        "Automation in this workbook. GridCraft runs its own scripts; a file's VBA project is preserved but not executed." => {
-            "此工作簿中的自动化。GridCraft 运行自己的脚本；文件中的 VBA 工程会保留但不执行。"
+        "Automation in this workbook. Cella runs its own scripts; a file's VBA project is preserved but not executed." => {
+            "此工作簿中的自动化。Cella 运行自己的脚本；文件中的 VBA 工程会保留但不执行。"
         }
         // The script editor (View ▸ Macros: the step list and its commands).
         "Add a step at the end of this script" => "在此脚本末尾添加一个步骤",
@@ -1173,8 +1173,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Format code" => "格式代码",
         "Go to" => "定位",
         "Greater Than…" => "大于…",
-        "GridCraft is fully drivable by agents. Every menu item, button and gesture is a command:" => {
-            "GridCraft 完全可由智能体驱动：每个菜单项、按钮和手势都是一条命令："
+        "Cella is fully drivable by agents. Every menu item, button and gesture is a command:" => {
+            "Cella 完全可由智能体驱动：每个菜单项、按钮和手势都是一条命令："
         }
         "Hex" => "十六进制",
         "High Contrast" => "高对比度",
@@ -1295,7 +1295,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "GRG Nonlinear: a local optimum of a smooth model, from the current values." => "非线性 GRG：从当前值出发求光滑模型的局部最优解。",
         "Let this workbook's scripts run for the rest of this session" => "允许此工作簿的脚本在本次会话中继续运行",
         "Names" => "名称",
-        "No dictionary is available on this system (GridCraft uses the system word list)." => "此系统没有可用的词典（GridCraft 使用系统词表）。",
+        "No dictionary is available on this system (Cella uses the system word list)." => "此系统没有可用的词典（Cella 使用系统词表）。",
         "No problems found." => "未发现问题。",
         "Nothing to evaluate." => "没有可计算的内容。",
         "Result:" => "结果：",
@@ -1684,8 +1684,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Themed Cell Styles" => "主题单元格样式",
         "Thick Bottom Border" => "粗底边框",
         "Thick Outside Borders" => "粗外侧框线",
-        "This chart type keeps its options in a chartex part, which GridCraft does not model." => {
-            "此图表类型把选项存放在 chartex 部件中，GridCraft 尚未对其建模。"
+        "This chart type keeps its options in a chartex part, which Cella does not model." => {
+            "此图表类型把选项存放在 chartex 部件中，Cella 尚未对其建模。"
         }
         "Time:" => "时间：",
         "Timeline {}" => "日程表 {}",
@@ -1754,8 +1754,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "The object no longer exists." => "该对象已不存在。",
         "The print command did not produce a PDF." => "打印命令没有生成 PDF。",
         "The text box's worksheet is no longer active." => "文本框所在的工作表已不再是活动工作表。",
-        "This workbook contains VBA macros. GridCraft keeps them when you save as .xlsm, but does not run them." => {
-            "此工作簿包含 VBA 宏。另存为 .xlsm 时 GridCraft 会保留它们，但不会运行它们。"
+        "This workbook contains VBA macros. Cella keeps them when you save as .xlsm, but does not run them." => {
+            "此工作簿包含 VBA 宏。另存为 .xlsm 时 Cella 会保留它们，但不会运行它们。"
         }
         "This workbook's VBA macros could not be loaded and were dropped, so they will not be in the saved file. Keep the original file." => {
             "此工作簿的 VBA 宏无法加载，已被丢弃，因此保存的文件中不会包含它们。请保留原始文件。"
@@ -1907,7 +1907,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         }
         // Automate > Agent Control: how an agent drives the app (there is no in-app assistant).
         "Listening on 127.0.0.1:{port}." => "正在 127.0.0.1:{port} 上监听。",
-        "Not listening. Start GridCraft with --control {port} to let agents in." => "未在监听。用 --control {port} 启动 GridCraft，代理才能接入。",
+        "Not listening. Start Cella with --control {port} to let agents in." => "未在监听。用 --control {port} 启动 Cella，代理才能接入。",
         "Every menu item, button and gesture is a command, so an agent drives the same engine this window does. Three ways in:" => {
             "每个菜单项、按钮和手势都是一条命令，所以代理驱动的就是本窗口驱动的同一台引擎。三种接法："
         }

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 
-use gridcraft_core::{MAX_COLS, MAX_ROWS};
+use cella_core::{MAX_COLS, MAX_ROWS};
 use serde::ser::SerializeMap as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -833,7 +833,7 @@ impl FilterHidden {
             return;
         }
         let move_row = |row: u32| if row >= at { row.saturating_add(count) } else { row };
-        self.shift_rows(move_row, |row| row < gridcraft_core::MAX_ROWS);
+        self.shift_rows(move_row, |row| row < cella_core::MAX_ROWS);
     }
 
     /// Keeps the hidden rows `keep` accepts, dropping the rest (and their parked line info).

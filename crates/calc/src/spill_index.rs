@@ -10,7 +10,7 @@
 //! sheet once per changed cell.
 
 use crate::recalc::{FxHasher, Key};
-use gridcraft_core::{CellRef, RangeRef};
+use cella_core::{CellRef, RangeRef};
 use std::hash::BuildHasherDefault;
 
 type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<FxHasher>>;

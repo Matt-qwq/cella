@@ -6,14 +6,14 @@
 
 use std::sync::Arc;
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, MAX_COLS, MAX_ROWS};
+use cella_engine::model::{AnchorMode, SlicerValue};
+use cella_ui_egui::grid::Geo;
+use cella_ui_egui::slicer_view::{slicer_chrome, timeline_chrome, widget_rect};
+use cella_ui_egui::{SheetApp, theme};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Shape, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, MAX_COLS, MAX_ROWS};
-use gridcraft_engine::model::{AnchorMode, SlicerValue};
-use gridcraft_ui_egui::grid::Geo;
-use gridcraft_ui_egui::slicer_view::{slicer_chrome, timeline_chrome, widget_rect};
-use gridcraft_ui_egui::{SheetApp, theme};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -126,7 +126,7 @@ fn report_texts(h: &Harness) -> Vec<String> {
     let mut out = vec![];
     for row in r.start.row..=r.end.row {
         for col in r.start.col..=r.end.col {
-            let t = gridcraft_engine::display::cell_text(&d.wb, sh, CellRef::new(row, col));
+            let t = cella_engine::display::cell_text(&d.wb, sh, CellRef::new(row, col));
             if !t.is_empty() {
                 out.push(t);
             }
@@ -187,13 +187,13 @@ fn dragging_the_frame_moves_the_anchor_in_one_undo_step() {
         let app = h.state();
         let sh = app.session.active().unwrap().wb.active().unwrap();
         let sl = sh.pivot_slicers.iter().find(|s| s.id == slicer).unwrap();
-        (sl.anchor.cell, gridcraft_ui_egui::chartview::frame_of(sh, &sl.anchor), geo(&h).z)
+        (sl.anchor.cell, cella_ui_egui::chartview::frame_of(sh, &sl.anchor), geo(&h).z)
     };
     let want = {
         let app = h.state();
         let sh = app.session.active().unwrap().wb.active().unwrap();
-        let moved = gridcraft_ui_egui::chartview::drag_frame(orig, gridcraft_ui_egui::chartview::Edges::MOVE, delta / z, false);
-        gridcraft_ui_egui::chartview::anchor_of(sh, moved).0
+        let moved = cella_ui_egui::chartview::drag_frame(orig, cella_ui_egui::chartview::Edges::MOVE, delta / z, false);
+        cella_ui_egui::chartview::anchor_of(sh, moved).0
     };
     assert_ne!(want, original_cell);
 
@@ -263,7 +263,7 @@ fn a_hostile_anchor_and_a_kilometre_caption_still_draw() {
         // Off the sheet with NaN offsets and a negative size: the drawing clamps every number.
         let bad = sh.pivot_slicers.iter().find(|s| s.id == slicer).map(|s| s.anchor).unwrap();
         if let Some(sl) = sh.pivot_slicers.iter_mut().find(|s| s.id == slicer) {
-            sl.anchor = gridcraft_engine::model::Anchor {
+            sl.anchor = cella_engine::model::Anchor {
                 cell: CellRef::new(MAX_ROWS - 1, MAX_COLS - 1),
                 dx: f32::NAN,
                 dy: f32::NEG_INFINITY,
@@ -281,7 +281,7 @@ fn a_hostile_anchor_and_a_kilometre_caption_still_draw() {
         let mut on_screen = sh.pivot_slicers.first().cloned().unwrap_or_default();
         on_screen.id = slicer.saturating_add(100);
         on_screen.caption = "C".repeat(5000);
-        on_screen.anchor = gridcraft_engine::model::Anchor {
+        on_screen.anchor = cella_engine::model::Anchor {
             cell: CellRef::parse("D20").unwrap(),
             // A negative offset and a negative size, both clamped instead of drawn off the sheet.
             dx: -30.0,
@@ -295,7 +295,7 @@ fn a_hostile_anchor_and_a_kilometre_caption_still_draw() {
         }
         sh.pivot_slicers.push(on_screen);
         if let Some(tl) = sh.pivot_timelines.iter_mut().find(|t| t.id == timeline) {
-            tl.anchor = gridcraft_engine::model::Anchor {
+            tl.anchor = cella_engine::model::Anchor {
                 cell: bad.cell,
                 dx: f32::NAN,
                 dy: f32::NAN,
@@ -421,11 +421,11 @@ fn timeline_frame(h: &Harness, id: u32) -> egui::Rect {
     widget_rect(&geo(h), sh, &tl.anchor)
 }
 
-fn timeline_layout(h: &Harness, id: u32) -> gridcraft_ui_egui::slicer_view::TimelineChrome {
+fn timeline_layout(h: &Harness, id: u32) -> cella_ui_egui::slicer_view::TimelineChrome {
     timeline_chrome(&geo(h), timeline_frame(h, id))
 }
 
-fn timeline_range(h: &Harness, id: u32) -> Option<gridcraft_engine::model::TimelineRange> {
+fn timeline_range(h: &Harness, id: u32) -> Option<cella_engine::model::TimelineRange> {
     h.state().session.active().unwrap().wb.active().unwrap().pivot_timelines.iter().find(|t| t.id == id).and_then(|t| t.range)
 }
 

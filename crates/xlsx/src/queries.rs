@@ -1,8 +1,8 @@
-//! The workbook's Get & Transform queries, in a part of our own: `xl/gridcraft/queries.json`.
+//! The workbook's Get & Transform queries, in a part of our own: `xl/cella/queries.json`.
 //!
 //! Excel keeps a query in a `customXml` DataMashup part (a proprietary compressed container).
 //! Reading or writing that is out of reach of a clean-room implementation, and a guess would corrupt
-//! a real workbook instead of round-tripping it, so GridCraft stores its own queries in a part of its
+//! a real workbook instead of round-tripping it, so Cella stores its own queries in a part of its
 //! own. An extra OPC part is legal: Excel reads the parts its relationships name and leaves the rest
 //! alone.
 //!
@@ -15,7 +15,7 @@
 //!   written.
 //! - **The model is the truth.** An empty `wb.queries` writes no part and declares no extension. A
 //!   file that *had* the part leaves with none once the model has no queries: the pass-through
-//!   carries only the parts a relationship reaches (`xl/gridcraft/` is in no keep list, and this part
+//!   carries only the parts a relationship reaches (`xl/cella/` is in no keep list, and this part
 //!   is reached by nothing), so a stale copy cannot outlive the queries it held.
 //! - **The JSON is the model's own serde shape** — externally tagged enums, fields in declaration
 //!   order, `null` for `None` — and `tests::queries` proves that against `serde_json` on the same
@@ -31,8 +31,8 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_core::{CellError, CellRef, RangeRef, Value};
-use gridcraft_model::{
+use cella_core::{CellError, CellRef, RangeRef, Value};
+use cella_model::{
     DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelTable, Query, QueryAggregate, QueryColumnType,
     QueryFilterOp, QueryLoad, QuerySource, QueryStep, Relationship, Workbook,
 };
@@ -42,7 +42,7 @@ use crate::read::Ctx;
 use crate::write::Out;
 
 /// The part the queries are written to: a folder of our own, so no Excel part can collide with it.
-pub(crate) const PART: &str = "xl/gridcraft/queries.json";
+pub(crate) const PART: &str = "xl/cella/queries.json";
 /// The extension the package has to declare a content type for.
 pub(crate) const EXTENSION: &str = "json";
 /// Its content type: plain JSON, which is exactly what the part holds.
@@ -537,12 +537,12 @@ fn as_source(v: &Json) -> Result<QuerySource, String> {
         "Http" => {
             let o = as_object(details(body, name)?, what)?;
             let format = match as_text(field(o, "format", what)?, "the Http source's format")?.to_ascii_lowercase().as_str() {
-                "csv" => gridcraft_model::HttpFormat::Csv,
-                "json" => gridcraft_model::HttpFormat::Json,
+                "csv" => cella_model::HttpFormat::Csv,
+                "json" => cella_model::HttpFormat::Json,
                 // A part written by a newer version names a format this one cannot read: dropping
                 // the whole query would lose the steps, so it is read as CSV and the refresh
                 // reports what actually came back.
-                _ => gridcraft_model::HttpFormat::Csv,
+                _ => cella_model::HttpFormat::Csv,
             };
             QuerySource::Http { url: as_text(field(o, "url", what)?, "the Http source's URL")?, format }
         }
@@ -1083,7 +1083,7 @@ impl<'a> Parser<'a> {
 // ---------------------------------------------------------------- the data model
 
 /// The model's tables, relationships and measures, written beside the queries: the part holds the
-/// workbook's GridCraft-only state, and a workbook that has one usually has the other.
+/// workbook's Cella-only state, and a workbook that has one usually has the other.
 fn encode_model(s: &mut String, m: &DataModel) {
     s.push_str("{\"tables\":[");
     for (i, t) in m.tables.iter().enumerate() {
@@ -1238,7 +1238,7 @@ fn as_model_table(v: &Json) -> Result<ModelTable, String> {
             }
             out.resize(columns.len(), Value::Empty);
             rows.push(out);
-            if rows.len() > gridcraft_core::MAX_ROWS as usize {
+            if rows.len() > cella_core::MAX_ROWS as usize {
                 return Err("the table holds more rows than a sheet".into());
             }
         }

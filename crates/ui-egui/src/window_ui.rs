@@ -6,7 +6,7 @@
 //! way the engine swaps a window's selection and sheet into its workbook. So a draft, a dialog or
 //! the File view stays in the window it belongs to — switching windows shows that window's.
 
-use gridcraft_engine::WindowId;
+use cella_engine::WindowId;
 
 use crate::{SheetApp, backstage, dialogs, editor, text_box};
 

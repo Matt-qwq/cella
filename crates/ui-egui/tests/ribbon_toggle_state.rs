@@ -1,15 +1,15 @@
 //! The formatting toggles' state: what Bold/Italic/Underline/Strikethrough show, and that a click
 //! repaints the grid in the same frame it lands in.
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_engine::model::Style;
+use cella_ui_egui::SheetApp;
 use egui::{
     Event, Key, Modifiers, Shape,
     accesskit::{Role, Toggled},
 };
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_engine::model::Style;
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 /// Ctrl on Windows and Linux sets both ctrl and command.
@@ -124,14 +124,14 @@ fn italic_underline_and_strikethrough_click_through_to_their_styles() {
     let main = h.get_all_by_role_and_label(Role::Button, "Underline (Ctrl+U)").min_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x));
     main.expect("Underline has a main half").click();
     h.run_steps(3);
-    assert_eq!(style(&h, "A1").font.underline, gridcraft_engine::model::Underline::Single, "Underline reaches the engine");
+    assert_eq!(style(&h, "A1").font.underline, cella_engine::model::Underline::Single, "Underline reaches the engine");
 
     let arrow = h.get_all_by_role_and_label(Role::Button, "Underline (Ctrl+U)").max_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x));
     arrow.expect("Underline has an arrow").click();
     h.run_steps(4);
     h.get_by_role_and_label(Role::Button, "Double Underline").click();
     h.run_steps(3);
-    assert_eq!(style(&h, "A1").font.underline, gridcraft_engine::model::Underline::Double, "Double Underline reaches the engine");
+    assert_eq!(style(&h, "A1").font.underline, cella_engine::model::Underline::Double, "Double Underline reaches the engine");
 
     h.get_by_role_and_label(Role::Button, "Strikethrough").click();
     h.run_steps(3);
@@ -187,7 +187,7 @@ fn ctrl_b_ctrl_i_and_ctrl_u_reach_the_same_styles() {
     assert_eq!(pressed(&h, "Italic (Ctrl+I)"), Some(true));
 
     key(&mut h, Key::U, CTRL);
-    assert_eq!(style(&h, "A1").font.underline, gridcraft_engine::model::Underline::Single, "Ctrl+U underlines");
+    assert_eq!(style(&h, "A1").font.underline, cella_engine::model::Underline::Single, "Ctrl+U underlines");
 
     // Ctrl+B again turns it off, as the button would.
     key(&mut h, Key::B, CTRL);

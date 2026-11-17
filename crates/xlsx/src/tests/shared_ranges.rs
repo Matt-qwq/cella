@@ -6,8 +6,8 @@
 //! sheet in more than one piece (parallel row chunks, streaming) must reproduce all of it exactly,
 //! so this file pins the behaviour down.
 
-use gridcraft_core::{CellRef, Value};
-use gridcraft_model::Workbook;
+use cella_core::{CellRef, Value};
+use cella_model::Workbook;
 
 use crate::{read_xlsx, write_xlsx};
 
@@ -123,7 +123,7 @@ fn shared_and_array_formulas_round_trip() {
     for (at_, cell) in a.cells.iter() {
         let got = b.cell(at_).unwrap_or_else(|| panic!("missing {at_}"));
         assert_eq!(got.value, cell.value, "value at {at_}");
-        let f = |c: &gridcraft_model::Cell| c.formula.as_ref().map(|f| (f.text.clone(), f.array.as_deref().copied(), f.dynamic));
+        let f = |c: &cella_model::Cell| c.formula.as_ref().map(|f| (f.text.clone(), f.array.as_deref().copied(), f.dynamic));
         assert_eq!(f(&got), f(&cell), "formula at {at_}");
     }
 }

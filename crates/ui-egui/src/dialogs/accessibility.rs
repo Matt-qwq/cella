@@ -4,7 +4,7 @@ use serde_json::{Value as Json, json};
 
 use crate::SheetApp;
 
-/// The Macros dialog: lists GridCraft's own recorded scripts and (if the file carries one) the
+/// The Macros dialog: lists Cella's own recorded scripts and (if the file carries one) the
 /// preserved VBA project. Mirrors Excel's Developer ▸ Macros list, but is honest that VBA is
 /// preserved and not executed.
 /// Review ▸ Check Accessibility: each issue where it is, a button that goes there and — for an

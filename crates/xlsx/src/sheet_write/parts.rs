@@ -7,7 +7,7 @@ use super::*;
 pub(crate) fn table_name(name: &str, used: &mut HashSet<String>, n: u32) -> String {
     let mut s: String =
         name.chars().enumerate().map(|(i, c)| if c.is_alphanumeric() || c == '_' || c == '.' || (i == 0 && c == '\\') { c } else { '_' }).collect();
-    if s.is_empty() || !s.starts_with(|c: char| c.is_alphabetic() || c == '_' || c == '\\') || gridcraft_core::CellRef::parse(&s).is_some() {
+    if s.is_empty() || !s.starts_with(|c: char| c.is_alphabetic() || c == '_' || c == '\\') || cella_core::CellRef::parse(&s).is_some() {
         s = format!("Table{n}");
     }
     let mut out = s.clone();
@@ -77,7 +77,7 @@ pub(crate) fn autofilter_xml(range: RangeRef, criteria: &[(u32, FilterCriterion)
                 let _ = write!(s, "<dynamicFilter type=\"{}\"/>", if *above { "aboveAverage" } else { "belowAverage" });
             }
             FilterCriterion::FillColor(c) => {
-                let st = Style { fill: gridcraft_model::Fill::solid(*c), ..Default::default() };
+                let st = Style { fill: cella_model::Fill::solid(*c), ..Default::default() };
                 let _ = write!(s, "<colorFilter dxfId=\"{}\"/>", dxf_id(&mut out.dxfs, &st));
             }
             FilterCriterion::FontColor(c) => {
@@ -208,7 +208,7 @@ pub(crate) fn thread_ids(sheet: &Sheet, si: usize) -> BTreeMap<CellRef, Vec<Stri
 }
 pub(crate) fn comments_xml(sheet: &Sheet, ids: &BTreeMap<CellRef, Vec<String>>) -> String {
     // A threaded comment's legacy note is authored by `tc={thread id}`.
-    let author_of = |cell: &CellRef, c: &gridcraft_model::Comment| match ids.get(cell).and_then(|v| v.first()) {
+    let author_of = |cell: &CellRef, c: &cella_model::Comment| match ids.get(cell).and_then(|v| v.first()) {
         Some(id) => format!("tc={id}"),
         None => c.author.clone(),
     };
@@ -303,11 +303,11 @@ pub(crate) fn threaded_xml(sheet: &Sheet, ids: &BTreeMap<CellRef, Vec<String>>, 
 }
 /// A protection password hash as attributes, each name preceded by `prefix` (see
 /// [`crate::sheet_read::read_password`]).
-pub(crate) fn password_attrs(h: &gridcraft_model::PasswordHash, prefix: &str) -> String {
+pub(crate) fn password_attrs(h: &cella_model::PasswordHash, prefix: &str) -> String {
     let name = |base: &str| crate::sheet_read::password_attr(prefix, base);
     match h {
-        gridcraft_model::PasswordHash::Legacy(h) => format!(" {}=\"{h:04X}\"", name("password")),
-        gridcraft_model::PasswordHash::Iterated { algorithm, hash, salt, spin_count } => format!(
+        cella_model::PasswordHash::Legacy(h) => format!(" {}=\"{h:04X}\"", name("password")),
+        cella_model::PasswordHash::Iterated { algorithm, hash, salt, spin_count } => format!(
             " {}=\"{}\" {}=\"{}\" {}=\"{}\" {}=\"{spin_count}\"",
             name("algorithmName"),
             esc_attr(algorithm),
@@ -344,7 +344,7 @@ fn note_anchor(cell: CellRef, b: Option<&NoteBox>) -> (String, (f64, f64)) {
     (format!("{}, {}", corner(&b.from), corner(&b.to)), b.size_pt.unwrap_or(DEFAULT_NOTE_SIZE_PT))
 }
 /// Legacy VML shapes Excel uses to display notes, then the form controls' shapes (`controls`):
-/// the idmap blocks the drawing claims, the id the first of GridCraft's own shapes takes, and the
+/// the idmap blocks the drawing claims, the id the first of Cella's own shapes takes, and the
 /// control shapes themselves.
 pub(crate) fn vml_xml(sheet: &Sheet, idmap: &str, base: u64, controls: &str) -> String {
     let mut s = format!(

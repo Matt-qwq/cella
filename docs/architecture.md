@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (bound Undo's retained cell storage) · **Target:** Microsoft Excel (Microsoft 365)
 
-How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
+How Cella is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
 ## Workspace and layering
 
@@ -18,7 +18,7 @@ including tests, 2026-10-10.
 | L1 | `functions` | ~13.4k | The function library: `FnSpec` registry (name, arity, category, scalar args, value args, signature, description) and pure implementations; automatic array lifting, where an Analysis-ToolPak value parameter rejects a multi-cell reference with `#VALUE!` |
 | L2 | `model` | ~2.2k | Workbook, sheets, copy-on-write cell store (64-row bands behind `Arc`), interned styles, names, tables, CF, validation, comments, charts, shapes, images, sparklines, print settings, protection |
 | L2 | `calc` | ~2.9k | Evaluator (references, names, tables, LET/LAMBDA, special forms like OFFSET/INDIRECT/SUBTOTAL) and dependency-graph recalculation with dynamic arrays, spills and cycle detection; single-threaded |
-| L2 | `xlsx` | ~10.7k | XLSX read/write (transitional and strict read), CSV/TSV, XLSB and ODS data import, PivotTable caches, DrawingML charts and drawings, and two parts of our own (`xl/gridcraft/`: queries and model PivotTables); byte slices only (WASM-safe); lenient reader that reports warnings |
+| L2 | `xlsx` | ~10.7k | XLSX read/write (transitional and strict read), CSV/TSV, XLSB and ODS data import, PivotTable caches, DrawingML charts and drawings, and two parts of our own (`xl/cella/`: queries and model PivotTables); byte slices only (WASM-safe); lenient reader that reports warnings |
 | L2 | `pdf` | ~1k | Small PDF 1.7 writer (14 standard fonts, vectors, images) for print and export |
 | L2 | `parquet` | ~1.1k | Parquet both ways, with the Apache `parquet` crate: a sheet (or a range) out as typed columns with real nulls, Snappy; a file back in as rows and column types for a query source (flat columns, `DATE`/`DECIMAL`/unsigned handled, nested and `INT96` refused by name); wasm-clean |
 | L2 | `query` | ~0.7k | The Get & Transform pipeline: a `Table` of values and the 13 steps (promote headers, change type, filter, sort, group, unpivot, …) applied to it. Pure: no I/O, no clock, no file system |
@@ -27,7 +27,7 @@ including tests, 2026-10-10.
 | L5 | `engine` | ~17.7k | `Session`: open workbooks, selection, history (COW snapshots), clipboard, fill, sort, filter, PivotTables, what-if, print, file I/O (`io.rs`), queries (`cmd/query.rs`: read a source, run the pipeline, load the result as a sheet table or into the data model) and the model (`cmd/model.rs`: relationships, measures), and the command registry (`cmd/*`, 393 commands) with the Excel ribbon catalog (`catalog.rs`) |
 | L6 | `ui-egui` | ~11.6k | Excel-style UI (title bar, QAT, ribbon, formula bar, virtualised grid, editor, tabs, status bar, dialogs, task panes, chart view) and the control channel |
 | L6 | `mcp` | ~1.4k | MCP server over stdio (hand-written JSON-RPC), headless or bridged to a running app |
-| L7 | `apps/gridcraft`, `apps/gridcraft-cli`, `apps/gridcraft-web` | ~2.2k | Desktop (eframe/wgpu), CLI (`info`, `convert`, `eval`, `cat`, `run`, `commands`, `functions`, `mcp`, `send`), web (WASM via trunk) |
+| L7 | `apps/cella`, `apps/cella-cli`, `apps/cella-web` | ~2.2k | Desktop (eframe/wgpu), CLI (`info`, `convert`, `eval`, `cat`, `run`, `commands`, `functions`, `mcp`, `send`), web (WASM via trunk) |
 | — | `xtask` | — | `ci`, `parity`, `assets`, `layers`, `wasm`, `version`, `stats` |
 
 ## Data flow
@@ -67,10 +67,10 @@ including tests, 2026-10-10.
 
 ## Agent control
 
-- Desktop control channel: `gridcraft --control 7979`, JSON lines on localhost
+- Desktop control channel: `cella --control 7979`, JSON lines on localhost
   (`engine.execute`, `ui.screenshot`, pointer and keyboard input…), see
   [`control-protocol.md`](control-protocol.md).
-- MCP: `gridcraft-cli mcp`, headless or `--connect` to a running app, see [`mcp.md`](mcp.md).
+- MCP: `cella-cli mcp`, headless or `--connect` to a running app, see [`mcp.md`](mcp.md).
 - CLI: [`cli.md`](cli.md).
 
 ## Platforms and builds

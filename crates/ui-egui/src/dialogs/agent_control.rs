@@ -2,7 +2,7 @@ use crate::SheetApp;
 
 /// Automate ▸ Agent Control: how an agent drives this application.
 ///
-/// GridCraft has no in-app assistant on purpose (decision 11-14): a model inside the window would
+/// Cella has no in-app assistant on purpose (decision 11-14): a model inside the window would
 /// have to ship a network client, a key store and a second way to run a command, and it would be
 /// absent from the web build — while an agent outside the window already reaches **every** command
 /// through the same registry the menus use. This dialog is that story's front door: where to
@@ -10,7 +10,7 @@ use crate::SheetApp;
 pub(super) fn agent_control(app: &mut SheetApp, ui: &mut egui::Ui) {
     let port = app.control_port.unwrap_or(7979);
     let listening = app.control_rx.is_some();
-    let commands = gridcraft_engine::command_specs().len();
+    let commands = cella_engine::command_specs().len();
     // The dialog has a 520-point frame; a pasted command line is longer than that, so every line
     // is truncated to the width available and shows itself in full on hover. Widening the dialog to
     // fit the longest command would put it over half the sheet.
@@ -20,7 +20,7 @@ pub(super) fn agent_control(app: &mut SheetApp, ui: &mut egui::Ui) {
     } else {
         ui.label(
             egui::RichText::new(
-                crate::widgets::tr(ui, "Not listening. Start GridCraft with --control {port} to let agents in.").replace("{port}", &port.to_string()),
+                crate::widgets::tr(ui, "Not listening. Start Cella with --control {port} to let agents in.").replace("{port}", &port.to_string()),
             )
             .color(crate::theme::Tokens::get(ui.ctx()).warning_ink),
         );
@@ -31,10 +31,10 @@ pub(super) fn agent_control(app: &mut SheetApp, ui: &mut egui::Ui) {
         "Every menu item, button and gesture is a command, so an agent drives the same engine this window does. Three ways in:",
     ));
     for (what, line) in [
-        ("MCP (this window)", format!("gridcraft-cli mcp --connect {port}")),
-        ("MCP (headless)", "gridcraft-cli mcp".to_string()),
-        ("CLI, one command", "gridcraft-cli run --in book.xlsx --cmd 'home.bold={\"range\":\"A1:C1\"}' --out book.xlsx".to_string()),
-        ("CLI, the catalogue", "gridcraft-cli commands".to_string()),
+        ("MCP (this window)", format!("cella-cli mcp --connect {port}")),
+        ("MCP (headless)", "cella-cli mcp".to_string()),
+        ("CLI, one command", "cella-cli run --in book.xlsx --cmd 'home.bold={\"range\":\"A1:C1\"}' --out book.xlsx".to_string()),
+        ("CLI, the catalogue", "cella-cli commands".to_string()),
     ] {
         ui.add_space(4.0);
         ui.horizontal(|ui| {

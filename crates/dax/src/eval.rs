@@ -8,8 +8,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gridcraft_core::{CellError, Value};
-use gridcraft_model::{DataModel, Relationship};
+use cella_core::{CellError, Value};
+use cella_model::{DataModel, Relationship};
 
 use crate::parse::{Agg, BinOp, Expr, aggregate, describe};
 use crate::{Context, DaxError, MAX_MEASURE_DEPTH};

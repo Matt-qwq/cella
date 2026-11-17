@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::f32::consts::{PI, TAU};
 
-use gridcraft_model::{
+use cella_model::{
     AxisCrossing, AxisOptions, Chart, ChartKind, DisplayUnits, ErrorBarDirection, ErrorBarKind, Gridlines, LabelOptions, LabelPosition, LegendPos,
     LineDash, QuartileMethod, Theme, TrendlineKind,
 };
@@ -693,7 +693,7 @@ fn draw_swatch(ctx: &mut Ctx, sw: Swatch, x: f32, yc: f32, s: f32, color: Rgba) 
 }
 
 /// The box an overlaid legend is laid out in: inside the plot region rather than the whole chart
-/// area, so it covers the data and not the axis labels. GridCraft's frame keeps a label band below
+/// area, so it covers the data and not the axis labels. Cella's frame keeps a label band below
 /// and beside the plot (one label line per row of axis labels); the legend is inset by that much
 /// on every side, plus a row per outer category level along the bottom.
 fn overlay_box(area: Bx, pos: LegendPos, levels: usize) -> Bx {

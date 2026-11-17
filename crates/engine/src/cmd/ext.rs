@@ -1,6 +1,6 @@
 //! Extensions: named command sequences a workbook carries, offered to whoever opens it.
 //!
-//! An extension is GridCraft's answer to an add-in **without executable code**: a list of the
+//! An extension is Cella's answer to an add-in **without executable code**: a list of the
 //! product's own commands with their parameters, saved in the workbook, run as one. That is the
 //! declarative tier of the extension model — it cannot reach the file system, the network or
 //! another process, because every step is a command the engine already offers.
@@ -44,7 +44,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             has_doc,
             run
         ),
-        // Home > Add-ins: the menu entry Excel has. GridCraft's add-ins are the declarative
+        // Home > Add-ins: the menu entry Excel has. Cella's add-ins are the declarative
         // extensions above (plus MCP for anything else), so this lists them and asks the UI for the
         // dialog; nothing runs.
         cmd!(
@@ -59,7 +59,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn extensions(wb: &gridcraft_model::Workbook) -> Json {
+fn extensions(wb: &cella_model::Workbook) -> Json {
     let v = super::extra::stash_get_shared(wb, EXTENSIONS_KEY);
     if v.is_object() { v } else { json!({}) }
 }
@@ -70,7 +70,7 @@ fn set_extensions(cx: &mut Ctx<'_>, v: &Json) -> Result<()> {
 
 /// Whether a workbook carries any extension: part of the trust default for a file that arrived
 /// with automation in it.
-pub fn has_extensions(wb: &gridcraft_model::Workbook) -> bool {
+pub fn has_extensions(wb: &cella_model::Workbook) -> bool {
     extensions(wb).as_object().is_some_and(|o| !o.is_empty())
 }
 

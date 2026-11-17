@@ -3,16 +3,16 @@
 
 use std::sync::Arc;
 
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_engine::model::{Cell, Formula, Workbook};
-use gridcraft_engine::{DocState, Session, io};
+use cella_engine::core::{CellRef, Value};
+use cella_engine::model::{Cell, Formula, Workbook};
+use cella_engine::{DocState, Session, io};
 use serde_json::json;
 
 fn at(s: &str) -> CellRef {
     CellRef::parse(s).unwrap()
 }
 
-/// A workbook saved by GridCraft whose D1 formula came from a file with `cm`.
+/// A workbook saved by Cella whose D1 formula came from a file with `cm`.
 fn opened() -> Session {
     let mut wb = Workbook::new();
     let sh = wb.sheet_mut(0).unwrap();

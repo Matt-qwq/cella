@@ -1,4 +1,4 @@
-//! Charts of kinds GridCraft cannot model (3-D, surface, pie of pie, Pareto) keep their drawing
+//! Charts of kinds Cella cannot model (3-D, surface, pie of pie, Pareto) keep their drawing
 //! frame and their part: saving a workbook never silently loses them.
 
 use std::io::Read;
@@ -18,7 +18,7 @@ const PARETO_PART: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="y
 <cx:chartSpace xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chartData><cx:data id="0"><cx:numDim type="val"><cx:f>_xlchart.v1.0</cx:f></cx:numDim></cx:data><cx:data id="1"><cx:numDim type="val"><cx:f>_xlchart.v1.1</cx:f></cx:numDim></cx:data></cx:chartData><cx:chart><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="clusteredColumn" uniqueId="{00000000-0000-0000-0000-000000000000}"><cx:dataId val="0"/></cx:series><cx:series layoutId="paretoLine" uniqueId="{00000000-0000-0000-0000-000000000001}"><cx:dataId val="1"/></cx:series></cx:plotAreaRegion></cx:plotArea></cx:chart></cx:chartSpace>
 "##;
 
-/// The Pareto chart's own style and colour parts: its whole look, none of which GridCraft models.
+/// The Pareto chart's own style and colour parts: its whole look, none of which Cella models.
 const PARETO_STYLE: &str = concat!(
     "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n",
     "<cs:chartStyle xmlns:cs=\"http://schemas.microsoft.com/office/drawing/2012/chartStyle\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" id=\"201\">",

@@ -5,8 +5,8 @@
 //! written into the table part, and the reader kept it only there. The reopened sheet had no
 //! AutoFilter at all — 0 criteria, the rows hidden and `data.clearFilter` with nothing to clear.
 
-use gridcraft_engine::Session;
-use gridcraft_engine::model::FilterCriterion;
+use cella_engine::Session;
+use cella_engine::model::FilterCriterion;
 use serde_json::json;
 
 /// The rows the sheet does not show, by whatever mechanism.
@@ -46,12 +46,12 @@ fn table_criteria(s: &Session) -> Vec<(u32, FilterCriterion)> {
 }
 
 fn saved(s: &Session) -> Vec<u8> {
-    gridcraft_engine::io::save_bytes(&s.doc().expect("document").wb, "filtered.xlsx").expect("it saves")
+    cella_engine::io::save_bytes(&s.doc().expect("document").wb, "filtered.xlsx").expect("it saves")
 }
 
 fn reopened(bytes: &[u8]) -> Session {
     let mut s = Session::new();
-    s.execute("file.open", json!({"name": "filtered.xlsx", "base64": gridcraft_engine::io::base64_encode(bytes)})).expect("it opens");
+    s.execute("file.open", json!({"name": "filtered.xlsx", "base64": cella_engine::io::base64_encode(bytes)})).expect("it opens");
     s
 }
 

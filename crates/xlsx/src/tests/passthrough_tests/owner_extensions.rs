@@ -1,4 +1,4 @@
-//! Content owned by parts GridCraft rewrites: slicers and their caches, timelines and their
+//! Content owned by parts Cella rewrites: slicers and their caches, timelines and their
 //! caches, query tables attached to a table, and the `extLst` children we don't model on the
 //! workbook, a worksheet, a table, a PivotTable and a pivot cache definition.
 
@@ -26,14 +26,14 @@ const TIMELINE_CACHE: &str = r#"<?xml version="1.0"?><timelineCacheDefinition xm
 /// A slicer cache whose data lives in an `<olap>` block: not modelled, so kept as it came.
 const OLAP_SLICER_CACHE: &str = r#"<?xml version="1.0"?><slicerCacheDefinition xmlns="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" name="Slicer_Region" sourceName="Region"><pivotTables><pivotTable tabId="1" name="PivotTable1"/></pivotTables><data><olap><pivotCacheId>1</pivotCacheId></olap></data></slicerCacheDefinition>"#;
 /// A timeline cache that says `filterType="unknown"` yet carries a selection: the two contradict
-/// each other, so GridCraft does not guess which one wins and keeps it as it came.
+/// each other, so Cella does not guess which one wins and keeps it as it came.
 const SELECTED_TIMELINE_CACHE: &str = r#"<?xml version="1.0"?><timelineCacheDefinition xmlns="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main" name="Timeline_Amount" sourceName="Amount"><pivotTables><pivotTable tabId="1" name="PivotTable1"/></pivotTables><state minimalRefreshVersion="0" lastRefreshVersion="0" pivotCacheId="1" filterType="unknown"><selection startDate="1900-01-10T00:00:00" endDate="1900-02-09T00:00:00"/><bounds startDate="1900-01-10T00:00:00" endDate="1900-02-09T00:00:00"/></state></timelineCacheDefinition>"#;
 const QUERY_TABLE: &str = r#"<?xml version="1.0"?><queryTable xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="SalesQuery" connectionId="1" autoFormatId="16" applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0" applyAlignmentFormats="0" applyWidthHeightFormats="0"/>"#;
 const PIVOT_CACHE: &str = r#"<?xml version="1.0"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" saveData="0" refreshOnLoad="1" createdVersion="6" refreshedVersion="6" minRefreshableVersion="3"><cacheSource type="worksheet"><worksheetSource ref="A1:B5" sheet="Data"/></cacheSource><cacheFields count="2"><cacheField name="Region" numFmtId="0"><sharedItems containsSemiMixedTypes="0" containsString="1"><s v="North"/><s v="South"/></sharedItems></cacheField><cacheField name="Amount" numFmtId="0"><sharedItems containsSemiMixedTypes="0" containsString="0"/></cacheField></cacheFields><extLst><ext uri="{33333333-4444-5555-6666-777777777777}"><x99:cacheThing xmlns:x99="urn:example:cache">keep the cache extension</x99:cacheThing></ext></extLst></pivotCacheDefinition>"#;
 const PIVOT_TABLE: &str = r#"<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="PivotTable1" cacheId="1" dataCaption="Values" updatedVersion="6" minRefreshableVersion="3"><location ref="E3:F6" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/><pivotFields count="2"><pivotField axis="axisRow" showAll="0"/><pivotField dataField="1" showAll="0"/></pivotFields><rowFields count="1"><field x="0"/></rowFields><rowItems count="1"><i><x/></i></rowItems><colItems count="1"><i/></colItems><dataFields count="1"><dataField name="Sum of Amount" fld="1" baseField="0" baseItem="0"/></dataFields><extLst><ext uri="{A8765BA9-456A-4dab-B4F3-ACF838C121DE}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:slicerCacheData><x14:slicerCache r:id="rId2"/></x14:slicerCacheData></ext><ext uri="{962EF5D1-5CA2-4c93-8EF4-DBF5C05439D2}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:pivotTableDefinition hideValuesRow="1"/></ext><ext uri="{22222222-3333-4444-5555-666666666666}"><x99:pivotThing xmlns:x99="urn:example:pivot">keep the pivot extension</x99:pivotThing></ext></extLst></pivotTableDefinition>"#;
 const TABLE_WITH_EXT: &str = r#"<?xml version="1.0"?><table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Sales" displayName="Sales" ref="A1:B5" totalsRowShown="0"><autoFilter ref="A1:B5"/><tableColumns count="2"><tableColumn id="1" name="Region"/><tableColumn id="2" name="Amount"/></tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/><extLst><ext uri="{7A5B2C4D-1111-2222-3333-444455556666}"><x99:tableThing xmlns:x99="urn:example:table">keep the table extension</x99:tableThing></ext></extLst></table>"#;
 
-/// A package with content GridCraft does not model: a slicer and its cache (behind the
+/// A package with content Cella does not model: a slicer and its cache (behind the
 /// PivotTable's `extLst` and the workbook's), a timeline with its cache, a table with a query
 /// table, and unknown `extLst` children on the workbook, the worksheet, the chart, the table and
 /// the pivot cache definition.
@@ -41,7 +41,7 @@ fn extension_package() -> Vec<u8> {
     extension_package_with(SLICER_CACHE, TIMELINE_CACHE)
 }
 
-/// [`extension_package`] with other slicer and timeline cache parts: a variant GridCraft cannot
+/// [`extension_package`] with other slicer and timeline cache parts: a variant Cella cannot
 /// model must keep them byte for byte.
 fn extension_package_with(slicer_cache: &str, timeline_cache: &str) -> Vec<u8> {
     let workbook = format!(
@@ -155,7 +155,7 @@ fn slicers_timelines_and_owner_extensions_survive_a_round_trip() {
     assert!(sl.all_selected());
     assert_eq!(sl.pivot_tables, ["PivotTable1"]);
     assert_eq!(sheet.pivot_timelines.len(), 1, "{:?}", rep.warnings);
-    assert_eq!(sheet.pivot_timelines[0].unit, gridcraft_model::TimeUnit::Months);
+    assert_eq!(sheet.pivot_timelines[0].unit, cella_model::TimeUnit::Months);
     assert_eq!(sheet.pivot_timelines[0].field, "Amount");
 
     let out = write_xlsx(&wb).unwrap();
@@ -253,7 +253,7 @@ fn slicers_timelines_and_owner_extensions_survive_a_round_trip() {
     let (_, chart2) = target_of_kind(&u2, &drawing2, "chart");
     assert!(u2.text(&chart2).contains("unknownChartThing"));
 
-    // Slicer content GridCraft cannot model keeps today's behaviour: an OLAP cache and a timeline
+    // Slicer content Cella cannot model keeps today's behaviour: an OLAP cache and a timeline
     // whose state contradicts itself (no filter type, but a selection) leave every slicer part
     // byte-identical, and nothing is modelled.
     let (wb, rep) = read_xlsx(&extension_package_with(OLAP_SLICER_CACHE, SELECTED_TIMELINE_CACHE)).unwrap();
@@ -336,11 +336,11 @@ fn a_renamed_pivottable_loses_its_slicer_and_timeline_caches() {
 #[test]
 fn editing_a_cell_keeps_the_slicers_and_pivot_extensions() {
     let (mut wb, _) = read_xlsx(&extension_package()).unwrap();
-    wb.sheet_mut(0).unwrap().set_value(gridcraft_core::CellRef::new(9, 0), gridcraft_core::Value::Number(7.0));
+    wb.sheet_mut(0).unwrap().set_value(cella_core::CellRef::new(9, 0), cella_core::Value::Number(7.0));
     let u = Unpacked::new(&write_xlsx(&wb).unwrap());
     u.assert_valid();
     // The slicer and timeline are modelled now, so an edit writes them from the model (still once)
-    // and keeps the parts GridCraft does not model as they were.
+    // and keeps the parts Cella does not model as they were.
     only_part(&u, "xl/slicerCaches/", ".xml");
     only_part(&u, "xl/slicers/", ".xml");
     only_part(&u, "xl/timelineCaches/", ".xml");

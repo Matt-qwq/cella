@@ -2,7 +2,7 @@
 //! path an agent (or a person editing by hand) is expected to take — do it once, save the steps,
 //! replay or edit them.
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::json;
 
 fn session() -> Session {
@@ -31,7 +31,7 @@ fn the_steps_that_ran_become_a_script_that_runs_the_same_way() {
     let a = s.doc().expect("doc").wb.sheet(0).expect("sheet");
     let b = fresh.doc().expect("doc").wb.sheet(0).expect("sheet");
     for at in ["A1", "A2"] {
-        let at = gridcraft_core::CellRef::parse(at).expect("ref");
+        let at = cella_core::CellRef::parse(at).expect("ref");
         assert_eq!(a.value(at), b.value(at), "cell {at:?}");
     }
 }

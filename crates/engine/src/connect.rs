@@ -12,10 +12,10 @@
 //! user did not point it at.
 
 #[cfg(feature = "connectors")]
-use gridcraft_core::Value;
-use gridcraft_query::Table;
+use cella_core::Value;
+use cella_query::Table;
 #[cfg(feature = "connectors")]
-use gridcraft_query::{MAX_COLUMNS, MAX_ROWS};
+use cella_query::{MAX_COLUMNS, MAX_ROWS};
 
 use crate::{EngineError, Result};
 

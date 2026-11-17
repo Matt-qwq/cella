@@ -1,4 +1,4 @@
-//! The GridCraft engine façade.
+//! The Cella engine façade.
 //!
 //! Every user-visible action is a command with a stable id (`cell.set`, `home.bold`,
 //! `data.sortAscending`…) and JSON parameters. The egui UI, the CLI, the control channel and MCP
@@ -30,18 +30,18 @@ pub mod windows;
 
 use std::sync::Arc;
 
-use gridcraft_calc::Calc;
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::Workbook;
+use cella_calc::Calc;
+use cella_core::{CellRef, RangeRef};
+use cella_model::Workbook;
 use serde::Serialize;
 use serde_json::Value as Json;
 
+pub use cella_calc as calc;
+pub use cella_core as core;
+pub use cella_formula as formula;
+pub use cella_model as model;
+pub use cella_numfmt as numfmt;
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command, register_test_command};
-pub use gridcraft_calc as calc;
-pub use gridcraft_core as core;
-pub use gridcraft_formula as formula;
-pub use gridcraft_model as model;
-pub use gridcraft_numfmt as numfmt;
 pub use memory::{MemoryReport, SheetMemory, WorkbookMemory};
 pub use selection::Selection;
 
@@ -73,7 +73,7 @@ pub struct HistoryEntry {
     /// ([`compress_history_entry`]).
     pub retained_bytes: usize,
     /// Whether `wb`'s sheets hold the bands this snapshot retains as compressed pages (see
-    /// [`gridcraft_model::CellStore::spill_retained_against`]), so `retained_bytes` is what its
+    /// [`cella_model::CellStore::spill_retained_against`]), so `retained_bytes` is what its
     /// pages cost and not what the bands they decode to would. An undo restores such a snapshot
     /// *as it is*, pages and all: nothing is decoded, and the workbook reads a page when it reads
     /// a cell in it.
@@ -244,14 +244,14 @@ fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
         if newer.sheets.iter().any(|next| Arc::ptr_eq(sheet, next)) {
             continue;
         }
-        bytes = bytes.saturating_add(std::mem::size_of::<gridcraft_model::Sheet>());
-        let empty = gridcraft_model::CellStore::new();
+        bytes = bytes.saturating_add(std::mem::size_of::<cella_model::Sheet>());
+        let empty = cella_model::CellStore::new();
         let next = newer.sheets.get(index).map_or(&empty, |next| &next.cells);
         bytes = bytes.saturating_add(sheet.cells.retained_bytes_against(next));
         // Line metadata is chunked the same way: a snapshot shares every chunk the next state did
         // not touch, and a sheet with a million formatted rows is charged its unshared chunks.
-        let empty_rows = gridcraft_model::LineMap::new(gridcraft_model::LineAxis::Rows);
-        let empty_cols = gridcraft_model::LineMap::new(gridcraft_model::LineAxis::Cols);
+        let empty_rows = cella_model::LineMap::new(cella_model::LineAxis::Rows);
+        let empty_cols = cella_model::LineMap::new(cella_model::LineAxis::Cols);
         let next_sheet = newer.sheets.get(index);
         bytes = bytes.saturating_add(sheet.rows.retained_bytes_against(next_sheet.map_or(&empty_rows, |next| &next.rows)));
         bytes = bytes.saturating_add(sheet.cols.retained_bytes_against(next_sheet.map_or(&empty_cols, |next| &next.cols)));
@@ -261,7 +261,7 @@ fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
 
 /// The formula cells two versions of a workbook disagree on, in the older version's coordinates:
 /// what a restore of `older` has to put back in the graph. `None` when the two versions cannot be
-/// compared cell by cell, which is exactly when [`Calc::restore`](gridcraft_calc::recalc::Calc::restore)
+/// compared cell by cell, which is exactly when [`Calc::restore`](cella_calc::recalc::Calc::restore)
 /// would rebuild instead of re-inserting.
 ///
 /// Called as a step is spilled ([`compress_history_entry`](compress_history_entry)), while both
@@ -468,7 +468,7 @@ fn worth_spilling_newest(retained: usize, newer_retained: usize, bands: usize, b
 /// The bands a history step would have to spill: its own, on the sheets the next version no longer
 /// shares with it. The same walk [`compress_history_entry`] makes, counted instead of encoded.
 fn history_compressible_bands(entry: &HistoryEntry, next: &Workbook) -> usize {
-    let empty = gridcraft_model::CellStore::new();
+    let empty = cella_model::CellStore::new();
     entry.wb.sheets.iter().enumerate().fold(0usize, |sum, (index, sheet)| {
         if next.sheets.iter().any(|other| Arc::ptr_eq(other, sheet)) {
             return sum;
@@ -479,7 +479,7 @@ fn history_compressible_bands(entry: &HistoryEntry, next: &Workbook) -> usize {
 }
 
 /// Compresses one history snapshot's own bands into a page file of its own (see
-/// [`gridcraft_model::CellStore::spill_retained_against`]), so the step costs its compressed
+/// [`cella_model::CellStore::spill_retained_against`]), so the step costs its compressed
 /// pages rather than the decoded bands it replaced. Returns whether the step is now as cheap as it
 /// is going to get; a snapshot another owner still shares is left whole, since copying it to
 /// compress it would cost the bytes it is there to save.
@@ -506,7 +506,7 @@ pub(crate) fn compress_history_entry(entry: &mut HistoryEntry, next: &Workbook, 
         entry.retained_bytes = history_retained_bytes(&entry.wb, next).saturating_add(delta_bytes(entry.formula_delta.as_ref()));
     }
     let Some(wb) = Arc::get_mut(&mut entry.wb) else { return false };
-    let empty = gridcraft_model::CellStore::new();
+    let empty = cella_model::CellStore::new();
     let mut spilled = 0usize;
     for (index, sheet) in wb.sheets.iter_mut().enumerate() {
         // A sheet the next version still shares is the one the workbook reads: its bands are live
@@ -626,9 +626,9 @@ impl Default for Prefs {
         Prefs {
             enter_direction: "down".into(),
             autocomplete: true,
-            user_name: "GridCraft User".into(),
-            default_font: gridcraft_model::DEFAULT_FONT.into(),
-            default_font_size: gridcraft_model::DEFAULT_FONT_SIZE,
+            user_name: "Cella User".into(),
+            default_font: cella_model::DEFAULT_FONT.into(),
+            default_font_size: cella_model::DEFAULT_FONT_SIZE,
             sheets_in_new_workbook: 1,
             r1c1: false,
             user_dictionary: vec![],
@@ -779,7 +779,7 @@ impl Session {
         let mut wb = Workbook::with_default_font(&font, size);
         for _ in 1..self.prefs.sheets_in_new_workbook.clamp(1, 255) {
             let name = wb.next_sheet_name();
-            wb.sheets.push(Arc::new(gridcraft_model::Sheet::new(name)));
+            wb.sheets.push(Arc::new(cella_model::Sheet::new(name)));
         }
         self.add_document(DocState::new(wb, None, format!("Book{n}")))
     }
@@ -1106,7 +1106,7 @@ impl Session {
 }
 
 /// Convenience: the active workbook's active sheet.
-pub fn active_sheet(s: &Session) -> Option<&gridcraft_model::Sheet> {
+pub fn active_sheet(s: &Session) -> Option<&cella_model::Sheet> {
     s.active().and_then(|d| d.wb.active())
 }
 

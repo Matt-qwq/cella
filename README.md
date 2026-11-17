@@ -1,11 +1,11 @@
-# GridCraft
+# Cella
 
 **An independent, high-performance spreadsheet built in Rust** — for data sets, for agents, and for
 the files people actually send. It runs natively on macOS, Windows, Linux and BSD, and in the
 browser via WebAssembly.
 
 > **This is an independent, modified version of GridCraft**, based on the work of the ArtCraft team
-> and the GridCraft contributors (MIT OR Apache-2.0 — see [`NOTICE`](NOTICE)). It is **not an
+> and the Cella contributors (MIT OR Apache-2.0 — see [`NOTICE`](NOTICE)). It is **not an
 > ArtCraft product** and carries **none of the ArtCraft marks**: upstream's brand licence requires a
 > modified version to remove them, and this tree did. The product name and every app identifier are
 > being replaced; the decision and the list are in
@@ -34,11 +34,11 @@ the harness and the gate are in [docs/performance.md](docs/performance.md).
 ## Quick start
 
 ```bash
-cargo run --release -p gridcraft -- --sample sales                        # the desktop app
-cargo run --release -p gridcraft -- --sample sales --control 7979         # + control channel
-cargo run -p gridcraft-cli -- eval '=SUM(1,2,3)'                          # headless evaluation
-cargo run -p gridcraft-cli -- mcp                                        # the MCP server on stdio
-cargo run -p gridcraft-ui-egui --example snapshot -- --sample sales out.png   # offscreen render
+cargo run --release -p cella -- --sample sales                        # the desktop app
+cargo run --release -p cella -- --sample sales --control 7979         # + control channel
+cargo run -p cella-cli -- eval '=SUM(1,2,3)'                          # headless evaluation
+cargo run -p cella-cli -- mcp                                        # the MCP server on stdio
+cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png   # offscreen render
 ```
 
 ## Docs

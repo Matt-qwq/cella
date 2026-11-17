@@ -91,7 +91,7 @@ pub fn host() -> Plan {
 /// The window the title bar assumes, for the app's `ViewportBuilder`.
 ///
 /// ```ignore
-/// let viewport = gridcraft_ui_egui::chrome::viewport(egui::ViewportBuilder::default());
+/// let viewport = cella_ui_egui::chrome::viewport(egui::ViewportBuilder::default());
 /// ```
 pub fn viewport(viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
     viewport_for(viewport, HOST)

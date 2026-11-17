@@ -5,8 +5,8 @@
 //! workbook's model. That is what lets a workbook hold a fact table of a million rows plus the
 //! lookups beside it, join them by a relationship, and answer a measure over the join.
 
-use gridcraft_core::Value;
-use gridcraft_model::{MAX_MEASURES, MAX_RELATIONSHIPS, Measure, Relationship};
+use cella_core::Value;
+use cella_model::{MAX_MEASURES, MAX_RELATIONSHIPS, Measure, Relationship};
 
 use serde_json::json;
 
@@ -68,7 +68,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
 }
 
 /// The model, or an error that says what is missing.
-fn model(s: &Session) -> Result<&gridcraft_model::DataModel> {
+fn model(s: &Session) -> Result<&cella_model::DataModel> {
     let d = s.doc()?;
     if d.wb.model.tables.is_empty() {
         return Err(EngineError::Other("This workbook has no data model yet: load a query into the model first.".into()));
@@ -203,7 +203,7 @@ fn measure_add(s: &mut Session, p: &Json) -> Result<Json> {
         // Prove the formula before keeping it: a measure that names a table or column the model
         // does not have is a formula that will never compute, and finding that out now (while the
         // person is looking at the formula) is the whole point of validating it here.
-        if let Err(e) = gridcraft_dax::validate(&cx.wb.model, &formula) {
+        if let Err(e) = cella_dax::validate(&cx.wb.model, &formula) {
             cx.wb.model.measures.retain(|m| !m.name.eq_ignore_ascii_case(&name));
             return Err(EngineError::Other(e.to_string()));
         }
@@ -234,7 +234,7 @@ fn measure_set(s: &mut Session, p: &Json) -> Result<Json> {
             m.table = t;
         }
         // The same rule as adding: an edit that does not compute is not kept.
-        if let Err(e) = gridcraft_dax::validate(&cx.wb.model, &now) {
+        if let Err(e) = cella_dax::validate(&cx.wb.model, &now) {
             if let Some(m) = cx.wb.model.measures.iter_mut().find(|m| m.name.eq_ignore_ascii_case(&name)) {
                 m.formula = before;
             }
@@ -280,7 +280,7 @@ fn measure_evaluate(s: &mut Session, p: &Json) -> Result<Json> {
     let filters = p.get("filters").and_then(Json::as_array).cloned().unwrap_or_default();
     let d = s.doc()?;
     let m = d.wb.model.measure(&name).cloned().ok_or_else(|| EngineError::Other(format!("There is no measure named \"{name}\".")))?;
-    let mut ctx = gridcraft_dax::Context::new();
+    let mut ctx = cella_dax::Context::new();
     for f in &filters {
         let table = f.get("table").and_then(Json::as_str).unwrap_or("");
         let column = f.get("column").and_then(Json::as_str).unwrap_or("");
@@ -292,6 +292,6 @@ fn measure_evaluate(s: &mut Session, p: &Json) -> Result<Json> {
         };
         ctx = ctx.filter(table, column, value);
     }
-    let value = gridcraft_dax::evaluate(&d.wb.model, &m.formula, &ctx).map_err(|e| EngineError::Other(e.to_string()))?;
+    let value = cella_dax::evaluate(&d.wb.model, &m.formula, &ctx).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"value": value_json(&value), "display": value.display()}))
 }

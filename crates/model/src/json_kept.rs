@@ -1,6 +1,6 @@
-//! JSON fields of a workbook or sheet that this version of GridCraft does not model.
+//! JSON fields of a workbook or sheet that this version of Cella does not model.
 //!
-//! The JSON workbook is the format we write that other GridCraft builds (and scripts) read: a
+//! The JSON workbook is the format we write that other Cella builds (and scripts) read: a
 //! newer build may write a field this one has never heard of, and a build that dropped a field
 //! leaves the old one behind in files written before. Serde normally discards what it does not
 //! recognise, which would make a save from an older build silently destroy the newer build's data.

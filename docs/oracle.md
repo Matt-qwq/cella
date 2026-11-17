@@ -5,7 +5,7 @@
 > on 11-03 on a local 3,084-workbook folder (0 save/reopen mismatches, Excel 16-identical copies);
 > the pinned corpus remains the CI artefact — see [gaps.md §1](gaps.md).
 
-GridCraft's target consumer is Microsoft Excel, and the one question a self round-trip cannot answer
+Cella's target consumer is Microsoft Excel, and the one question a self round-trip cannot answer
 is *"does somebody else's reader accept this package?"*. `cargo xtask oracle` answers it with three
 probes that are **not ours**: openpyxl (a foreign parser), Excel 16 and WPS 12.0 (independent
 applications that open, recalculate and save a copy).
@@ -35,11 +35,11 @@ The probe also fails if openpyxl *refuses* the package.
 
 **app — an independent spreadsheet application.** Excel 16 (`Excel.Application`) and WPS 12.0
 (`KET.Application`) each open the file, refresh every PivotTable, recalculate and save a copy;
-GridCraft then reads that copy back and every value must survive. Excel is the gate probe; WPS is
+Cella then reads that copy back and every value must survive. Excel is the gate probe; WPS is
 the second opinion (and the only one on a machine without Excel). Only Excel's localized PivotTable
 chrome (`Row Labels`, `Grand Total`) is tolerated as a text difference.
 
-**The package validator** (`gridcraft_xlsx::testing::check_package`, run on every package the test
+**The package validator** (`cella_xlsx::testing::check_package`, run on every package the test
 suite saves) gained the fifth repair-prompt cause: a part that uses a namespace prefix it never
 declares. That one is not a heuristic — a strict XML parser rejects the part outright.
 
@@ -133,6 +133,6 @@ are in `plan/corpus-run-2026-11-03.md` (local).
 ## Adding a fixture
 
 A fixture is a `Workbook` in `xtask/src/oracle/mod.rs`. Samples come straight from
-`gridcraft_engine::sample::build`; anything else is built by running real commands through `Session`,
+`cella_engine::sample::build`; anything else is built by running real commands through `Session`,
 so the fixture also exercises the commands' own contracts. If the application regenerates part of
 the workbook (a PivotTable body, for instance), name that sheet in `app_skips` and say why.

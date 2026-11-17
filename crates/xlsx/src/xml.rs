@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_model::{PhoneticProps, PhoneticRun, PhoneticString};
+use cella_model::{PhoneticProps, PhoneticRun, PhoneticString};
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
@@ -604,7 +604,7 @@ pub fn si_body(text: &str, phonetic: Option<&PhoneticString>) -> String {
 pub fn push_si_body(s: &mut String, text: &str, phonetic: Option<&PhoneticString>) {
     push_t_el(s, text);
     let Some(p) = phonetic else { return };
-    // The model is public and restored from GridCraft JSON too, so the reader's checks are not the
+    // The model is public and restored from Cella JSON too, so the reader's checks are not the
     // only way data gets here: validate again and write only what the schema allows (§18.4.6: an
     // `sb` before `eb`, both inside the base text, a non-empty reading; §18.18.56/57: a known enum
     // value). Damaged data is dropped, never written back invalid.

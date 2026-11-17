@@ -3,7 +3,7 @@
 //! miss the bugs that need a sequence — insert rows under a spill, undo, sort, paste into a table —
 //! and those are the ones that corrupt a workbook.
 //!
-//! Each seed picks a sample (sales, budget, grades) and runs `GRIDCRAFT_FUZZ_STEPS` commands. Most
+//! Each seed picks a sample (sales, budget, grades) and runs `CELLA_FUZZ_STEPS` commands. Most
 //! come from a curated list of state-changing commands with hand-shaped params; the rest are drawn
 //! from every registered command, with params generated from its `params` doc string.
 //!
@@ -22,19 +22,19 @@
 //!   final one (view state aside), and both keep the Watch Window list, which isn't an edit.
 //!
 //! Knobs (environment variables):
-//! - `GRIDCRAFT_FUZZ_SEEDS` (default 6) and `GRIDCRAFT_FUZZ_STEPS` (default 40): the budget. Soak with
-//!   `GRIDCRAFT_FUZZ_SEEDS=200 GRIDCRAFT_FUZZ_STEPS=200 cargo test --release -p gridcraft-engine --test command_sequence_fuzz`.
-//! - `GRIDCRAFT_FUZZ_SEED_BUDGET_MS` (default 20000, `0` disables): the wall clock one seed may take.
+//! - `CELLA_FUZZ_SEEDS` (default 6) and `CELLA_FUZZ_STEPS` (default 40): the budget. Soak with
+//!   `CELLA_FUZZ_SEEDS=200 CELLA_FUZZ_STEPS=200 cargo test --release -p cella-engine --test command_sequence_fuzz`.
+//! - `CELLA_FUZZ_SEED_BUDGET_MS` (default 20000, `0` disables): the wall clock one seed may take.
 //!   A seed that runs past it is cut *between* steps and reported `slow` with the step it was cut at
 //!   and the time it took, instead of stalling the run (see "cutting a seed" below).
-//! - `GRIDCRAFT_FUZZ_SEED=17`: replay that one seed (the failure message prints the command line).
-//! - `GRIDCRAFT_FUZZ_REPLAY=<path>`: replay a capture file a failing run wrote, instead of generating
+//! - `CELLA_FUZZ_SEED=17`: replay that one seed (the failure message prints the command line).
+//! - `CELLA_FUZZ_REPLAY=<path>`: replay a capture file a failing run wrote, instead of generating
 //!   sequences. Takes precedence over the seeds and steps, and a replay the budget cuts fails: a
 //!   sequence that did not reach its end has proven nothing.
-//! - `GRIDCRAFT_FUZZ_SHRINK=1`: on failure, shrink the sequence to a minimal list of commands that
+//! - `CELLA_FUZZ_SHRINK=1`: on failure, shrink the sequence to a minimal list of commands that
 //!   still fails the same way, printed as `execute` calls ready for a regression test.
-//! - `GRIDCRAFT_FUZZ_KEEP_GOING=1`: report every failing seed instead of stopping at the first.
-//! - `GRIDCRAFT_FUZZ_TRACE=1`: print each step before running it, so a hang names its command.
+//! - `CELLA_FUZZ_KEEP_GOING=1`: report every failing seed instead of stopping at the first.
+//! - `CELLA_FUZZ_TRACE=1`: print each step before running it, so a hang names its command.
 //!
 //! Every run prints one summary line, whatever the outcome:
 //! `soak: 30 seeds × 100 steps, 41.7 s wall, 0 invariant failures, 0 slow seeds, slowest seed 12 (3102 ms)`
@@ -49,8 +49,8 @@
 //!
 //! Seeds are not portable: a sequence is drawn from the registered commands in registration order
 //! (`command_specs()`), so adding, renaming, removing or reordering a command changes every seed's
-//! sequence, and `GRIDCRAFT_FUZZ_SEED=<n>` only reproduces a run at the commit that generated it. The
-//! capture file is the durable artefact: `GRIDCRAFT_FUZZ_REPLAY=<path>` replays it verbatim against
+//! sequence, and `CELLA_FUZZ_SEED=<n>` only reproduces a run at the commit that generated it. The
+//! capture file is the durable artefact: `CELLA_FUZZ_REPLAY=<path>` replays it verbatim against
 //! the current tree, with the same checks and the same report, so a soak failure stays usable after
 //! the command set changes.
 //!
@@ -62,10 +62,10 @@
 //! the steps already run cost; a failure there is likewise reported as a failure, not as the cut.
 //! What a cut does not check is the steps after it, so a `slow` seed is not an invariant failure (the
 //! test stays green) but is counted apart in the summary and reported in full;
-//! `GRIDCRAFT_FUZZ_SEED=<seed> GRIDCRAFT_FUZZ_SEED_BUDGET_MS=0` finishes a seed that was cut. The one
+//! `CELLA_FUZZ_SEED=<seed> CELLA_FUZZ_SEED_BUDGET_MS=0` finishes a seed that was cut. The one
 //! thing the budget cannot bound is a single step that runs longer than the whole budget: it is not
 //! interrupted, because cutting inside a command would report a half-applied edit.
-//! `GRIDCRAFT_FUZZ_TRACE=1` names that step, and the overshoot is one step rather than the hours a
+//! `CELLA_FUZZ_TRACE=1` names that step, and the overshoot is one step rather than the hours a
 //! pathological seed used to take.
 
 use std::collections::BTreeSet;
@@ -73,10 +73,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, col_to_letters};
-use gridcraft_engine::calc::Calc;
-use gridcraft_engine::model::{CalcMode, Formula, LineMap, Sheet, Style, StyleId, StyleTable, Workbook};
-use gridcraft_engine::{EngineError, Session, command_specs, find_command, io};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, col_to_letters};
+use cella_engine::calc::Calc;
+use cella_engine::model::{CalcMode, Formula, LineMap, Sheet, Style, StyleId, StyleTable, Workbook};
+use cella_engine::{EngineError, Session, command_specs, find_command, io};
 use serde_json::{Value as Json, json};
 
 mod fuzz_common;
@@ -94,7 +94,7 @@ const EPISODE_UNDO_DEPTH: usize = 90;
 const EPISODE_UNDO_BYTES: usize = 48 * 1024 * 1024;
 /// Save and reload every this many steps (and at the end of every episode).
 const ROUNDTRIP_EVERY: usize = 10;
-/// Default wall clock one seed may take (`GRIDCRAFT_FUZZ_SEED_BUDGET_MS`). A healthy seed runs 200
+/// Default wall clock one seed may take (`CELLA_FUZZ_SEED_BUDGET_MS`). A healthy seed runs 200
 /// commands in well under a second; the seeds that took minutes (one grew past 5 GB) made the same
 /// 400 × 200 soak take 22 min on one commit and two hours on another, so a stall now names itself.
 const DEFAULT_SEED_BUDGET_MS: u64 = 20_000;
@@ -153,7 +153,7 @@ impl Rng {
 
 type Step = (String, Json);
 
-/// What a seed cut short by `GRIDCRAFT_FUZZ_SEED_BUDGET_MS` is reported as: a failure `kind`, so the
+/// What a seed cut short by `CELLA_FUZZ_SEED_BUDGET_MS` is reported as: a failure `kind`, so the
 /// report and the shrink filter can name it, counted apart from the invariant failures.
 const SLOW: &str = "slow";
 
@@ -171,9 +171,9 @@ fn env_num(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
 }
 
-/// The wall clock one seed may take, `None` when `GRIDCRAFT_FUZZ_SEED_BUDGET_MS=0` disables it.
+/// The wall clock one seed may take, `None` when `CELLA_FUZZ_SEED_BUDGET_MS=0` disables it.
 fn seed_budget() -> Option<Duration> {
-    match env_num("GRIDCRAFT_FUZZ_SEED_BUDGET_MS", DEFAULT_SEED_BUDGET_MS) {
+    match env_num("CELLA_FUZZ_SEED_BUDGET_MS", DEFAULT_SEED_BUDGET_MS) {
         0 => None,
         ms => Some(Duration::from_millis(ms)),
     }
@@ -214,15 +214,15 @@ impl Summary {
 #[test]
 #[allow(clippy::disallowed_methods)] // the soak times itself; this test never runs on wasm
 fn command_sequences_keep_the_workbook_consistent() {
-    if let Some(path) = std::env::var_os("GRIDCRAFT_FUZZ_REPLAY") {
+    if let Some(path) = std::env::var_os("CELLA_FUZZ_REPLAY") {
         replay_capture(Path::new(&path));
         return;
     }
-    let seeds = env_num("GRIDCRAFT_FUZZ_SEEDS", 6);
-    let steps = env_num("GRIDCRAFT_FUZZ_STEPS", 40) as usize;
+    let seeds = env_num("CELLA_FUZZ_SEEDS", 6);
+    let steps = env_num("CELLA_FUZZ_STEPS", 40) as usize;
     let budget = seed_budget();
-    let keep_going = std::env::var_os("GRIDCRAFT_FUZZ_KEEP_GOING").is_some();
-    let list: Vec<u64> = match std::env::var("GRIDCRAFT_FUZZ_SEED").ok().and_then(|v| v.trim().parse().ok()) {
+    let keep_going = std::env::var_os("CELLA_FUZZ_KEEP_GOING").is_some();
+    let list: Vec<u64> = match std::env::var("CELLA_FUZZ_SEED").ok().and_then(|v| v.trim().parse().ok()) {
         Some(one) => vec![one],
         None => (0..seeds).collect(),
     };
@@ -257,7 +257,7 @@ fn command_sequences_keep_the_workbook_consistent() {
     assert!(reports.is_empty(), "{} failing seed(s)\n\n{}", reports.len(), reports.join("\n\n"));
 }
 
-/// `GRIDCRAFT_FUZZ_REPLAY`: replay a captured sequence against the current tree, with the same checks
+/// `CELLA_FUZZ_REPLAY`: replay a captured sequence against the current tree, with the same checks
 /// a generated run makes, and print the same result. A capture the budget cuts fails the replay: a
 /// sequence that did not reach its end has proven nothing.
 #[allow(clippy::disallowed_methods)] // the replay times itself; this test never runs on wasm
@@ -285,7 +285,7 @@ fn replay_capture(path: &Path) {
 /// the workbook) and every other non-blank line is one step, `id json`. A leading `file.new` names
 /// the sample instead and is not run twice, so a capture may start with the command that opens it.
 fn read_capture(path: &Path) -> (String, Vec<Step>) {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("GRIDCRAFT_FUZZ_REPLAY={}: {e}", path.display()));
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("CELLA_FUZZ_REPLAY={}: {e}", path.display()));
     let mut sample = None;
     let mut steps = Vec::new();
     for (n, line) in text.lines().enumerate() {
@@ -330,7 +330,7 @@ fn run_seed(seed: u64, steps: usize, budget: Option<Duration>) -> SeedRun {
     let sample = SAMPLES[(seed % SAMPLES.len() as u64) as usize];
     let mut h = Harness::new(sample);
     let mut sequence = Vec::new();
-    let trace = std::env::var_os("GRIDCRAFT_FUZZ_TRACE").is_some();
+    let trace = std::env::var_os("CELLA_FUZZ_TRACE").is_some();
     for i in 0..steps {
         // Between steps, never inside one: the previous step's command and every check it ran have
         // passed, so the cut cannot turn a failure into a pass.
@@ -417,7 +417,7 @@ fn shrink(sample: &str, steps: &[Step], kind: &str) -> Vec<Step> {
 
 // ---------------------------------------------------------------- reporting
 
-/// Where the whole sequence can be replayed from: a file the caller already has (`GRIDCRAFT_FUZZ_REPLAY`
+/// Where the whole sequence can be replayed from: a file the caller already has (`CELLA_FUZZ_REPLAY`
 /// read it) or one the report writes now.
 enum Capture<'a> {
     Existing(&'a Path),
@@ -452,7 +452,7 @@ fn report(seed: Option<u64>, sample: &str, sequence: &[Step], f: &Failure, captu
         Ok(path) => {
             out.push_str(&format!("  whole sequence ({} steps) in {}\n", sequence.len(), path.display()));
             out.push_str(&format!(
-                "  replay the file: GRIDCRAFT_FUZZ_REPLAY={} cargo test -p gridcraft-engine --test command_sequence_fuzz\n",
+                "  replay the file: CELLA_FUZZ_REPLAY={} cargo test -p cella-engine --test command_sequence_fuzz\n",
                 path.display()
             ));
         }
@@ -461,12 +461,12 @@ fn report(seed: Option<u64>, sample: &str, sequence: &[Step], f: &Failure, captu
     }
     if let Capture::Write { seed, planned } = capture {
         out.push_str(&format!(
-            "  replay the seed: GRIDCRAFT_FUZZ_SEED={seed} GRIDCRAFT_FUZZ_STEPS={planned} cargo test -p gridcraft-engine --test command_sequence_fuzz\n    (a seed's sequence depends on the registered command set: that line is only valid at the commit that generated it)\n"
+            "  replay the seed: CELLA_FUZZ_SEED={seed} CELLA_FUZZ_STEPS={planned} cargo test -p cella-engine --test command_sequence_fuzz\n    (a seed's sequence depends on the registered command set: that line is only valid at the commit that generated it)\n"
         ));
     }
     out.push_str(&steps_inline(sequence));
     if f.kind != SLOW {
-        if std::env::var_os("GRIDCRAFT_FUZZ_SHRINK").is_some() {
+        if std::env::var_os("CELLA_FUZZ_SHRINK").is_some() {
             let end = (f.step + 1).min(sequence.len());
             let min = shrink(sample, &sequence[..end], f.kind);
             out.push_str(&format!("  minimal sequence ({} steps) from file.new {{\"sample\": \"{sample}\"}}:\n", min.len()));
@@ -477,7 +477,7 @@ fn report(seed: Option<u64>, sample: &str, sequence: &[Step], f: &Failure, captu
                 out.push_str(&format!("  which fails with [{}]: {}\n", f.kind, f.what));
             }
         } else {
-            out.push_str("  (set GRIDCRAFT_FUZZ_SHRINK=1 for a minimal sequence)\n");
+            out.push_str("  (set CELLA_FUZZ_SHRINK=1 for a minimal sequence)\n");
         }
     }
     out
@@ -513,8 +513,8 @@ fn steps_inline(sequence: &[Step]) -> String {
 #[allow(clippy::disallowed_methods)] // the capture is stamped with the clock; this test never runs on wasm
 fn capture_file(seed: u64, sample: &str, planned: usize, sequence: &[Step], f: &Failure) -> Result<PathBuf, String> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("gridcraft-soak-seed-{seed}-{stamp}.txt"));
-    let mut text = String::from("# GridCraft command-sequence soak capture: replay it with GRIDCRAFT_FUZZ_REPLAY=<this file>.\n");
+    let path = std::env::temp_dir().join(format!("cella-soak-seed-{seed}-{stamp}.txt"));
+    let mut text = String::from("# Cella command-sequence soak capture: replay it with CELLA_FUZZ_REPLAY=<this file>.\n");
     text.push_str("# Steps are `id json`, one per line, from the workbook `file.new` opens for `# sample:`.\n");
     text.push_str(&format!("# seed: {seed}\n# sample: {sample}\n# planned steps: {planned}\n# captured steps: {}\n", sequence.len()));
     let stopped = if f.kind == SLOW { "cut" } else { "failure" };
@@ -612,7 +612,7 @@ impl Harness {
     /// and reload; the next episode starts from here with an empty history.
     fn end_episode(&mut self, i: usize) -> Result<(), Failure> {
         let end = self.wb();
-        if std::env::var_os("GRIDCRAFT_FUZZ_TRACE").is_some() {
+        if std::env::var_os("CELLA_FUZZ_TRACE").is_some() {
             let d = self.s.doc().expect("document");
             eprintln!(
                 "episode ends at step {i}: {} undo, {} redo, base sheets {:?}",
@@ -680,7 +680,7 @@ fn overlaps(a: &RangeRef, b: &RangeRef) -> bool {
     a.intersection(b).is_some()
 }
 
-fn structure_problem(wb: &Workbook, sel: &gridcraft_engine::Selection) -> Option<String> {
+fn structure_problem(wb: &Workbook, sel: &cella_engine::Selection) -> Option<String> {
     if wb.sheets.is_empty() {
         return Some("no sheets left".into());
     }
@@ -734,12 +734,12 @@ fn same_value(a: &Value, b: &Value, file: bool) -> bool {
         // `#CIRC!` as 0 (see the writer; Excel refuses those error codes in cached values). A
         // full recalc must still agree exactly; only the save/reload comparison is tolerant.
         (Value::Error(a), Value::Error(b)) if file => {
-            let file_value = |e: &gridcraft_core::CellError| matches!(e, gridcraft_core::CellError::Value);
-            let unrepresentable = |e: &gridcraft_core::CellError| matches!(e, gridcraft_core::CellError::Spill | gridcraft_core::CellError::Calc);
+            let file_value = |e: &cella_core::CellError| matches!(e, cella_core::CellError::Value);
+            let unrepresentable = |e: &cella_core::CellError| matches!(e, cella_core::CellError::Spill | cella_core::CellError::Calc);
             a == b || (unrepresentable(a) && file_value(b)) || (unrepresentable(b) && file_value(a))
         }
-        (Value::Error(gridcraft_core::CellError::Circ), Value::Number(n)) if file => *n == 0.0,
-        (Value::Number(n), Value::Error(gridcraft_core::CellError::Circ)) if file => *n == 0.0,
+        (Value::Error(cella_core::CellError::Circ), Value::Number(n)) if file => *n == 0.0,
+        (Value::Number(n), Value::Error(cella_core::CellError::Circ)) if file => *n == 0.0,
         _ => a == b,
     }
 }
@@ -800,7 +800,7 @@ fn recalc_diff(wb: &Workbook) -> Result<(), String> {
 /// formula that reads back as a different one, so every formula the fuzzer visits is checked here.
 fn normalized_formula(at: CellRef, f: &Formula) -> String {
     if let Some(e) = f.expr_at(at) {
-        let printed = gridcraft_formula::print(&e);
+        let printed = cella_formula::print(&e);
         assert_eq!(printed, f.text, "{at:?}: the cell's text is not the print of its tree at its cell");
     }
     let text = Formula::new(&f.text).text;
@@ -942,7 +942,7 @@ fn spill_anchors(wb: &Workbook) -> Vec<(usize, CellRef)> {
     wb.sheets.iter().enumerate().flat_map(|(i, sh)| sh.spill_ranges.keys().map(move |c| (i, *c))).collect()
 }
 
-fn tables(wb: &Workbook) -> Vec<(usize, &gridcraft_engine::model::Table)> {
+fn tables(wb: &Workbook) -> Vec<(usize, &cella_engine::model::Table)> {
     wb.sheets.iter().enumerate().flat_map(|(i, sh)| sh.tables.iter().map(move |t| (i, t))).collect()
 }
 

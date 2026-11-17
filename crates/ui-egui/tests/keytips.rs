@@ -1,11 +1,11 @@
 //! Ribbon access keys through the complete egui input and UI path.
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, Value};
+use cella_engine::model::HAlign;
+use cella_ui_egui::SheetApp;
 use egui::{Event, Key, Modifiers, PointerButton, os::OperatingSystem};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_engine::model::HAlign;
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -396,7 +396,7 @@ fn tab_letters_switch_to_their_ribbon_tabs() {
 
 #[test]
 fn f_opens_the_file_view_and_its_letters_still_run() {
-    use gridcraft_ui_egui::backstage::Page;
+    use cella_ui_egui::backstage::Page;
     let mut h = harness(blank());
     sequence(&mut h, &[Key::F], false);
     assert_eq!(h.state().backstage.as_ref().map(|b| b.page), Some(Page::Home), "F opens the File view on Home");
@@ -534,7 +534,7 @@ fn pending_sequences_go_live_when_the_command_lands() {
     sequence(&mut h, &[Key::N, Key::W], false);
     let shapes = &h.state().session.active().expect("a document").wb.active().expect("a sheet").shapes;
     assert_eq!(shapes.len(), 1, "NW inserts a WordArt now that the command exists");
-    assert_eq!(shapes[0].kind, gridcraft_engine::model::ShapeKind::WordArt);
+    assert_eq!(shapes[0].kind, cella_engine::model::ShapeKind::WordArt);
     // And a sequence that is still reserved stays a silent no-op (NJ -> insert.object).
     let mut h = harness(blank());
     sequence(&mut h, &[Key::N, Key::J], false);
@@ -648,7 +648,7 @@ fn color_palette_navigates_with_arrows_and_enter_applies() {
 
 #[test]
 fn every_sequence_terminates_without_panicking() {
-    use gridcraft_ui_egui::keytips::keytip_table::SEQUENCES;
+    use cella_ui_egui::keytips::keytip_table::SEQUENCES;
     for (seq, _entry) in SEQUENCES {
         let mut h = harness(blank());
         key(&mut h, Key::F10); // arm

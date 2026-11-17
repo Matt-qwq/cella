@@ -1,8 +1,8 @@
 //! Extensions (named command sequences) and "what changed": the two surfaces an agent needs from
 //! the engine to answer for a workbook.
 
-use gridcraft_core::{CellRef, Value};
-use gridcraft_engine::Session;
+use cella_core::{CellRef, Value};
+use cella_engine::Session;
 use serde_json::{Value as Json, json};
 
 fn session() -> Session {
@@ -75,7 +75,7 @@ fn an_extension_that_reaches_outside_the_workbook_is_refused() {
 fn a_file_that_arrives_with_an_extension_starts_untrusted() {
     let mut s = session();
     run(&mut s, "ext.add", json!({"name": "Hello", "commands": [{"command": "cell.set", "params": {"cell": "A1", "input": "hi"}}]}));
-    let path = std::env::temp_dir().join("gridcraft_ext_trust.xlsx");
+    let path = std::env::temp_dir().join("cella_ext_trust.xlsx");
     let p = path.to_string_lossy().to_string();
     run(&mut s, "file.saveAs", json!({"path": p}));
     let mut back = Session::new();
@@ -92,7 +92,7 @@ fn a_file_that_arrives_with_an_extension_starts_untrusted() {
 #[test]
 fn what_changed_lists_the_edits_since_the_file_was_saved() {
     let mut s = session();
-    let path = std::env::temp_dir().join("gridcraft_whatchanged.xlsx");
+    let path = std::env::temp_dir().join("cella_whatchanged.xlsx");
     let p = path.to_string_lossy().to_string();
     run(&mut s, "range.setValues", json!({"range": "A1", "values": [["keep"], ["change"]]}));
     run(&mut s, "file.saveAs", json!({"path": p}));
@@ -117,7 +117,7 @@ fn what_changed_lists_the_edits_since_the_file_was_saved() {
 #[test]
 fn what_changed_reports_added_and_removed_sheets_by_name() {
     let mut s = session();
-    let path = std::env::temp_dir().join("gridcraft_whatchanged_sheets.xlsx");
+    let path = std::env::temp_dir().join("cella_whatchanged_sheets.xlsx");
     let p = path.to_string_lossy().to_string();
     run(&mut s, "file.saveAs", json!({"path": p}));
     run(&mut s, "home.insertSheet", json!({"name": "Extra"}));

@@ -1,8 +1,8 @@
 //! Value-axis scaling ("nice numbers"), Format Axis options and label formatting.
 
-use gridcraft_core::{DateSystem, Value, number_to_text};
-use gridcraft_model::AxisOptions;
-use gridcraft_numfmt::{NumberFormat, format_value};
+use cella_core::{DateSystem, Value, number_to_text};
+use cella_model::AxisOptions;
+use cella_numfmt::{NumberFormat, format_value};
 
 /// Largest magnitude we plot; bigger values are clamped so ranges stay finite.
 pub(crate) const MAX_ABS: f64 = 1e300;

@@ -1,7 +1,7 @@
 //! The query pipeline: a table of values in, the same table with steps applied, a table of values
 //! out.
 //!
-//! The steps are the document's (`gridcraft_model::QueryStep`); this crate is the engine that
+//! The steps are the document's (`cella_model::QueryStep`); this crate is the engine that
 //! runs them. It does **no I/O**: reading a file, a sheet or a folder into the first `Table`
 //! belongs to whoever has the bytes (the engine command), which keeps the whole pipeline testable
 //! without a file system and keeps `crates/query` buildable for WebAssembly.
@@ -16,9 +16,9 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use gridcraft_core::date::{datetime_from_serial, serial_from_ymd};
-use gridcraft_core::{CellError, DateSystem, Value};
-use gridcraft_model::{QueryColumnType, QueryFilterOp, QueryStep};
+use cella_core::date::{datetime_from_serial, serial_from_ymd};
+use cella_core::{CellError, DateSystem, Value};
+use cella_model::{QueryColumnType, QueryFilterOp, QueryStep};
 
 mod steps;
 #[cfg(test)]

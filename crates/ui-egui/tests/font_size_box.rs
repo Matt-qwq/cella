@@ -1,10 +1,10 @@
 //! Home ▸ Font Size is a box you type a size into, with the standard sizes behind its arrow (#932).
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, Value};
+use cella_ui_egui::SheetApp;
 use egui::{Event, Key, Modifiers, accesskit::Role};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

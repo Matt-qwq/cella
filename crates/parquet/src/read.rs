@@ -39,7 +39,7 @@
 //! - **More than [`MAX_ROWS`] rows or [`MAX_COLUMNS`] columns**: both are the sheet's own limits,
 //!   and both are checked against the declared metadata before a row or a column is read.
 
-use gridcraft_core::{CellError, Value};
+use cella_core::{CellError, Value};
 use parquet::basic::{Compression, ConvertedType, LogicalType, Type as PhysicalType};
 use parquet::column::reader::{ColumnReader, ColumnReaderImpl};
 use parquet::data_type::{BoolType, ByteArrayType, DoubleType, FixedLenByteArray, FixedLenByteArrayType, FloatType, Int32Type, Int64Type};
@@ -50,9 +50,9 @@ use parquet::schema::types::ColumnDescPtr;
 use crate::ColumnType;
 
 /// The sheet's row limit: a file with more rows than a sheet has cannot be put on one.
-pub const MAX_ROWS: usize = gridcraft_core::MAX_ROWS as usize;
+pub const MAX_ROWS: usize = cella_core::MAX_ROWS as usize;
 /// The sheet's column limit.
-pub const MAX_COLUMNS: usize = gridcraft_core::MAX_COLS as usize;
+pub const MAX_COLUMNS: usize = cella_core::MAX_COLS as usize;
 
 /// The file marker Parquet writes at both ends of a file.
 const MAGIC: &[u8] = b"PAR1";
@@ -81,10 +81,10 @@ pub enum ReadError {
     #[error("this file is not a Parquet file (it does not begin and end with `PAR1`)")]
     NotParquet,
     /// The file has a group or a repeated column: not a flat table.
-    #[error("this file has nested or repeated columns; GridCraft imports flat tables")]
+    #[error("this file has nested or repeated columns; Cella imports flat tables")]
     Nested,
     /// More rows than a sheet has.
-    #[error("this file has {rows} rows; GridCraft imports at most {limit} (the sheet's row limit)")]
+    #[error("this file has {rows} rows; Cella imports at most {limit} (the sheet's row limit)")]
     TooManyRows {
         /// Rows the file declares.
         rows: u64,
@@ -92,7 +92,7 @@ pub enum ReadError {
         limit: u64,
     },
     /// More columns than a sheet has.
-    #[error("this file has {columns} columns; GridCraft imports at most {limit} (the sheet's column limit)")]
+    #[error("this file has {columns} columns; Cella imports at most {limit} (the sheet's column limit)")]
     TooManyColumns {
         /// Columns the file has.
         columns: usize,
@@ -100,7 +100,7 @@ pub enum ReadError {
         limit: usize,
     },
     /// A column is compressed with a codec this build does not compile in.
-    #[error("column {column} is compressed with {codec}; GridCraft reads uncompressed and Snappy files (re-save it as Snappy)")]
+    #[error("column {column} is compressed with {codec}; Cella reads uncompressed and Snappy files (re-save it as Snappy)")]
     Compression {
         /// The column's name.
         column: String,
@@ -108,7 +108,7 @@ pub enum ReadError {
         codec: String,
     },
     /// A column holds something this importer will not guess at.
-    #[error("column {column} holds {kind}, which GridCraft does not import")]
+    #[error("column {column} holds {kind}, which Cella does not import")]
     Unsupported {
         /// The column's name.
         column: String,

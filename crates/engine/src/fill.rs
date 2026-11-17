@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::date::{MONTHS, WEEKDAYS, datetime_from_serial, days_in_month, serial_from_ymd};
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::Cell;
-use gridcraft_numfmt::{FormatKind, NumberFormat};
+use cella_core::date::{MONTHS, WEEKDAYS, datetime_from_serial, days_in_month, serial_from_ymd};
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::Cell;
+use cella_numfmt::{FormatKind, NumberFormat};
 
 use crate::Result;
 use crate::cmd::Ctx;
@@ -206,12 +206,12 @@ enum Pattern {
         last: f64,
         first: f64,
         months: i64,
-        sys: gridcraft_core::DateSystem,
+        sys: cella_core::DateSystem,
     },
 }
 
 impl Pattern {
-    fn detect(cells: &[(CellRef, Option<Cell>)], custom: &[Vec<String>], sys: gridcraft_core::DateSystem, fmt: &str) -> Pattern {
+    fn detect(cells: &[(CellRef, Option<Cell>)], custom: &[Vec<String>], sys: cella_core::DateSystem, fmt: &str) -> Pattern {
         let vals: Vec<Value> = cells.iter().map(|(_, c)| c.as_ref().map(|c| c.value.clone()).unwrap_or_default()).collect();
         if cells.iter().any(|(_, c)| c.as_ref().is_some_and(|c| c.formula.is_some())) {
             return Pattern::Copy;
@@ -354,7 +354,7 @@ impl Pattern {
 /// `serial` shifted by `months` calendar months, keeping the day of month but clamping it to the
 /// target month's last day (Jan 31 + 1 month = Feb 28/29). Always measured from the original date,
 /// so a series does not drift: Jan 31, Feb 28, Mar 31, Apr 30.
-fn add_months_clamped(sys: gridcraft_core::DateSystem, serial: f64, months: i64) -> Option<f64> {
+fn add_months_clamped(sys: cella_core::DateSystem, serial: f64, months: i64) -> Option<f64> {
     let d = datetime_from_serial(sys, serial)?;
     let total = (d.year as i64).checked_mul(12)?.checked_add(d.month as i64 - 1)?.checked_add(months)?;
     let year = total.div_euclid(12);
@@ -481,7 +481,7 @@ pub fn flash_fill(cx: &mut Ctx, sheet: usize, at: CellRef) -> Result<usize> {
         top -= 1;
     }
     let mut bottom = at.row;
-    while bottom + 1 < gridcraft_core::MAX_ROWS && !sh.value(CellRef::new(bottom + 1, src_col)).is_empty() && bottom - top < 1_000_000 {
+    while bottom + 1 < cella_core::MAX_ROWS && !sh.value(CellRef::new(bottom + 1, src_col)).is_empty() && bottom - top < 1_000_000 {
         bottom += 1;
     }
     // Header row: skip a first row whose target is text and source looks like a header? Keep simple.
@@ -659,7 +659,7 @@ mod tests {
         s.execute("cell.set", serde_json::json!({"cell": "B1", "input": "=A1*2+3"})).unwrap();
         s.execute("edit.autoFill", serde_json::json!({"source": "B1", "target": "B1:B1000"})).unwrap();
         let sh = s.doc().unwrap().wb.active().unwrap();
-        let mut first: Option<std::sync::Arc<gridcraft_formula::Shape>> = None;
+        let mut first: Option<std::sync::Arc<cella_formula::Shape>> = None;
         for row in 0..1_000u32 {
             let at = CellRef::new(row, 1);
             let f = sh.cells.get(at).and_then(|c| c.formula).expect("a formula in every filled cell");

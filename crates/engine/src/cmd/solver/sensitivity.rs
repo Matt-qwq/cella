@@ -4,8 +4,8 @@
 //! the LP linearised at the solution. GRG Nonlinear: the reduced gradients and the Lagrange
 //! multipliers of the binding constraints at the solution, from difference gradients.
 
-use gridcraft_core::{CellError, CellRef, Value};
-use gridcraft_model::Sheet;
+use cella_core::{CellError, CellRef, Value};
+use cella_model::Sheet;
 
 use crate::cmd::whatif::Trial;
 use crate::{DocState, EngineError, Result};
@@ -602,7 +602,7 @@ fn nonlinear_body(ev: &mut Evaluator, at: &At) -> Result<Body> {
 #[cfg(test)]
 mod tests {
     use super::{Goal, MULTIPLIER_WORK, Row, Sense, multipliers};
-    use gridcraft_core::CellRef;
+    use cella_core::CellRef;
 
     #[test]
     fn multipliers_at_the_constraint_limit_stop_at_the_work_limit() {

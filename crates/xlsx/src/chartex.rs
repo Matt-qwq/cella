@@ -4,9 +4,9 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_core::RangeRef;
-use gridcraft_formula::{Expr, SheetSel};
-use gridcraft_model::{Anchor, AxisOptions, Chart, ChartKind, LabelOptions, LegendPos, PointFormat, PointLabel, QuartileMethod, Series, Workbook};
+use cella_core::RangeRef;
+use cella_formula::{Expr, SheetSel};
+use cella_model::{Anchor, AxisOptions, Chart, ChartKind, LabelOptions, LegendPos, PointFormat, PointLabel, QuartileMethod, Series, Workbook};
 
 use crate::drawing::{dml_color, srgb};
 use crate::package::Rel;
@@ -230,10 +230,7 @@ pub fn read_chartex(root: &El) -> Option<Chart> {
             points,
             point_labels,
             // The default colour (the series' theme accent, which the writer spells out) isn't kept.
-            color: s
-                .path(&["spPr", "solidFill"])
-                .and_then(dml_color)
-                .filter(|c| *c != gridcraft_model::Color::Theme(4 + (series.len() % 6) as u8, 0)),
+            color: s.path(&["spPr", "solidFill"]).and_then(dml_color).filter(|c| *c != cella_model::Color::Theme(4 + (series.len() % 6) as u8, 0)),
             ..Default::default()
         });
     }
@@ -272,7 +269,7 @@ pub fn read_chartex(root: &El) -> Option<Chart> {
     })
 }
 
-/// Whether a chartex part is one GridCraft models: every plot-area series has a layout it can read
+/// Whether a chartex part is one Cella models: every plot-area series has a layout it can read
 /// and write, and none of them is a Pareto line (which belongs to a histogram the model would
 /// write back as a plain histogram, losing the line).
 pub fn is_modelled(root: &El) -> bool {
@@ -307,7 +304,7 @@ fn f_xml(wb: &Workbook, si: usize, f: &str, names: &mut Vec<String>) -> String {
 
 /// A reference's sheet and range (for the row/column direction).
 fn ref_range(wb: &Workbook, si: usize, f: &str) -> Option<(usize, RangeRef)> {
-    let Ok(Expr::Ref(r)) = gridcraft_formula::parse(f) else { return None };
+    let Ok(Expr::Ref(r)) = cella_formula::parse(f) else { return None };
     let sheet = match &r.sheet {
         SheetSel::Current => si,
         SheetSel::Named(n) => wb.sheet_index(n)?,
@@ -407,7 +404,7 @@ pub(crate) fn accent(i: usize) -> String {
 /// from the file while the part is kept or patched, dropped when it has to be regenerated.
 pub fn write_chartex(wb: &Workbook, si: usize, ch: &Chart, names: &mut Vec<String>) -> crate::chart::ChartXml {
     // A part read from a file is written back as it was when nothing changed, and patched field by
-    // field when something the part stores changed: everything GridCraft does not model in it
+    // field when something the part stores changed: everything Cella does not model in it
     // survives. A change it cannot express regenerates the part from the model.
     if let Some(text) = kept_part(wb, si, ch, names) {
         let (style, colors) = ch.kept_style_parts();
@@ -599,7 +596,7 @@ fn name_index(name: &str) -> Option<usize> {
 
 /// Registers a kept chartex part's hidden `_xlchart` names again and renumbers them to the global
 /// sequence the writer allocates (`names`), so the part's data references stay valid. A part whose
-/// names are in ascending order — how both Excel and GridCraft write them — keeps its bytes.
+/// names are in ascending order — how both Excel and Cella write them — keeps its bytes.
 fn resolve_part_names(part: &str, table: &[(String, String)], names: &mut Vec<String>) -> Option<String> {
     let roots = crate::chart_patch::scan(part)?;
     let space = roots.iter().find(|n| n.name == "chartSpace")?;

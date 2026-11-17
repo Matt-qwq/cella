@@ -1,16 +1,16 @@
 [package]
-name = "gridcraft-query"
+name = "cella-query"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft query pipeline: Get & Transform steps applied to a table of values"
+description = "Cella query pipeline: Get & Transform steps applied to a table of values"
 
 [lints]
 workspace = true
 
 [dependencies]
-gridcraft-core = { workspace = true }
-gridcraft-model = { workspace = true }
+cella-core = { workspace = true }
+cella-model = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

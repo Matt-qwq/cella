@@ -1,8 +1,8 @@
 //! Array arithmetic: the aggregates a pass folds a reference into, element-wise broadcasting
 //! with Excel's dimension rules, and the binary operators' array behaviour.
 
-use gridcraft_core::{Array, CellError, Value, compare};
-use gridcraft_formula::BinOp;
+use cella_core::{Array, CellError, Value, compare};
+use cella_formula::BinOp;
 
 use super::MAX_CELLS;
 
@@ -58,15 +58,15 @@ impl Acc {
 
     /// The same fold as `add_cell`, on a cell read straight from a page.
     /// Folds a cell read straight from a stored page.
-    pub fn add_packed(&mut self, kind: Agg, v: gridcraft_model::Packed<'_>) -> Result<(), CellError> {
+    pub fn add_packed(&mut self, kind: Agg, v: cella_model::Packed<'_>) -> Result<(), CellError> {
         match v {
-            gridcraft_model::Packed::Number(n) => {
+            cella_model::Packed::Number(n) => {
                 self.sum += n;
                 self.count = self.count.saturating_add(1);
                 self.note(n, kind);
                 Ok(())
             }
-            gridcraft_model::Packed::Error(e) if kind != Agg::Count => Err(e),
+            cella_model::Packed::Error(e) if kind != Agg::Count => Err(e),
             _ => Ok(()),
         }
     }
@@ -96,7 +96,7 @@ impl Acc {
 
 // ---------------------------------------------------------------- operators
 
-pub(super) fn map_unary(v: &Value, f: &dyn Fn(f64) -> Value, plus: bool, sys: gridcraft_core::DateSystem) -> Value {
+pub(super) fn map_unary(v: &Value, f: &dyn Fn(f64) -> Value, plus: bool, sys: cella_core::DateSystem) -> Value {
     match v {
         Value::Array(a) => Value::from(Array { rows: a.rows, cols: a.cols, data: a.data.iter().map(|x| map_unary(x, f, plus, sys)).collect() }),
         Value::Error(e) => Value::Error(*e),
@@ -172,11 +172,11 @@ pub(super) fn single(v: Value) -> Option<Value> {
     }
 }
 
-pub fn binary_values(op: BinOp, x: &Value, y: &Value, sys: gridcraft_core::DateSystem) -> Value {
+pub fn binary_values(op: BinOp, x: &Value, y: &Value, sys: cella_core::DateSystem) -> Value {
     zip2(x, y, |a, b| binary_scalar(op, a, b, sys))
 }
 
-fn binary_scalar(op: BinOp, a: &Value, b: &Value, sys: gridcraft_core::DateSystem) -> Value {
+fn binary_scalar(op: BinOp, a: &Value, b: &Value, sys: cella_core::DateSystem) -> Value {
     if let Value::Error(e) = a {
         return Value::Error(*e);
     }

@@ -1,8 +1,8 @@
 //! Insert › Text › WordArt: decorative text as a floating shape (`ShapeKind::WordArt`) built on
 //! the text-box machinery (anchor, move/resize/delete, undo, XLSX shape text body, printing).
-//! The style palette below is original to GridCraft.
+//! The style palette below is original to Cella.
 
-use gridcraft_model::{Anchor, Color, Shape, ShapeFormat, ShapeKind, ShapeTextAlign, ShapeTextAnchor};
+use cella_model::{Anchor, Color, Shape, ShapeFormat, ShapeKind, ShapeTextAlign, ShapeTextAnchor};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -23,7 +23,7 @@ const fn rgb(v: u32) -> Color {
     Color::Rgb(v)
 }
 
-/// GridCraft's own WordArt presets. Theme colours where it makes sense (they follow the theme),
+/// Cella's own WordArt presets. Theme colours where it makes sense (they follow the theme),
 /// fixed colours for the rest.
 pub const STYLES: [WordArtStyle; 10] = [
     WordArtStyle { name: "Classic", fill: Color::Theme(4, 0), outline: None, shadow: None, bold: true, italic: false, size: 36.0 },

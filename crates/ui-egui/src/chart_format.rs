@@ -17,12 +17,12 @@
 
 use std::ops::RangeInclusive;
 
-use egui::{RichText, Ui, vec2};
-use gridcraft_chart::ChartKind;
-use gridcraft_engine::model::{
+use cella_chart::ChartKind;
+use cella_engine::model::{
     Anchor, AnchorMode, AxisCrossing, AxisOptions, Chart, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, Image, LabelFont, LabelOptions,
     LabelPosition, Shape, ShapeTextAlign, ShapeTextAnchor,
 };
+use egui::{RichText, Ui, vec2};
 use serde_json::{Map, Value as Json, json};
 
 use crate::SheetApp;
@@ -30,7 +30,7 @@ use crate::theme::{self, Tokens};
 use crate::widgets::tr;
 
 /// Why a chartex chart stores none of its axis scaling, error bars or axis frames here.
-const CHARTEX: &str = "This chart type keeps its options in a chartex part, which GridCraft does not model.";
+const CHARTEX: &str = "This chart type keeps its options in a chartex part, which Cella does not model.";
 /// Why a pie has no axis options.
 const NO_AXES: &str = "This chart type has no axes.";
 /// Why a chartex chart's gridlines are the value axis's major set alone.
@@ -107,14 +107,14 @@ impl Selection {
 /// The `Data Point` section's selected point for `series`, kept in the UI's temporary store so a
 /// click on a bar, slice or marker can point the section at it.
 fn point_key(chart: u32, series: usize) -> egui::Id {
-    egui::Id::new(("gridcraft.chart_point", chart, series))
+    egui::Id::new(("cella.chart_point", chart, series))
 }
 
 /// Points the pane at what a click on the chart landed on: an axis, a series, or a bar/slice/marker
 /// of a series (which also selects that point in the Data Point section). A click on the chart's
 /// title, legend blank space or background selects the chart area, as Excel does.
-pub fn select_element(app: &mut SheetApp, ui: &mut Ui, chart: u32, hit: gridcraft_chart::Hit) {
-    use gridcraft_chart::Hit;
+pub fn select_element(app: &mut SheetApp, ui: &mut Ui, chart: u32, hit: cella_chart::Hit) {
+    use cella_chart::Hit;
     app.format_selection = match hit {
         Hit::ChartArea => Selection::Chart,
         Hit::AxisX => Selection::AxisX,
@@ -192,7 +192,7 @@ pub fn error_bar_reason(chart: &Chart) -> Option<&'static str> {
     let drawn = !chart.series.is_empty()
         && (0..chart.series.len()).all(|i| {
             matches!(
-                gridcraft_chart::series_plot_kind(chart, i),
+                cella_chart::series_plot_kind(chart, i),
                 ColumnClustered
                     | ColumnStacked
                     | ColumnStacked100
@@ -252,7 +252,7 @@ pub fn marker_reason(chart: &Chart, series: usize) -> Option<&'static str> {
         return Some(NO_CHARTEX_MARKER);
     }
     let line_like =
-        matches!(gridcraft_chart::series_plot_kind(chart, series), Line | LineMarkers | LineStacked | Scatter | ScatterLines | Bubble | Radar);
+        matches!(cella_chart::series_plot_kind(chart, series), Line | LineMarkers | LineStacked | Scatter | ScatterLines | Bubble | Radar);
     (!line_like).then_some("A marker colour applies to line, scatter, bubble and radar points only.")
 }
 
@@ -397,7 +397,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
         app.format_selection = Selection::Chart;
     }
     let mut selection = app.format_selection;
-    egui::ComboBox::from_id_salt(("gridcraft.format_selection", id))
+    egui::ComboBox::from_id_salt(("cella.format_selection", id))
         .selected_text(selection.localized(ui))
         .width(ui.available_width().min(260.0))
         .show_ui(ui, |ui| {
@@ -453,7 +453,7 @@ fn series_axis(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, i: usize
         if ui.checkbox(&mut secondary, crate::widgets::tr(ui, "Plot on secondary axis")).changed()
             && let Err(e) = app.run("chart.setSeriesAxis", json!({"chart": id, "series": i, "secondary": secondary}))
         {
-            app.message = Some(("GridCraft".into(), crate::clean_error(&e)));
+            app.message = Some(("Cella".into(), crate::clean_error(&e)));
         }
         if secondary {
             ui.label(
@@ -468,7 +468,7 @@ fn series_axis(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, i: usize
 /// The chart object itself: title, type, legend, elements, palettes and size.
 fn chart_area(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
     ui.collapsing(tr(ui, "Chart Title"), |ui| {
-        let field = egui::Id::new(("gridcraft.chart_title", id));
+        let field = egui::Id::new(("cella.chart_title", id));
         if let Some(title) = crate::widgets::committed_text(ui, field, chart.title.as_deref().unwrap_or(""), None) {
             app.run_or_alert("chart.set", json!({"chart": id, "title": title}));
         }
@@ -531,7 +531,7 @@ fn chart_area(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
         {
             ui.horizontal(|ui| {
                 ui.label(tr(ui, label));
-                let field = egui::Id::new(("gridcraft.chart_axis_title", id, key));
+                let field = egui::Id::new(("cella.chart_axis_title", id, key));
                 if let Some(text) = crate::widgets::committed_text(ui, field, current.unwrap_or(""), None) {
                     app.run_or_alert("chart.set", json!({"chart": id, key: if text.is_empty() { Json::Null } else { json!(text) }}));
                 }
@@ -559,7 +559,7 @@ fn chart_area(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
     ui.collapsing(tr(ui, "chart|Size"), |ui| {
         // Keep the value being typed or dragged between frames; reloading it from the chart every
         // frame threw the edit away.
-        let draft = egui::Id::new(("gridcraft.chart_size_draft", id));
+        let draft = egui::Id::new(("cella.chart_size_draft", id));
         let min = crate::chartview::OBJECT_MIN_SIZE;
         let (mut w, mut h) = ui.data_mut(|d| d.get_temp::<(f32, f32)>(draft)).unwrap_or((chart.anchor.width, chart.anchor.height));
         let a = ui.add(egui::DragValue::new(&mut w).prefix(tr(ui, "Width ")).range(min..=4000.0));
@@ -631,7 +631,7 @@ fn run_data_table(app: &mut SheetApp, id: u32, params: Json) {
 fn gridlines(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
     let t = Tokens::get(ui.ctx());
     // Which axis the section is editing, remembered per chart.
-    let key = egui::Id::new(("gridcraft.gridlines_axis", id));
+    let key = egui::Id::new(("cella.gridlines_axis", id));
     let mut x_axis = ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
     // A scatter's category axis is its numeric X axis, so that is what it is called.
     let x_name = match chart.kind {
@@ -641,9 +641,9 @@ fn gridlines(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
     ui.collapsing(tr(ui, "Gridlines"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr(ui, "Axis"));
-            egui::ComboBox::from_id_salt(("gridcraft.gridlines_axis_box", id))
-                .selected_text(tr(ui, if x_axis { x_name } else { "Value axis" }))
-                .show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(("cella.gridlines_axis_box", id)).selected_text(tr(ui, if x_axis { x_name } else { "Value axis" })).show_ui(
+                ui,
+                |ui| {
                     if ui.selectable_label(!x_axis, tr(ui, "Value axis")).clicked() {
                         x_axis = false;
                         ui.data_mut(|d| d.insert_temp(key, x_axis));
@@ -652,7 +652,8 @@ fn gridlines(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
                         x_axis = true;
                         ui.data_mut(|d| d.insert_temp(key, x_axis));
                     }
-                });
+                },
+            );
         });
         if let Some(r) = gridlines_reason(chart, x_axis) {
             ui.label(RichText::new(tr(ui, r)).small().color(t.text_dim));
@@ -683,7 +684,7 @@ fn gridlines(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32) {
 /// chart crate resolves it), so the legend entry list names each entry it deletes.
 fn series_names(app: &SheetApp, chart: &Chart) -> Vec<String> {
     let Some(d) = app.session.active() else { return Vec::new() };
-    let data = gridcraft_chart::resolve(&d.wb, d.wb.active_sheet, chart);
+    let data = cella_chart::resolve(&d.wb, d.wb.active_sheet, chart);
     data.series.iter().map(|s| s.name.clone()).collect()
 }
 
@@ -845,7 +846,7 @@ fn axis(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, value_axis: boo
         }
         ui.horizontal(|ui| {
             ui.label(tr(ui, "Format code"));
-            let field = egui::Id::new(("gridcraft.chart_axis_numfmt", id, value_axis));
+            let field = egui::Id::new(("cella.chart_axis_numfmt", id, value_axis));
             if let Some(code) = crate::widgets::committed_text(ui, field, o.number_format.as_deref().unwrap_or(""), None) {
                 run_axis(app, id, axis_name, json!({"numberFormat": code}));
             }
@@ -899,7 +900,7 @@ fn crossing_json(crosses: AxisCrossing) -> Json {
 /// somewhere sensible (the data's own edge) rather than at zero.
 fn data_bounds(app: &SheetApp, chart: &Chart) -> (f64, f64) {
     let Some(d) = app.session.active() else { return (0.0, 1.0) };
-    let data = gridcraft_chart::resolve(&d.wb, d.wb.active_sheet, chart);
+    let data = cella_chart::resolve(&d.wb, d.wb.active_sheet, chart);
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
     for v in data.series.iter().flat_map(|s| s.values.iter().flatten()) {
@@ -1022,7 +1023,7 @@ fn data_labels(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: 
                 None => {
                     ui.horizontal(|ui| {
                         ui.label(tr(ui, "Separator"));
-                        let field = egui::Id::new(("gridcraft.chart_label_sep", id, series));
+                        let field = egui::Id::new(("cella.chart_label_sep", id, series));
                         if let Some(text) = crate::widgets::committed_text(ui, field, o.separator.as_deref().unwrap_or(", "), Some(60.0)) {
                             run_labels(app, id, series, json!({"separator": text}));
                         }
@@ -1036,7 +1037,7 @@ fn data_labels(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: 
                 None => {
                     ui.horizontal(|ui| {
                         ui.label(tr(ui, "Number format"));
-                        let field = egui::Id::new(("gridcraft.chart_label_numfmt", id, series));
+                        let field = egui::Id::new(("cella.chart_label_numfmt", id, series));
                         if let Some(text) = crate::widgets::committed_text(ui, field, o.number_format.as_deref().unwrap_or(""), Some(90.0)) {
                             run_labels(app, id, series, json!({"numberFormat": text}));
                         }
@@ -1258,7 +1259,7 @@ fn data_point(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: O
                     ui.label(tr(ui, "Marker size"));
                     if let Some(v) = number(
                         ui,
-                        egui::Id::new(("gridcraft.chart_point_marker_size", id, scope, index)),
+                        egui::Id::new(("cella.chart_point_marker_size", id, scope, index)),
                         f64::from(pt.marker_size.unwrap_or(5)),
                         2.0..=72.0,
                         "",
@@ -1295,7 +1296,7 @@ fn data_point(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: O
     });
 }
 
-fn colour_of(pt: &gridcraft_engine::model::PointFormat, key: &str) -> Option<Color> {
+fn colour_of(pt: &cella_engine::model::PointFormat, key: &str) -> Option<Color> {
     match key {
         "fill" => pt.fill,
         "line" => pt.line,
@@ -1310,7 +1311,7 @@ fn colour_of(pt: &gridcraft_engine::model::PointFormat, key: &str) -> Option<Col
 fn colour_row(
     app: &mut SheetApp,
     ui: &mut Ui,
-    wb_theme: &gridcraft_engine::model::Theme,
+    wb_theme: &cella_engine::model::Theme,
     label: &str,
     current: Option<Color>,
     cmd: &str,
@@ -1330,7 +1331,7 @@ fn colour_row(
 
 /// The swatch of the current colour (or a dim word when there is none) and the palette menu beside
 /// it: returns the colour that was picked, `"none"` for the palette's no-colour entry.
-fn colour_choice(ui: &mut Ui, wb_theme: &gridcraft_engine::model::Theme, current: Option<Color>, none: &str) -> Option<String> {
+fn colour_choice(ui: &mut Ui, wb_theme: &cella_engine::model::Theme, current: Option<Color>, none: &str) -> Option<String> {
     let t = Tokens::get(ui.ctx());
     let mut picked = None;
     match current.and_then(|c| c.resolve(wb_theme)).map(theme::color32) {
@@ -1358,7 +1359,7 @@ fn colour_choice(ui: &mut Ui, wb_theme: &gridcraft_engine::model::Theme, current
 fn point_colour(
     app: &mut SheetApp,
     ui: &mut Ui,
-    wb_theme: &gridcraft_engine::model::Theme,
+    wb_theme: &cella_engine::model::Theme,
     id: u32,
     series: usize,
     point: usize,
@@ -1388,7 +1389,7 @@ fn label_font_controls(app: &mut SheetApp, ui: &mut Ui, id: u32, series: Option<
     }
     ui.horizontal(|ui| {
         ui.label(tr(ui, "Label size"));
-        let field = egui::Id::new(("gridcraft.chart_label_font_size", id, series, point));
+        let field = egui::Id::new(("cella.chart_label_font_size", id, series, point));
         if let Some(v) = number(ui, field, f64::from(f.size.unwrap_or(9.0)), 1.0..=400.0, "") {
             let mut m = params.clone();
             m.insert("fontSize".into(), json!(v));
@@ -1408,7 +1409,7 @@ fn label_font_controls(app: &mut SheetApp, ui: &mut Ui, id: u32, series: Option<
 
 /// The series a chart-level section works on, remembered per chart.
 fn chart_scope(ui: &mut Ui, chart: &Chart, id: u32) -> usize {
-    let key = egui::Id::new(("gridcraft.chart_scope", id));
+    let key = egui::Id::new(("cella.chart_scope", id));
     let mut scope: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
     let n = chart.series.len();
     ui.horizontal(|ui| {
@@ -1484,7 +1485,7 @@ fn shape(app: &mut SheetApp, ui: &mut Ui, sh: &Shape) {
         ui.collapsing(tr(ui, "Text"), |ui| {
             ui.horizontal(|ui| {
                 ui.label(tr(ui, "Text size"));
-                let field = egui::Id::new(("gridcraft.object_font_size", sh.id));
+                let field = egui::Id::new(("cella.object_font_size", sh.id));
                 if let Some(v) = number(ui, field, f64::from(f.font_size.unwrap_or(SHAPE_TEXT_PT)), 1.0..=400.0, "") {
                     run_object(app, &params, json!({"fontSize": v}));
                 }
@@ -1500,7 +1501,7 @@ fn shape(app: &mut SheetApp, ui: &mut Ui, sh: &Shape) {
             }
             ui.horizontal(|ui| {
                 ui.label(tr(ui, "Typeface"));
-                let field = egui::Id::new(("gridcraft.object_font", sh.id));
+                let field = egui::Id::new(("cella.object_font", sh.id));
                 if let Some(name) = crate::widgets::committed_text(ui, field, f.font.as_deref().unwrap_or(""), Some(120.0)) {
                     run_object(app, &params, json!({"font": name}));
                 }
@@ -1521,7 +1522,7 @@ fn shape(app: &mut SheetApp, ui: &mut Ui, sh: &Shape) {
                 }
                 if let Some((colour, width)) = f.text_outline
                     && let Some(hex) = colour.hex(&wb_theme)
-                    && let Some(v) = number(ui, egui::Id::new(("gridcraft.object_text_outline", sh.id)), f64::from(width), 0.0..=100.0, "")
+                    && let Some(v) = number(ui, egui::Id::new(("cella.object_text_outline", sh.id)), f64::from(width), 0.0..=100.0, "")
                 {
                     run_object(app, &params, json!({"textOutline": {"color": hex, "width": v}}));
                 }
@@ -1534,7 +1535,7 @@ fn shape(app: &mut SheetApp, ui: &mut Ui, sh: &Shape) {
                     Some(ShapeTextAlign::Right) => "Right",
                     None => "Default",
                 };
-                egui::ComboBox::from_id_salt(("gridcraft.object_align", sh.id)).selected_text(tr(ui, current)).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(("cella.object_align", sh.id)).selected_text(tr(ui, current)).show_ui(ui, |ui| {
                     for (label, value) in [("Default", Json::Null), ("Left", json!("left")), ("Center", json!("center")), ("Right", json!("right"))] {
                         if ui.selectable_label(current == label, tr(ui, label)).clicked() {
                             run_object(app, &params, json!({"align": value}));
@@ -1550,7 +1551,7 @@ fn shape(app: &mut SheetApp, ui: &mut Ui, sh: &Shape) {
                     Some(ShapeTextAnchor::Bottom) => "Bottom",
                     None => "Default",
                 };
-                egui::ComboBox::from_id_salt(("gridcraft.object_anchor", sh.id)).selected_text(tr(ui, current)).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(("cella.object_anchor", sh.id)).selected_text(tr(ui, current)).show_ui(ui, |ui| {
                     for (label, value) in [("Default", Json::Null), ("Top", json!("top")), ("Middle", json!("middle")), ("Bottom", json!("bottom"))] {
                         if ui.selectable_label(current == label, tr(ui, label)).clicked() {
                             run_object(app, &params, json!({"anchor": value}));
@@ -1581,13 +1582,13 @@ fn object_box(app: &mut SheetApp, ui: &mut Ui, kind: &str, id: u32, anchor: &Anc
     ui.collapsing(tr(ui, "Position & Size"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr(ui, "From"));
-            if let Some(at) = crate::widgets::committed_text(ui, egui::Id::new(("gridcraft.object_at", id)), &anchor.cell.a1(), Some(70.0)) {
+            if let Some(at) = crate::widgets::committed_text(ui, egui::Id::new(("cella.object_at", id)), &anchor.cell.a1(), Some(70.0)) {
                 run_object(app, &params, json!({"at": at}));
             }
         });
         // Keep the value being typed or dragged between frames; reloading it from the object every
         // frame threw the edit away.
-        let draft = egui::Id::new(("gridcraft.object_size", id));
+        let draft = egui::Id::new(("cella.object_size", id));
         let min = crate::chartview::OBJECT_MIN_SIZE;
         let (mut w, mut h) = ui.data_mut(|d| d.get_temp::<(f32, f32)>(draft)).unwrap_or((anchor.width, anchor.height));
         let a = ui.add(egui::DragValue::new(&mut w).prefix(tr(ui, "Width ")).range(min..=4000.0));
@@ -1630,7 +1631,7 @@ fn object_alt(app: &mut SheetApp, ui: &mut Ui, kind: &str, id: u32, alt: &str) {
     ui.collapsing(tr(ui, "Alt Text"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr(ui, "Description"));
-            if let Some(text) = crate::widgets::committed_text(ui, egui::Id::new(("gridcraft.object_alt", id)), alt, None) {
+            if let Some(text) = crate::widgets::committed_text(ui, egui::Id::new(("cella.object_alt", id)), alt, None) {
                 app.run_or_alert("object.setAltText", json!({"kind": kind, "id": id, "text": text}));
             }
         });
@@ -1641,14 +1642,14 @@ fn object_alt(app: &mut SheetApp, ui: &mut Ui, kind: &str, id: u32, alt: &str) {
 /// How many points a series plots (its value count, at least one).
 pub fn point_count(app: &SheetApp, chart: &Chart, series: usize) -> usize {
     let Some(d) = app.session.active() else { return 1 };
-    let data = gridcraft_chart::resolve(&d.wb, d.wb.active_sheet, chart);
+    let data = cella_chart::resolve(&d.wb, d.wb.active_sheet, chart);
     data.series.get(series).map_or(1, |s| s.values.len()).max(1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridcraft_engine::Session;
+    use cella_engine::Session;
 
     fn chart(kind: &str) -> Session {
         let mut s = Session::new();

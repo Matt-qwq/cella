@@ -3,7 +3,7 @@
 //! Show / Hide Detail commands act on them. Summary rows sit below their detail and summary
 //! columns right of it (Excel's defaults; the model has no setting for the other way round).
 
-use gridcraft_model::LineMap;
+use cella_model::LineMap;
 
 /// The deepest outline level XLSX allows.
 pub const MAX_LEVEL: u8 = 7;
@@ -79,7 +79,7 @@ pub fn group_at(lines: &LineMap, line: u32, level: u8) -> Option<OutlineGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridcraft_model::LineInfo;
+    use cella_model::LineInfo;
 
     fn lines(spec: &[(u32, u8, bool)]) -> LineMap {
         LineMap::from_rows(spec.iter().map(|&(i, outline, hidden)| (i, LineInfo { outline, hidden, ..Default::default() })).collect())
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn deepest_level_at_the_last_lines_does_not_overflow() {
-        let last = gridcraft_core::MAX_ROWS - 1;
+        let last = cella_core::MAX_ROWS - 1;
         let l = lines(&[(last - 1, 9, false), (last, 7, false)]);
         let g = groups(&l);
         assert_eq!(g.len(), 7);

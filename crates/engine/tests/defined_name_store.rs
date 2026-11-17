@@ -1,4 +1,4 @@
-//! The chunked defined-name store (`gridcraft_engine::cmd::stash`): the workbook data GridCraft
+//! The chunked defined-name store (`cella_engine::cmd::stash`): the workbook data Cella
 //! keeps in hidden defined names — scripts, custom views, the Watch Window list, extensions and
 //! scenarios — has to survive a real xlsx file. Excel limits a string literal to 255 characters
 //! and a formula to 8,192, and the xlsx writer drops the characters XML cannot carry, so a value
@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_engine::Session;
-use gridcraft_engine::cmd::stash;
-use gridcraft_engine::model::{DefinedName, Workbook};
+use cella_engine::Session;
+use cella_engine::cmd::stash;
+use cella_engine::model::{DefinedName, Workbook};
 use serde_json::{Value as Json, json};
 
 /// Excel's limits: characters in one string literal, and characters in one name's formula.
@@ -27,7 +27,7 @@ fn run(s: &mut Session, cmd: &str, params: Json) -> Json {
 
 /// A path in the temp directory no other test uses.
 fn temp_path(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("gridcraft-stash-{tag}-{}.xlsx", std::process::id()))
+    std::env::temp_dir().join(format!("cella-stash-{tag}-{}.xlsx", std::process::id()))
 }
 
 /// The string literals of a `"a"&"b""c"` formula, quotes undoubled.
@@ -84,8 +84,8 @@ fn characters_xml_cannot_carry_survive_a_saved_file() {
     let formula = &wb.names.first().expect("one name").formula;
     assert!(formula.contains(stash::ESCAPE), "{formula:?}");
     assert!(!formula.contains('\u{FFFF}') && !formula.contains('\u{1}') && !formula.contains('\u{FFFE}'), "{formula:?}");
-    let bytes = gridcraft_engine::io::save_bytes(&wb, "odd.xlsx").expect("save");
-    let (back, warnings) = gridcraft_engine::io::open_bytes("odd.xlsx", &bytes).expect("open");
+    let bytes = cella_engine::io::save_bytes(&wb, "odd.xlsx").expect("save");
+    let (back, warnings) = cella_engine::io::open_bytes("odd.xlsx", &bytes).expect("open");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(stash::get(&back, "odd"), Some(text), "every character comes back as it went in");
 
@@ -147,8 +147,8 @@ fn no_store_writes_a_literal_over_255_or_a_formula_over_8192() {
 
     // The writer re-emits each name's formula into the file: the limits hold there too, and every
     // store reads back unchanged.
-    let bytes = gridcraft_engine::io::save_bytes(wb, "limits.xlsx").expect("save");
-    let (back, warnings) = gridcraft_engine::io::open_bytes("limits.xlsx", &bytes).expect("open");
+    let bytes = cella_engine::io::save_bytes(wb, "limits.xlsx").expect("save");
+    let (back, warnings) = cella_engine::io::open_bytes("limits.xlsx", &bytes).expect("open");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_excel_limits(&back);
     for key in keys {

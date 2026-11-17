@@ -1,6 +1,6 @@
-//! Renders the whole GridCraft window offscreen (wgpu, no window) to a PNG.
+//! Renders the whole Cella window offscreen (wgpu, no window) to a PNG.
 //!
-//! `cargo run --release -p gridcraft-ui-egui --example snapshot -- [--sample sales] [--in file.xlsx]
+//! `cargo run --release -p cella-ui-egui --example snapshot -- [--sample sales] [--in file.xlsx]
 //!  [--size 1440x900] [--scale 2] [--fonts] [--cmd 'id={json}']... [--tab Insert] [--dark] [--high-contrast] [--language en|es|zh|ja|ko|ru|pt|de|cs|fr|tr]
 //!  [--dialog 'name={json}'] [--hf-edit header|footer] [--pane formatChart] [--chart <id>|last]
 //!  [--drag se=120x60] [--format chart|axisX|axisY|seriesN] [--expand 'Axis Options'] out.png
@@ -8,8 +8,8 @@
 //! `--drag` leaves a chart resize in progress (the handle pressed and moved, not released), so a
 //! snapshot can show what a drag looks like.
 
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
 use serde_json::json;
 
 fn main() {
@@ -125,7 +125,7 @@ fn main() {
     // `--fonts` waits for the installed-font scan, so workbook fonts (宋体, Cambria, …) are bound
     // before the first frame instead of the snapshot falling back to a generic face.
     if wait_fonts {
-        gridcraft_ui_egui::fonts::catalog();
+        cella_ui_egui::fonts::catalog();
     }
     let mut harness =
         egui_kittest::Harness::builder().with_size(egui::vec2(size.0, size.1)).with_pixels_per_point(scale).with_max_steps(12).wgpu().build_ui_state(
@@ -139,7 +139,7 @@ fn main() {
                 app.ui.dark = dark;
                 app.ui.high_contrast = high_contrast;
                 if let Some(code) = &language
-                    && let Some(l) = gridcraft_ui_egui::i18n::Language::parse(code)
+                    && let Some(l) = cella_ui_egui::i18n::Language::parse(code)
                 {
                     app.ui.language = l;
                 }
@@ -149,7 +149,7 @@ fn main() {
                 app.grid.pane = pane;
                 app.selected_chart = chart;
                 if let Some(f) = &format {
-                    app.format_selection = gridcraft_ui_egui::chart_format::Selection::parse(f);
+                    app.format_selection = cella_ui_egui::chart_format::Selection::parse(f);
                 }
                 if let Some(d) = &dialog {
                     let (name, p) =
@@ -159,8 +159,8 @@ fn main() {
                 // Page Layout view: edit the first page's centre header (or footer) section.
                 let active = app.session.active().and_then(|d| d.wb.active().cloned().map(|s| (d.wb.active_sheet, s)));
                 if let (Some(part), Some((si, sh))) = (&hf_edit, active) {
-                    let zone = gridcraft_engine::paper::HfZone { footer: part == "footer", section: 1 };
-                    gridcraft_ui_egui::paper_view::begin(&mut app, si, &sh, (0, 0), zone);
+                    let zone = cella_engine::paper::HfZone { footer: part == "footer", section: 1 };
+                    cella_ui_egui::paper_view::begin(&mut app, si, &sh, (0, 0), zone);
                 }
                 app
             },
@@ -193,7 +193,7 @@ fn main() {
 /// Presses a selected chart's resize handle and moves the pointer, leaving the drag in progress:
 /// `se=120x60`, `nw=-40x-20`, `e=60x0`.
 fn resize_drag(harness: &mut egui_kittest::Harness<'static, SheetApp>, spec: &str) {
-    use gridcraft_ui_egui::chartview::{Handle, handle_centres};
+    use cella_ui_egui::chartview::{Handle, handle_centres};
     let (which, by) = spec.split_once('=').unwrap_or((spec, "120x60"));
     let (dx, dy) = by.split_once('x').and_then(|(a, b)| a.trim().parse::<f32>().ok().zip(b.trim().parse::<f32>().ok())).unwrap_or((120.0, 60.0));
     let handle = match which.trim().to_ascii_lowercase().as_str() {
@@ -212,7 +212,7 @@ fn resize_drag(harness: &mut egui_kittest::Harness<'static, SheetApp>, spec: &st
         let Some(rect) = app.grid.rect else { return };
         let Some(id) = app.selected_chart else { return };
         let Some(ch) = sh.charts.iter().find(|c| c.id == id) else { return };
-        let geo = gridcraft_ui_egui::grid::Geo::new(sh, rect, app.view().scroll);
+        let geo = cella_ui_egui::grid::Geo::new(sh, rect, app.view().scroll);
         let a = &ch.anchor;
         let min = egui::pos2(geo.x(sh, a.cell.col) + a.dx * geo.z, geo.y(sh, a.cell.row) + a.dy * geo.z);
         let r = egui::Rect::from_min_size(min, egui::vec2(a.width.max(1.0), a.height.max(1.0)) * geo.z);

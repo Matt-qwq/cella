@@ -1,11 +1,11 @@
 //! The Format pane drives the four chart commands, and disables what the chart kind cannot store.
 
+use cella_engine::Session;
+use cella_engine::model::{AxisCrossing, Chart, ChartKind, ErrorBarDirection, ErrorBarKind, LabelPosition};
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::chart_format::Selection;
 use egui::{Event, Key, Modifiers, PointerButton, Rect, accesskit::Role, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::model::{AxisCrossing, Chart, ChartKind, ErrorBarDirection, ErrorBarKind, LabelPosition};
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::chart_format::Selection;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

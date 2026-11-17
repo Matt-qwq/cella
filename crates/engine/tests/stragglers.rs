@@ -1,13 +1,13 @@
 //! The straggler commands adopted from upstream: the small ids that were missing, plus the guard
-//! that keeps the defined-name store (`gridcraft_engine::cmd::stash`) whole when a caller names one
+//! that keeps the defined-name store (`cella_engine::cmd::stash`) whole when a caller names one
 //! of its chunks in a `formulas.*` name command.
 //!
 //! Every id here runs with no params (or its minimal ones), does what it says, appears in
 //! `app.commands` with its ribbon path, and survives undo/redo where it edits the workbook.
 
-use gridcraft_engine::Session;
-use gridcraft_engine::cmd::stash;
-use gridcraft_engine::core::CellRef;
+use cella_engine::Session;
+use cella_engine::cmd::stash;
+use cella_engine::core::CellRef;
 use serde_json::{Value as Json, json};
 
 fn session() -> Session {
@@ -25,7 +25,7 @@ fn text(s: &Session, at: &str) -> String {
     d.wb.active().expect("a sheet").value(CellRef::parse(at).expect("a cell")).display()
 }
 
-fn sheet(s: &Session) -> gridcraft_engine::model::Sheet {
+fn sheet(s: &Session) -> cella_engine::model::Sheet {
     s.doc().expect("a document").wb.active().expect("a sheet").clone()
 }
 
@@ -281,7 +281,7 @@ fn the_name_commands_refuse_a_chunk_of_the_store() {
 
 #[test]
 fn legacy_underscore_sc_names_are_left_alone() {
-    // Older items are one `_sc_<key>` name each, and GridCraft's own fixtures define those through
+    // Older items are one `_sc_<key>` name each, and Cella's own fixtures define those through
     // `formulas.defineName`: refusing them would break them, and one name is a whole item, so
     // deleting it loses nothing of another one.
     let mut s = session();

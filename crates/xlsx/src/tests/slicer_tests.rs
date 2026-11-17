@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::*;
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::*;
 
 use crate::read_xlsx;
 use crate::testing::check_package;
@@ -470,8 +470,8 @@ fn a_hostile_anchor_is_clamped_not_trusted() {
     assert!(
         drawing.contains(&format!(
             "<xdr:from><xdr:col>{}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{}</xdr:row><xdr:rowOff>0</xdr:rowOff>",
-            gridcraft_core::MAX_COLS - 1,
-            gridcraft_core::MAX_ROWS - 1
+            cella_core::MAX_COLS - 1,
+            cella_core::MAX_ROWS - 1
         )),
         "{drawing}"
     );
@@ -546,7 +546,7 @@ fn a_timeline_without_a_range_writes_no_selection_and_unknown() {
 
 #[test]
 fn a_timeline_state_a_save_could_not_spell_back_keeps_its_bytes() {
-    // A reversed range, a date the calendar cannot hold, a fraction of a second GridCraft's dates
+    // A reversed range, a date the calendar cannot hold, a fraction of a second Cella's dates
     // do not carry, a filter type that contradicts the children, a state attribute or child the
     // model does not carry, and a refresh version: none of these can be written back as they came,
     // so the whole timeline set stays on the kept path, byte for byte.

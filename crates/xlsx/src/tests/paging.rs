@@ -27,7 +27,7 @@ fn temp_dir(tag: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("gridcraft-xlsx-{tag}-{}-{nonce}", std::process::id()))
+    std::env::temp_dir().join(format!("cella-xlsx-{tag}-{}-{nonce}", std::process::id()))
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn a_paged_read_puts_the_spill_beside_the_document_and_leaves_nothing() {
         let sheet = paged.active().expect("a sheet");
         assert_eq!(sheet.cells.page_file_path().and_then(|p| p.parent()), Some(dir.as_path()), "the spill went beside the document");
         let name = sheet.cells.page_file_path().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or_default();
-        assert!(name.starts_with(".gridcraft-spill-report-"), "{name}");
+        assert!(name.starts_with(".cella-spill-report-"), "{name}");
         let live_cells: Vec<_> = live.active().expect("a sheet").cells.iter().collect();
         assert_eq!(sheet.cells.iter().collect::<Vec<_>>(), live_cells, "paging changes no cell");
     }

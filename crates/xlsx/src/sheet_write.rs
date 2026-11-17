@@ -9,8 +9,8 @@ use crate::write::{
     CT_CHART, CT_COMMENTS, CT_DRAWING, CT_TABLE, CT_THREADED_COMMENTS, NS_MAIN, NS_REL, NS_THREADED, Out, REL_THREADED_COMMENT, Rels, Sst, XML_DECL,
 };
 use crate::xml::{encode_xstring, esc, esc_attr, num};
-use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_model::{
+use cella_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_model::{
     Cell, CfOperator, CfRule, CfValueKind, Chart, Color, CondFormat, ErrorStyle, FilterCriterion, LineInfo, NoteBox, NoteCorner, Orientation,
     PageOrder, Sheet, SparklineKind, Style, Table, TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
 };
@@ -309,7 +309,7 @@ pub fn write_sheet(
     if sheet.right_to_left {
         s.push_str(" rightToLeft=\"1\"");
     }
-    if sheet.view != gridcraft_model::SheetViewMode::Normal {
+    if sheet.view != cella_model::SheetViewMode::Normal {
         let _ = write!(s, " view=\"{}\"", sheet.view.as_str());
     }
     if sheet.zoom != 100 && (10..=400).contains(&sheet.zoom) {
@@ -338,8 +338,8 @@ pub fn write_sheet(
                 s,
                 " topLeftCell=\"{}\" activePane=\"{pane}\" state=\"frozen\"/>",
                 CellRef::new(
-                    rows.max(sheet.view_top_left.row).min(gridcraft_core::MAX_ROWS - 1),
-                    cols.max(sheet.view_top_left.col).min(gridcraft_core::MAX_COLS - 1)
+                    rows.max(sheet.view_top_left.row).min(cella_core::MAX_ROWS - 1),
+                    cols.max(sheet.view_top_left.col).min(cella_core::MAX_COLS - 1)
                 )
                 .a1()
             );
@@ -355,11 +355,11 @@ pub fn write_sheet(
     let max_row_outline = sheet.rows.values().map(|r| r.outline).max().unwrap_or(0);
     let max_col_outline = sheet.cols.values().map(|r| r.outline).max().unwrap_or(0);
     s.push_str("<sheetFormatPr");
-    if (sheet.default_col_width - gridcraft_model::DEFAULT_COL_WIDTH).abs() > 0.01 {
+    if (sheet.default_col_width - cella_model::DEFAULT_COL_WIDTH).abs() > 0.01 {
         let _ = write!(s, " defaultColWidth=\"{}\"", num(px_to_col_width(sheet.default_col_width)));
     }
     let _ = write!(s, " defaultRowHeight=\"{}\"", num(px_to_pt(sheet.default_row_height)));
-    if (sheet.default_row_height - gridcraft_model::DEFAULT_ROW_HEIGHT).abs() > 0.01 {
+    if (sheet.default_row_height - cella_model::DEFAULT_ROW_HEIGHT).abs() > 0.01 {
         s.push_str(" customHeight=\"1\"");
     }
     if max_row_outline > 0 {
@@ -380,7 +380,7 @@ pub fn write_sheet(
             // .xls conversion writes max="16384" for the trailing style, and a partial range
             // (28..256) makes Excel treat those columns as used and grow the used range.
             if b + 1 == 256 {
-                b = gridcraft_core::MAX_COLS - 1;
+                b = cella_core::MAX_COLS - 1;
             }
             let w = i.size.unwrap_or(sheet.default_col_width);
             let _ = write!(s, "<col min=\"{}\" max=\"{}\" width=\"{}\"", a + 1, b + 1, num(px_to_col_width(w)));
@@ -402,7 +402,7 @@ pub fn write_sheet(
             s.push_str("/>");
         };
         for (c, info) in &sheet.cols {
-            if c >= gridcraft_core::MAX_COLS {
+            if c >= cella_core::MAX_COLS {
                 continue;
             }
             run = match run {
@@ -685,7 +685,7 @@ pub fn write_sheet(
                 out.part(&format!("xl/charts/_rels/chartEx{n}.xml.rels"), None, crels.xml().into_bytes());
                 drels.add_uri(crate::chartex::REL_CHARTEX, &format!("../charts/chartEx{n}.xml"))
             } else {
-                // Byte for byte as read: GridCraft does not model this chart's kind.
+                // Byte for byte as read: Cella does not model this chart's kind.
                 out.part(&format!("xl/charts/chart{n}.xml"), Some(CT_CHART), ch.xml.as_bytes().to_vec());
                 let crels = write_style_parts(out, n, false, (ch.style.as_deref(), ch.colors.as_deref()));
                 if !crels.is_empty() {
@@ -783,7 +783,7 @@ pub fn write_sheet(
         }
         let _ = write!(s, "<tableParts count=\"{}\">{parts}</tableParts>", tables.len());
     }
-    // Excel 2010 extensions: solid data bars, then sparklines, then the ones GridCraft does not
+    // Excel 2010 extensions: solid data bars, then sparklines, then the ones Cella does not
     // model (timelines, filters…) as they came.
     let solid_bars: Vec<(&CondFormat, u32)> = sheet
         .cond_formats
@@ -821,8 +821,7 @@ pub fn write_sheet(
                 SparklineKind::Column => " type=\"column\"",
                 SparklineKind::WinLoss => " type=\"stacked\"",
             };
-            let src =
-                if sp.source.contains('!') { sp.source.clone() } else { format!("{}!{}", gridcraft_formula::quote_sheet(&sheet.name), sp.source) };
+            let src = if sp.source.contains('!') { sp.source.clone() } else { format!("{}!{}", cella_formula::quote_sheet(&sheet.name), sp.source) };
             let color = if sp.color == Color::Auto { "rgb=\"FF376092\"".to_string() } else { color_attrs(&sp.color) };
             let _ = write!(
                 s,
@@ -850,7 +849,7 @@ struct StyleIds {
 }
 
 impl StyleIds {
-    fn get(self, s: gridcraft_model::StyleId) -> u32 {
+    fn get(self, s: cella_model::StyleId) -> u32 {
         if s.0 < self.count { s.0 } else { 0 }
     }
 }
@@ -1224,7 +1223,7 @@ fn build_rows(
 
 /// The formula a cell writes: an override (a table header's text, a spilled value) replaces the
 /// cell, formula and all.
-fn formula_of<'c>(cell: Option<&'c Cell>, a: &Additions<'_>) -> Option<&'c gridcraft_model::Formula> {
+fn formula_of<'c>(cell: Option<&'c Cell>, a: &Additions<'_>) -> Option<&'c cella_model::Formula> {
     if a.override_text.is_some() {
         return None;
     }
@@ -1538,11 +1537,11 @@ mod perf {
             let g = format!("B{row}*C{row}+D{row}");
             let h = if r == 0 { format!("G{row}") } else { format!("H{}+G{row}", row - 1) };
             for (col, text) in [(6u32, g), (7, h)] {
-                let formula = gridcraft_model::Formula::new(&text);
+                let formula = cella_model::Formula::new(&text);
                 let value = Value::Number(n * 2.0);
                 sheet.set_cell(
                     CellRef::new(r, col),
-                    Cell { value, formula: Some(std::sync::Arc::new(formula)), style: gridcraft_model::StyleId::DEFAULT },
+                    Cell { value, formula: Some(std::sync::Arc::new(formula)), style: cella_model::StyleId::DEFAULT },
                 );
             }
         }
@@ -1553,19 +1552,19 @@ mod perf {
     }
 
     /// Where a save's time goes: the worksheet XML build (one `write_sheet` per sheet) against the
-    /// whole write, which also deflates every sheet. A synthetic workbook of GRIDCRAFT_PERF_ROWS
-    /// rows (default 1,000,000) unless GRIDCRAFT_PERF_FILE points at a real file (the clock is read
+    /// whole write, which also deflates every sheet. A synthetic workbook of CELLA_PERF_ROWS
+    /// rows (default 1,000,000) unless CELLA_PERF_FILE points at a real file (the clock is read
     /// here, which the crate bans on wasm):
-    ///   cargo test --release -p gridcraft-xlsx --lib -- --ignored --nocapture saving_a_big_file
-    ///   GRIDCRAFT_PERF_FILE=big.xlsx ... saving_a_big_file
+    ///   cargo test --release -p cella-xlsx --lib -- --ignored --nocapture saving_a_big_file
+    ///   CELLA_PERF_FILE=big.xlsx ... saving_a_big_file
     #[test]
     #[ignore = "timing, not a check"]
     #[cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
     fn saving_a_big_file() {
-        let wb = match std::env::var("GRIDCRAFT_PERF_FILE") {
+        let wb = match std::env::var("CELLA_PERF_FILE") {
             Ok(path) => crate::read_xlsx_file(std::path::Path::new(&path)).expect("read").0,
             Err(_) => {
-                let rows: u32 = std::env::var("GRIDCRAFT_PERF_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
+                let rows: u32 = std::env::var("CELLA_PERF_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
                 big_workbook(rows)
             }
         };
@@ -1603,7 +1602,7 @@ mod perf {
         // The biggest worksheet's XML through the zip writer at several levels: what compression
         // costs and what it buys, on this file's real text rather than a synthetic row. Off unless
         // asked, because it takes minutes on a million-row sheet.
-        if std::env::var_os("GRIDCRAFT_PERF_ZIP").is_none() {
+        if std::env::var_os("CELLA_PERF_ZIP").is_none() {
             return;
         }
         if let Some(sheet) = wb.sheets.iter().max_by_key(|s| s.cells.len()) {
@@ -1642,7 +1641,7 @@ mod perf {
     }
 
     /// Where a saved report's time goes. Run it with:
-    ///   cargo test --release -p gridcraft-xlsx --lib -- --ignored --nocapture number_formatting
+    ///   cargo test --release -p cella-xlsx --lib -- --ignored --nocapture number_formatting
     #[test]
     #[ignore = "timing, not a check"]
     #[cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]

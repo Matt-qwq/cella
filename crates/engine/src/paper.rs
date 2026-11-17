@@ -9,8 +9,8 @@
 //! grid with a gap around each: page `(row band, column band)` starts at
 //! `(gap + j·(page_w + gap), gap + i·(page_h + gap))`, and its cells start at its top-left margin.
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef};
-use gridcraft_model::{LineIndex, PageOrder, Sheet, Workbook};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef};
+use cella_model::{LineIndex, PageOrder, Sheet, Workbook};
 
 use crate::cmd::print::{self, PX_TO_PT, PrintOptions};
 
@@ -239,7 +239,7 @@ pub fn need_for(sh: &Sheet, x: f64, y: f64) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use gridcraft_model::{Orientation, Sheet};
+    use cella_model::{Orientation, Sheet};
 
     use super::*;
 
@@ -248,7 +248,7 @@ mod tests {
         if let Some(sh) = wb.sheet_mut(0) {
             for r in 0..rows {
                 for c in 0..cols {
-                    sh.set_value(CellRef::new(r, c), gridcraft_core::Value::Number(1.0));
+                    sh.set_value(CellRef::new(r, c), cella_core::Value::Number(1.0));
                 }
             }
         }
@@ -312,7 +312,7 @@ mod tests {
         let mut sh = Sheet::new("S");
         for row in 0..200u32 {
             for col in 0..60u32 {
-                sh.set_value(CellRef::new(row, col), gridcraft_core::Value::Number(f64::from(row * 60 + col)));
+                sh.set_value(CellRef::new(row, col), cella_core::Value::Number(f64::from(row * 60 + col)));
             }
         }
         wb.sheets.push(std::sync::Arc::new(sh));

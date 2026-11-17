@@ -12,10 +12,7 @@ use crate::SheetApp;
 /// remembers; a command that refuses shows in the message bar.
 pub(super) fn macros(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language;
-    ui.label(crate::widgets::tr(
-        ui,
-        "Automation in this workbook. GridCraft runs its own scripts; a file's VBA project is preserved but not executed.",
-    ));
+    ui.label(crate::widgets::tr(ui, "Automation in this workbook. Cella runs its own scripts; a file's VBA project is preserved but not executed."));
     ui.add_space(6.0);
     let items: Vec<Json> = d.result.as_ref().and_then(Json::as_array).cloned().unwrap_or_default();
     if items.is_empty() {

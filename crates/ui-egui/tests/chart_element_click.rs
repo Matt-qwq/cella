@@ -1,14 +1,14 @@
 //! Clicking a chart element selects it in the Format pane, as Excel does: the first click
 //! selects the chart, the next one the axis, series or point under the pointer.
 
+use cella_chart::{Hit, HitShape};
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::chart_format::Selection;
+use cella_ui_egui::grid::Geo;
 use egui::{Event, Modifiers, PointerButton, Rect, accesskit::Role, pos2, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_chart::{Hit, HitShape};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::chart_format::Selection;
-use gridcraft_ui_egui::grid::Geo;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -52,8 +52,8 @@ fn a_bar(h: &Harness, id: u32) -> egui::Pos2 {
     let sh = wb.active().unwrap();
     let chart = sh.charts.iter().find(|c| c.id == id).unwrap();
     let (w, ht) = (chart.anchor.width.max(1.0), chart.anchor.height.max(1.0));
-    let data = gridcraft_chart::resolve(wb, wb.active_sheet, chart);
-    let drawing = gridcraft_chart::draw(chart, &data, w, ht, &gridcraft_chart::ApproxMeasure);
+    let data = cella_chart::resolve(wb, wb.active_sheet, chart);
+    let drawing = cella_chart::draw(chart, &data, w, ht, &cella_chart::ApproxMeasure);
     let (x, y) = drawing
         .hits
         .iter()

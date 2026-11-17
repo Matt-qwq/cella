@@ -2,16 +2,16 @@
 //! and Clear/Apply row in English. They were translated; the report came from an older installed
 //! build, so this pins the menu itself — open it and read its labels.
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::{SheetApp, grid};
 use egui::{Event, Modifiers, PointerButton};
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::{SheetApp, grid};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
 
-fn open_filter_menu(language: gridcraft_ui_egui::i18n::Language) -> Harness {
+fn open_filter_menu(language: cella_ui_egui::i18n::Language) -> Harness {
     let mut session = Session::new();
     session.new_workbook();
     session.execute("range.setValues", json!({"range": "A1", "values": [["Name"], ["Ana"], ["Bia"], ["Caio"]]})).unwrap();
@@ -45,7 +45,7 @@ fn open_filter_menu(language: gridcraft_ui_egui::i18n::Language) -> Harness {
 
 #[test]
 fn the_filter_menu_speaks_chinese() {
-    let h = open_filter_menu(gridcraft_ui_egui::i18n::Language::Zh);
+    let h = open_filter_menu(cella_ui_egui::i18n::Language::Zh);
     for label in ["↑  升序排序", "↓  降序排序", "筛选", "（全选）", "清除筛选", "应用"] {
         assert!(h.query_by_label(label).is_some(), "the filter menu should show {label}");
     }
@@ -54,6 +54,6 @@ fn the_filter_menu_speaks_chinese() {
 
 #[test]
 fn the_filter_menu_follows_an_english_ui() {
-    let h = open_filter_menu(gridcraft_ui_egui::i18n::Language::En);
+    let h = open_filter_menu(cella_ui_egui::i18n::Language::En);
     assert!(h.query_by_label("Clear Filter").is_some(), "an English UI keeps the English menu");
 }

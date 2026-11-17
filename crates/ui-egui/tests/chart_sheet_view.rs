@@ -1,11 +1,11 @@
 //! Chart sheets in the UI: the tab strip marks one, activating it shows its chart, and the chart's
 //! own Format pane still acts on it (the chart of a chart sheet is an ordinary chart model).
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::chart_format::Selection;
 use egui::{Color32, Rect, Shape, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::chart_format::Selection;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -25,7 +25,7 @@ fn harness() -> (Harness, u32) {
     let mut h = egui_kittest::Harness::builder().with_step_dt(1.0 / 60.0).with_size(vec2(1300.0, 900.0)).build_ui_state(
         move |ui, app: &mut SheetApp| {
             if !fonts_ready {
-                ui.ctx().set_fonts(gridcraft_ui_egui::theme::font_definitions());
+                ui.ctx().set_fonts(cella_ui_egui::theme::font_definitions());
                 fonts_ready = true;
                 return;
             }
@@ -97,6 +97,6 @@ fn the_chart_sheets_chart_takes_the_format_pane() {
     h.run_steps(2);
     let wb = &h.state().session.doc().unwrap().wb;
     let ch = wb.sheet(1).unwrap().chart_sheet_chart().expect("the chart sheet's chart");
-    assert_eq!(ch.legend, gridcraft_engine::model::LegendPos::Top);
+    assert_eq!(ch.legend, cella_engine::model::LegendPos::Top);
     assert!(wb.sheet(1).unwrap().cells.is_empty(), "the chart sheet still has no cells");
 }

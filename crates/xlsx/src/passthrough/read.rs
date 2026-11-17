@@ -1,9 +1,9 @@
-//! Reading the parts GridCraft keeps verbatim, with their content type and relationships.
+//! Reading the parts Cella keeps verbatim, with their content type and relationships.
 
 use super::rebase::*;
 use super::*;
 
-/// The model's PivotTable for the pivotTable part `part`, when GridCraft reads it but does not
+/// The model's PivotTable for the pivotTable part `part`, when Cella reads it but does not
 /// compute it (a data-model or OLAP cache). Its parts are carried whole instead of rewritten.
 fn read_only_pivot<'a>(cx: &mut Ctx<'_>, part: &str, pivots: &'a [PivotTable]) -> Option<&'a PivotTable> {
     if !pivots.iter().any(PivotTable::is_read_only) {
@@ -47,7 +47,7 @@ struct ExtScan {
     name: Option<String>,
     exts: Vec<String>,
 }
-/// Reads the `extLst` children of a part that GridCraft rewrites (a table, PivotTable or pivot
+/// Reads the `extLst` children of a part that Cella rewrites (a table, PivotTable or pivot
 /// cache definition), with the root's namespace declarations added to each fragment. `None` when
 /// the part is not XML.
 fn scan_exts(bytes: &[u8]) -> Option<ExtScan> {
@@ -136,7 +136,7 @@ fn rel_ids(x: &str) -> Option<Vec<String>> {
     })
     .map(|_| ids)
 }
-/// A part GridCraft rewrites, as far as pass-through needs it: its root `name`, its `<extLst>`
+/// A part Cella rewrites, as far as pass-through needs it: its root `name`, its `<extLst>`
 /// children and its relationships.
 fn read_owner_part(cx: &mut Ctx<'_>, part: &str) -> Option<(String, Vec<String>, Vec<PreservedRel>)> {
     let bytes = cx.pkg.read_limited(part, MAX_META).ok().flatten()?;
@@ -294,8 +294,8 @@ impl KeptReader {
         Ok(())
     }
 
-    /// Keeps a part GridCraft rewrites and what it owns that the model doesn't: the `<extLst>`
-    /// children it has (except `modeled`, which GridCraft writes itself), the relationships in
+    /// Keeps a part Cella rewrites and what it owns that the model doesn't: the `<extLst>`
+    /// children it has (except `modeled`, which Cella writes itself), the relationships in
     /// `owned` and everything behind them. Extras hang off the owner key (`owner_key`), so a
     /// renamed or deleted owner drops them instead of attaching them elsewhere. `key_name`
     /// overrides the part's root `name` attribute (a pivot cache definition has none).
@@ -329,10 +329,10 @@ impl KeptReader {
         Some(key)
     }
 
-    /// Keeps the `extLst` children of an owner that GridCraft does not model, and the
+    /// Keeps the `extLst` children of an owner that Cella does not model, and the
     /// relationships they name. `key` is empty for the package's own owners (the workbook and a
     /// worksheet, whose relationships are written as they are) and the owner key for a rewritten
-    /// part. A fragment that names a relationship GridCraft can't keep is dropped whole: it would
+    /// part. A fragment that names a relationship Cella can't keep is dropped whole: it would
     /// point at a part the file no longer has.
     #[allow(clippy::too_many_arguments)]
     fn keep_exts(
@@ -365,7 +365,7 @@ impl KeptReader {
             };
             let keepable = |id: &str| rels.iter().any(|r| r.id == id && !rewritten(r));
             if let Some(bad) = ids.iter().find(|id| !keepable(id)) {
-                cx.warn(format!("{owner}: an extension was dropped: it names {bad}, which GridCraft cannot keep"));
+                cx.warn(format!("{owner}: an extension was dropped: it names {bad}, which Cella cannot keep"));
                 continue;
             }
             wanted.push((frag, ids));
@@ -435,7 +435,7 @@ impl KeptReader {
                 cx.warn(format!("{} part {} was dropped: {why}", kind(&r.rel_type), r.target));
             }
         }
-        // Workbook extensions GridCraft does not model (slicer caches, timeline cache references,
+        // Workbook extensions Cella does not model (slicer caches, timeline cache references,
         // defined names of extensions…), and the slicer and timeline caches they or a relationship
         // name. Their part bytes, relationships and content types are kept as they are.
         let wb_exts = cx.pkg.read_limited(wb_part, MAX_META).ok().flatten().and_then(|b| scan_exts(&b)).map(|s| s.exts).unwrap_or_default();
@@ -517,7 +517,7 @@ impl KeptReader {
 
     /// The parts of the workbook's data model (Power Pivot), kept with the workbook however the
     /// reports that name them fare. A workbook whose cache definitions relate a `powerPivotData`
-    /// part has one; its content is opaque to GridCraft and is never read.
+    /// part has one; its content is opaque to Cella and is never read.
     fn keep_data_model(&mut self, cx: &mut Ctx<'_>, wb_xml: &xml::El, wb_rels: &[PreservedRel], p: &mut Preserved, seen: &mut HashSet<String>) {
         let caches: Vec<String> = wb_xml
             .child("pivotCaches")
@@ -535,13 +535,13 @@ impl KeptReader {
         let mut seen_parts: HashSet<String> = HashSet::new();
         roots.retain(|r| seen_parts.insert(normalize(&r.target)));
         match self.keep_through(cx, p, &roots, seen, PIVOT_GRAPH) {
-            Ok(()) => cx.warn("the workbook's data model was kept; GridCraft carries it and does not read it"),
+            Ok(()) => cx.warn("the workbook's data model was kept; Cella carries it and does not read it"),
             Err(why) => cx.warn(format!("the workbook's data model was dropped: {why}")),
         }
     }
 
     /// Sheet-level content of the sheet part `part`. `pivots` are the PivotTables the model read
-    /// from it: a report GridCraft does not compute is carried whole, not rewritten.
+    /// from it: a report Cella does not compute is carried whole, not rewritten.
     pub fn sheet(&mut self, cx: &mut Ctx<'_>, part: &str, name: &str, pivots: &[PivotTable]) -> Option<Arc<Preserved>> {
         if !self.on {
             return None;
@@ -560,20 +560,20 @@ impl KeptReader {
                 cx.warn(format!("sheet \"{name}\": {} was dropped: {why}", kind(&r.rel_type)));
             }
         }
-        // Parts GridCraft rewrites keep what the model has no room for: a table's extensions and
+        // Parts Cella rewrites keep what the model has no room for: a table's extensions and
         // the query table attached to it, a PivotTable's slicer cache and the extensions of its
         // cache definition. Each hangs off the owner's name; a renamed or deleted owner drops it.
         for r in rels.iter().filter(|r| is_kind(r, &["table"]) && !r.external) {
             self.keep_owner(cx, &r.target, "table", None, &[], TABLE_OWNED, &mut p);
         }
         for r in rels.iter().filter(|r| is_kind(r, &["pivotTable"]) && !r.external) {
-            // A report GridCraft does not compute (a data-model or OLAP cache) is carried whole:
+            // A report Cella does not compute (a data-model or OLAP cache) is carried whole:
             // its own part, its cache definition, its records and the data model behind them are
             // kept byte for byte, keyed to the report's name so a deleted or renamed report takes
             // them with it. Its cached values stay on the sheet as the cells they already are.
             //
             // The pivot's relationships that name another part (the cache definition, then its
-            // records) are followed through the kinds GridCraft normally rewrites: keeping the
+            // records) are followed through the kinds Cella normally rewrites: keeping the
             // whole graph is the point, and the graph is never recomputed.
             if let Some(read_only) = read_only_pivot(cx, &r.target, pivots) {
                 let root = owner_key("pivot", &read_only.name).map(|key| PreservedRel { id: prefixed(&key, &r.id), ..r.clone() });
@@ -604,7 +604,7 @@ impl KeptReader {
     /// A chart sheet's own content that the model has no room for: page margins, page setup, header
     /// and footer, protection and its extensions. Each child is kept as a fragment, its relationship
     /// ids rewritten on save (printer settings, the only part a chart sheet may reference that
-    /// GridCraft does not write, are kept with it). The drawing and the chart behind it are
+    /// Cella does not write, are kept with it). The drawing and the chart behind it are
     /// modelled, so they are not kept here: writing them twice would give the package two charts.
     pub fn chart_sheet(&mut self, cx: &mut Ctx<'_>, part: &str, name: &str) -> Option<Arc<Preserved>> {
         if !self.on {
@@ -647,7 +647,7 @@ impl KeptReader {
             let roots: Option<Vec<PreservedRel>> =
                 ids.iter().map(|id| rels.iter().find(|r| r.id == *id && !r.external && is_kind(r, &["printerSettings"])).cloned()).collect();
             let Some(roots) = roots else {
-                cx.warn(format!("chart sheet \"{name}\": its <{tag}> names a part GridCraft does not keep, so it was dropped"));
+                cx.warn(format!("chart sheet \"{name}\": its <{tag}> names a part Cella does not keep, so it was dropped"));
                 continue;
             };
             if !roots.is_empty()
@@ -683,7 +683,7 @@ impl KeptReader {
             }
         }
         // Header and footer pictures (`&G`): a VML drawing of their own and the images it shows,
-        // kept byte for byte (GridCraft writes the header text, not the pictures).
+        // kept byte for byte (Cella writes the header text, not the pictures).
         if let Some(id) = scan.legacy_drawing_hf.as_deref()
             && scan.legacy_drawing.as_deref() != Some(id)
             && let Some(r) = rels.iter().find(|r| r.id == id && is_kind(r, &["vmlDrawing"]))
@@ -749,7 +749,7 @@ impl KeptReader {
     }
 
     /// The sheet's VML drawing without its notes and the form controls read into the model
-    /// (GridCraft writes those), and the parts its shapes refer to (preview images).
+    /// (Cella writes those), and the parts its shapes refer to (preview images).
     fn vml(
         &mut self,
         cx: &mut Ctx<'_>,
@@ -995,7 +995,7 @@ fn first_start(x: &str, local: &str) -> Option<crate::xml::El> {
     }
     None
 }
-/// VML without its note shapes (GridCraft writes those) and without the shapes numbered in
+/// VML without its note shapes (Cella writes those) and without the shapes numbered in
 /// `drop` (the form controls the sheet reader modelled). Each shape is judged by its own client
 /// data and tags, never by text elsewhere in it: a button captioned `ObjectType="Note"` is a
 /// button, and a shape's number is its `id`, else its `o:spid` ([\`crate::controls::number_of\`]).
@@ -1038,12 +1038,12 @@ pub(crate) fn vml_block_max(vml: &str) -> u64 {
         .unwrap_or(0);
     used.max(claimed)
 }
-/// The first shape block free in kept VML: GridCraft's own shapes (notes, then form controls) are
+/// The first shape block free in kept VML: Cella's own shapes (notes, then form controls) are
 /// numbered from `block * 1024 + 1` when they join it ([\`merge_vml\`]).
 pub(crate) fn first_free_block(kept: &str) -> u64 {
     shape_numbers(kept).into_iter().max().unwrap_or(0) / 1024 + 1
 }
-/// Kept VML (controls, OLE objects) plus GridCraft's note and form control shapes: ours get ids
+/// Kept VML (controls, OLE objects) plus Cella's note and form control shapes: ours get ids
 /// in fresh shape blocks so they can't collide with the kept shapes the sheet XML refers to.
 pub(crate) fn merge_vml(kept: &str, ours: &str) -> String {
     let Some(close) = kept.rfind("</xml>") else { return ours.to_string() };

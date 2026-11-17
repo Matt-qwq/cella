@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, RangeRef, Value};
+use cella_core::{CellRef, RangeRef, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, CellPicture};
@@ -150,7 +150,7 @@ pub struct Sheet {
     #[serde(with = "crate::cellmap")]
     pub hyperlinks: BTreeMap<CellRef, Hyperlink>,
     pub charts: Vec<Chart>,
-    /// Charts of kinds GridCraft cannot model (3-D, surface, pie of pie…), kept whole: their
+    /// Charts of kinds Cella cannot model (3-D, surface, pie of pie…), kept whole: their
     /// drawing frame and part are written back as they were. Not in JSON, not drawn, not
     /// selectable.
     #[serde(skip)]
@@ -201,7 +201,7 @@ pub struct Sheet {
     #[serde(default)]
     pub kind: SheetKind,
     /// Fields of this sheet's object in a JSON file that this version does not model (a newer
-    /// GridCraft's, or one a later build dropped). Serde collects them on a read and writes them
+    /// Cella's, or one a later build dropped). Serde collects them on a read and writes them
     /// back on a save, so an older build never destroys a newer file's data. Not in XLSX.
     #[serde(flatten)]
     pub json_kept: crate::JsonKept,
@@ -410,7 +410,7 @@ impl Sheet {
             return;
         }
         let style = self.style_id(c);
-        self.cells.set(c, Cell { value: Value::Error(gridcraft_core::CellError::Value), formula: None, style });
+        self.cells.set(c, Cell { value: Value::Error(cella_core::CellError::Value), formula: None, style });
         self.cell_pictures.insert(c, picture);
     }
     pub fn input_text(&self, c: CellRef) -> String {
@@ -535,11 +535,11 @@ impl Sheet {
     /// Row containing y (points from the top), clamped.
     pub fn row_at(&self, y: f64) -> u32 {
         if self.filter_hidden.is_empty() {
-            return line_at(y, self.default_row_height as f64, &self.rows, gridcraft_core::MAX_ROWS);
+            return line_at(y, self.default_row_height as f64, &self.rows, cella_core::MAX_ROWS);
         }
         // Filter-hidden rows take no space, so the uniform-line break is wrong: the answer is the
         // last row whose top is at or above y, found on row_top (monotone in row).
-        let (mut lo, mut hi) = (0u32, gridcraft_core::MAX_ROWS - 1);
+        let (mut lo, mut hi) = (0u32, cella_core::MAX_ROWS - 1);
         while lo < hi {
             let mid = lo + (hi - lo).div_ceil(2);
             if self.row_top(mid) <= y {
@@ -551,7 +551,7 @@ impl Sheet {
         lo
     }
     pub fn col_at(&self, x: f64) -> u32 {
-        line_at(x, self.default_col_width as f64, &self.cols, gridcraft_core::MAX_COLS)
+        line_at(x, self.default_col_width as f64, &self.cols, cella_core::MAX_COLS)
     }
 
     /// The merged range containing `c`, if any.
@@ -710,14 +710,14 @@ mod tests {
         let mut s = Sheet::new("S");
         s.rows.insert(3, LineInfo { size: Some(30.0), ..Default::default() });
         s.filter_hidden = FilterHidden::build([1u32, 2, 5], BTreeMap::new());
-        let idx = LineIndex::with_hidden(&s.rows, &s.filter_hidden, s.default_row_height, gridcraft_core::MAX_ROWS);
+        let idx = LineIndex::with_hidden(&s.rows, &s.filter_hidden, s.default_row_height, cella_core::MAX_ROWS);
         for row in [0u32, 1, 2, 3, 4, 5, 6, 10, 1000] {
             assert!((idx.start(row) - s.row_top(row)).abs() < 1e-6, "start({row}) = {}, row_top = {}", idx.start(row), s.row_top(row));
         }
         assert_eq!(idx.at(idx.start(4)), 4);
         assert_eq!(idx.at(idx.start(1000) + 1.0), 1000);
         // Without a filter the index is the plain line map.
-        let plain = LineIndex::new(&s.rows, s.default_row_height, gridcraft_core::MAX_ROWS);
+        let plain = LineIndex::new(&s.rows, s.default_row_height, cella_core::MAX_ROWS);
         assert_eq!(plain.start(4), 4.0 * s.default_row_height as f64 + 10.0);
     }
 
@@ -733,7 +733,7 @@ mod tests {
         // A write to a chart sheet's cells is refused rather than stored somewhere invisible and
         // lost on save.
         let mut s = s;
-        s.set_value(CellRef::new(0, 0), gridcraft_core::Value::Number(1.0));
+        s.set_value(CellRef::new(0, 0), cella_core::Value::Number(1.0));
         s.set_style(CellRef::new(0, 0), StyleId::DEFAULT);
         let mut row = vec![(0u32, Cell::default())];
         s.set_row_cells(0, &mut row);
@@ -763,7 +763,7 @@ mod tests {
         for r in (0..5000).step_by(3) {
             s.rows.insert(r, LineInfo { size: Some(10.0 + (r % 7) as f32), hidden: r % 11 == 0, ..Default::default() });
         }
-        let idx = LineIndex::new(&s.rows, s.default_row_height, gridcraft_core::MAX_ROWS);
+        let idx = LineIndex::new(&s.rows, s.default_row_height, cella_core::MAX_ROWS);
         for r in [0u32, 1, 2, 3, 4, 100, 999, 4998, 5000, 6000] {
             assert!((idx.start(r) - s.row_top(r)).abs() < 1e-6, "start {r}");
         }
@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(s.rows.get(&53), None, "the inserted rows are empty");
         assert_eq!(s.rows.get(&59), Some(&moved), "row 52 moved to 59");
         assert_eq!(s.rows.get(&52), None);
-        let idx = LineIndex::new(&s.rows, s.default_row_height, gridcraft_core::MAX_ROWS);
+        let idx = LineIndex::new(&s.rows, s.default_row_height, cella_core::MAX_ROWS);
         for r in [0u32, 1, 49, 50, 56, 57, 60, 299, 310, 400] {
             assert!((idx.start(r) - s.row_top(r)).abs() < 1e-6, "start {r}");
         }
@@ -794,7 +794,7 @@ mod tests {
         }
         s.rows.delete_lines(50, 7);
         assert_eq!(s.rows.get(&52), Some(&moved), "row 52 is back");
-        assert!((LineIndex::new(&s.rows, s.default_row_height, gridcraft_core::MAX_ROWS).start(52) - s.row_top(52)).abs() < 1e-6);
+        assert!((LineIndex::new(&s.rows, s.default_row_height, cella_core::MAX_ROWS).start(52) - s.row_top(52)).abs() < 1e-6);
     }
 
     /// Reference implementation: one `value_ref` call per row, exactly the loop
@@ -926,7 +926,7 @@ mod tests {
         assert_eq!(s.row_at(59.0), 1);
         assert_eq!(s.row_at(61.0), 3);
         assert_eq!(s.row_at(85.0), 4);
-        assert_eq!(s.col_at(1e12), gridcraft_core::MAX_COLS - 1);
+        assert_eq!(s.col_at(1e12), cella_core::MAX_COLS - 1);
         assert_eq!(s.col_at(-5.0), 0);
         assert_eq!(s.col_left(2), 128.0);
     }

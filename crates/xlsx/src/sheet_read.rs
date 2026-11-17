@@ -7,9 +7,9 @@ use crate::read::Ctx;
 use crate::styles::read_color;
 use crate::tables::{col_width_to_px, paper_name, pt_to_px};
 use crate::xml::{self, El};
-use gridcraft_core::date::{serial_from_ymd, time_fraction};
-use gridcraft_core::{CellError, CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_model::{
+use cella_core::date::{serial_from_ymd, time_fraction};
+use cella_core::{CellError, CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_model::{
     AutoFilter, Cell, CfOperator, CfRule, CfValueKind, Comment, CondFormat, EditRange, ErrorStyle, FilterCriterion, FilterHidden, Formula, Hyperlink,
     LineInfo, NoteBox, NoteCorner, Orientation, PageOrder, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn,
     TotalsFn, Validation, ValidationKind, XmlColumnPr,
@@ -29,7 +29,7 @@ pub(crate) use rules::{read_cf, read_validation};
 /// one parse for two million formulas possible — SHAPE-SHARING.md §3.4.3).
 struct Shared {
     anchor: CellRef,
-    shape: Option<Arc<gridcraft_formula::Shape>>,
+    shape: Option<Arc<cella_formula::Shape>>,
     text: String,
     /// The master formula was unwrapped from Google Sheets' export wrapper: its copies are
     /// dynamic-array formulas too.
@@ -46,7 +46,7 @@ struct RowState {
     /// hold the `Arc`s. Never a `static` (it would share shapes across documents and never free
     /// them); one table per workbook is a session's own choice, and equal shapes from two parts of
     /// one workbook simply end up as two `Arc`s with the same tree.
-    shapes: gridcraft_formula::ShapeTable,
+    shapes: cella_formula::ShapeTable,
     /// Legacy array ranges: cached values inside them (other than the anchor) are not stored, so
     /// the formula fills them again on recalculation. Dynamic-array spills are not here: the file
     /// keeps their values, which [`adopt_spills`] moves to the sheet's spill map afterwards.
@@ -70,15 +70,15 @@ struct RowState {
 /// document order.
 pub(crate) struct DecodeCtx<'a> {
     sst: &'a [Arc<str>],
-    xf_map: &'a [gridcraft_model::StyleId],
-    pictures: &'a [Option<Arc<gridcraft_model::CellPicture>>],
+    xf_map: &'a [cella_model::StyleId],
+    pictures: &'a [Option<Arc<cella_model::CellPicture>>],
     date_system: DateSystem,
     /// The functions the evaluator can calculate: a Google Sheets export wrapper is unwrapped
     /// only when every function it holds is one.
     known: crate::KnownFunctions,
 }
 impl DecodeCtx<'_> {
-    fn style(&self, xf: Option<u32>) -> gridcraft_model::StyleId {
+    fn style(&self, xf: Option<u32>) -> cella_model::StyleId {
         xf.and_then(|i| self.xf_map.get(i as usize).copied()).unwrap_or_default()
     }
 }
@@ -106,7 +106,7 @@ pub(crate) struct ReadPlan {
     pub known_function: crate::KnownFunctions,
 }
 /// A place and a name hint for the page file a paging read creates. The model sanitizes the hint
-/// and applies the `GRIDCRAFT_SPILL` policy; nothing here reaches a document or a sheet name.
+/// and applies the `CELLA_SPILL` policy; nothing here reaches a document or a sheet name.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SpillTarget {
     /// The directory to try first: the document's folder.
@@ -151,7 +151,7 @@ pub(crate) fn read_sheet_with(cx: &mut Ctx<'_>, part: &str, name: &str, plan: &R
         // be spilled later. A file that cannot be created leaves the sheet in the ordinary store
         // and costs one warning: a large workbook will use much more memory, but it still opens.
         let spill = plan.spill.as_ref();
-        let enabled = sheet.cells.enable_paging_with(gridcraft_model::SpillOptions {
+        let enabled = sheet.cells.enable_paging_with(cella_model::SpillOptions {
             dir: spill.and_then(|s| s.dir.as_deref()),
             name: spill.and_then(|s| s.name.as_deref()),
             cache_bytes: None,
@@ -468,7 +468,7 @@ fn read_views(e: &El, sheet: &mut Sheet) {
     sheet.show_outline_symbols = v.flag("showOutlineSymbols", true);
     sheet.right_to_left = v.flag("rightToLeft", false);
     sheet.show_outline_symbols = v.flag("showOutlineSymbols", true);
-    sheet.view = v.attr("view").and_then(gridcraft_model::SheetViewMode::parse).unwrap_or_default();
+    sheet.view = v.attr("view").and_then(cella_model::SheetViewMode::parse).unwrap_or_default();
     if let Some(z) = v.attr_u32("zoomScale") {
         sheet.zoom = z.clamp(10, 400) as u16;
     }
@@ -515,7 +515,7 @@ fn read_cols(cx: &Ctx<'_>, e: &El, sheet: &mut Sheet, remaining: &mut u64) -> Re
         info.collapsed = c.flag("collapsed", false);
         if let Some(s) = c.attr_u32("style") {
             let id = cx.style(Some(s));
-            if id != gridcraft_model::StyleId::DEFAULT {
+            if id != cella_model::StyleId::DEFAULT {
                 info.style = Some(id);
             }
         }
@@ -555,7 +555,7 @@ fn adopt_spills(sheet: &mut Sheet) {
             if !cell.value.is_empty() {
                 sheet.spill.insert(c, cell.value);
             }
-            if cell.style == gridcraft_model::StyleId::DEFAULT {
+            if cell.style == cella_model::StyleId::DEFAULT {
                 sheet.cells.remove(c);
             } else {
                 sheet.cells.set(c, Cell { value: Value::Empty, ..cell });
@@ -707,9 +707,9 @@ fn decode_rows(
 /// cell stores no value — the picture is held beside the cells).
 struct DecodedCell {
     at: CellRef,
-    style: gridcraft_model::StyleId,
+    style: cella_model::StyleId,
     cell: Option<Cell>,
-    picture: Option<Arc<gridcraft_model::CellPicture>>,
+    picture: Option<Arc<cella_model::CellPicture>>,
     /// For a dynamic array's anchor, the range the file says its result spilled into.
     spill: Option<RangeRef>,
 }
@@ -717,9 +717,9 @@ struct DecodedCell {
 /// the row settings, pictures and stray cells (a `<c>` whose reference names another row) that the
 /// sheet, not the store, holds.
 struct Chunk {
-    bands: gridcraft_model::BandBatch,
+    bands: cella_model::BandBatch,
     rows: Vec<(u32, Option<LineInfo>)>,
-    pictures: Vec<(CellRef, Arc<gridcraft_model::CellPicture>, gridcraft_model::StyleId)>,
+    pictures: Vec<(CellRef, Arc<cella_model::CellPicture>, cella_model::StyleId)>,
     strays: Vec<(CellRef, Cell)>,
     rows_read: u64,
     dropped: u64,
@@ -827,7 +827,7 @@ fn plan_chunks(bytes: &[u8], min_bytes: usize) -> Option<Vec<(usize, usize)>> {
 }
 fn decode_chunk(bytes: &[u8], dc: &DecodeCtx<'_>, default_height: f32) -> Chunk {
     let mut chunk = Chunk {
-        bands: gridcraft_model::BandBatch::new(),
+        bands: cella_model::BandBatch::new(),
         rows: Vec::new(),
         pictures: Vec::new(),
         strays: Vec::new(),
@@ -1110,7 +1110,7 @@ fn fast_cell_ref(b: &[u8]) -> Option<CellRef> {
         row = row.checked_mul(10)?.checked_add(u32::from(d - b'0'))?;
         i += 1;
     }
-    if row == 0 || row > gridcraft_core::MAX_ROWS {
+    if row == 0 || row > cella_core::MAX_ROWS {
         return None;
     }
     Some(CellRef::new(row - 1, col - 1))

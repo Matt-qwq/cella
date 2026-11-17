@@ -2,10 +2,10 @@
 //! engine labels the pane translates) and the preview's footer. A step whose label was never added
 //! to the catalog would show English here.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::i18n::Language;
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::i18n::Language;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

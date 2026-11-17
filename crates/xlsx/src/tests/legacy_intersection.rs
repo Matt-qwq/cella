@@ -4,8 +4,8 @@
 //! evaluator computes the legacy result instead of spilling. A dynamic-array formula (`cm`) and a
 //! Ctrl+Shift+Enter array range are read as written.
 
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::Workbook;
+use cella_core::{CellRef, RangeRef};
+use cella_model::Workbook;
 
 use crate::read_xlsx;
 

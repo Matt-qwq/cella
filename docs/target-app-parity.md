@@ -1,4 +1,4 @@
-# Target-app parity: GridCraft vs Microsoft Excel
+# Target-app parity: Cella vs Microsoft Excel
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (**N1 wave 1 + two languages, 11-14**: PivotTable Show Details and the Generate GetPivotData click, chart gridlines per axis (major/minor, x and y) and the legend's overlay and per-entry delete, and a Format pane for shapes and pictures behind `object.format` — catalog 284/299, and `cargo xtask oracle` passes every fixture in Excel 16 and WPS after the changes. **Localization is rescoped to English + Simplified Chinese**: 18 catalogs removed, 1,489 strings and 214/362 command labels translated behind a ratchet and the new `cargo xtask i18n` gate, formula syntax en-US by decision. **#10 out of scope**: the field machines belong upstream, so the stability gate is not ours to close; the release run is what remains. 2026-11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× / text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame — plus three filter save-fidelity bugs a 150-seed soak found, and a real-app check (20k name formulas: 5 ms per unrelated keystroke, 8 ms for the name's cell; data bars rescale after an edit; `grid_ms` 0.75 ms). 2026-11-13: a **performance round**, every number measured on the owner's machine before and after: `used_range` 6.5 ms → 10 ns per call at 1M rows (it sized both scrollbars every frame), conditional-format statistics and chart/sparkline layouts kept across frames (grid paint 10.7 → 1.4 ms/frame on a 100k-row data bar), a defined name resolved to a static precedent instead of a dynamic reference (a keystroke on a name-formula column: 100,000 cells/158 ms → 1 cell/5 µs) and read from a cache when evaluated (31 ms per 100k names, at parity with an inline reference), the array guard asking the store instead of diffing it (1M-row keystroke 4.6 → 0.9 ms), and the parsed tree handed back to the cell so a save stops rebuilding it (12 % of a save). Round 18: the real-world corpus ran — 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches, Excel 16-identical copies on 16 `.xlsx` files and all 37 readable `.xls` — so #1 is met and only #10 (field machines) plus the release run remain; remaining-to-beta ~8–12 h + 8–12 h. The corpus digest now covers formula text and merges/comments/links/CF/DV/tables/objects, and an `.xls` trailing-styled-column used-range bug is fixed. No score change) · **Target:** Microsoft Excel (Microsoft 365)
 
@@ -91,7 +91,7 @@ performance 8, stability 8, localization 4, hardware 2, platforms 2, ecosystem 2
 | Get & Transform, external data, data model | 5 | ~15% | ~10% | 60–100 | Import of CSV/TSV, JSON, HTML. No Power Query editor, no From Web, database or folder sources, no connections or refresh, no relationships or data model, no external workbook links (dropped with a warning) |
 | Insert objects | 3 | ~55% | ~45% | 25–40 | Pictures, 8 shape kinds (Excel has ~170), text boxes, WordArt (a transparent shape whose text body carries the no-warp marker, so it round-trips as WordArt), own icon set, ink with Ink to Shape, hyperlinks, checkboxes. Missing: SmartArt, equations, signature line, objects, 3-D models, screenshot, pictures in cells (PR #105) |
 | Review, comments, protection, collaboration | 4 | ~55% | ~44% | 32–50 | Threaded comments, notes, spelling (system dictionary), thesaurus, sheet and workbook protection, Allow Edit Ranges with Excel-compatible password hashes (#307). The **accessibility check** lists charts, pictures and shapes without alt text (set from the dialog or `object.setAltText`, written as `xdr:cNvPr/@descr`), tables without a header row, merged cells and default sheet names, and goes to each; the visible cells are an **AccessKit grid** for screen readers, high contrast is a View option, and the status bar shows the issue count (11-02/03). Missing: comment navigation, Show Changes, notes-to-comments conversion, co-authoring. Password-encrypted workbooks **open** (Agile and Standard are read) and **both schemes are written** back with the scheme they had (#11, #7) |
-| Automation | 4 | ~30% | ~20% | 12–20 | Recorded, editable GridCraft scripts (Automate tab). VBA is out of scope by owner decision and is **dropped** when an `.xlsm` is opened (warning shown). No Office Scripts compatibility |
+| Automation | 4 | ~30% | ~20% | 12–20 | Recorded, editable Cella scripts (Automate tab). VBA is out of scope by owner decision and is **dropped** when an `.xlsm` is opened (warning shown). No Office Scripts compatibility |
 | **Weighted** | 100 | **~78%** | **~64.2%** | **269–433** | |
 
 ## Dimensions
@@ -155,7 +155,7 @@ Discounts for what still stops real work:
 | File exchange with Excel users | × 0.90 | Excel 16 opens, refreshes, recalculates and re-reads every oracle fixture without repair, and a 3,084-workbook real-world corpus ran with 0 save/reopen mismatches and Excel 16-identical copies (16 `.xlsx`, all 37 readable `.xls`); the pinned corpus is the remaining CI form; the data model/Power Pivot parts are still dropped on save; chartex options and chart details are regenerated; `.xls` opens with charts, pictures and shapes but without OLE objects/controls and not for BIFF5 (validation, conditional formats including colour scales/data bars/icon sets, hyperlinks, panes and pictures are read), and writes as `.xlsx`; RC4 is read but not written (Agile and Standard are). Large files now open (100M cells with cold paging), unmodelled package parts are kept, and encrypted packages are written. Harsher than a drawing app's discount because spreadsheets are exchanged constantly |
 
 **Mainstream practitioner: 73.6 × 0.92 × 0.92 × 0.90 = 56.1 → ~56%** (estimated, re-measured 2026-10-30). Unlike most
-apps it is not higher than the full number: GridCraft's breadth is wide (functions, formatting,
+apps it is not higher than the full number: Cella's breadth is wide (functions, formatting,
 ribbon), so excluding the long tail removes little, while the discounts land on exactly what
 mainstream users do every week (exchange files with Excel users).
 
@@ -192,7 +192,7 @@ Counted from all 83 GitHub issues and 109 PRs on 2026-10-10; none of the issues 
 the maintainer.
 
 - **Praise:** 3 explicit ("this is brilliant. Tiny fast native binaries", #16; "Thanks for the
-  great work on GridCraft", #61; "i didnt have excel kind app on my macos", #69), plus polite
+  great work on Cella", #61; "i didnt have excel kind app on my macos", #69), plus polite
   thanks in feature requests (#39, #45, #142).
 - **"Switched from Excel" reports:** 0. One counter-signal: "without macro support most
   professionals cannot switch from excel" (#6).
@@ -206,7 +206,7 @@ the maintainer.
 Excel recalculates on every core (multi-threaded recalculation), streams large files, and handles
 1,048,576 × 16,384 sheets with millions of formulas.
 
-| Measure | GridCraft | Excel | Kind |
+| Measure | Cella | Excel | Kind |
 |---|---|---|---|
 | Sheet size limits | 1,048,576 × 16,384 | same | measured (`crates/core/src/addr.rs`) |
 | Recalc threads | up to 8 for independent formulas (native; wasm single-threaded) | all cores | measured (`crates/calc`): leaves wave by wave; arrays, volatile formulas and cycles stay sequential |
@@ -221,7 +221,7 @@ Excel recalculates on every core (multi-threaded recalculation), streams large f
 | Scrollbar extent (`used_range`), 1M stored rows | **10 ns** per call (was 6.5 ms): the bounding box is grown on write and re-walked only when a mutation can shrink it | immediate | measured 2026-11-13, release probe; the UI asks twice per frame (both scrollbars) |
 | Open a large workbook | 100M-cell / 551 MB export: **16.7 MiB live, 183 MiB peak**, 729 MiB compressed pages; 31.7M-cell / 118 MB report: 49.7 MiB live, 1.47 s | opens | measured 2026-10-28, `session_breakdown` / `cell_digest` |
 | Row / column structural insert with 2M formulas | insert a row **3.97 s** (was 8.29), delete **3.59 s** (was 8.61), rename a sheet over a 1M-formula column **4.86 s** (was 8.58): the rewrite is one tree per formula *shape* plus one print per moved cell, and the old path is provably reproduced byte for byte | 1–4 s | measured 2026-11-17, same-binary A/B on 1M × 6 with 2M formulas |
-| Row / column structural insert, no formulas | 1M×20: row **3.7 ms** command / 35.8 ms commit; column **9.8 ms** / 42.5 ms; zero cells moved | immediate | measured 2026-10-28, `gridcraft-cli` |
+| Row / column structural insert, no formulas | 1M×20: row **3.7 ms** command / 35.8 ms commit; column **9.8 ms** / 42.5 ms; zero cells moved | immediate | measured 2026-10-28, `cella-cli` |
 | Line metadata, 1M custom heights | `Sheet::clone` **0.13 ms**, insert/delete **0.013/0.007 ms**, 10k inherited lines 0.1 ms; `LineIndex` build 6.6 ms (cached per revision) | immediate | measured 2026-10-29, `_gridcraft-bench/linebench` |
 | Mapped value write-back | 1M values: identity 36–42 ms; after a row insert **35 ms** (was 131–135), after a column insert **33 ms** (was 116–142) | immediate | measured 2026-10-29, `_gridcraft-bench` release probe |
 | Packed walk / owned gate | Dense block **2.5–3.3 ns/cell** on identity or a mapped column (was 30.6); owned/formula gate over 1M paged rows **0.84 ms** (was 9.5) | fine | measured 2026-10-29, `_gridcraft-bench` release probe |
@@ -231,7 +231,7 @@ Excel recalculates on every core (multi-threaded recalculation), streams large f
 | Live heap, 1M × 6 with 2M formulas | **1.14 GB** — cells 480 MB (formula text 133 MB at 48 B a formula, row side tables 144 MB, formula trees **12 MB** for 2,000,000 formulas, number tables 66, text dictionaries 32), graph 372 MB (dependents map 143, nodes 105, areas 125), undo 242 MB charged, journal 42 MB; **0.95 GB reopened** | not published | measured 2026-11-17, `crates/engine/examples/memory.rs`: arithmetic on lengths, capacities and layouts, not a heap census; `total == Σ parts` is a test per crate. One interned tree per formula *shape*: **3 shapes for 2M formulas**, and a 1M-row autofill costs 0 parses |
 | Fill 1M formulas / recalc 1M after one edit | **2.15 s / 1.81 s** (chained running sum 2.98 s); the graph rebuild of the same 2M formulas is 1.25 s | 1–3 s | measured 2026-11-17, the gate harness best of three on an idle machine; 2.8 / 2.3 / 4.0 / 1.7 s before shape sharing |
 | Save a large workbook | 31.7M cells: **3.48 s, 1,283.9 MiB peak**; 100M-cell export: **28.42 s, 1,814.3 MiB peak** | should stay flat | measured 2026-10-29, `session_breakdown` release with counting allocator; per-sheet deflate, bytes identical |
-| Whole-sheet operations | Bounded: Remove Duplicates on 1M×10 falls from 91 s to 12 s, Sort 3.2 s, Fill Down of 1M rows 1.45 s; sort/remove duplicates/setValues cap at 12M cells (1M×20 refused in 1.3 s) | fine | measured on `max_1048576.xlsx` / `wide_1m_x20.xlsx`, `gridcraft-cli` |
+| Whole-sheet operations | Bounded: Remove Duplicates on 1M×10 falls from 91 s to 12 s, Sort 3.2 s, Fill Down of 1M rows 1.45 s; sort/remove duplicates/setValues cap at 12M cells (1M×20 refused in 1.3 s) | fine | measured on `max_1048576.xlsx` / `wide_1m_x20.xlsx`, `cella-cli` |
 
 Work: the deferred page-file rewrite and post-beta streaming save, then M17 zone maps and the M21
 Parquet read half after beta. The 2026-11-17 rounds took the memory ranking down in order: formula
@@ -252,7 +252,7 @@ old streaming/threading/whole-column items are landed; keep the measured workboo
 
 ## Platforms
 
-| Platform | Excel | GridCraft |
+| Platform | Excel | Cella |
 |---|---|---|
 | Windows x64 / arm64 | yes | yes (signed MSI and portable zip; also x86) |
 | macOS (Apple silicon, Intel) | yes | yes (signed, notarized universal DMG) |
@@ -261,17 +261,17 @@ old streaming/threading/whole-column items are landed; keep the measured workboo
 | Linux | no | yes (AppImage, Flatpak, deb, rpm, tarball; x86_64, aarch64, riscv64) |
 | FreeBSD | no | yes |
 
-Mobile is the gap (30–60 h for a touch layout over the same engine). GridCraft is ahead on
+Mobile is the gap (30–60 h for a touch layout over the same engine). Cella is ahead on
 Linux, BSD and RISC-V, where Excel doesn't run.
 
 ## Ecosystem and AI
 
 - **Add-ins:** Excel has Office JavaScript add-ins, COM/XLL add-ins, VBA, Office Scripts and
-  Power Automate. GridCraft has its own recorded scripts, plus a control channel, MCP server and
+  Power Automate. Cella has its own recorded scripts, plus a control channel, MCP server and
   CLI that reach every command. VBA is out of scope (owner decision). A plugin or custom-function
   API (for example LAMBDA libraries and WASM custom functions) is the open-equivalent path: 25–40 h.
 - **AI:** Excel has Copilot, the COPILOT() function, Analyze Data, Python in Excel and Flash
-  Fill. GridCraft has Flash Fill and best-in-class agent control (any MCP client can drive every
+  Fill. Cella has Flash Fill and best-in-class agent control (any MCP client can drive every
   command headless or live), but no in-app assistant, no natural-language formulas and no
   Analyze Data. Local-model equivalents: 30–50 h; model choice needs the owner.
 

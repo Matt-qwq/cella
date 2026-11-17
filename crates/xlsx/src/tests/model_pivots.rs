@@ -1,8 +1,8 @@
 //! The part our model PivotTables live in: written when a workbook has one, read back whole, and
 //! absent when it has none.
 
-use gridcraft_core::Value;
-use gridcraft_model::{ModelTable, PivotSourceKind, PivotTable, Sheet, Workbook};
+use cella_core::Value;
+use cella_model::{ModelTable, PivotSourceKind, PivotTable, Sheet, Workbook};
 
 use crate::{read_xlsx, write_xlsx};
 

@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellError, CellRef, RangeRef, Value};
-use gridcraft_model::{Cell, Sheet, Workbook};
+use cella_core::{CellError, CellRef, RangeRef, Value};
+use cella_model::{Cell, Sheet, Workbook};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::*;

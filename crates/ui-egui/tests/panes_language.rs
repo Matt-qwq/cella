@@ -3,10 +3,10 @@
 //! selection pane's slicers. The catalog answers each label; a pane whose label was never added
 //! would show the English here.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::i18n::Language;
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::i18n::Language;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

@@ -4,10 +4,10 @@
 //! Each case renders the real window (not just the catalog) and reads what a screen reader and a
 //! test can both see, so a label that stops going through the translation lookup fails here.
 
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::i18n::Language;
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::i18n::Language;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;
@@ -123,7 +123,7 @@ fn the_sheet_tabs_menu_speaks_chinese() {
 fn a_ribbon_tooltip_names_the_command_and_its_shortcut_in_chinese() {
     // Hovering a painted button in a test is timing-dependent, so the tooltip text is read from
     // the same function the ribbon's buttons call, in a frame drawn in each language.
-    let keys = gridcraft_ui_egui::widgets::tooltip_shortcut("Paste", cfg!(target_os = "macos")).expect("Paste has a shortcut");
+    let keys = cella_ui_egui::widgets::tooltip_shortcut("Paste", cfg!(target_os = "macos")).expect("Paste has a shortcut");
     assert_eq!(tooltip(Language::En, "Paste"), format!("Paste ({keys})"));
     // The brackets are the language's own: Chinese draws them full width.
     assert_eq!(tooltip(Language::Zh, "Paste"), format!("粘贴（{keys}）"));
@@ -136,8 +136,8 @@ fn tooltip(language: Language, tip: &str) -> String {
     let ctx = egui::Context::default();
     let mut text = String::new();
     let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-        gridcraft_ui_egui::i18n::set_current(ui.ctx(), language);
-        text = gridcraft_ui_egui::widgets::tooltip_text(ui, tip);
+        cella_ui_egui::i18n::set_current(ui.ctx(), language);
+        text = cella_ui_egui::widgets::tooltip_text(ui, tip);
     });
     out.textures_delta.clear(); // nothing consumes the atlas in a headless test
     text

@@ -9,7 +9,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("F", Entry::Tab("File")), // Excel: File tab (Backstage view); Opens the File view on Home; its letters below still run their commands.
     ("H", Entry::Tab("Home")),
     ("N", Entry::Tab("Insert")),
-    ("JI", Entry::Tab("Draw")), // Two-letter unit. Deeper Draw letters differ between Excel and GridCraft; left blank for future contributors.
+    ("JI", Entry::Tab("Draw")), // Two-letter unit. Deeper Draw letters differ between Excel and Cella; left blank for future contributors.
     ("P", Entry::Tab("Page Layout")),
     ("M", Entry::Tab("Formulas")),
     ("A", Entry::Tab("Data")),
@@ -50,7 +50,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("HOI", Entry::Finish(Action::Command("home.autofitColumnWidth"))),
     ("OCA", Entry::Finish(Action::Command("home.autofitColumnWidth"))), // Legacy Format menu.
     ("WVG", Entry::Finish(Action::Command("view.gridlines"))),
-    ("WVI", Entry::Finish(Action::Control("view.highContrast"))), // GridCraft's own: Excel takes high contrast from the OS.
+    ("WVI", Entry::Finish(Action::Control("view.highContrast"))), // Cella's own: Excel takes high contrast from the OS.
     ("H0", Entry::Finish(Action::Command("home.increaseDecimal"))), // Excel: Increase Decimals; containment(Increase Decimal)
     ("H1", Entry::Finish(Action::Command("home.bold"))),          // Excel: Bold
     ("H2", Entry::Finish(Action::Command("home.italic"))),        // Excel: Italic

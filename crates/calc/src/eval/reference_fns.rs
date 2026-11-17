@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{Array, CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_formula::Expr;
-use gridcraft_functions::Arg;
+use cella_core::{Array, CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_formula::Expr;
+use cella_functions::Arg;
 
 use super::format::r1c1_to_a1;
 use super::{Area, Ev, Evaluator, FnCtx, MAX_CELLS, err};
@@ -82,7 +82,7 @@ impl<'h> Evaluator<'h> {
                 Err(e) => return err(e),
             }
         };
-        match gridcraft_formula::parse(&text) {
+        match cella_formula::parse(&text) {
             Ok(Expr::Ref(_)) if !a1_ok => err(CellError::Ref),
             // The text names coordinates: an absolute tree, whatever this formula's own tree is.
             Ok(e @ (Expr::Ref(_) | Expr::Name(_) | Expr::Struct(_))) => match self.eval_absolute(&e) {
@@ -233,7 +233,7 @@ impl<'h> Evaluator<'h> {
         if (3..=6).contains(&args.len())
             && let (Ev::R(look), Ev::R(ret)) = (self.eval(&args[1]), self.eval(&args[2]))
             && let ([l], [r]) = (look.as_slice(), ret.as_slice())
-            && let Some(spec) = gridcraft_functions::lookup("XMATCH")
+            && let Some(spec) = cella_functions::lookup("XMATCH")
         {
             let key = self.value(&args[0]);
             let (l, r) = (*l, *r);
@@ -261,7 +261,7 @@ impl<'h> Evaluator<'h> {
                     }
                 }
                 let mut ctx = FnCtx { ev: self, criteria: None, lambda: None };
-                return match gridcraft_functions::call(spec, &xargs, &mut ctx) {
+                return match cella_functions::call(spec, &xargs, &mut ctx) {
                     Value::Number(p) if p >= 1.0 => {
                         let k = p as u32 - 1;
                         let range = if vertical {

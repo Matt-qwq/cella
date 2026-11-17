@@ -1,16 +1,16 @@
 [package]
-name = "gridcraft-parquet"
+name = "cella-parquet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft's Parquet connector: a sheet as a typed, columnar file DuckDB, pandas and Spark read, and a file back as rows"
+description = "Cella's Parquet connector: a sheet as a typed, columnar file DuckDB, pandas and Spark read, and a file back as rows"
 
 [lints]
 workspace = true
 
 [dependencies]
-gridcraft-core.workspace = true
-gridcraft-model.workspace = true
+cella-core.workspace = true
+cella-model.workspace = true
 thiserror.workspace = true
 # The reference Apache implementation, without `arrow`: this crate only writes columns, so the
 # arrow compatibility layer and every compression codec are off. Compiling it is the alternative

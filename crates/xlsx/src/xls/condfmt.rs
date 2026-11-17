@@ -12,8 +12,8 @@
 
 use std::collections::HashMap;
 
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::{CfOperator, CfRule, CfValueKind, Color, Style};
+use cella_core::{CellRef, RangeRef};
+use cella_model::{CfOperator, CfRule, CfValueKind, Color, Style};
 
 use super::dxf::read_dxfn;
 use super::records::Cursor;
@@ -351,5 +351,5 @@ fn read_dxfn12(c: &mut Cursor<'_, '_>, palette: &Palette, formats: &HashMap<u16,
 /// A `CFParsedFormulaNoCCE` (2.5.198.6) as text; `None` when the tokens can't be read.
 fn text(rgce: &[u8], base: CellRef, links: &Links) -> Option<String> {
     let e = decode(rgce, &[], base, super::Mode::Cell, links).ok()?;
-    Some(gridcraft_formula::print(&e))
+    Some(cella_formula::print(&e))
 }

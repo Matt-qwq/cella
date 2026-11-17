@@ -11,7 +11,7 @@ use super::*;
 pub(crate) struct PartFacts {
     pivots: HashSet<String>,
     caches: HashSet<String>,
-    /// Keep every part, whatever it names. Content carried for a PivotTable GridCraft does not
+    /// Keep every part, whatever it names. Content carried for a PivotTable Cella does not
     /// compute is never repaired: the parts are written as they came, and a part dropped behind
     /// one of them would leave the relationship ids its own bytes name pointing at nothing.
     keep_all: bool,
@@ -34,7 +34,7 @@ pub struct KeptOut {
     root: Vec<(String, String, bool)>,
 }
 impl KeptOut {
-    /// Reserves a part name GridCraft writes itself, so kept parts don't take it. False when it is
+    /// Reserves a part name Cella writes itself, so kept parts don't take it. False when it is
     /// already taken.
     pub fn reserve(&mut self, name: &str) -> bool {
         self.used.insert(name.to_ascii_lowercase())
@@ -54,7 +54,7 @@ impl KeptOut {
     }
 
     /// Reserves the VML shape blocks the kept header and footer drawings of `wb` use, so that the
-    /// notes drawings GridCraft writes don't reuse their shape ids.
+    /// notes drawings Cella writes don't reuse their shape ids.
     pub fn reserve_vml_blocks(&mut self, wb: &Workbook) {
         let vmls =
             wb.sheets.iter().filter_map(|s| s.preserved.as_deref()).flat_map(|p| &p.parts).filter(|q| q.content_type.eq_ignore_ascii_case(CT_VML));
@@ -184,14 +184,14 @@ fn part_usable(facts: &PartFacts, p: &PreservedPart) -> bool {
     let names: Vec<&str> = x.children.iter().filter(|c| c.name == "slicer" || c.name == "timeline").filter_map(|c| c.attr("cache")).collect();
     names.iter().all(|n| n.trim().is_empty() || facts.caches.contains(&n.to_lowercase()))
 }
-/// The parts and relationships [`Keep::sheet`] kept for a PivotTable GridCraft does not compute
+/// The parts and relationships [`Keep::sheet`] kept for a PivotTable Cella does not compute
 /// (its own part, its cache definition, its records, the data model behind them).
 pub fn owner_kept(owner: Option<&Preserved>, key: Option<&str>) -> (Vec<PreservedPart>, Vec<PreservedRel>) {
     let (Some(p), Some(key)) = (owner, key) else { return (vec![], vec![]) };
     let (parts, sources, _frags) = owner_parts(p, key, &PartFacts { keep_all: true, ..PartFacts::default() });
     (parts, sources)
 }
-/// Writes the parts of a PivotTable GridCraft does not compute, under the names `name_of` gives
+/// Writes the parts of a PivotTable Cella does not compute, under the names `name_of` gives
 /// them (the writer's own: a kept report keeps its `pivotTableN.xml` numbering and its cache the
 /// id it was written with, so the report's `cacheId` still names its cache, and every part comes
 /// back byte for byte). Returns the kept relationships with their targets rewritten to the written
@@ -248,7 +248,7 @@ pub struct KeptSheet {
 pub struct WorkbookKept {
     /// Workbook XML elements that go right after `<sheets>` (`<externalReferences>`).
     pub elements: String,
-    /// The workbook `<ext>` children GridCraft does not model, relationship ids rewritten.
+    /// The workbook `<ext>` children Cella does not model, relationship ids rewritten.
     pub ext: String,
     sheets: Vec<KeptSheet>,
 }
@@ -309,7 +309,7 @@ pub(crate) fn live_parts(p: &Preserved, roots: &[&PreservedRel], facts: &PartFac
     }
     p.parts.iter().filter(|q| live.contains(&normalize(&q.name)) && part_usable(facts, q)).cloned().collect()
 }
-/// The kept parts of `p` an owner GridCraft writes reaches through its own relationships.
+/// The kept parts of `p` an owner Cella writes reaches through its own relationships.
 fn owner_parts(p: &Preserved, key: &str, facts: &PartFacts) -> (Vec<PreservedPart>, Vec<PreservedRel>, Vec<String>) {
     let prefix = format!("{key}{KS}");
     let mut sources: Vec<PreservedRel> = vec![];
@@ -322,7 +322,7 @@ fn owner_parts(p: &Preserved, key: &str, facts: &PartFacts) -> (Vec<PreservedPar
     let roots: Vec<&PreservedRel> = sources.iter().collect();
     (live_parts(p, &roots, facts), sources, frags)
 }
-/// What a part GridCraft rewrites keeps: its `<ext>` children and the relationships and parts
+/// What a part Cella rewrites keeps: its `<ext>` children and the relationships and parts
 /// only it owns. Writes the parts and adds the relationships to `rels` (the part's own), then
 /// returns the `<ext>` XML with fresh relationship ids; empty when `key` matches no kept owner
 /// (the table or PivotTable was deleted or renamed) or it had nothing.

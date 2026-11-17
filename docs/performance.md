@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
-GridCraft is for people who work on real data sets — programmers, analysts, e-commerce operations —
+Cella is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
 folklore within a month. This page is the number, the harness that produces it, and the gate that
 refuses a regression.
@@ -34,13 +34,13 @@ Run it yourself:
 
 ```bash
 # the human table, at 100k and 1M rows (the gate's sizes)
-cargo run --release -p gridcraft-engine --example perf
+cargo run --release -p cella-engine --example perf
 
 # one size, machine-readable, best of three passes
-cargo run --release -p gridcraft-engine --example perf -- 1000000 --json --repeat=3
+cargo run --release -p cella-engine --example perf -- 1000000 --json --repeat=3
 
 # only some scenarios
-cargo run --release -p gridcraft-engine --example perf -- --scenario=sort.desc,open.xlsx
+cargo run --release -p cella-engine --example perf -- --scenario=sort.desc,open.xlsx
 ```
 
 `--release` is not optional: a debug build is 10–30× slower and the harness says so. `--repeat=N`
@@ -93,7 +93,7 @@ release build; this gate builds the engine in release and takes minutes at 1M ro
 - **after any change to a hot path** — the cell store, recalculation, fill, sort, the xlsx reader
   and writer, `range.setValues` — where "it feels faster" is not a review comment.
 
-Slow or shared machine: `GRIDCRAFT_PERF_SCALE=2 cargo xtask perf` (or `--scale=2`) multiplies
+Slow or shared machine: `CELLA_PERF_SCALE=2 cargo xtask perf` (or `--scale=2`) multiplies
 every budget. Use it to make the gate fit the hardware it runs on, never to excuse a regression —
 re-record with `--update` only when the new number is the one you intend to keep.
 
@@ -160,7 +160,7 @@ the measurement, that entry owns the work.
 ## The performance round of 2026-11-16, measured on a quiet machine
 
 Five batches took the numbers above and moved them. **Same workbook, same command sequence, release,
-best of three passes on an otherwise idle machine** (`cargo run --release -p gridcraft-engine
+best of three passes on an otherwise idle machine** (`cargo run --release -p cella-engine
 --example perf -- 1000000 --repeat=3`):
 
 | scenario (1M rows × 6 columns, 72 MB .xlsx) | before | after | change |
@@ -261,7 +261,7 @@ the quietest run of each scenario rather than any single pass.
 
 ### Where the live heap goes
 
-`cargo run --release -p gridcraft-engine --example memory -- 1000000` builds the reference workbook
+`cargo run --release -p cella-engine --example memory -- 1000000` builds the reference workbook
 through the same three fills and prints one line per allocation class. It is arithmetic on lengths,
 capacities and layouts — not a heap census — and `total == Σ parts` is a test in each crate.
 

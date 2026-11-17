@@ -1,9 +1,9 @@
 [package]
-name = "gridcraft-pdf"
+name = "cella-pdf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft's tiny self-contained PDF 1.7 writer (standard 14 fonts, vector drawing, RGBA images)"
+description = "Cella's tiny self-contained PDF 1.7 writer (standard 14 fonts, vector drawing, RGBA images)"
 
 [lints]
 workspace = true
@@ -11,7 +11,7 @@ workspace = true
 [dependencies]
 # The text engine: the Unicode bidi algorithm and OpenType shaping. `core` is L0, so the PDF
 # writer and the grid shape with the same code and produce the same text.
-gridcraft-core = { workspace = true }
+cella-core = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]

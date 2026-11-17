@@ -6,7 +6,7 @@ use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 use serde::Serialize;
 
-use gridcraft_core::{CellRef, RangeRef};
+use cella_core::{CellRef, RangeRef};
 
 use crate::eval::Area;
 
@@ -82,8 +82,8 @@ impl<K, V> Deps<K, V> {
     /// capacity is not derivable from the table's.
     fn memory(&self) -> (usize, usize) {
         use std::mem::size_of;
-        let mut bytes = gridcraft_model::hash_index_bytes(self.one.capacity(), size_of::<(K, V)>())
-            .saturating_add(gridcraft_model::hash_index_bytes(self.many.capacity(), size_of::<(K, Vec<V>)>()));
+        let mut bytes = cella_model::hash_index_bytes(self.one.capacity(), size_of::<(K, V)>())
+            .saturating_add(cella_model::hash_index_bytes(self.many.capacity(), size_of::<(K, Vec<V>)>()));
         let mut lists = 0usize;
         for v in self.many.values() {
             lists = lists.saturating_add(1);
@@ -95,7 +95,7 @@ impl<K, V> Deps<K, V> {
     /// The slot counts of both tables, for the test that ratchets the index's size.
     #[cfg(test)]
     fn slots(&self) -> usize {
-        gridcraft_model::hash_index_bytes(self.one.capacity(), 0).saturating_add(gridcraft_model::hash_index_bytes(self.many.capacity(), 0))
+        cella_model::hash_index_bytes(self.one.capacity(), 0).saturating_add(cella_model::hash_index_bytes(self.many.capacity(), 0))
     }
 }
 
@@ -262,7 +262,7 @@ impl CellDeps {
     /// [`GraphMemory`]).
     fn memory(&self) -> (usize, usize) {
         use std::mem::size_of;
-        let mut bytes = gridcraft_model::hash_index_bytes(self.same.capacity(), size_of::<(usize, Deps<CellRef, CellRef>)>());
+        let mut bytes = cella_model::hash_index_bytes(self.same.capacity(), size_of::<(usize, Deps<CellRef, CellRef>)>());
         let mut lists = 0usize;
         for deps in self.same.values() {
             let (part, count) = deps.memory();
@@ -276,7 +276,7 @@ impl CellDeps {
     /// The slot counts of every table (see [`Graph::cell_deps_slots`]).
     #[cfg(test)]
     fn slots(&self) -> usize {
-        let mut slots = gridcraft_model::hash_index_bytes(self.same.capacity(), 0).saturating_add(self.cross.slots());
+        let mut slots = cella_model::hash_index_bytes(self.same.capacity(), 0).saturating_add(self.cross.slots());
         for deps in self.same.values() {
             slots = slots.saturating_add(deps.slots());
         }
@@ -305,7 +305,7 @@ pub(super) struct Node {
     /// one in place, resolving its relative references at the node's own cell (the graph's key), so
     /// eight bytes stand where a tree per formula stood — the reference workbook's two million
     /// formulas are a handful of trees, not 768 MB of them (`plan/SHAPE-SHARING.md` §3.4).
-    pub(super) shape: Option<std::sync::Arc<gridcraft_formula::Shape>>,
+    pub(super) shape: Option<std::sync::Arc<cella_formula::Shape>>,
 }
 
 /// A node's run length and its flags in one word: the length in the low `RUN_BITS`, the flags in
@@ -406,7 +406,7 @@ impl Node {
     }
 
     /// The same node, holding the shape its cell shares instead of a tree of its own.
-    pub(super) fn with_shape(mut self, shape: Option<std::sync::Arc<gridcraft_formula::Shape>>) -> Self {
+    pub(super) fn with_shape(mut self, shape: Option<std::sync::Arc<cella_formula::Shape>>) -> Self {
         self.shape = shape;
         self
     }
@@ -520,9 +520,9 @@ impl NodeTable {
     /// Heap bytes of the outer map and of every sheet's table (see [`GraphMemory`]).
     fn memory(&self) -> usize {
         use std::mem::size_of;
-        let mut bytes = gridcraft_model::hash_index_bytes(self.sheets.capacity(), size_of::<(usize, HashMap<CellRef, Node>)>());
+        let mut bytes = cella_model::hash_index_bytes(self.sheets.capacity(), size_of::<(usize, HashMap<CellRef, Node>)>());
         for m in self.sheets.values() {
-            bytes = bytes.saturating_add(gridcraft_model::hash_index_bytes(m.capacity(), size_of::<(CellRef, Node)>()));
+            bytes = bytes.saturating_add(cella_model::hash_index_bytes(m.capacity(), size_of::<(CellRef, Node)>()));
         }
         bytes
     }
@@ -530,9 +530,9 @@ impl NodeTable {
     /// The slot counts of the outer map and of every sheet's table (see [`Graph::node_slots`]).
     #[cfg(test)]
     fn slots(&self) -> usize {
-        let mut slots = gridcraft_model::hash_index_bytes(self.sheets.capacity(), 0);
+        let mut slots = cella_model::hash_index_bytes(self.sheets.capacity(), 0);
         for m in self.sheets.values() {
-            slots = slots.saturating_add(gridcraft_model::hash_index_bytes(m.capacity(), 0));
+            slots = slots.saturating_add(cella_model::hash_index_bytes(m.capacity(), 0));
         }
         slots
     }
@@ -632,7 +632,7 @@ impl<T: Copy + Ord> Intervals<T> {
             .saturating_add(self.dead.capacity())
             .saturating_add(self.max_end.capacity().saturating_mul(size_of::<u32>()))
             // A `BTreeSet` has no capacity: charge the nodes its `len` entries sit in.
-            .saturating_add(gridcraft_model::btree_index_bytes(self.pending.len(), item))
+            .saturating_add(cella_model::btree_index_bytes(self.pending.len(), item))
     }
     /// Merges pending insertions and drops dead entries when there are enough of them.
     pub(super) fn settle(&mut self) {
@@ -742,7 +742,7 @@ impl GraphMemory {
 
 /// Heap bytes of one hash set of `T` (see [`GraphMemory`]).
 fn set_bytes<T>(set: &HashSet<T>) -> usize {
-    gridcraft_model::hash_index_bytes(set.capacity(), std::mem::size_of::<T>())
+    cella_model::hash_index_bytes(set.capacity(), std::mem::size_of::<T>())
 }
 /// A precedent area as the arena keeps it: an [`Area`] with the sheet as a `u32` instead of a
 /// `usize`. A workbook cannot hold four billion sheets (the index is an offset into a
@@ -1090,7 +1090,7 @@ impl Graph {
     /// `cfg(test)`: the pass reads a node's shape through [`crate::recalc::pass_host::Trees`], and
     /// nothing in the product asks the graph for one.
     #[cfg(test)]
-    pub(super) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<gridcraft_formula::Shape>> {
+    pub(super) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<cella_formula::Shape>> {
         self.nodes.get(k).and_then(|n| n.shape.clone())
     }
 
@@ -1237,11 +1237,11 @@ impl Graph {
             areas: self.areas.capacity().saturating_mul(size_of::<PackedArea>()),
             cell_deps,
             many_lists,
-            cols: gridcraft_model::hash_index_bytes(self.col_deps.capacity(), size_of::<((usize, u32), Intervals<Key>)>())
+            cols: cella_model::hash_index_bytes(self.col_deps.capacity(), size_of::<((usize, u32), Intervals<Key>)>())
                 .saturating_add(self.col_deps.values().map(Intervals::memory).sum::<usize>()),
-            wide: gridcraft_model::hash_index_bytes(self.wide_deps.capacity(), size_of::<(usize, Intervals<(u32, u32, Key)>)>())
+            wide: cella_model::hash_index_bytes(self.wide_deps.capacity(), size_of::<(usize, Intervals<(u32, u32, Key)>)>())
                 .saturating_add(self.wide_deps.values().map(Intervals::memory).sum::<usize>()),
-            legacy_ranges: gridcraft_model::hash_index_bytes(self.legacy_range.capacity(), size_of::<(Key, RangeRef)>()),
+            legacy_ranges: cella_model::hash_index_bytes(self.legacy_range.capacity(), size_of::<(Key, RangeRef)>()),
             flags: set_bytes(&self.dynamic)
                 .saturating_add(set_bytes(&self.may_spill))
                 .saturating_add(set_bytes(&self.legacy))
@@ -1261,7 +1261,7 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridcraft_core::CellRef;
+    use cella_core::CellRef;
 
     fn key(sheet: usize, row: u32, col: u32) -> Key {
         (sheet, CellRef::new(row, col))

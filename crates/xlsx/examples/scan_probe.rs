@@ -1,4 +1,4 @@
-//! How fast the row scanner reads a sheet: `cargo run --release -p gridcraft-xlsx --example scan_probe -- <part.xml>`.
+//! How fast the row scanner reads a sheet: `cargo run --release -p cella-xlsx --example scan_probe -- <part.xml>`.
 //!
 //! Native-only benchmark: the clock read is behind an allow for that reason.
 #![allow(clippy::disallowed_methods)]
@@ -11,10 +11,10 @@ fn main() {
         let t = std::time::Instant::now();
         let mut rows = 0u64;
         let mut cells = 0u64;
-        gridcraft_xlsx::rows::parse(&xml, &mut |item| {
+        cella_xlsx::rows::parse(&xml, &mut |item| {
             match item {
-                gridcraft_xlsx::rows::Item::RowStart(_) => rows += 1,
-                gridcraft_xlsx::rows::Item::Cell(_) => cells += 1,
+                cella_xlsx::rows::Item::RowStart(_) => rows += 1,
+                cella_xlsx::rows::Item::Cell(_) => cells += 1,
                 _ => {}
             }
             Ok(())

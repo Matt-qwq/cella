@@ -2,8 +2,8 @@
 //! keeps them (issue #524). The page-parity options it exposes (page order, black and white, draft
 //! quality) reach the sheet through the same command.
 
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::SheetApp;
+use cella_engine::Session;
+use cella_ui_egui::SheetApp;
 use serde_json::{Value, json};
 
 fn margins(app: &SheetApp) -> [f32; 6] {

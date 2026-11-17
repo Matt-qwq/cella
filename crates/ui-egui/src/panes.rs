@@ -72,7 +72,7 @@ fn title_of(kind: Option<&str>) -> &'static str {
 fn comments(app: &mut SheetApp, ui: &mut Ui) {
     let Some(d) = app.session.active() else { return };
     let Some(sh) = d.wb.active() else { return };
-    let list: Vec<(String, gridcraft_engine::model::Comment)> = sh.comments.iter().map(|(c, m)| (c.a1(), m.clone())).collect();
+    let list: Vec<(String, cella_engine::model::Comment)> = sh.comments.iter().map(|(c, m)| (c.a1(), m.clone())).collect();
     if list.is_empty() {
         ui.label(egui::RichText::new(crate::widgets::tr(ui, "No comments on this sheet yet. Select a cell and choose New Comment.")).italics());
     }
@@ -131,7 +131,7 @@ fn watch(app: &mut SheetApp, ui: &mut Ui) {
         && let Some(d) = app.session.active()
         && let Some(sh) = d.wb.active()
     {
-        let r = format!("{}!{}", gridcraft_engine::formula::quote_sheet(&sh.name), d.selection.active.a1());
+        let r = format!("{}!{}", cella_engine::formula::quote_sheet(&sh.name), d.selection.active.a1());
         let _ = app.session.run("formulas.watchWindow", json!({"add": r}));
     }
     let list = app.session.run("formulas.watchWindow", json!({})).unwrap_or(Json::Null);
@@ -228,7 +228,7 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
                     let n = v["queries"].as_array().map_or(0, Vec::len);
                     app.toast = Some((crate::widgets::tr(ui, "Refreshed {}").replace("{}", &n.to_string()), crate::now_ms()));
                 }
-                Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
             }
         }
         if ui.button(crate::widgets::tr(ui, "New query from file…")).clicked()
@@ -238,7 +238,7 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
             // the Data tab's Get Data opens the same file as a workbook instead.
             match app.session.run("data.query.add", json!({"source": source_for_path(&path)})) {
                 Ok(_) => app.toast = Some((crate::widgets::tr(ui, "Query added").to_string(), crate::now_ms())),
-                Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
             }
         }
     });
@@ -270,7 +270,7 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
                 if ui.small_button(crate::widgets::tr(ui, "Refresh")).clicked() {
                     match app.session.run("data.query.refresh", json!({"name": name})) {
                         Ok(_) => app.toast = Some((crate::widgets::tr(ui, "Refreshed {}").replace("{}", "1"), crate::now_ms())),
-                        Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                        Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
                     }
                 }
                 if ui.small_button(crate::widgets::tr(ui, "Delete")).clicked() {
@@ -281,7 +281,7 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
                             }
                             app.toast = Some((crate::widgets::tr(ui, "Query deleted").to_string(), crate::now_ms()));
                         }
-                        Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                        Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
                     }
                 }
             });
@@ -305,7 +305,7 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
                             if crate::widgets::icon_button(ui, crate::icons::Icon::Close, t.text_dim, "Remove step", vec2(16.0, 16.0)).clicked() {
                                 match app.session.run("data.query.removeStep", json!({"name": name, "index": i})) {
                                     Ok(_) => app.toast = Some((crate::widgets::tr(ui, "Step removed").to_string(), crate::now_ms())),
-                                    Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
+                                    Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
                                 }
                             }
                         });

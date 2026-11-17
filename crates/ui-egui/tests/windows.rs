@@ -3,8 +3,8 @@
 //! each window shows of it — its active sheet, its selection — is the window's own, and switching
 //! windows brings that view back.
 
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::{Services, SheetApp};
+use cella_engine::Session;
+use cella_ui_egui::{Services, SheetApp};
 use serde_json::json;
 
 fn app() -> SheetApp {
@@ -18,8 +18,8 @@ fn app() -> SheetApp {
 fn shown(app: &SheetApp, cell: &str) -> String {
     let d = app.session.active().expect("a document");
     let sh = d.wb.active().expect("a sheet");
-    let at = gridcraft_engine::core::CellRef::parse(cell).expect("a cell address");
-    gridcraft_engine::display::edit_text(&d.wb, sh, at)
+    let at = cella_engine::core::CellRef::parse(cell).expect("a cell address");
+    cella_engine::display::edit_text(&d.wb, sh, at)
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn the_window_list_names_both_windows_and_switches_between_them() {
     assert_eq!(list[1]["active"], json!(true), "the new window has the focus: {listed}");
     // Switching windows moves the focus, as View ▸ Switch Windows does.
     app.run("window.activate", json!({"index": 0})).expect("switch to the first window");
-    assert_eq!(app.session.active_window(), Some(gridcraft_engine::WindowId(list[0]["window"].as_u64().expect("an id"))));
+    assert_eq!(app.session.active_window(), Some(cella_engine::WindowId(list[0]["window"].as_u64().expect("an id"))));
     let listed = app.session.run("view.switchWindows", json!({})).expect("the window list");
     assert_eq!(listed[0]["active"], json!(true));
     assert_eq!(listed[1]["active"], json!(false));
@@ -99,14 +99,14 @@ fn the_control_channel_names_the_window_it_drives() {
         app,
     );
     let main = h.state().session.active_window().expect("the main window");
-    let inspected = gridcraft_ui_egui::control::inspect(h.state(), &h.ctx);
+    let inspected = cella_ui_egui::control::inspect(h.state(), &h.ctx);
     assert_eq!(inspected["mainWindow"], json!(main.0), "{inspected}");
     assert_eq!(inspected["windows"].as_array().map(Vec::len), Some(1), "{inspected}");
 
     let mut h = h;
     h.state_mut().run("view.newWindow", json!({})).expect("a second window");
     h.run_steps(3);
-    let inspected = gridcraft_ui_egui::control::inspect(h.state(), &h.ctx);
+    let inspected = cella_ui_egui::control::inspect(h.state(), &h.ctx);
     assert_eq!(h.state().session.windows().len(), 2, "{inspected}");
     assert_eq!(h.state().session.documents().len(), 1, "two windows on one document");
     let windows = inspected["windows"].as_array().expect("the window list");
@@ -186,7 +186,7 @@ fn switching_windows_restores_that_windows_sheet_and_selection() {
 
 /// The two windows of a new second window: the app's first one and the one View ▸ New Window
 /// added (which has the focus).
-fn two_windows(app: &mut SheetApp) -> (gridcraft_engine::WindowId, gridcraft_engine::WindowId) {
+fn two_windows(app: &mut SheetApp) -> (cella_engine::WindowId, cella_engine::WindowId) {
     app.run("view.newWindow", json!({})).expect("a second window");
     let ids: Vec<_> = app.session.windows().into_iter().map(|(_, w)| w.id).collect();
     assert_eq!(ids.len(), 2, "two windows on the document");
@@ -243,7 +243,7 @@ fn a_dialog_stays_in_the_window_it_was_opened_in() {
 fn the_file_view_belongs_to_its_window() {
     let mut app = app();
     let (first, second) = two_windows(&mut app);
-    app.open_backstage(gridcraft_ui_egui::backstage::Page::Print);
+    app.open_backstage(cella_ui_egui::backstage::Page::Print);
     assert_eq!(app.backstage.as_ref().map(|b| b.page.id()), Some("print"));
 
     app.run("window.activate", json!({"window": first.0})).expect("switch to the first window");

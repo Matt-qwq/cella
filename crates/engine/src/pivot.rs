@@ -8,11 +8,11 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use gridcraft_core::date::datetime_from_serial;
-pub use gridcraft_core::quote_sheet;
-use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, split_sheet};
-use gridcraft_model::pivot_item;
-use gridcraft_model::*;
+use cella_core::date::datetime_from_serial;
+pub use cella_core::quote_sheet;
+use cella_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, split_sheet};
+use cella_model::pivot_item;
+use cella_model::*;
 
 use crate::pivot_calc::CalcSet;
 
@@ -90,7 +90,7 @@ impl Source {
 
 /// Absolute reference text for a range on a sheet: `Sheet1!$A$1:$E$20`.
 pub fn range_text(sheet_name: &str, r: RangeRef) -> String {
-    let abs = |c: CellRef| format!("${}${}", gridcraft_core::col_to_letters(c.col), c.row as u64 + 1);
+    let abs = |c: CellRef| format!("${}${}", cella_core::col_to_letters(c.col), c.row as u64 + 1);
     format!("{}!{}:{}", quote_sheet(sheet_name), abs(r.start), abs(r.end))
 }
 
@@ -209,7 +209,7 @@ pub fn read_source(wb: &Workbook, text: &str, default_sheet: usize) -> Result<So
 }
 
 /// What a pivot's source text names: one of the model's tables, or a sheet block (a range, a table
-/// or a defined name) that GridCraft reads cell by cell.
+/// or a defined name) that Cella reads cell by cell.
 ///
 /// A sheet name wins where both would answer: `insert.pivotTable` has always accepted a table
 /// name, and a report that names a sheet table must keep reading that table.
@@ -1296,13 +1296,13 @@ struct Lookup<'a> {
 /// A path that stops short (a subtotal) or is empty (a grand total) filters only what it names,
 /// which is exactly what a subtotal and a grand total mean.
 fn measure_context(
-    mut ctx: gridcraft_dax::Context,
+    mut ctx: cella_dax::Context,
     fields: &[&PivotField],
     items: &[FieldItems],
     path: &[u32],
     src: &Source,
     wb: &Workbook,
-) -> gridcraft_dax::Context {
+) -> cella_dax::Context {
     for (d, fi) in items.iter().enumerate() {
         let (Some(&id), Some(f)) = (path.get(d), fields.get(d)) else { continue };
         let Some(it) = fi.get(id) else { continue };
@@ -1365,12 +1365,7 @@ fn bucket_members(wb: &Workbook, src: &Source, f: &PivotField, group: Grouping, 
 /// The filter context the report's Filters area puts on every measure cell: a field there with a
 /// selection narrows the measure exactly as a row member does, and one with no selection (All)
 /// adds nothing. A field filtered on an axis only hides items, which the axis already does.
-fn page_context(
-    mut ctx: gridcraft_dax::Context,
-    page: &[(usize, &PivotFilter, Grouping, bool)],
-    src: &Source,
-    wb: &Workbook,
-) -> gridcraft_dax::Context {
+fn page_context(mut ctx: cella_dax::Context, page: &[(usize, &PivotFilter, Grouping, bool)], src: &Source, wb: &Workbook) -> cella_dax::Context {
     for (c, pf, group, shown) in page {
         if !*shown {
             continue;
@@ -1419,11 +1414,11 @@ impl Lookup<'_> {
             // ignored. A formula that cannot compute puts its error in this one cell, never a
             // failed refresh.
             let m = self.wb.model.measures.get(*i)?;
-            let ctx = gridcraft_dax::Context::new();
+            let ctx = cella_dax::Context::new();
             let ctx = measure_context(ctx, self.row_fields, self.row_items, rp, self.src, self.wb);
             let ctx = measure_context(ctx, self.col_fields, self.col_items, cp, self.src, self.wb);
             let ctx = page_context(ctx, self.page, self.src, self.wb);
-            return Some(match gridcraft_dax::evaluate(&self.wb.model, &m.formula, &ctx) {
+            return Some(match cella_dax::evaluate(&self.wb.model, &m.formula, &ctx) {
                 Ok(v) => v,
                 Err(_) => Value::Error(CellError::Value),
             });
@@ -2221,7 +2216,7 @@ pub fn parse_chart_link(link: &str) -> Option<(String, String)> {
     };
     let (sheet, name) = t.rsplit_once('!')?;
     let sheet = sheet.trim();
-    let sheet = gridcraft_core::unquote_sheet(sheet);
+    let sheet = cella_core::unquote_sheet(sheet);
     let name = name.trim();
     if sheet.is_empty() || name.is_empty() {
         return None;
@@ -2238,7 +2233,7 @@ pub fn links_to(link: &str, sheet: &str, pivot: &str) -> bool {
 fn rows_ref(sheet: &str, origin: CellRef, col: u32, rows: &[u32]) -> Option<String> {
     let q = quote_sheet(sheet);
     let c = origin.col.checked_add(col)?;
-    let letters = gridcraft_core::col_to_letters(c);
+    let letters = cella_core::col_to_letters(c);
     let mut parts: Vec<String> = Vec::new();
     let mut i = 0;
     while let Some(&start) = rows.get(i) {
@@ -2497,7 +2492,7 @@ fn formula_for(wb: &Workbook, sheet: usize, pt: &PivotTable, out: &Output, at: C
     let vi = out.col_values.get(j).copied().flatten().or_else(|| out.row_values.get(r).copied().flatten()).ok_or(NOT_A_VALUE_CELL)?;
     let value = out.value_names.get(vi).filter(|n| !n.is_empty()).ok_or(NOT_A_VALUE_CELL)?;
     let name = wb.sheet(sheet).map(|s| s.name.clone()).ok_or("There's no such sheet.")?;
-    let abs = |c: CellRef| format!("\u{24}{}\u{24}{}", gridcraft_core::col_to_letters(c.col), c.row as u64 + 1);
+    let abs = |c: CellRef| format!("\u{24}{}\u{24}{}", cella_core::col_to_letters(c.col), c.row as u64 + 1);
     let corner = format!("{}!{}", quote_sheet(&name), abs(area.start));
     let mut args: Vec<String> = vec![quoted(value), corner];
     // The pairs of one axis: its items, or "Grand Total" for a total line (which stands for every

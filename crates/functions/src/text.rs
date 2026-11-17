@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use gridcraft_core::parse::parse_number_text_in;
-use gridcraft_core::{CellError, Value, number_to_text};
+use cella_core::parse::parse_number_text_in;
+use cella_core::{CellError, Value, number_to_text};
 
 use crate::criteria::wildcard_find;
 use crate::util::{
@@ -1137,7 +1137,7 @@ pub(crate) fn specs() -> Vec<FnSpec> {
 
 #[cfg(test)]
 mod tests {
-    use gridcraft_core::{CellError, Value};
+    use cella_core::{CellError, Value};
 
     /// The pieces expand exactly as `regex::Captures::expand` does.
     #[test]
@@ -1216,7 +1216,7 @@ mod tests {
     /// 3 GB of copies). Errors among the inputs still win, in argument order.
     #[test]
     fn textjoin_stops_at_the_text_cap() {
-        use gridcraft_core::Array;
+        use cella_core::Array;
         let long = tv(&"x".repeat(32_767));
         let many = || av(Array::filled(100_000, 1, long.clone()).into());
         is_err(ev("TEXTJOIN", vec![t(","), b(true), many()]), CellError::Value);
@@ -1364,7 +1364,7 @@ mod tests {
         close(ev("VALUE", vec![t("2020-01-01")]), 43831.0);
         is_err(ev("VALUE", vec![t("abc")]), CellError::Value);
         // Refused by NUMBERVALUE itself; the text→number accounting forms ($(5), (5)%) are read
-        // by gridcraft-core's parser, ported with the text-to-number landing.
+        // by cella-core's parser, ported with the text-to-number landing.
         close(ev("NUMBERVALUE", vec![t("2.500,27"), t(","), t(".")]), 2500.27);
         close(ev("NUMBERVALUE", vec![t("3.5%")]), 0.035);
         close(ev("NUMBERVALUE", vec![t(" 1 000 ")]), 1000.0);

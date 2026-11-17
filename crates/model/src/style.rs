@@ -143,7 +143,7 @@ pub struct Theme {
 impl Theme {
     /// The East Asian typeface body text uses: the minor scheme's `<a:ea>` when the theme sets
     /// one, else its per-script entry (`script="Hans"` → 宋体 in a Chinese Excel file), else the
-    /// major scheme's. `None` when the file named none, as GridCraft's own theme does.
+    /// major scheme's. `None` when the file named none, as Cella's own theme does.
     pub fn body_ea_font(&self, script: &str) -> Option<&str> {
         if !self.minor_font_ea.is_empty() {
             return Some(&self.minor_font_ea);
@@ -164,7 +164,7 @@ fn scripted<'a>(list: &'a [(String, String)], script: &str) -> Option<&'a str> {
 }
 
 impl Default for Theme {
-    /// GridCraft's own default theme ("Craft"): original palette. The East Asian and
+    /// Cella's own default theme ("Craft"): original palette. The East Asian and
     /// complex-script typefaces stay empty: the file did not set one.
     fn default() -> Self {
         Theme {
@@ -609,7 +609,7 @@ mod theme_tests {
     #[test]
     fn a_font_scheme_names_its_east_asian_face() {
         let mut theme = Theme::default();
-        assert_eq!(theme.body_ea_font("Hans"), None, "GridCraft's own theme names none");
+        assert_eq!(theme.body_ea_font("Hans"), None, "Cella's own theme names none");
         theme.minor_font_scripts = vec![("Jpan".into(), "游ゴシック".into()), ("Hans".into(), "宋体".into())];
         assert_eq!(theme.body_ea_font("Hans"), Some("宋体"));
         assert_eq!(theme.body_ea_font("jpan"), Some("游ゴシック"), "script names are case-insensitive");

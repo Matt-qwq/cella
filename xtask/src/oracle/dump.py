@@ -1,6 +1,6 @@
 """Dump what an independent reader (openpyxl) sees in a workbook, as JSON on stdout.
 
-`cargo xtask oracle` runs this against files GridCraft wrote and compares the result with the
+`cargo xtask oracle` runs this against files Cella wrote and compares the result with the
 model it saved, so a package our own reader tolerates but a foreign one does not shows up.
 
 openpyxl is a different implementation from ours (and a different codebase from Excel), so it

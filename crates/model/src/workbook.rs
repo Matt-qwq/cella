@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::DateSystem;
-use gridcraft_formula::Expr;
+use cella_core::DateSystem;
+use cella_formula::Expr;
 use serde::{Deserialize, Serialize};
 
 use crate::cell::Formula;
@@ -235,7 +235,7 @@ pub struct Workbook {
     /// which holds unmodelled parts), so it is saved to JSON as well as to XLSX.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub phonetics: Vec<PhoneticString>,
-    /// VBA project (`xl/vbaProject.bin`) carried through unchanged. GridCraft does not run
+    /// VBA project (`xl/vbaProject.bin`) carried through unchanged. Cella does not run
     /// macros; the blob is preserved so that saving a macro-enabled workbook never destroys the
     /// macros it arrived with. base64 in JSON. `None` = the workbook has no macros. Shared, so a
     /// copy of the workbook (every edit's undo step) doesn't copy it.
@@ -268,7 +268,7 @@ pub struct Workbook {
     #[serde(skip)]
     pub source_path: Option<std::path::PathBuf>,
     /// Fields of the workbook object in a JSON file that this version does not model (a newer
-    /// GridCraft's, or one a later build dropped). Serde collects them on a read and writes them
+    /// Cella's, or one a later build dropped). Serde collects them on a read and writes them
     /// back on a save, so an older build never destroys a newer file's data. Not in XLSX.
     #[serde(flatten)]
     pub json_kept: crate::JsonKept,
@@ -387,13 +387,13 @@ impl Workbook {
         }
         Ok(())
     }
-    /// The prefixes of GridCraft's own hidden names, which store view state (the Watch Window
+    /// The prefixes of Cella's own hidden names, which store view state (the Watch Window
     /// list, custom views, scripts, scenarios, extensions) rather than workbook data: `_gc_` for
     /// the chunked store (`_gc_<key>_<n>`, see the engine's `cmd::stash`) and `_sc_` for the one
     /// name older files keep the same data in.
     const PRIVATE_NAME_PREFIXES: [&str; 2] = ["_gc_", "_sc_"];
 
-    /// Whether `name` is one of GridCraft's private state names. Formulas never see them: that
+    /// Whether `name` is one of Cella's private state names. Formulas never see them: that
     /// state is not cell content and survives undo (the Watch Window list isn't an edit), so a
     /// formula reading it could keep a stale value when the name came or went (found by the
     /// command-sequence fuzzer). The prefixes are reserved for the app's own names.
@@ -423,7 +423,7 @@ impl Workbook {
         if lambdas.is_empty() {
             return;
         }
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         for sheet in self.sheets.iter_mut() {
             let fixed: Vec<_> = sheet
                 .cells
@@ -451,10 +451,10 @@ impl Workbook {
             }
         }
         for n in self.names.iter_mut() {
-            if let Ok(e) = gridcraft_formula::parse_name(&n.formula) {
+            if let Ok(e) = cella_formula::parse_name(&n.formula) {
                 let ne = spell_calls(e.clone(), &lambdas);
                 if ne != e {
-                    n.formula = gridcraft_formula::print(&ne);
+                    n.formula = cella_formula::print(&ne);
                 }
             }
         }

@@ -1,4 +1,4 @@
-//! GridCraft file formats: XLSX (transitional and strict) and CSV import/export, plus XLSB and ODS data import
+//! Cella file formats: XLSX (transitional and strict) and CSV import/export, plus XLSB and ODS data import
 //! and legacy Excel 97-2003 `.xls` (BIFF8) import, and password-encrypted workbooks (Agile and
 //! Standard encryption read and written; Agile is the default scheme).
 //!
@@ -50,8 +50,8 @@ mod xml;
 #[cfg(test)]
 mod tests;
 
-use gridcraft_core::DateSystem;
-use gridcraft_model::Workbook;
+use cella_core::DateSystem;
+use cella_model::Workbook;
 
 pub use crypto::{DecryptError, EncryptionScheme, check_encryption, decrypt, encrypt_workbook, encrypt_workbook_as, encryption_scheme};
 pub use csv::{MAX_CSV_BYTES, read_csv, write_csv, write_csv_limited};
@@ -59,7 +59,7 @@ pub use fmla::{KnownFunctions, needs_file_rewrite};
 pub use ods::read_ods;
 pub use package::MAX_PART;
 
-/// The per-part limit this process actually uses (the default, or what `GRIDCRAFT_MAX_PART_MB`
+/// The per-part limit this process actually uses (the default, or what `CELLA_MAX_PART_MB`
 /// asks for).
 pub fn max_part() -> u64 {
     package::max_part()

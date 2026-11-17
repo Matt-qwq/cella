@@ -2,11 +2,11 @@
 //! shipped interface languages (English, Simplified Chinese) use the canonical English formula
 //! syntax, so a switch never changes what a formula means or what the file stores.
 
-use gridcraft_engine::{
+use cella_engine::{
     Session,
     core::{CellError, CellRef, Value},
 };
-use gridcraft_ui_egui::{SheetApp, UiState, i18n::Language};
+use cella_ui_egui::{SheetApp, UiState, i18n::Language};
 use serde_json::json;
 
 fn app() -> SheetApp {

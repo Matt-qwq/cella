@@ -34,7 +34,7 @@
    "seq": "JI",
    "kind": "tab",
    "target": "Draw",
-   "note": "Two-letter unit. Deeper Draw letters differ between Excel and GridCraft; left blank for future contributors."
+   "note": "Two-letter unit. Deeper Draw letters differ between Excel and Cella; left blank for future contributors."
   },
   {
    "seq": "P",
@@ -272,7 +272,7 @@
    "seq": "WVI",
    "kind": "control",
    "target": "view.highContrast",
-   "note": "GridCraft's own: Excel takes high contrast from the OS."
+   "note": "Cella's own: Excel takes high contrast from the OS."
   },
   {
    "seq": "H0",

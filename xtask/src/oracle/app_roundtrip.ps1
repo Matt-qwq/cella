@@ -1,4 +1,4 @@
-# Open a GridCraft-written workbook in an independent spreadsheet application, recalculate it and
+# Open a Cella-written workbook in an independent spreadsheet application, recalculate it and
 # save a copy, so `cargo xtask oracle` can read the copy back and compare it with the model.
 #
 # `-App` is the COM ProgID: Excel.Application (the gate check) or KET.Application (WPS, the

@@ -1,7 +1,7 @@
 //! In-place editing of a text box. The draft becomes one undoable engine command.
 
+use cella_engine::{Mode, model::ShapeKind};
 use egui::{Color32, FontId, Key, Modifiers, Rect, TextEdit};
-use gridcraft_engine::{Mode, model::ShapeKind};
 use serde_json::json;
 
 use crate::{SheetApp, grid::Geo, theme};
@@ -18,7 +18,7 @@ pub struct EditState {
 }
 
 pub(crate) fn editor_id() -> egui::Id {
-    egui::Id::new("gridcraft.text_box_editor")
+    egui::Id::new("cella.text_box_editor")
 }
 
 impl SheetApp {
@@ -111,7 +111,7 @@ pub(crate) fn contains_pointer(app: &SheetApp, ctx: &egui::Context) -> bool {
     app.text_box_editor.as_ref().and_then(|ed| ed.rect).is_some_and(|r| ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| r.contains(p))))
 }
 
-pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &gridcraft_engine::model::Sheet) {
+pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &cella_engine::model::Sheet) {
     let Some(mut ed) = app.text_box_editor.take() else { return };
     if app.view_key() != Some((ed.uid, ed.sheet)) {
         app.text_box_editor = Some(ed);
@@ -122,7 +122,7 @@ pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &gridcr
         return;
     };
     // shape.setText's limit per kind: a cell's for a text box, a WordArt's own for decorative text.
-    let char_limit = if shape.kind == ShapeKind::WordArt { gridcraft_engine::cmd::wordart::MAX_CHARS } else { 32_767 };
+    let char_limit = if shape.kind == ShapeKind::WordArt { cella_engine::cmd::wordart::MAX_CHARS } else { 32_767 };
     let save = ui.input_mut(|i| {
         if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::S) {
             Some("file.saveAs")

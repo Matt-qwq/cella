@@ -15,8 +15,8 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_core::{DateSystem, Value};
-use gridcraft_numfmt::{NumberFormat, format_general_fit, format_value, text_function};
+use cella_core::{DateSystem, Value};
+use cella_numfmt::{NumberFormat, format_general_fit, format_value, text_function};
 
 /// Rows this fork renders differently from the recorded golden **on purpose**, with the reason.
 ///
@@ -143,7 +143,7 @@ fn values() -> Vec<f64> {
     v
 }
 
-fn fmt_formatted(f: &gridcraft_numfmt::Formatted) -> String {
+fn fmt_formatted(f: &cella_numfmt::Formatted) -> String {
     format!("{:?}|{:?}|{:?}|{}", f.text, f.color, f.fill, f.numeric)
 }
 

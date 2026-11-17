@@ -1,4 +1,4 @@
-//! PivotTables built on the data model, in a part of our own: `xl/gridcraft/pivots.json`.
+//! PivotTables built on the data model, in a part of our own: `xl/cella/pivots.json`.
 //!
 //! A report over a worksheet range is an Excel PivotTable and is written as one. A report over the
 //! **data model** is not: its cache would have to point at `xl/model/*`, the Power Pivot part Excel
@@ -15,7 +15,7 @@
 //! fields across nested structures, and a second, hand-written definition of it would be a copy that
 //! drifts. The serde shape *is* the format here, and tests prove the bytes are it.
 
-use gridcraft_model::{PivotSourceKind, PivotTable, Workbook};
+use cella_model::{PivotSourceKind, PivotTable, Workbook};
 use serde::{Deserialize, Serialize};
 
 use crate::IoError;
@@ -23,7 +23,7 @@ use crate::read::Ctx;
 use crate::write::Out;
 
 /// The part the model's PivotTables are written to.
-pub(crate) const PART: &str = "xl/gridcraft/pivots.json";
+pub(crate) const PART: &str = "xl/cella/pivots.json";
 /// Its extension and content type. Whichever of our parts is written first declares the default;
 /// the content-type map keeps the first one for an extension, so there is never a duplicate.
 pub(crate) const EXTENSION: &str = "json";

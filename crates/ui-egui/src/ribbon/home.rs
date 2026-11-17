@@ -5,8 +5,8 @@ use super::controls::{
 
 use super::galleries::{cell_style_gallery, table_gallery};
 
+use cella_engine::model::{HAlign, Style, VAlign};
 use egui::{Key, Modifiers, Rect, Ui, vec2};
-use gridcraft_engine::model::{HAlign, Style, VAlign};
 use serde_json::json;
 
 use crate::SheetApp;
@@ -146,7 +146,7 @@ pub(super) fn home(app: &mut SheetApp, ui: &mut Ui) {
             if __k.clicked() {
                 act(app, "home.italic", json!({}));
             }
-            let underlined = st.font.underline != gridcraft_engine::model::Underline::None;
+            let underlined = st.font.underline != cella_engine::model::Underline::None;
             let (u, ua) = split_button(ui, Icon::Underline, None, Some(underlined), "Underline");
             control_keytip(app, ui, &ua, "home.underline");
             if u {
@@ -203,7 +203,7 @@ pub(super) fn home(app: &mut SheetApp, ui: &mut Ui) {
                 }
             });
             let fill = app.grid.last_fill.clone();
-            let fill_c = gridcraft_engine::model::Color::from_hex(&fill).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
+            let fill_c = cella_engine::model::Color::from_hex(&fill).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
             let (f, fa) = split_button(ui, Icon::Fill, fill_c, None, "Fill Color");
             control_keytip(app, ui, &fa, "home.fillColor");
             if f {
@@ -224,7 +224,7 @@ pub(super) fn home(app: &mut SheetApp, ui: &mut Ui) {
                     }
                 });
             let fc = app.grid.last_font_color.clone();
-            let fc_c = gridcraft_engine::model::Color::from_hex(&fc).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
+            let fc_c = cella_engine::model::Color::from_hex(&fc).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
             let (c, ca) = split_button(ui, Icon::FontColor, fc_c, None, "Font Color");
             control_keytip(app, ui, &ca, "home.fontColor");
             if c {
@@ -627,7 +627,7 @@ fn size_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
     let t = Tokens::get(ui.ctx());
     let size = st.font.size;
     let current = if size.fract() == 0.0 { format!("{}", size as i32) } else { format!("{size}") };
-    let field = egui::Id::new("gridcraft.font_size_box");
+    let field = egui::Id::new("cella.font_size_box");
     let draft = field.with("draft");
     let mut text = ui.data_mut(|d| d.get_temp::<String>(draft)).unwrap_or_else(|| current.clone());
     // One frame like the Font name box beside it (same fill, border, height and corners), with the
@@ -689,7 +689,7 @@ fn size_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
 
 fn number_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
     let code = st.num_fmt.as_str().to_string();
-    let kind = gridcraft_engine::display::number_format(&code).kind();
+    let kind = cella_engine::display::number_format(&code).kind();
     let current = format!("{kind:?}");
     let lang = app.ui.language;
     let sample = app.session.active().and_then(|d| d.wb.active().map(|sh| sh.value(d.selection.active))).unwrap_or_default();
@@ -700,8 +700,8 @@ fn number_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
     let items: Vec<(&str, String)> = names
         .iter()
         .map(|n| {
-            let code = gridcraft_engine::cmd::format::format_code_for(n);
-            let preview = app.session.active().map(|d| gridcraft_engine::display::format(&sample, code, &d.wb).text).unwrap_or_default();
+            let code = cella_engine::cmd::format::format_code_for(n);
+            let preview = app.session.active().map(|d| cella_engine::display::format(&sample, code, &d.wb).text).unwrap_or_default();
             (*n, format!("{:<12}   {preview}", lang.tr(n)))
         })
         .chain(std::iter::once(("__more", format!("{:>12}", lang.tr("More Number Formats…")))))
@@ -804,8 +804,8 @@ fn cf_menu(app: &mut SheetApp, ui: &mut Ui) {
 #[cfg(test)]
 mod accounting_symbol_tests {
     use super::*;
-    use gridcraft_engine::core::{DateSystem, Value};
-    use gridcraft_engine::numfmt::{NumberFormat, format_value};
+    use cella_engine::core::{DateSystem, Value};
+    use cella_engine::numfmt::{NumberFormat, format_value};
 
     #[test]
     fn accounting_dropdown_offers_the_issue_currencies_with_excel_codes() {

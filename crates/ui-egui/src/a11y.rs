@@ -11,10 +11,10 @@
 //! reaches the rest of a sheet by scrolling it, as a sighted user does. Column and row headers
 //! are not nodes of their own yet.
 
+use cella_engine::core::{CellRef, RangeRef};
+use cella_engine::model::{Sheet, Workbook};
 use egui::accesskit::Role;
 use egui::{Id, Sense};
-use gridcraft_engine::core::{CellRef, RangeRef};
-use gridcraft_engine::model::{Sheet, Workbook};
 
 use crate::grid::Geo;
 use crate::i18n::Language;
@@ -40,7 +40,7 @@ pub(crate) fn expose_grid(ui: &mut egui::Ui, wb: &Workbook, si: usize, sh: &Shee
     cols.extend(sc0..=sc1);
 
     // The grid node: a child `Ui` whose node becomes the parent of the cells created below.
-    let grid = ui.new_child(egui::UiBuilder::new().max_rect(geo.cells).id_salt(("gridcraft.a11y.grid", si)));
+    let grid = ui.new_child(egui::UiBuilder::new().max_rect(geo.cells).id_salt(("cella.a11y.grid", si)));
     let grid_id = grid.unique_id();
     let used = sh.used_range();
     let active_value = sh.value(active);
@@ -86,9 +86,9 @@ pub(crate) fn expose_grid(ui: &mut egui::Ui, wb: &Workbook, si: usize, sh: &Shee
         if !rect.intersects(geo.cells) {
             continue;
         }
-        let id = Id::new(("gridcraft.a11y.col", si, c));
+        let id = Id::new(("cella.a11y.col", si, c));
         let _ = grid.interact(rect, id, Sense::hover());
-        let name = gridcraft_engine::core::col_to_letters(c);
+        let name = cella_engine::core::col_to_letters(c);
         ctx.accesskit_node_builder(id, |n| {
             n.set_role(Role::ColumnHeader);
             n.set_label(name);
@@ -101,7 +101,7 @@ pub(crate) fn expose_grid(ui: &mut egui::Ui, wb: &Workbook, si: usize, sh: &Shee
         if !rect.intersects(geo.cells) {
             continue;
         }
-        let id = Id::new(("gridcraft.a11y.row", si, r));
+        let id = Id::new(("cella.a11y.row", si, r));
         let _ = grid.interact(rect, id, Sense::hover());
         ctx.accesskit_node_builder(id, |n| {
             n.set_role(Role::RowHeader);
@@ -122,7 +122,7 @@ pub(crate) fn expose_grid(ui: &mut egui::Ui, wb: &Workbook, si: usize, sh: &Shee
             if !rect.intersects(geo.cells) {
                 continue;
             }
-            let id = Id::new(("gridcraft.a11y.cell", si, r, c));
+            let id = Id::new(("cella.a11y.cell", si, r, c));
             // A hover-only response gives the cell an AccessKit node under this `Ui` (the only
             // public way to parent a node) without taking clicks from the grid's own pointer
             // handling.

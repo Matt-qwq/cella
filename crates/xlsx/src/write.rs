@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
-use gridcraft_core::RangeRef;
-use gridcraft_formula::quote_sheet;
-use gridcraft_model::{CalcMode, CalcSettings, PhoneticString, ShowObjects, Style, Visibility, Workbook, WorkbookView};
+use cella_core::RangeRef;
+use cella_formula::quote_sheet;
+use cella_model::{CalcMode, CalcSettings, PhoneticString, ShowObjects, Style, Visibility, Workbook, WorkbookView};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::package::Packed;
@@ -145,7 +145,7 @@ impl SheetPacker {
         let (jobs, job_rx) = std::sync::mpsc::sync_channel(1);
         let (result_tx, results) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new()
-            .name("gridcraft-xlsx-sheet-pack".into())
+            .name("cella-xlsx-sheet-pack".into())
             .spawn(move || {
                 for (index, name, data) in job_rx {
                     // A part that fails still travels back, so the save reports it instead of
@@ -193,7 +193,7 @@ pub struct Out {
     pub comments: u32,
     /// Legacy VML drawing parts written (notes and form controls share one per sheet).
     pub vmls: u32,
-    /// The VML shape blocks GridCraft's own drawings have claimed so far: the next drawing numbers
+    /// The VML shape blocks Cella's own drawings have claimed so far: the next drawing numbers
     /// its shapes after them.
     pub vml_block: u32,
     /// Control properties parts written (`xl/ctrlProps/ctrlPropN.xml`).
@@ -346,7 +346,7 @@ pub fn person_guid(i: usize) -> String {
 
 /// `$A$1:$D$20` (or `$1:$3` / `$A:$C`).
 pub fn abs_range(r: &RangeRef) -> String {
-    let c = |col: u32| gridcraft_core::col_to_letters(col);
+    let c = |col: u32| cella_core::col_to_letters(col);
     if r.is_full_rows() && !r.is_full_cols() {
         return format!("${}:${}", r.start.row + 1, r.end.row + 1);
     }
@@ -611,16 +611,16 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
 
     let mut w = format!("{XML_DECL}<workbook xmlns=\"{NS_MAIN}\" xmlns:r=\"{NS_REL}\">");
     // A workbook read from a file keeps its <fileVersion> as it was: Excel trusts the saved values
-    // only when appName is "xl" (#799). One without names GridCraft (#1699), and Excel recalculates it.
+    // only when appName is "xl" (#799). One without names Cella (#1699), and Excel recalculates it.
     let file_version = crate::passthrough::workbook_elements(wb, "fileVersion");
-    w.push_str(if file_version.is_empty() { "<fileVersion appName=\"gridcraft\"/>" } else { &file_version });
+    w.push_str(if file_version.is_empty() { "<fileVersion appName=\"cella\"/>" } else { &file_version });
     w.push_str("<workbookPr");
     match wb.show_objects {
         ShowObjects::All => {}
         ShowObjects::Placeholders => w.push_str(" showObjects=\"placeholders\""),
         ShowObjects::None => w.push_str(" showObjects=\"none\""),
     }
-    if wb.date_system == gridcraft_core::DateSystem::D1904 {
+    if wb.date_system == cella_core::DateSystem::D1904 {
         w.push_str(" date1904=\"1\"");
     }
     if wb.remove_personal_info {
@@ -753,7 +753,7 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     core.push_str("</cp:coreProperties>");
     out.part("docProps/core.xml", Some("application/vnd.openxmlformats-package.core-properties+xml"), core.into_bytes());
     let mut app = String::from(XML_DECL);
-    app.push_str("<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\"><Application>GridCraft</Application>");
+    app.push_str("<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\"><Application>Cella</Application>");
     if !p.company.is_empty() {
         let _ = write!(app, "<Company>{}</Company>", esc(&p.company));
     }

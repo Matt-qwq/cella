@@ -7,9 +7,9 @@
 //! workbook is refused whatever the flag says; a script that runs a script is refused rather than
 //! recursed.
 
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_engine::display::cell_text;
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_engine::display::cell_text;
 use serde_json::{Value as Json, json};
 
 fn session() -> Session {
@@ -163,7 +163,7 @@ fn a_script_that_runs_a_script_is_refused() {
 /// whatever the flag says.
 #[test]
 fn the_trust_policy_gates_the_file_system() {
-    let dir = std::env::temp_dir().join(format!("gridcraft-macros-trust-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cella-macros-trust-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     let csv = dir.join("in.csv");
@@ -178,9 +178,9 @@ fn the_trust_policy_gates_the_file_system() {
         "automate.newScript",
         json!({"name": "Import", "commands": [{"command": "data.getData", "params": {"path": csv.clone(), "sheet": "Data"}}]}),
     );
-    let bytes = gridcraft_engine::io::save_bytes(&author.doc().expect("document").wb, "book.xlsx").expect("save");
+    let bytes = cella_engine::io::save_bytes(&author.doc().expect("document").wb, "book.xlsx").expect("save");
     let mut s = Session::new();
-    run(&mut s, "file.open", json!({"name": "downloaded.xlsx", "base64": gridcraft_engine::io::base64_encode(&bytes)}));
+    run(&mut s, "file.open", json!({"name": "downloaded.xlsx", "base64": cella_engine::io::base64_encode(&bytes)}));
     assert!(!s.doc().expect("document").scripts_trusted, "a workbook opened with scripts starts untrusted");
     let err = s.execute("macro.run", json!({"name": "Import"})).expect_err("untrusted").to_string();
     assert!(err.contains("trust"), "{err}");
@@ -212,7 +212,7 @@ fn the_trust_policy_gates_the_file_system() {
         assert_eq!(text(&s, "C1"), "", "{name}: no step of a refused script runs");
     }
     assert!(!std::path::Path::new(&leak).exists(), "nothing was written");
-    assert!(!s.ui_requests.iter().any(|q| matches!(q, gridcraft_engine::UiRequest::OpenUrl(_))), "no link was opened");
+    assert!(!s.ui_requests.iter().any(|q| matches!(q, cella_engine::UiRequest::OpenUrl(_))), "no link was opened");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -229,14 +229,14 @@ fn a_recording_survives_save_and_open() {
 
     // The recording wrote A1; take it back so the file holds the script and not its effect.
     run(&mut s, "cell.set", json!({"cell": "A1", "input": ""}));
-    let bytes = gridcraft_engine::io::save_bytes(&s.doc().expect("document").wb, "book.xlsx").expect("save");
-    let (reopened, _) = gridcraft_engine::io::open_bytes("book.xlsx", &bytes).expect("open");
-    let stored = gridcraft_engine::cmd::stash::get(&reopened, "scripts").expect("the scripts are in the file");
+    let bytes = cella_engine::io::save_bytes(&s.doc().expect("document").wb, "book.xlsx").expect("save");
+    let (reopened, _) = cella_engine::io::open_bytes("book.xlsx", &bytes).expect("open");
+    let stored = cella_engine::cmd::stash::get(&reopened, "scripts").expect("the scripts are in the file");
     assert!(stored.contains("Keep") && stored.contains("saved"), "{stored}");
 
     // The file holds the script, not what it wrote; running it writes the cells again.
     let mut s = Session::new();
-    run(&mut s, "file.open", json!({"name": "book.xlsx", "base64": gridcraft_engine::io::base64_encode(&bytes)}));
+    run(&mut s, "file.open", json!({"name": "book.xlsx", "base64": cella_engine::io::base64_encode(&bytes)}));
     assert_eq!(text(&s, "A1"), "", "the saved file has the script, not its effect");
     run(&mut s, "macro.run", json!({"name": "Keep", "trusted": true}));
     assert_eq!(text(&s, "A1"), "saved");

@@ -13,10 +13,10 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::CellRef;
-use gridcraft_engine::model::{Sheet, Workbook};
+use cella_core::CellRef;
+use cella_engine::model::{Sheet, Workbook};
 
-pub fn has_content(c: &gridcraft_engine::model::Cell) -> bool {
+pub fn has_content(c: &cella_engine::model::Cell) -> bool {
     c.formula.is_some() || !c.value.is_empty()
 }
 
@@ -49,7 +49,7 @@ pub fn content_diff(a: &Workbook, b: &Workbook) -> Option<String> {
 
 /// The Watch Window list, which is workbook state but not an edit (undo keeps it).
 pub fn watch_list(wb: &Workbook) -> Option<String> {
-    gridcraft_engine::cmd::stash::get(wb, "watch")
+    cella_engine::cmd::stash::get(wb, "watch")
 }
 
 /// The workbook with view state (active sheet, scroll, active cell) and the Watch Window list
@@ -57,13 +57,13 @@ pub fn watch_list(wb: &Workbook) -> Option<String> {
 pub fn canonical(wb: &Workbook) -> Workbook {
     let mut wb = wb.clone();
     wb.active_sheet = 0;
-    gridcraft_engine::cmd::stash::remove(&mut wb, "watch");
+    cella_engine::cmd::stash::remove(&mut wb, "watch");
     for sh in wb.sheets.iter_mut() {
         let sh = Arc::make_mut(sh);
         sh.view_active = CellRef::default();
         sh.view_top_left = CellRef::default();
         // A view command (page layout, page break preview) is not content and is not undoable.
-        sh.view = gridcraft_engine::model::SheetViewMode::Normal;
+        sh.view = cella_engine::model::SheetViewMode::Normal;
         // Split (not undoable) shows its split as frozen panes; a view setting is not content.
         sh.freeze = None;
     }

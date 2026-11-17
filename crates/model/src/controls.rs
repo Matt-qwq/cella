@@ -5,7 +5,7 @@
 //! picture and painted above every other object. Its value lives both here and in its linked cell;
 //! the value commands keep the two in step.
 
-use gridcraft_core::CellRef;
+use cella_core::CellRef;
 use serde::{Deserialize, Serialize};
 
 use crate::features::Anchor;
@@ -55,7 +55,7 @@ pub const MAX_MACRO_NAME: usize = 255;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ControlAction {
-    /// Runs the workbook's script `name` (GridCraft's scripts hold no inputs or outputs of their
+    /// Runs the workbook's script `name` (Cella's scripts hold no inputs or outputs of their
     /// own: a script reads the selection and writes cells).
     Macro {
         name: String,
@@ -64,7 +64,7 @@ pub enum ControlAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
-    /// Runs one GridCraft command with fixed parameters. The parameters are JSON object text
+    /// Runs one Cella command with fixed parameters. The parameters are JSON object text
     /// (`{"cell":"B2"}`; empty is none): the model crate holds no JSON value, so the engine reads
     /// it. A command action has no place in an .xlsx file, so a save keeps only macro actions.
     Command {
@@ -75,7 +75,7 @@ pub enum ControlAction {
 }
 
 /// The range a button's script runs on, as a file records it (Excel's `FmlaMacro` and the
-/// assigned range). GridCraft's scripts read the selection, so a fixed input is kept for the
+/// assigned range). Cella's scripts read the selection, so a fixed input is kept for the
 /// round trip but not used when the button is pressed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -204,7 +204,7 @@ impl FormControl {
     /// and `$` included). `None` without a link, or when it isn't a cell reference.
     pub fn link_cell(&self) -> Option<CellRef> {
         let text = self.link.as_deref()?.trim().trim_start_matches('=');
-        let body = gridcraft_core::split_sheet(text).1;
+        let body = cella_core::split_sheet(text).1;
         CellRef::parse(body.trim())
     }
 }

@@ -1,8 +1,8 @@
 //! Formatting controls behave the way Excel's do when a cell already carries a variant, and a
 //! button that names one value is a choice rather than a toggle.
 
-use gridcraft_engine::Session;
-use gridcraft_engine::model::{HAlign, Underline};
+use cella_engine::Session;
+use cella_engine::model::{HAlign, Underline};
 use serde_json::json;
 
 fn session() -> Session {
@@ -13,7 +13,7 @@ fn session() -> Session {
     s
 }
 
-fn style(s: &Session) -> gridcraft_engine::model::Style {
+fn style(s: &Session) -> cella_engine::model::Style {
     let d = s.doc().expect("doc");
     let sh = d.wb.active().expect("sheet");
     d.wb.styles.get(sh.style_id(d.selection.active)).clone()

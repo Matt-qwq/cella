@@ -19,9 +19,9 @@ use graph::{BULK_EDIT, HashMap, HashSet, Node};
 pub use graph::{FxHasher, Graph, GraphMemory, Key};
 use pass_host::{PassHost, Slot, Trees, holds_content, spilled_nothing, spills_as_before};
 
-use gridcraft_core::{CellError, CellRef, RangeRef, Value};
-use gridcraft_formula::{Expr, UnOp};
-use gridcraft_model::{CalcMode, Workbook};
+use cella_core::{CellError, CellRef, RangeRef, Value};
+use cella_formula::{Expr, UnOp};
+use cella_model::{CalcMode, Workbook};
 use serde::Serialize;
 
 use crate::eval::{Area, Evaluator, precedents_into};
@@ -66,7 +66,7 @@ pub struct Calc {
     /// these are handed back to their cells: the writer, a sort, a fill and a paste then share one
     /// shape per family instead of parsing the text once each. Empty for a workbook whose cells
     /// already carry a shape or a tree.
-    unshared: Vec<(Key, std::sync::Arc<gridcraft_formula::Shape>)>,
+    unshared: Vec<(Key, std::sync::Arc<cella_formula::Shape>)>,
     #[cfg(test)]
     parallel_runs: usize,
     /// Index entries the last `cells_changed` examined looking for the spill areas the edit
@@ -597,7 +597,7 @@ impl Calc {
         });
         let eval_ms = prof_now() - started;
         let total: usize = shards.iter().filter_map(|r| r.as_ref().ok()).map(|s| s.values.len()).sum();
-        if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+        if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("  wave: {} dirty, {total} leaves on {threads} threads (min {min}), {eval_ms:.1} ms", dirty.len());
         }
         if total < min {
@@ -639,7 +639,7 @@ impl Calc {
         {
             self.parallel_runs += 1;
         }
-        if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+        if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("  parallel {total} formulas on {threads} threads: eval {eval_ms:.1} ms, write {write_ms:.1} ms");
         }
         true
@@ -661,7 +661,7 @@ impl Calc {
     /// The shape the graph evaluates at `k`, for the test that holds a column of one `=A1*2` fill
     /// to one tree.
     #[cfg(test)]
-    pub(crate) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<gridcraft_formula::Shape>> {
+    pub(crate) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<cella_formula::Shape>> {
         self.graph.node_shape(k)
     }
 
@@ -690,7 +690,7 @@ impl Calc {
             unshared: self
                 .unshared
                 .capacity()
-                .saturating_mul(size_of::<(Key, std::sync::Arc<gridcraft_formula::Shape>)>())
+                .saturating_mul(size_of::<(Key, std::sync::Arc<cella_formula::Shape>)>())
                 .saturating_add(unshared_trees),
             names: self.names.memory(),
             pass: 0,
@@ -712,7 +712,7 @@ impl Calc {
         // The shapes of the formulas that arrived as text alone are interned here, so a document
         // of a million formulas of one shape ends with one — and the nodes of those cells hold the
         // one `Arc`, so a pass resolves nothing it did not resolve here.
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         // The shapes this state, not a cell, holds: one entry per distinct `Arc`, for the memory
         // report (a cell that holds a shape is charged by the store).
         let mut kept: std::collections::HashSet<usize> = std::collections::HashSet::default();
@@ -751,20 +751,20 @@ impl Calc {
         wb: &Workbook,
         si: usize,
         at: CellRef,
-        f: &gridcraft_model::Formula,
-        shapes: &mut gridcraft_formula::ShapeTable,
-    ) -> Option<(Node, Option<std::sync::Arc<gridcraft_formula::Shape>>)> {
+        f: &cella_model::Formula,
+        shapes: &mut cella_formula::ShapeTable,
+    ) -> Option<(Node, Option<std::sync::Arc<cella_formula::Shape>>)> {
         // The tree this formula reads, and the cell its relative parts are offsets from: a shape's
         // canonical tree, read where it is. Nothing is resolved here: a shape is walked once, in
         // place, for a million cells (S4). A formula that holds no shape arrived as text alone (a
         // JSON document, or `Formula::new`), and `expr_at` is the fallback that parses it at the
         // cell; interning that parse makes the million cells of one shape share one tree.
         let own = f.shape();
-        let mut keep: Option<std::sync::Arc<gridcraft_formula::Shape>> = None;
-        let (tree, base): (&gridcraft_formula::Expr, Option<CellRef>) = match &own {
+        let mut keep: Option<std::sync::Arc<cella_formula::Shape>> = None;
+        let (tree, base): (&cella_formula::Expr, Option<CellRef>) = match &own {
             Some(shape) => (shape.tree(), Some(at)),
             None => {
-                keep = Some(shapes.intern(gridcraft_formula::Shape::from_expr(f.expr_at(at)?, at)));
+                keep = Some(shapes.intern(cella_formula::Shape::from_expr(f.expr_at(at)?, at)));
                 (keep.as_ref()?.tree(), Some(at))
             }
         };
@@ -808,7 +808,7 @@ impl Calc {
         };
         self.last_restore_cells = Some(changes.len());
         self.parallel_fallback = false;
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         for (si, at, formula) in changes {
             // A formula whose text does not parse has no node at all, as in `rebuild`. The shape
             // a text-only formula's parse makes is dropped here: this path has a snapshot to look
@@ -843,7 +843,7 @@ impl Calc {
         self.last_recalc_cells = 0;
         self.last_restore_cells = Some(cells.len());
         self.parallel_fallback = false;
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         for (si, at) in cells {
             let formula = to.sheets.get(*si).and_then(|sheet| sheet.cells.formula(*at));
             // A formula whose text does not parse has no node at all, as in `rebuild`.
@@ -863,7 +863,7 @@ impl Calc {
 
     /// The formula cells two versions of a workbook disagree on, with the sheet each is on, or
     /// `None` when they cannot be found cheaply (see [`Calc::restore`]).
-    fn formula_changes(from: &Workbook, to: &Workbook) -> Option<Vec<(usize, CellRef, Option<std::sync::Arc<gridcraft_model::Formula>>)>> {
+    fn formula_changes(from: &Workbook, to: &Workbook) -> Option<Vec<(usize, CellRef, Option<std::sync::Arc<cella_model::Formula>>)>> {
         if from.sheets.len() != to.sheets.len() || from.names != to.names {
             return None;
         }
@@ -936,13 +936,13 @@ impl Calc {
             }
         }
         if seeds.is_empty() {
-            if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+            if std::env::var_os("CELLA_PROFILE").is_some() {
                 eprintln!("  open: rebuild {rebuild_ms:.1} ms, no stale cells ({} ms)", prof_now() - ts);
             }
             return;
         }
         let stale = self.dirty_closure(wb, &seeds);
-        if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+        if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("  open: rebuild {rebuild_ms:.1} ms, {} seeds, {} stale ({} ms)", seeds.len(), stale.len(), prof_now() - ts);
         }
         self.run(wb, stale, true, &HashSet::default());
@@ -997,7 +997,7 @@ impl Calc {
         // Whether the edit put a formula anywhere: when it did not, and the workbook has none
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
         let mut formulas = false;
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         for &k in changed {
             let formula = wb.sheet(k.0).and_then(|s| s.cell(k.1)).and_then(|c| c.formula.clone());
             formulas |= formula.is_some();
@@ -1189,7 +1189,7 @@ impl Calc {
         let t1 = prof_now();
         let n = dirty.len();
         self.run(wb, dirty, false, &HashSet::default());
-        if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+        if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("recalc: {} seeds, closure {} cells {:.1} ms, run {:.1} ms", seeds.len(), n, t1 - t0, prof_now() - t1);
         }
     }
@@ -1287,7 +1287,7 @@ impl Calc {
                 }
                 if host.iterate && !host.members.is_empty() {
                     let passes = host.iterate_loops(&dirty, wb.calc.max_iterations, wb.calc.max_change);
-                    if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+                    if std::env::var_os("CELLA_PROFILE").is_some() {
                         eprintln!("  iterative calculation: {} passes over {} formulas", passes, host.tainted.len());
                     }
                 }
@@ -1324,7 +1324,7 @@ impl Calc {
                     }
                 }
             }
-            if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+            if std::env::var_os("CELLA_PROFILE").is_some() {
                 let done = slots.iter().filter(|s| s.value().is_some()).count();
                 eprintln!("  eval {done} formulas {:.1} ms", prof_now() - tp);
             }
@@ -1346,7 +1346,7 @@ impl Calc {
             self.last_recalc_cells += values.len();
             write_values_ordered(wb, &values);
             let two = prof_now();
-            if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+            if std::env::var_os("CELLA_PROFILE").is_some() {
                 eprintln!("  write values {:.1} ms", two - twr);
             }
             // Arrays that held a spill before this pass lay out first, so a contested area keeps
@@ -1403,8 +1403,8 @@ impl Calc {
                 if let Some(arr) = new {
                     let end = CellRef::new(k.1.row.saturating_add(arr.rows as u32 - 1), k.1.col.saturating_add(arr.cols as u32 - 1));
                     let range = RangeRef::new(k.1, end);
-                    let blocked = end.row >= gridcraft_core::MAX_ROWS
-                        || end.col >= gridcraft_core::MAX_COLS
+                    let blocked = end.row >= cella_core::MAX_ROWS
+                        || end.col >= cella_core::MAX_COLS
                         || range.iter().any(|c| c != k.1 && (holds_content(sheet, c) || sheet.spill.contains_key(&c)))
                         || sheet.merges.iter().any(|m| m.intersects(&range))
                         || sheet.tables.iter().any(|t| t.range.contains(k.1));
@@ -1489,7 +1489,7 @@ impl Calc {
             if full {
                 // Everything was already evaluated once; spill dependents need another pass.
             }
-            if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
+            if std::env::var_os("CELLA_PROFILE").is_some() {
                 eprintln!("  spills {:.1} ms, write-back {:.1} ms", prof_now() - two, prof_now() - tw);
             }
             spill_changes.sort_by_key(|(s, c)| (*s, c.row, c.col));
@@ -1511,14 +1511,14 @@ impl Calc {
 /// UTC; the local offset isn't available without platform calls. Falls back to a fixed date only
 /// when no clock is available.
 pub fn now_serial() -> f64 {
-    gridcraft_core::date::unix_now_ms().map_or(46302.5, gridcraft_core::date::serial_from_unix_ms)
+    cella_core::date::unix_now_ms().map_or(46302.5, cella_core::date::serial_from_unix_ms)
 }
 
 /// Evaluates a formula in the context of a cell without storing it (conditional formats, data
 /// validation, Evaluate Formula, Name Manager previews, the CLI `eval`).
 pub fn evaluate(wb: &Workbook, sheet: usize, at: CellRef, formula: &str) -> Value {
     let body = formula.strip_prefix('=').unwrap_or(formula);
-    let Ok(expr) = gridcraft_formula::parse(body) else { return Value::Error(CellError::Name) };
+    let Ok(expr) = cella_formula::parse(body) else { return Value::Error(CellError::Name) };
     evaluate_expr(wb, sheet, at, &expr)
 }
 
@@ -1550,8 +1550,8 @@ fn prof_now() -> f64 {
 pub(crate) mod tests {
     use std::time::{Duration, Instant};
 
-    use gridcraft_core::{CellError, CellRef, RangeRef, Value};
-    use gridcraft_model::{Cell, DefinedName, Formula, Workbook};
+    use cella_core::{CellError, CellRef, RangeRef, Value};
+    use cella_model::{Cell, DefinedName, Formula, Workbook};
 
     use crate::eval::Host;
 
@@ -1936,7 +1936,7 @@ pub(crate) mod tests {
         set(&mut wb, &mut calc, "CZ3", "30");
         assert_eq!(num(&wb, "DA6"), 36.0);
         // Ranges on another sheet.
-        wb.sheets.push(std::sync::Arc::new(gridcraft_model::Sheet::new("Data")));
+        wb.sheets.push(std::sync::Arc::new(cella_model::Sheet::new("Data")));
         set(&mut wb, &mut calc, "DA9", "=SUM(Data!A1:A3)+SUM(Data!A:CZ)");
         assert_eq!(num(&wb, "DA9"), 0.0);
         wb.sheet_mut(1).unwrap().cells.set(CellRef::parse("A2").unwrap(), Cell::value(Value::Number(4.0)));
@@ -2047,7 +2047,7 @@ pub(crate) mod tests {
     /// A two-sheet workbook: Sheet1 and Sheet2.
     fn two_sheets() -> Workbook {
         let mut wb = Workbook::new();
-        wb.sheets.push(std::sync::Arc::new(gridcraft_model::Sheet::new("Sheet2")));
+        wb.sheets.push(std::sync::Arc::new(cella_model::Sheet::new("Sheet2")));
         wb
     }
 
@@ -2375,7 +2375,7 @@ pub(crate) mod tests {
         let mut put = |wb: &mut Workbook, at: String, text: String| {
             let at = CellRef::parse(&at).unwrap();
             wb.sheet_mut(0).unwrap().cells.set(at, Cell::formula(Formula::new(&text)));
-            trees.push_tree((0, at), &std::sync::Arc::new(gridcraft_formula::parse(&text[1..]).unwrap()));
+            trees.push_tree((0, at), &std::sync::Arc::new(cella_formula::parse(&text[1..]).unwrap()));
         };
         // A1 reads A2, ..., A64 (the 64th formula deep) reads a wide range of formulas.
         for r in 1..64 {
@@ -2403,7 +2403,7 @@ pub(crate) mod tests {
     pub(crate) fn probe_visit_range(wb: &Workbook, pending: &[(&str, &str)], range: RangeRef) -> Option<Vec<Value>> {
         let mut trees = Trees::default();
         for (at, formula) in pending {
-            let expr = gridcraft_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).ok()?;
+            let expr = cella_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).ok()?;
             trees.push_tree((0, CellRef::parse(at)?), &std::sync::Arc::new(expr));
         }
 

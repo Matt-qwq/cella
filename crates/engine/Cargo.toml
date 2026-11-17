@@ -1,9 +1,9 @@
 [package]
-name = "gridcraft-engine"
+name = "cella-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft engine: sessions, commands, history, clipboard, fill, sort, filter"
+description = "Cella engine: sessions, commands, history, clipboard, fill, sort, filter"
 
 [lints]
 workspace = true
@@ -12,28 +12,28 @@ workspace = true
 rayon = { workspace = true }
 
 [dependencies]
-gridcraft-core = { workspace = true }
-gridcraft-numfmt = { workspace = true }
-gridcraft-formula = { workspace = true }
-gridcraft-functions = { workspace = true }
-gridcraft-model = { workspace = true }
-gridcraft-calc = { workspace = true }
+cella-core = { workspace = true }
+cella-numfmt = { workspace = true }
+cella-formula = { workspace = true }
+cella-functions = { workspace = true }
+cella-model = { workspace = true }
+cella-calc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
-gridcraft-xlsx = { workspace = true }
-gridcraft-parquet = { workspace = true }
-gridcraft-query = { workspace = true }
-gridcraft-dax = { workspace = true }
-gridcraft-chart = { workspace = true }
-gridcraft-pdf = { workspace = true }
+cella-xlsx = { workspace = true }
+cella-parquet = { workspace = true }
+cella-query = { workspace = true }
+cella-dax = { workspace = true }
+cella-chart = { workspace = true }
+cella-pdf = { workspace = true }
 image = { workspace = true }
 rusqlite = { version = "0.43.0", features = ["bundled"], optional = true }
 ureq = { version = "3.5.2", optional = true }
 
 [dev-dependencies]
-gridcraft-xlsx = { workspace = true, features = ["test-support"] }
+cella-xlsx = { workspace = true, features = ["test-support"] }
 zip = { workspace = true }
 # The save-identical check in the history tests: `sha2` is already in the workspace (the model
 # hashes passwords with it), so this adds no crate to the build.

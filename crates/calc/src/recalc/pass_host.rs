@@ -8,9 +8,9 @@ use super::Graph;
 use super::graph::{HashMap, HashSet, Key, PackedArea};
 use crate::eval::{Evaluator, Host};
 use crate::spill_index::{Cover, SpillIndex};
-use gridcraft_core::{Array, CellError, CellRef, RangeRef, Value};
-use gridcraft_formula::Expr;
-use gridcraft_model::Workbook;
+use cella_core::{Array, CellError, CellRef, RangeRef, Value};
+use cella_formula::Expr;
+use cella_model::Workbook;
 
 /// Formulas a formula may calculate on demand one inside the other (each needing one another's
 /// value before it is done). Each level takes stack, so a chain deeper than this is suspended and
@@ -73,7 +73,7 @@ fn fold(text: &str) -> String {
 /// Whether `c` holds content of its own. A cell kept only for its formatting (a fill, a border,
 /// an empty value) does not: an array may spill over formatted cells, and a cell that was
 /// formatted while a spill covered it must not turn that spill into `#SPILL!` on the next pass.
-pub(super) fn holds_content(sheet: &gridcraft_model::Sheet, c: CellRef) -> bool {
+pub(super) fn holds_content(sheet: &cella_model::Sheet, c: CellRef) -> bool {
     sheet.cells.get(c).is_some_and(|x| x.formula.is_some() || !x.value.is_empty())
 }
 
@@ -96,7 +96,7 @@ const MAX_CACHED_BLOCK_CELLS_TOTAL: usize = 4_000_000;
 #[derive(Clone, Debug)]
 struct Source {
     /// The shape the cell shares with every cell of its fill.
-    shape: std::sync::Arc<gridcraft_formula::Shape>,
+    shape: std::sync::Arc<cella_formula::Shape>,
     /// The cell its relative parts are offsets from.
     at: CellRef,
 }
@@ -136,7 +136,7 @@ impl Trees {
     /// it).
     #[cfg(test)]
     pub(super) fn push_tree(&mut self, k: Key, tree: &std::sync::Arc<Expr>) {
-        let shape = gridcraft_formula::Shape::from_expr((**tree).clone(), k.1);
+        let shape = cella_formula::Shape::from_expr((**tree).clone(), k.1);
         self.add(k, Source { shape: std::sync::Arc::new(shape), at: k.1 });
     }
 
@@ -525,8 +525,8 @@ fn spill_blocked(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
-    if end.row >= gridcraft_core::MAX_ROWS
-        || end.col >= gridcraft_core::MAX_COLS
+    if end.row >= cella_core::MAX_ROWS
+        || end.col >= cella_core::MAX_COLS
         || sh.merges.iter().any(|m| m.intersects(&range))
         || sh.tables.iter().any(|t| t.range.contains(anchor))
         || sh.cells.iter_range(range).any(|(c, cell)| c != anchor && (!cell.value.is_empty() || cell.formula.is_some()))
@@ -559,7 +559,7 @@ pub(super) fn spilled_nothing(v: &Value) -> bool {
 
 /// Whether `arr`, anchored at `anchor`, would spill exactly what the sheet already holds over
 /// `range`: the same area, nothing new in the way, and the same values.
-pub(super) fn spills_as_before(sheet: &gridcraft_model::Sheet, anchor: CellRef, range: RangeRef, arr: &Array) -> bool {
+pub(super) fn spills_as_before(sheet: &cella_model::Sheet, anchor: CellRef, range: RangeRef, arr: &Array) -> bool {
     let end =
         CellRef::new(anchor.row.saturating_add((arr.rows as u32).saturating_sub(1)), anchor.col.saturating_add((arr.cols as u32).saturating_sub(1)));
     RangeRef::new(anchor, end) == range
@@ -947,8 +947,8 @@ impl Host for PassHost<'_> {
         );
         let range = RangeRef::new(anchor, end);
         let sh = self.wb.sheet(sheet)?;
-        let blocked = end.row >= gridcraft_core::MAX_ROWS
-            || end.col >= gridcraft_core::MAX_COLS
+        let blocked = end.row >= cella_core::MAX_ROWS
+            || end.col >= cella_core::MAX_COLS
             || sh.cells.iter_range(range).any(|(c, cell)| c != anchor && (cell.formula.is_some() || !cell.value.is_empty()))
             || sh.merges.iter().any(|m| m.intersects(&range));
         (!blocked).then_some(range)
@@ -1133,7 +1133,7 @@ impl Host for PassHost<'_> {
         range: RangeRef,
         kind: crate::eval::Agg,
         acc: &mut crate::eval::Acc,
-    ) -> Option<Result<(), gridcraft_core::CellError>> {
+    ) -> Option<Result<(), cella_core::CellError>> {
         let wb = self.wb;
         let sh = wb.sheet(sheet)?;
         // Spilled values sit between the stored cells, and a spill may hold a number: leave such

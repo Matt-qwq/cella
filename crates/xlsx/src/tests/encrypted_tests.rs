@@ -18,9 +18,9 @@ fn the_test_compound_writer_reads_back() {
 
 #[test]
 fn a_workbook_saved_with_a_password_reopens_with_the_same_cells() {
-    use gridcraft_core::{CellRef, Value};
+    use cella_core::{CellRef, Value};
 
-    let mut wb = gridcraft_model::Workbook::new();
+    let mut wb = cella_model::Workbook::new();
     let sh = wb.sheet_mut(0).unwrap();
     sh.set_value(CellRef::parse("A1").unwrap(), Value::from("Quarterly"));
     sh.set_value(CellRef::parse("A2").unwrap(), Value::Number(1200.5));
@@ -49,8 +49,8 @@ fn a_workbook_saved_with_a_password_reopens_with_the_same_cells() {
 
 #[test]
 fn every_cut_of_a_saved_encrypted_workbook_is_an_error_not_a_panic() {
-    let mut wb = gridcraft_model::Workbook::new();
-    wb.sheet_mut(0).unwrap().set_value(gridcraft_core::CellRef::parse("A1").unwrap(), gridcraft_core::Value::from("hi"));
+    let mut wb = cella_model::Workbook::new();
+    wb.sheet_mut(0).unwrap().set_value(cella_core::CellRef::parse("A1").unwrap(), cella_core::Value::from("hi"));
     let file = crate::encrypt_workbook(&crate::write_xlsx(&wb).unwrap(), "pw").unwrap();
     for cut in (0..file.len()).step_by(97) {
         if let Ok(plain) = decrypt(&file[..cut], "pw") {
@@ -96,15 +96,15 @@ fn a_compound_file_without_the_streams_is_malformed() {
 }
 
 #[test]
-fn a_gridcraft_workbook_survives_encryption() {
-    let b2 = gridcraft_core::CellRef::parse("B2").unwrap();
-    let mut wb = gridcraft_model::Workbook::new();
-    wb.sheet_mut(0).unwrap().set_value(b2, gridcraft_core::Value::Number(42.0));
+fn a_cella_workbook_survives_encryption() {
+    let b2 = cella_core::CellRef::parse("B2").unwrap();
+    let mut wb = cella_model::Workbook::new();
+    wb.sheet_mut(0).unwrap().set_value(b2, cella_core::Value::Number(42.0));
     let xlsx = crate::write_xlsx(&wb).unwrap();
     let file = encrypt_workbook(&xlsx, "Pass1234");
     assert_eq!(crate::sniff(&file), crate::Format::Encrypted);
     let (back, _) = crate::read_xlsx(&decrypt(&file, "Pass1234").unwrap()).unwrap();
-    assert_eq!(back.active().unwrap().value(b2), gridcraft_core::Value::Number(42.0));
+    assert_eq!(back.active().unwrap().value(b2), cella_core::Value::Number(42.0));
 }
 
 #[test]
@@ -130,8 +130,8 @@ fn schemes_no_password_opens_are_named_before_asking_for_one() {
 fn a_workbook_written_with_standard_encryption_reopens_with_the_same_cells() {
     // `crate::encrypt_workbook_as(.., Standard)` is the writer `file.save` uses — fresh salt and
     // verifier, AES-128-ECB over the package — not the fixed-key `testing` helper.
-    use gridcraft_core::{CellRef, Value};
-    let mut wb = gridcraft_model::Workbook::new();
+    use cella_core::{CellRef, Value};
+    let mut wb = cella_model::Workbook::new();
     let sh = wb.sheet_mut(0).unwrap();
     sh.set_value(CellRef::parse("A1").unwrap(), Value::from("Legacy"));
     sh.set_value(CellRef::parse("B2").unwrap(), Value::Number(-12.5));
@@ -152,8 +152,8 @@ fn standard_encryption_leaves_a_flipped_byte_to_the_zip_to_refuse() {
     // only check, so a flipped ciphertext byte decrypts to a changed package and the zip's own
     // structure is what refuses the workbook. Pinning the honest limit of the scheme, and why
     // Agile is the default.
-    let mut wb = gridcraft_model::Workbook::new();
-    wb.sheet_mut(0).unwrap().set_value(gridcraft_core::CellRef::parse("A1").unwrap(), gridcraft_core::Value::from("hi"));
+    let mut wb = cella_model::Workbook::new();
+    wb.sheet_mut(0).unwrap().set_value(cella_core::CellRef::parse("A1").unwrap(), cella_core::Value::from("hi"));
     let xlsx = crate::write_xlsx(&wb).unwrap();
     let file = crate::encrypt_workbook_as(&xlsx, "pw", crate::EncryptionScheme::Standard).unwrap();
     let (info, package) = crate::crypto::streams(&file).unwrap();

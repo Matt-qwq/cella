@@ -1,7 +1,7 @@
 //! The data model end to end: two queries loaded into it, a relationship between them, a measure
 //! over the join, and a cell that reads the measure — through a refresh and through save/reopen.
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::{Value, json};
 
 fn session() -> Session {
@@ -136,20 +136,20 @@ fn a_measure_in_a_cell_recalcs_when_the_model_refreshes() {
     run(&mut s, "range.setValues", json!({"range": "Sheet1!A1", "values": [["=MEASURE(\"Total\")"]]}));
     let d = s.doc().expect("doc");
     let sh = d.wb.sheet(0).expect("sheet");
-    assert_eq!(sh.value(gridcraft_core::CellRef::new(0, 0)), gridcraft_core::Value::number(22.0));
+    assert_eq!(sh.value(cella_core::CellRef::new(0, 0)), cella_core::Value::number(22.0));
     // The source file changed: a fourth row, and the query refilled from it.
     run(&mut s, "data.query.setSource", json!({"name": "Sales", "source": {"kind": "csv", "text": "RegionId,Amount\n1,10\n2,5\n1,7\n2,8\n"}}));
     let d = s.doc().expect("doc");
     let sh = d.wb.sheet(0).expect("sheet");
-    let v = sh.value(gridcraft_core::CellRef::new(0, 0));
-    assert_eq!(v, gridcraft_core::Value::number(30.0), "the cell follows the model, not a stale total");
+    let v = sh.value(cella_core::CellRef::new(0, 0));
+    assert_eq!(v, cella_core::Value::number(30.0), "the cell follows the model, not a stale total");
 }
 
 #[test]
 fn the_model_survives_save_and_reopen() {
     let mut s = model_session();
     run(&mut s, "range.setValues", json!({"range": "Sheet1!A1", "values": [["=MEASURE(\"Total\", \"Region[Name]\", \"East\")"]]}));
-    let path = std::env::temp_dir().join("gridcraft_model_roundtrip.xlsx");
+    let path = std::env::temp_dir().join("cella_model_roundtrip.xlsx");
     let p = path.to_string_lossy().to_string();
     run(&mut s, "file.saveAs", json!({"path": p}));
 
@@ -164,7 +164,7 @@ fn the_model_survives_save_and_reopen() {
     assert_eq!(east["value"], 5.0);
     // And the cell that reads the measure recalculated on open.
     let d = back.doc().expect("doc");
-    assert_eq!(d.wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::new(0, 0)), gridcraft_core::Value::number(5.0));
+    assert_eq!(d.wb.sheet(0).expect("sheet").value(cella_core::CellRef::new(0, 0)), cella_core::Value::number(5.0));
     let _ = std::fs::remove_file(&path);
 }
 
@@ -174,13 +174,13 @@ fn a_model_pivot_survives_save_and_reopen_and_recalcs_after_a_refresh() {
     // read by a PivotTable, saved, reopened, refreshed after the source changed.
     let mut s = model_session();
     run(&mut s, "insert.pivotTable", json!({"source": "Sales", "destination": "Sheet1!E3", "rows": ["Region[Name]"], "values": ["Total"]}));
-    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(cella_core::CellRef::parse(a).expect("ref"));
     // Labels sort: East is the first item row, West the second.
-    assert_eq!(at(&s, "F4"), gridcraft_core::Value::number(5.0), "East");
-    assert_eq!(at(&s, "F5"), gridcraft_core::Value::number(17.0), "West");
-    assert_eq!(at(&s, "F6"), gridcraft_core::Value::number(22.0), "grand total");
+    assert_eq!(at(&s, "F4"), cella_core::Value::number(5.0), "East");
+    assert_eq!(at(&s, "F5"), cella_core::Value::number(17.0), "West");
+    assert_eq!(at(&s, "F6"), cella_core::Value::number(22.0), "grand total");
 
-    let path = std::env::temp_dir().join("gridcraft_model_pivot_roundtrip.xlsx");
+    let path = std::env::temp_dir().join("cella_model_pivot_roundtrip.xlsx");
     let p = path.to_string_lossy().to_string();
     run(&mut s, "file.saveAs", json!({"path": p}));
 
@@ -189,14 +189,14 @@ fn a_model_pivot_survives_save_and_reopen_and_recalcs_after_a_refresh() {
     let d = back.doc().expect("doc");
     assert_eq!(d.wb.model.tables.len(), 2);
     assert_eq!(d.wb.model.measures.len(), 1);
-    assert_eq!(at(&back, "F6"), gridcraft_core::Value::number(22.0), "the report came back with its numbers");
+    assert_eq!(at(&back, "F6"), cella_core::Value::number(22.0), "the report came back with its numbers");
 
     // The source file changed: the query refills the model, and a refresh recomputes the report.
     run(&mut back, "data.query.setSource", json!({"name": "Sales", "source": {"kind": "csv", "text": "RegionId,Amount\n1,10\n2,5\n1,7\n2,8\n"}}));
     let name = back.doc().expect("doc").wb.sheet(0).and_then(|sh| sh.pivots.first().map(|p| p.name.clone())).expect("the report came back");
     run(&mut back, "pivot.refresh", json!({"pivot": name}));
-    assert_eq!(at(&back, "F6"), gridcraft_core::Value::number(30.0), "the grand total follows the model");
-    assert_eq!(at(&back, "F5"), gridcraft_core::Value::number(17.0), "West is unchanged");
+    assert_eq!(at(&back, "F6"), cella_core::Value::number(30.0), "the grand total follows the model");
+    assert_eq!(at(&back, "F5"), cella_core::Value::number(17.0), "West is unchanged");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -254,11 +254,11 @@ fn a_grouped_row_field_narrows_the_measure() {
         "insert.pivotTable",
         json!({"source": "Sales", "destination": "Sheet1!E3", "rows": [{"field": "Sales[Day]", "group": "years"}], "values": ["Total"]}),
     );
-    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(cella_core::CellRef::parse(a).expect("ref"));
     // 2024 holds 10 + 5, 2025 holds 7, and the grand total is 22.
-    assert_eq!(at(&s, "F4"), gridcraft_core::Value::number(15.0), "2024");
-    assert_eq!(at(&s, "F5"), gridcraft_core::Value::number(7.0), "2025");
-    assert_eq!(at(&s, "F6"), gridcraft_core::Value::number(22.0), "grand total");
+    assert_eq!(at(&s, "F4"), cella_core::Value::number(15.0), "2024");
+    assert_eq!(at(&s, "F5"), cella_core::Value::number(7.0), "2025");
+    assert_eq!(at(&s, "F6"), cella_core::Value::number(22.0), "grand total");
 }
 
 #[test]
@@ -271,14 +271,14 @@ fn a_report_filter_narrows_the_measure() {
         "insert.pivotTable",
         json!({"source": "Sales", "destination": "Sheet1!E3", "rows": ["Region[Name]"], "values": ["Total"], "filters": ["Region[Name]"]}),
     );
-    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(cella_core::CellRef::parse(a).expect("ref"));
     let name = s.doc().expect("doc").wb.sheet(0).and_then(|sh| sh.pivots.first().map(|p| p.name.clone())).expect("pivot");
     run(&mut s, "pivot.filter", json!({"pivot": name, "field": "Region[Name]", "selected": ["West"]}));
     // East is filtered out, so West is the only row and the grand total is West's sum.
     let mut seen: Vec<String> = Vec::new();
     for r in 3..=8 {
         for c in 4..=6 {
-            seen.push(format!("{:?}", at(&s, &gridcraft_core::CellRef::new(r, c).a1())));
+            seen.push(format!("{:?}", at(&s, &cella_core::CellRef::new(r, c).a1())));
         }
     }
     let joined = seen.join(" | ");
@@ -333,9 +333,9 @@ fn a_dimension_two_hops_away_can_be_a_row_field() {
         .unwrap_or_default();
     assert!(names.iter().any(|n| n == "Category[Name]"), "the two-hop field is a field: {names:?}");
 
-    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(gridcraft_core::CellRef::parse(a).expect("ref"));
+    let at = |s: &Session, a: &str| s.doc().expect("doc").wb.sheet(0).expect("sheet").value(cella_core::CellRef::parse(a).expect("ref"));
     // Stationery holds Pen (10) and Cup (5) through Product, Kitchen holds Mug (7).
-    assert_eq!(at(&s, "F4"), gridcraft_core::Value::number(7.0), "Kitchen sorts first");
-    assert_eq!(at(&s, "F5"), gridcraft_core::Value::number(15.0), "Stationery");
-    assert_eq!(at(&s, "F6"), gridcraft_core::Value::number(22.0), "grand total");
+    assert_eq!(at(&s, "F4"), cella_core::Value::number(7.0), "Kitchen sorts first");
+    assert_eq!(at(&s, "F5"), cella_core::Value::number(15.0), "Stationery");
+    assert_eq!(at(&s, "F6"), cella_core::Value::number(22.0), "grand total");
 }

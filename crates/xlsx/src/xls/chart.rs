@@ -10,10 +10,10 @@
 //! Only what the model holds is read: the chart kind, its series and their range formulas, the
 //! title and whether a legend exists. Axis titles, per-point formatting, trendlines, data labels
 //! and the plot layout are left to the model's defaults; those options survive only for charts
-//! GridCraft writes itself. A chart the reader cannot express is skipped rather than read wrong.
+//! Cella writes itself. A chart the reader cannot express is skipped rather than read wrong.
 
-use gridcraft_core::CellRef;
-use gridcraft_model::{Anchor, AnchorMode, Chart, ChartKind, LegendPos, Series};
+use cella_core::CellRef;
+use cella_model::{Anchor, AnchorMode, Chart, ChartKind, LegendPos, Series};
 
 use super::Budget;
 use super::formula::{Links, Mode, decode};
@@ -134,7 +134,7 @@ pub(super) fn read(recs: &mut Records<'_>, budget: &mut Budget, links: &Links, a
         keep(&mut series, s);
     }
     if unsupported {
-        return Err(super::invalid("an .xls chart kind GridCraft can't import (3-D, surface or bar of pie)"));
+        return Err(super::invalid("an .xls chart kind Cella can't import (3-D, surface or bar of pie)"));
     }
     if !saw_chart || series.is_empty() {
         return Ok(None);
@@ -231,5 +231,5 @@ fn group_kind(rec: &Record<'_>) -> Option<ChartKind> {
 /// reference, so only reference expressions are printed; a literal or a constant is not a range.
 fn print_formula(rgce: &[u8], links: &Links) -> Option<String> {
     let expr = decode(rgce, &[], CellRef::default(), Mode::Cell, links).ok()?;
-    Some(gridcraft_formula::print(&expr))
+    Some(cella_formula::print(&expr))
 }

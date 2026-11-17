@@ -1,11 +1,11 @@
 //! The Format pane's shape and picture sections: what they show, and that every control reaches
 //! the engine's `object.format` (or `object.setAnchorMode`) instead of the model.
 
+use cella_engine::Session;
+use cella_engine::model::{AnchorMode, Color, Image, Shape, ShapeTextAlign, ShapeTextAnchor};
+use cella_ui_egui::SheetApp;
 use egui::{Event, Key, Modifiers, PointerButton, Rect, accesskit::Role, vec2};
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::Session;
-use gridcraft_engine::model::{AnchorMode, Color, Image, Shape, ShapeTextAlign, ShapeTextAnchor};
-use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

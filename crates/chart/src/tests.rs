@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, Value};
-use gridcraft_model::{Anchor, Chart, ChartKind, Color, LegendPos, Series, SparklineKind, Style, Workbook};
+use cella_core::{CellRef, Value};
+use cella_model::{Anchor, Chart, ChartKind, Color, LegendPos, Series, SparklineKind, Style, Workbook};
 
 use crate::*;
 
@@ -211,7 +211,7 @@ fn axis_labels_use_number_format() {
 #[test]
 fn resolve_from_workbook() {
     let mut wb = Workbook::new();
-    let cur = wb.styles.intern(Style { num_fmt: gridcraft_model::NumFmt(Arc::from("$#,##0")), ..Style::default() });
+    let cur = wb.styles.intern(Style { num_fmt: cella_model::NumFmt(Arc::from("$#,##0")), ..Style::default() });
     {
         let s = wb.sheet_mut(0).unwrap();
         s.name = "Sales".into();
@@ -362,7 +362,7 @@ fn resolve_from_workbook() {
 
 #[test]
 fn palette_beyond_six_series() {
-    let theme = gridcraft_model::Theme::default();
+    let theme = cella_model::Theme::default();
     let p = default_palette(&theme, 14);
     assert_eq!(p.len(), 14);
     assert_ne!(p[0], p[6]);
@@ -1334,7 +1334,7 @@ fn pie_points_follow_workbook_theme() {
     let legend: Vec<Rgba> = legend_entries(&c, &d).iter().map(|e| e.1).collect();
     assert_eq!(legend.len(), 40);
     assert_eq!(legend.get(37), Some(&series_color(&wb.theme, 37)));
-    assert_ne!(series_color(&wb.theme, 37), series_color(&gridcraft_model::Theme::default(), 37));
+    assert_ne!(series_color(&wb.theme, 37), series_color(&cella_model::Theme::default(), 37));
 }
 
 #[test]
@@ -1466,7 +1466,7 @@ fn a_huge_trendline_forecast_does_not_collapse_the_columns() {
 
 #[test]
 fn box_whisker_draws_each_series_quartile_method() {
-    use gridcraft_model::QuartileMethod;
+    use cella_model::QuartileMethod;
     let mut c = chart(ChartKind::BoxWhisker);
     c.legend = LegendPos::None;
     c.series = vec![Series::default(), Series { quartiles: QuartileMethod::Inclusive, ..Default::default() }];
@@ -1643,7 +1643,7 @@ fn per_point_fill_colours_the_right_point() {
     let mut d = sample(ChartKind::ColumnClustered);
     let red = [0xC0, 0x00, 0x00, 0xFF];
     d.series[0].points =
-        vec![gridcraft_model::PointFormat { index: 1, fill: Some(gridcraft_model::Color::Rgb(0xC00000)), ..gridcraft_model::PointFormat::default() }]
+        vec![cella_model::PointFormat { index: 1, fill: Some(cella_model::Color::Rgb(0xC00000)), ..cella_model::PointFormat::default() }]
             .into_iter()
             .map(|p| PointStyle { index: p.index as usize, fill: Some(red), line: None, marker: None, marker_size: None, no_label: false })
             .collect();

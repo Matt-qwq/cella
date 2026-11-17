@@ -1,9 +1,9 @@
 //! Pulls chart data (names, categories, values, formats, colours) out of a workbook.
 
-use gridcraft_calc::evaluate;
-use gridcraft_core::{CellRef, RangeRef, Value, category_levels, number_to_text};
-use gridcraft_model::{Chart, ChartKind, ErrorBars, PointFormat, PointLabel, Theme, Workbook, style::apply_tint};
-use gridcraft_numfmt::{NumberFormat, format_value};
+use cella_calc::evaluate;
+use cella_core::{CellRef, RangeRef, Value, category_levels, number_to_text};
+use cella_model::{Chart, ChartKind, ErrorBars, PointFormat, PointLabel, Theme, Workbook, style::apply_tint};
+use cella_numfmt::{NumberFormat, format_value};
 
 use crate::{ChartData, ErrorBarsData, LabelFont, LabelStyle, PointLabelData, PointStyle, Rgba, SeriesData, TrendlineData};
 
@@ -43,7 +43,7 @@ fn parse_ref(wb: &Workbook, sheet: usize, formula: &str) -> Option<(usize, Range
     let (sh, addr) = match f.rfind('!') {
         Some(i) => {
             let name = f.get(..i)?.trim();
-            let name = gridcraft_core::unquote_sheet(name);
+            let name = cella_core::unquote_sheet(name);
             (wb.sheet_index(&name)?, f.get(i + 1..)?)
         }
         None => (sheet, f),
@@ -126,7 +126,7 @@ fn ref_format(wb: &Workbook, sheet: usize, formula: &str) -> String {
 
 /// Colours of a point override, resolved against the workbook theme.
 fn point_styles(points: &[PointFormat], theme: &Theme) -> Vec<PointStyle> {
-    let rgba = |c: &Option<gridcraft_model::Color>| c.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]);
+    let rgba = |c: &Option<cella_model::Color>| c.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]);
     let mut out: Vec<PointStyle> = points
         .iter()
         .take(MAX_POINT_STYLES)
@@ -198,9 +198,7 @@ fn custom_amounts(wb: &Workbook, sheet: usize, f: Option<&String>) -> Vec<Option
 /// they are drawn.
 fn error_bars(wb: &Workbook, sheet: usize, e: &ErrorBars) -> ErrorBarsData {
     let (plus, minus) = match &e.kind {
-        gridcraft_model::ErrorBarKind::Custom { plus, minus } => {
-            (custom_amounts(wb, sheet, plus.as_ref()), custom_amounts(wb, sheet, minus.as_ref()))
-        }
+        cella_model::ErrorBarKind::Custom { plus, minus } => (custom_amounts(wb, sheet, plus.as_ref()), custom_amounts(wb, sheet, minus.as_ref())),
         _ => (vec![], vec![]),
     };
     ErrorBarsData { spec: e.clone(), plus, minus }

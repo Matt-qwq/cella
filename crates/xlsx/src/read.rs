@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{DateSystem, RangeRef};
-use gridcraft_model::{
+use cella_core::{DateSystem, RangeRef};
+use cella_model::{
     CalcMode, CellPicture, DefinedName, PhoneticString, Sheet, ShowObjects, Style, StyleId, StyleTable, Visibility, Workbook, WorkbookView,
 };
 
@@ -333,7 +333,7 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
             wb.calc.set_max_change(d);
         }
         wb.calc.precision_as_displayed = !c.flag("fullPrecision", true);
-        // R1C1 reference style: kept with the file (GridCraft itself shows A1 references).
+        // R1C1 reference style: kept with the file (Cella itself shows A1 references).
         wb.calc.r1c1 = c.attr("refMode") == Some("R1C1");
     }
     if let Some(p) = wb_xml.child("workbookProtection") {
@@ -356,7 +356,7 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
     // Sheets. `file_to_model[i]` maps the i-th <sheet> to a model sheet index.
     let mut file_to_model: Vec<Option<usize>> = vec![];
     // Legacy formula cells per model sheet, rewritten once names and tables are known.
-    let mut legacy_formulas: Vec<(usize, Vec<gridcraft_core::CellRef>)> = vec![];
+    let mut legacy_formulas: Vec<(usize, Vec<cella_core::CellRef>)> = vec![];
     let mut pivot_caches = crate::pivot::CachesIn::new(&wb_xml, &wb_rels);
     let sheet_els: Vec<El> = wb_xml.child("sheets").map(|s| s.kids("sheet").cloned().collect()).unwrap_or_default();
     for (i, se) in sheet_els.iter().enumerate() {
@@ -382,7 +382,7 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
             };
             if !representable {
                 // Kept whole through the pass-through, exactly as before chart sheets were modelled:
-                // a sheet GridCraft cannot represent is never half-modelled.
+                // a sheet Cella cannot represent is never half-modelled.
                 file_to_model.push(None);
                 continue;
             }
@@ -516,7 +516,7 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
         wb.props.company = x.child("Company").map(|e| e.text.clone()).unwrap_or_default();
     }
 
-    // A VBA project is carried through unchanged: GridCraft never runs macros, but preserving the
+    // A VBA project is carried through unchanged: Cella never runs macros, but preserving the
     // binary keeps macro-enabled workbooks from being silently stripped on save.
     if let Some(r) = find_rel(&wb_rels, "vbaProject").cloned() {
         match cx.pkg.read(&r.target) {
@@ -552,7 +552,7 @@ fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadRepor
 /// Reads the chart a chart sheet shows: `<chartsheet><drawing r:id="…"/></chartsheet>` → a
 /// drawing part → one chart frame → the chart part (ECMA-376 Part 1, §19.3 chart sheets). Returns
 /// whether the sheet can be represented at all, warning about what stopped it (a missing drawing or
-/// chart part, a chart kind GridCraft does not model). `false` leaves the sheet to the
+/// chart part, a chart kind Cella does not model). `false` leaves the sheet to the
 /// pass-through, which keeps it byte for byte — a sheet is never half-modelled.
 fn read_chart_sheet(cx: &mut Ctx<'_>, part: &str, name: &str, sheet: &mut Sheet) -> Result<bool, IoError> {
     let Some(x) = cx.optional_xml(part)? else { return Ok(false) };
@@ -575,7 +575,7 @@ fn read_chart_sheet(cx: &mut Ctx<'_>, part: &str, name: &str, sheet: &mut Sheet)
     if !sheet.kept_charts.is_empty() {
         sheet.kept_charts.clear();
         sheet.charts.clear();
-        cx.warn(format!("chart sheet \"{name}\" holds a chart kind GridCraft does not model; it was kept as it was and is not shown"));
+        cx.warn(format!("chart sheet \"{name}\" holds a chart kind Cella does not model; it was kept as it was and is not shown"));
         return Ok(false);
     }
     match sheet.charts.len() {
@@ -625,10 +625,10 @@ pub fn parse_print_titles(text: &str) -> (Option<(u32, u32)>, Option<(u32, u32)>
         let p = strip_sheet(part.trim()).replace('$', "");
         let Some((a, b)) = p.split_once(':') else { continue };
         if let (Ok(r0), Ok(r1)) = (a.parse::<u32>(), b.parse::<u32>()) {
-            if r0 >= 1 && r1 >= r0 && r1 <= gridcraft_core::MAX_ROWS {
+            if r0 >= 1 && r1 >= r0 && r1 <= cella_core::MAX_ROWS {
                 rows = Some((r0 - 1, r1 - 1));
             }
-        } else if let (Some(c0), Some(c1)) = (gridcraft_core::letters_to_col(a), gridcraft_core::letters_to_col(b))
+        } else if let (Some(c0), Some(c1)) = (cella_core::letters_to_col(a), cella_core::letters_to_col(b))
             && c1 >= c0
         {
             cols = Some((c0, c1));

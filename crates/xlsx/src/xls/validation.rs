@@ -6,8 +6,8 @@
 //! `errStyle` 3, `fStrLookup` 1, `fAllowBlank` 1, `fSuppressCombo` 1, `mdImeMode` 8,
 //! `fShowInputMsg` 1, `fShowErrorMsg` 1, `typOperator` 4, `reserved` 8), not into two bytes.
 
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::{CfOperator, ErrorStyle, Validation, ValidationKind};
+use cella_core::{CellRef, RangeRef};
+use cella_model::{CfOperator, ErrorStyle, Validation, ValidationKind};
 
 use super::records::Cursor;
 use super::{Budget, Links, decode, invalid, ref8};
@@ -127,7 +127,7 @@ fn text(rgce: &[u8], base: CellRef, links: &Links) -> String {
         return String::new();
     }
     match decode(rgce, &[], base, super::Mode::Cell, links) {
-        Ok(e) => gridcraft_formula::print(&e),
+        Ok(e) => cella_formula::print(&e),
         Err(_) => String::new(),
     }
 }

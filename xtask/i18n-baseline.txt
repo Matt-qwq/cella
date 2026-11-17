@@ -10,6 +10,6 @@
 # deliberate "this stays English" and belongs in the commit message with the reason. Rows are
 # matched by path and text, so the line number is only a hint for the reviewer: an edit that shifts
 # lines does not report the whole file as new.
-crates/ui-egui/src/backstage.rs:1030	GridCraft
-crates/ui-egui/src/dialogs/about.rs:19	GridCraft
+crates/ui-egui/src/backstage.rs:1030	Cella
+crates/ui-egui/src/dialogs/about.rs:19	Cella
 crates/ui-egui/src/dialogs/external_data.rs:13	https://

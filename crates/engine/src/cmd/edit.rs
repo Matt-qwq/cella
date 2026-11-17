@@ -1,7 +1,7 @@
 //! Cell entry, selection, undo/redo, clipboard, clear, fill, find & replace.
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_model::{Cell, Formula, StyleId};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_model::{Cell, Formula, StyleId};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -143,8 +143,8 @@ pub(crate) fn input_to_cell(
     input: &str,
     sheet: usize,
     at: CellRef,
-    wb: &mut gridcraft_model::Workbook,
-    shapes: &mut gridcraft_formula::ShapeTable,
+    wb: &mut cella_model::Workbook,
+    shapes: &mut cella_formula::ShapeTable,
 ) -> Result<Option<Cell>> {
     let style = wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
     if input.is_empty() {
@@ -158,13 +158,13 @@ pub(crate) fn input_to_cell(
     let is_formula = input.starts_with('=')
         || (input.len() > 1
             && (input.starts_with('+') || input.starts_with('-'))
-            && gridcraft_core::parse::parse_number_text(input).is_none()
+            && cella_core::parse::parse_number_text(input).is_none()
             && input.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic() || c == '('));
     if is_formula {
         let body = input.strip_prefix('=').unwrap_or(input);
         let expr = wb.name_call_case(parse_typed_formula(body)?);
         check_arg_counts(&expr)?;
-        let rewrite = gridcraft_xlsx::needs_file_rewrite(&expr);
+        let rewrite = cella_xlsx::needs_file_rewrite(&expr);
         let mut cell = Cell::formula(Formula::from_expr_at(expr, at, shapes, rewrite));
         cell.style = style;
         // Formulas whose result is a date/time get a format from functions like TODAY().
@@ -185,12 +185,12 @@ pub(crate) fn input_to_cell(
                 None
             };
             if let Some(code) = auto {
-                cell.style = wb.styles.derive(style, |s| s.num_fmt = gridcraft_model::NumFmt::new(code));
+                cell.style = wb.styles.derive(style, |s| s.num_fmt = cella_model::NumFmt::new(code));
             }
         }
         return Ok(Some(cell));
     }
-    let mut parsed = gridcraft_core::parse::parse_input(input, wb.date_system);
+    let mut parsed = cella_core::parse::parse_input(input, wb.date_system);
     // Like Excel's automatic percent entry: a bare number of 1 or more typed into a cell already
     // formatted as a percentage is a percent (3 -> 3%); smaller numbers are taken as fractions.
     if parsed.format.is_none()
@@ -205,7 +205,7 @@ pub(crate) fn input_to_cell(
     if let Some(code) = parsed.format {
         let cur = wb.styles.get(style).num_fmt.as_str().to_string();
         if cur == "General" {
-            style = wb.styles.derive(style, |s| s.num_fmt = gridcraft_model::NumFmt::new(code));
+            style = wb.styles.derive(style, |s| s.num_fmt = cella_model::NumFmt::new(code));
         }
     }
     // Wrap text automatically when the input has line breaks (Alt+Enter).
@@ -217,9 +217,9 @@ pub(crate) fn input_to_cell(
 
 /// Parses a formula as it is typed (without the `=`). Excel closes missing parentheses for you,
 /// and refuses a formula that still doesn't parse.
-pub(crate) fn parse_typed_formula(body: &str) -> Result<gridcraft_formula::Expr> {
+pub(crate) fn parse_typed_formula(body: &str) -> Result<cella_formula::Expr> {
     // Excel closes missing parentheses for you.
-    let parsed = gridcraft_formula::parse_closing_parens(body, gridcraft_formula::parse);
+    let parsed = cella_formula::parse_closing_parens(body, cella_formula::parse);
     parsed.map_err(|e| EngineError::Other(format!("There's a problem with this formula: {e}")))
 }
 
@@ -227,12 +227,12 @@ pub(crate) fn parse_typed_formula(body: &str) -> Result<gridcraft_formula::Expr>
 /// refused when it's entered, rather than stored to show `#VALUE!`. Functions the registry doesn't
 /// hold (special forms like LET, LAMBDA, OFFSET, INDIRECT, SUBTOTAL), defined LAMBDA names and
 /// unknown functions are skipped.
-pub(crate) fn check_arg_counts(expr: &gridcraft_formula::Expr) -> Result<()> {
+pub(crate) fn check_arg_counts(expr: &cella_formula::Expr) -> Result<()> {
     let mut bad = None;
     expr.walk(&mut |e| {
         if bad.is_none()
-            && let gridcraft_formula::Expr::Call(name, args) = e
-            && let Some(spec) = gridcraft_functions::lookup(name)
+            && let cella_formula::Expr::Call(name, args) = e
+            && let Some(spec) = cella_functions::lookup(name)
             && !spec.accepts(args.len())
         {
             let few = args.len() < spec.min_args;
@@ -278,13 +278,13 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
             // its range still covers would keep stale values that the save loses: the file says the
             // array owns them, so reading it back drops them (`sheet_read`'s legacy-array rule).
             // Excel refuses the entry too; an error here keeps every cell as it was.
-            if range.count() > gridcraft_calc::eval::MAX_CELLS {
+            if range.count() > cella_calc::eval::MAX_CELLS {
                 return Err(EngineError::Other(format!(
                     "An array formula can't cover more than {} cells. Select a smaller range.",
-                    gridcraft_calc::eval::MAX_CELLS
+                    cella_calc::eval::MAX_CELLS
                 )));
             }
-            let mut shapes = gridcraft_formula::ShapeTable::default();
+            let mut shapes = cella_formula::ShapeTable::default();
             let mut cell = input_to_cell(&input, sheet, range.start, &mut cx.wb, &mut shapes)?.unwrap_or_default();
             if let Some(f) = cell.formula.as_mut() {
                 std::sync::Arc::make_mut(f).array = Some(Box::new(range));
@@ -310,7 +310,7 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
             }
             return Ok(Json::Null);
         }
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         let cell = input_to_cell(&input, sheet, at, &mut cx.wb, &mut shapes)?;
         let sh = cx.sheet_mut(sheet)?;
         match cell {
@@ -358,7 +358,7 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     // The shapes this command interns: a formula string written into a thousand cells is one
     // shape when it spells the same references (an absolute one, or a plain `=$A$1*2`), where
     // every cell used to hold its own tree.
-    let mut shapes = gridcraft_formula::ShapeTable::default();
+    let mut shapes = cella_formula::ShapeTable::default();
     // A data import is mostly rows: the store builds a whole row in one pass (set_row_cells),
     // while a cell at a time pays a row lookup, a band lookup and a growth step each. A sheet
     // holding a cell picture keeps the per-cell way, because set_cell owns that rule.
@@ -428,7 +428,7 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
         // The input as it was entered, parsed once per style: every cell of the fill then shares
         // its shape and prints its own text from it.
         let mut by_style: std::collections::HashMap<StyleId, Option<Cell>> = std::collections::HashMap::new();
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         for r in &ranges {
             if r.count() > 2_000_000 {
                 return Err(bad("range.fill", "range too large"));
@@ -473,7 +473,7 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
 // ---------------------------------------------------------------- selection
 
 /// Whether the cell may be selected: a protected sheet can forbid selecting locked and/or unlocked cells.
-fn cell_selectable(wb: &gridcraft_model::Workbook, sheet: &gridcraft_model::Sheet, c: CellRef) -> bool {
+fn cell_selectable(wb: &cella_model::Workbook, sheet: &cella_model::Sheet, c: CellRef) -> bool {
     let Some(p) = sheet.protection.as_ref() else { return true };
     if wb.styles.get(sheet.style_id(c)).protection.locked { p.select_locked } else { p.select_unlocked }
 }
@@ -673,7 +673,7 @@ pub(super) fn go_to(s: &mut Session, p: &Json) -> Result<Json> {
         } else if let Some((si, ti)) = d.wb.table(reference) {
             // As in Excel, a table's name stands for its data, without the header and totals rows.
             let t = d.wb.sheet(si).and_then(|sh| sh.tables.get(ti)).map(|t| t.data_range().unwrap_or(t.range).a1()).unwrap_or_default();
-            format!("{}!{}", gridcraft_core::quote_sheet(&d.wb.sheet(si).map(|s| s.name.clone()).unwrap_or_default()), t)
+            format!("{}!{}", cella_core::quote_sheet(&d.wb.sheet(si).map(|s| s.name.clone()).unwrap_or_default()), t)
         } else {
             return Err(EngineError::Other("Reference isn't valid.".into()));
         }
@@ -761,7 +761,7 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
     // The formula cells the undone steps changed, when every one of them recorded them: a restore
     // that knows them re-inserts those nodes and reads the snapshot's formula for them alone — no
     // page of a spilled snapshot is decoded to find out what changed (see `Calc::restore_cells`).
-    let mut cells: Option<Vec<(usize, gridcraft_core::CellRef)>> = Some(Vec::new());
+    let mut cells: Option<Vec<(usize, cella_core::CellRef)>> = Some(Vec::new());
     for _ in 0..steps {
         let Some(mut e) = d.undo.pop() else { break };
         let cur_wb = d.wb.clone();
@@ -795,7 +795,7 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
-    let mut cells: Option<Vec<(usize, gridcraft_core::CellRef)>> = Some(Vec::new());
+    let mut cells: Option<Vec<(usize, cella_core::CellRef)>> = Some(Vec::new());
     for _ in 0..steps {
         let Some(mut e) = d.redo.pop() else { break };
         let cur_wb = d.wb.clone();
@@ -865,7 +865,7 @@ fn copy_impl(s: &mut Session, p: &Json, cut: bool) -> Result<Json> {
 /// bottom), without overlapping. Returns a copy of the workbook whose sheet holds the areas packed
 /// into one block at the first area's place, and that block. Formulas travel as their values, as
 /// in Excel. `None` when the areas don't line up.
-fn slide_together(wb: &gridcraft_model::Workbook, sheet: usize, areas: &[RangeRef]) -> Option<(gridcraft_model::Workbook, RangeRef)> {
+fn slide_together(wb: &cella_model::Workbook, sheet: usize, areas: &[RangeRef]) -> Option<(cella_model::Workbook, RangeRef)> {
     let first = *areas.first()?;
     let across = areas.iter().all(|a| a.start.row == first.start.row && a.end.row == first.end.row);
     let down = areas.iter().all(|a| a.start.col == first.start.col && a.end.col == first.end.col);
@@ -982,7 +982,7 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
     let rows: Vec<Vec<String>> = parse_tsv(text);
     let h = rows.len();
     let w = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let mut shapes = gridcraft_formula::ShapeTable::default();
+    let mut shapes = cella_formula::ShapeTable::default();
     // The HTML flavour, when the host passed it: the number behind each cell's shown text. Read
     // only as far as the text's own shape, so spans in the markup can't expand without bound.
     let html = str_param(p, "html").map(|html| crate::clip_html::table_cells(html, h, w)).unwrap_or_default();
@@ -1017,7 +1017,7 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
 /// source recorded for it in its HTML, with a format that shows the same text when one can be
 /// inferred and the cell has none. The HTML cell must show the same text as the tab-separated
 /// field, so HTML that belongs to another copy (or a table laid out differently) changes nothing.
-fn numeric_from_html(cell: &mut Cell, field: &str, html: Option<&crate::clip_html::HtmlCell>, wb: &mut gridcraft_model::Workbook) {
+fn numeric_from_html(cell: &mut Cell, field: &str, html: Option<&crate::clip_html::HtmlCell>, wb: &mut cella_model::Workbook) {
     let Some(hc) = html else { return };
     let Some(n) = hc.num else { return };
     if cell.formula.is_some() || !matches!(cell.value, Value::Text(_)) || wb.styles.get(cell.style).num_fmt.as_str() == "@" {
@@ -1030,7 +1030,7 @@ fn numeric_from_html(cell: &mut Cell, field: &str, html: Option<&crate::clip_htm
     if wb.styles.get(cell.style).num_fmt.as_str() == "General"
         && let Some(code) = crate::clip_html::format_for(field, n)
     {
-        cell.style = wb.styles.derive(cell.style, |s| s.num_fmt = gridcraft_model::NumFmt::new(&code));
+        cell.style = wb.styles.derive(cell.style, |s| s.num_fmt = cella_model::NumFmt::new(&code));
     }
 }
 
@@ -1138,7 +1138,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     let link = bool_param(p, "link").unwrap_or(false);
     // The shapes this paste interns, for the cells a source shape cannot serve (a move to another
     // sheet qualifies its references, and a reference can clamp at the destination).
-    let mut shapes = gridcraft_formula::ShapeTable::default();
+    let mut shapes = cella_formula::ShapeTable::default();
     if link && !clip.areas.is_empty() {
         return Err(EngineError::Other("This action won't work on multiple selections.".into()));
     }
@@ -1168,7 +1168,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     edit(s, |cx| {
         // Styles from another workbook must be re-interned.
         let mut style_map = std::collections::HashMap::new();
-        let mut map_style = |id: StyleId, wb: &mut gridcraft_model::Workbook| -> StyleId {
+        let mut map_style = |id: StyleId, wb: &mut cella_model::Workbook| -> StyleId {
             if same_doc {
                 return id;
             }
@@ -1220,16 +1220,16 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 // those references before the workbook-wide move adjustment below.
                                 let e = if dest_sheet != clip.sheet {
                                     e.map(&mut |x| match x {
-                                        gridcraft_formula::Expr::Ref(mut r) if r.sheet == gridcraft_formula::SheetSel::Current => {
-                                            r.sheet = gridcraft_formula::SheetSel::Named(src_sheet_name.clone());
-                                            gridcraft_formula::Expr::Ref(r)
+                                        cella_formula::Expr::Ref(mut r) if r.sheet == cella_formula::SheetSel::Current => {
+                                            r.sheet = cella_formula::SheetSel::Named(src_sheet_name.clone());
+                                            cella_formula::Expr::Ref(r)
                                         }
                                         other => other,
                                     })
                                 } else {
                                     e
                                 };
-                                let rewrite = gridcraft_xlsx::needs_file_rewrite(&e);
+                                let rewrite = cella_xlsx::needs_file_rewrite(&e);
                                 let mut moved = Formula::from_expr_at(e, dest, &mut shapes, rewrite);
                                 // The array range moves with its formula.
                                 let (dr, dc) = (dest.row as i64 - sc.row as i64, dest.col as i64 - sc.col as i64);
@@ -1248,7 +1248,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             let sheet_prefix = if dest_sheet == clip.sheet && same_doc {
                                 String::new()
                             } else {
-                                format!("{}!", gridcraft_formula::quote_sheet(&src_sheet_name))
+                                format!("{}!", cella_formula::quote_sheet(&src_sheet_name))
                             };
                             // A plain sheet-qualified reference: no function, so no file spelling.
                             let link_text = format!("={sheet_prefix}{}", sc.a1());
@@ -1298,7 +1298,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             {
                                 if old_picture.is_some() || new_picture.is_some() {
                                     new_picture = None;
-                                    new.value = Value::Error(gridcraft_core::CellError::Value);
+                                    new.value = Value::Error(cella_core::CellError::Value);
                                 }
                                 let a = old.value.clone();
                                 let b = new.value.clone();
@@ -1314,7 +1314,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                         "multiply" => Value::number(x * y),
                                         "divide" => {
                                             if y == 0.0 {
-                                                Value::Error(gridcraft_core::CellError::Div0)
+                                                Value::Error(cella_core::CellError::Div0)
                                             } else {
                                                 Value::number(x / y)
                                             }
@@ -1336,7 +1336,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                         _ => None,
                                     }
                                 {
-                                    let text = format!("=({}){sym}{}", f.text, gridcraft_core::number_to_text(y));
+                                    let text = format!("=({}){sym}{}", f.text, cella_core::number_to_text(y));
                                     new.formula = Some(std::sync::Arc::new(Formula::new(&text)));
                                     new.value = Value::Empty;
                                 }
@@ -1404,9 +1404,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             // References elsewhere to the moved block now point to its new place.
             let dest_name = cx.wb.sheet(dest_sheet).map(|s| s.name.clone()).unwrap_or_default();
             let e = if dest_sheet == clip.sheet {
-                gridcraft_formula::adjust::Edit::Move { from: src, to_row: at.row, to_col: at.col }
+                cella_formula::adjust::Edit::Move { from: src, to_row: at.row, to_col: at.col }
             } else {
-                gridcraft_formula::adjust::Edit::MoveToSheet { from: src, to_sheet: dest_name, to_row: at.row, to_col: at.col }
+                cella_formula::adjust::Edit::MoveToSheet { from: src, to_sheet: dest_name, to_row: at.row, to_col: at.col }
             };
             rewrite_all_formulas(&mut cx.wb, &src_sheet_name, &e);
             cx.structural = true;
@@ -1433,8 +1433,8 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
 /// A cell whose formula has no shape yet (text alone) or one that does not resolve where it sits
 /// (a fill that clamped a relative part) takes the per-cell path: its text is parsed, rewritten
 /// and interned at the cell, as before.
-pub(crate) fn rewrite_shapes(wb: &mut gridcraft_model::Workbook, map: impl Fn(usize, gridcraft_formula::Expr) -> Option<gridcraft_formula::Expr>) {
-    let mut shapes = gridcraft_formula::ShapeTable::default();
+pub(crate) fn rewrite_shapes(wb: &mut cella_model::Workbook, map: impl Fn(usize, cella_formula::Expr) -> Option<cella_formula::Expr>) {
+    let mut shapes = cella_formula::ShapeTable::default();
     for si in 0..wb.sheets.len() {
         let keys: Vec<(CellRef, std::sync::Arc<Formula>)> =
             wb.sheets.get(si).map(|s| s.cells.formulas().map(|(c, f, _)| (c, f)).collect()).unwrap_or_default();
@@ -1442,7 +1442,7 @@ pub(crate) fn rewrite_shapes(wb: &mut gridcraft_model::Workbook, map: impl Fn(us
             continue;
         }
         // One rewritten tree per shape, interned once. `None` is "the map left this shape alone".
-        let mut planned: std::collections::HashMap<usize, Option<std::sync::Arc<gridcraft_formula::Shape>>> = std::collections::HashMap::new();
+        let mut planned: std::collections::HashMap<usize, Option<std::sync::Arc<cella_formula::Shape>>> = std::collections::HashMap::new();
         let Some(sheet) = wb.sheet_mut(si) else { continue };
         for (c, f) in keys {
             let shape = f.shape.clone().filter(|s| s.fits(c));
@@ -1466,9 +1466,9 @@ pub(crate) fn rewrite_shapes(wb: &mut gridcraft_model::Workbook, map: impl Fn(us
             // Text alone, or a shape that does not resolve here: the cell's own parse.
             let Some(tree) = f.text_tree() else { continue };
             let Some(new) = map(si, tree) else { continue };
-            let text = gridcraft_formula::print(&new);
+            let text = cella_formula::print(&new);
             if let Some(mut cell) = sheet.cells.get(c) {
-                let rewrite = gridcraft_xlsx::needs_file_rewrite(&new);
+                let rewrite = cella_xlsx::needs_file_rewrite(&new);
                 let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
                 nf.array = f.array.clone();
                 nf.dynamic = f.dynamic;
@@ -1485,8 +1485,8 @@ pub(crate) fn rewrite_shapes(wb: &mut gridcraft_model::Workbook, map: impl Fn(us
 /// position the cell's text was written for, which is the one its shape resolves at. `None` when
 /// the position has no predecessor (the line an insert opened) or the edit is one that moves a
 /// block rather than the lines a shape is anchored to.
-fn cell_before(c: CellRef, e: &gridcraft_formula::adjust::Edit) -> Option<CellRef> {
-    use gridcraft_formula::adjust::{Axis, Edit};
+fn cell_before(c: CellRef, e: &cella_formula::adjust::Edit) -> Option<CellRef> {
+    use cella_formula::adjust::{Axis, Edit};
     let (axis, at, count) = match e {
         Edit::Insert { axis, at, count } | Edit::Delete { axis, at, count } => (*axis, *at, *count),
         _ => return None,
@@ -1527,11 +1527,11 @@ fn form_by_shape(
     c: CellRef,
     host: &str,
     target: &str,
-    e: &gridcraft_formula::adjust::Edit,
-    shapes: &mut gridcraft_formula::ShapeTable,
-    planned: &mut std::collections::HashMap<(usize, bool), Option<std::sync::Arc<gridcraft_formula::Shape>>>,
-) -> Option<(String, std::sync::Arc<gridcraft_formula::Shape>)> {
-    use gridcraft_formula::{Adjusted, adjust::CellMove};
+    e: &cella_formula::adjust::Edit,
+    shapes: &mut cella_formula::ShapeTable,
+    planned: &mut std::collections::HashMap<(usize, bool), Option<std::sync::Arc<cella_formula::Shape>>>,
+) -> Option<(String, std::sync::Arc<cella_formula::Shape>)> {
+    use cella_formula::{Adjusted, adjust::CellMove};
     let shape = f.shape.clone()?;
     let old = cell_before(c, e)?;
     if shape.straddles(old, e) {
@@ -1558,8 +1558,8 @@ fn form_by_shape(
 /// The tree work is **one rewrite per shape** (S5 of `plan/SHAPE-SHARING.md`): the cells an edit
 /// moves hold a handful of shapes, so a million formulas cost a handful of new trees and one print
 /// per cell whose text really changed.
-pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &str, e: &gridcraft_formula::adjust::Edit) {
-    use gridcraft_formula::adjust::Edit;
+pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str, e: &cella_formula::adjust::Edit) {
+    use cella_formula::adjust::Edit;
     // Rows and columns inserted or deleted on the target sheet move its legacy array ranges too
     // (a cut moves its arrays itself).
     let moves_arrays = matches!(e, Edit::Insert { .. } | Edit::Delete { .. } | Edit::InsertCells { .. } | Edit::DeleteCells { .. });
@@ -1577,7 +1577,7 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
             | Edit::Move { .. }
             | Edit::MoveToSheet { .. }
     );
-    let mut shapes = gridcraft_formula::ShapeTable::default();
+    let mut shapes = cella_formula::ShapeTable::default();
     for si in 0..wb.sheets.len() {
         let host = wb.sheets.get(si).map(|s| s.name.clone()).unwrap_or_default();
         // The store yields formulas from its side tables, not by walking every cell: a
@@ -1590,8 +1590,7 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
         let on_target = moves_arrays && host.eq_ignore_ascii_case(target);
         // One answer per shape — and per side of the edit, because a reference the edit leaves
         // alone is a line further away from a cell that moved (S5 of `plan/SHAPE-SHARING.md`).
-        let mut planned: std::collections::HashMap<(usize, bool), Option<std::sync::Arc<gridcraft_formula::Shape>>> =
-            std::collections::HashMap::new();
+        let mut planned: std::collections::HashMap<(usize, bool), Option<std::sync::Arc<cella_formula::Shape>>> = std::collections::HashMap::new();
         let Some(sheet) = wb.sheet_mut(si) else { continue };
         for (c, f) in keys {
             let array: Option<RangeRef> = match f.array.as_deref() {
@@ -1614,13 +1613,13 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
             // formula holds at the position it was written for, so the parse is the tree the edit
             // must adjust — this is the per-cell path S5 kept for what it cannot answer.
             let Some(expr) = f.text_tree() else { continue };
-            let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
-            let text = gridcraft_formula::print(&new);
+            let new = cella_formula::adjust::adjust(expr, &host, target, e);
+            let text = cella_formula::print(&new);
             if (text != f.text || array != f.array.as_deref().copied() || (moves_cells && f.shape.is_some()))
                 && let Some(mut cell) = sheet.cells.get(c)
             {
                 // Interned at the cell it sits at now, so `expr_at` is this tree again.
-                let rewrite = gridcraft_xlsx::needs_file_rewrite(&new);
+                let rewrite = cella_xlsx::needs_file_rewrite(&new);
                 let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
                 nf.array = array.map(Box::new);
                 nf.dynamic = f.dynamic;
@@ -1630,10 +1629,10 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
         }
     }
     for n in wb.names.iter_mut() {
-        if let Ok(expr) = gridcraft_formula::parse_name(&n.formula) {
+        if let Ok(expr) = cella_formula::parse_name(&n.formula) {
             // Names are workbook-level: unqualified refs don't occur; qualified ones adjust.
-            let new = gridcraft_formula::adjust::adjust(expr, "\u{0}", target, e);
-            n.formula = gridcraft_formula::print(&new);
+            let new = cella_formula::adjust::adjust(expr, "\u{0}", target, e);
+            n.formula = cella_formula::print(&new);
         }
     }
 }
@@ -1679,7 +1678,7 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
                     } else {
                         cell.value = Value::Empty;
                         if checkbox {
-                            cell.style = cx.wb.styles.derive(cell.style, |st| st.num_fmt = gridcraft_model::NumFmt::new("General"));
+                            cell.style = cx.wb.styles.derive(cell.style, |st| st.num_fmt = cella_model::NumFmt::new("General"));
                         }
                     }
                 }
@@ -1720,7 +1719,7 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
                     let blocked: Vec<_> = sh
                         .cells
                         .iter_range(reach)
-                        .filter(|(_, cell)| cell.formula.is_some() && cell.value == Value::Error(gridcraft_core::CellError::Spill))
+                        .filter(|(_, cell)| cell.formula.is_some() && cell.value == Value::Error(cella_core::CellError::Spill))
                         .map(|(c, _)| (sheet, c))
                         .collect();
                     cx.changed.extend(blocked);
@@ -1961,7 +1960,7 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
     let active = s.doc()?.selection.active;
     let n = edit(s, |cx| {
         let sheets: Vec<usize> = if workbook { (0..cx.wb.sheets.len()).collect() } else { vec![cx.wb.active_sheet] };
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        let mut shapes = cella_formula::ShapeTable::default();
         let mut n = 0;
         for si in sheets {
             let cells: Vec<(CellRef, String)> =

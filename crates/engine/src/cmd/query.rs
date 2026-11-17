@@ -1,19 +1,19 @@
 //! Get & Transform: saved queries, their steps, and loading a query's rows onto a sheet.
 //!
-//! A query is a recipe (`gridcraft_model::Query`); the pipeline that runs it is `gridcraft_query`;
+//! A query is a recipe (`cella_model::Query`); the pipeline that runs it is `cella_query`;
 //! this module is the only part that touches files, because it is the only part allowed to.
 //! Loading writes a real table onto a sheet, so a query's result is ordinary data: it prints,
 //! charts, feeds a pivot table, and the next refresh rewrites it in place.
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{MAX_MODEL_CELLS, Query, QueryLoad, QuerySource, QueryStep, query_name_is_free};
-use gridcraft_query::{MAX_CELLS, MAX_COLUMNS, MAX_ROWS, Table};
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::{MAX_MODEL_CELLS, Query, QueryLoad, QuerySource, QueryStep, query_name_is_free};
+use cella_query::{MAX_CELLS, MAX_COLUMNS, MAX_ROWS, Table};
 use serde_json::json;
 
 use super::*;
 
 /// The sheet a source names, or the active one when the source left the sheet out.
-fn find_sheet<'a>(wb: &'a gridcraft_model::Workbook, name: &str) -> Option<&'a gridcraft_model::Sheet> {
+fn find_sheet<'a>(wb: &'a cella_model::Workbook, name: &str) -> Option<&'a cella_model::Sheet> {
     wb.sheet_index(name).and_then(|i| wb.sheet(i))
 }
 
@@ -110,7 +110,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
 
 // ---------------------------------------------------------------- param parsing
 
-fn query_index(wb: &gridcraft_model::Workbook, name: &str) -> Result<usize> {
+fn query_index(wb: &cella_model::Workbook, name: &str) -> Result<usize> {
     wb.queries.iter().position(|q| q.name == name).ok_or_else(|| EngineError::Other(format!("There is no query named \"{name}\".")))
 }
 
@@ -160,10 +160,10 @@ fn parse_source(v: &Json) -> Result<QuerySource> {
                 .ok_or_else(|| bad("data.query", "an http source needs a url"))?
                 .to_string();
             let format = match v.get("format").and_then(Json::as_str) {
-                None => gridcraft_model::HttpFormat::from_url(&url),
+                None => cella_model::HttpFormat::from_url(&url),
                 Some(f) => match f.to_ascii_lowercase().as_str() {
-                    "csv" | "text" => gridcraft_model::HttpFormat::Csv,
-                    "json" => gridcraft_model::HttpFormat::Json,
+                    "csv" | "text" => cella_model::HttpFormat::Csv,
+                    "json" => cella_model::HttpFormat::Json,
                     other => return Err(bad("data.query", format!("\"{other}\" is not a web format (csv, json)"))),
                 },
             };
@@ -202,8 +202,8 @@ fn parse_steps(v: Option<&Json>) -> Result<Vec<QueryStep>> {
         return Ok(Vec::new());
     }
     let steps: Vec<QueryStep> = serde_json::from_value(v.clone()).map_err(|e| bad("data.query", format!("steps is not a list of QueryStep: {e}")))?;
-    if steps.len() > gridcraft_model::MAX_STEPS {
-        return Err(bad("data.query", format!("a query holds at most {} steps", gridcraft_model::MAX_STEPS)));
+    if steps.len() > cella_model::MAX_STEPS {
+        return Err(bad("data.query", format!("a query holds at most {} steps", cella_model::MAX_STEPS)));
     }
     Ok(steps)
 }
@@ -224,8 +224,8 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
     match src {
         QuerySource::Csv { path, text, delimiter } => {
             let bytes = read_source(path.as_deref(), text.as_deref(), "csv")?;
-            let opts = gridcraft_xlsx::CsvOptions { delimiter: *delimiter as u8, parse_values: false, ..Default::default() };
-            let wb = gridcraft_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+            let opts = cella_xlsx::CsvOptions { delimiter: *delimiter as u8, parse_values: false, ..Default::default() };
+            let wb = cella_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
             let sh = wb.sheet(0).ok_or(EngineError::NoDocument)?;
             grid_from_sheet(sh, None)
         }
@@ -237,7 +237,7 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
         }
         QuerySource::Xlsx { path, sheet } => {
             let bytes = read_source(Some(path), None, "xlsx")?;
-            let (wb, _) = gridcraft_xlsx::read_xlsx(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+            let (wb, _) = cella_xlsx::read_xlsx(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
             let sh = match sheet {
                 Some(name) => find_sheet(&wb, name).ok_or_else(|| EngineError::Other(format!("\"{path}\" has no sheet named \"{name}\".")))?,
                 None => wb.sheet(0).ok_or(EngineError::NoDocument)?,
@@ -246,7 +246,7 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
         }
         QuerySource::Parquet { path } => {
             let bytes = read_source(Some(path), None, "parquet")?;
-            let t = gridcraft_parquet::read_table(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+            let t = cella_parquet::read_table(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
             let names: Vec<String> = t.columns.iter().map(|(n, _)| n.clone()).collect();
             let mut rows = t.rows;
             shift_parquet_dates(&t.columns, &mut rows);
@@ -262,13 +262,13 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
                 )));
             }
             match format {
-                gridcraft_model::HttpFormat::Csv => {
-                    let opts = gridcraft_xlsx::CsvOptions { delimiter: b',', parse_values: false, ..Default::default() };
-                    let wb = gridcraft_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(format!("{url}: {e}")))?;
+                cella_model::HttpFormat::Csv => {
+                    let opts = cella_xlsx::CsvOptions { delimiter: b',', parse_values: false, ..Default::default() };
+                    let wb = cella_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(format!("{url}: {e}")))?;
                     let sh = wb.sheet(0).ok_or(EngineError::NoDocument)?;
                     grid_from_sheet(sh, None)
                 }
-                gridcraft_model::HttpFormat::Json => {
+                cella_model::HttpFormat::Json => {
                     let text = String::from_utf8_lossy(&bytes);
                     let rows = json_rows(&text)?;
                     Table::from_rows(rows, false).map_err(pipeline_error)
@@ -302,9 +302,9 @@ fn source_table(s: &mut Session, src: &QuerySource) -> Result<Table> {
 /// A Parquet `DATE` is a day count from 1970-01-01; a sheet's date is a serial from 1899-12-30.
 /// Read unconverted, every date in an imported file would be 25,569 days off, so the import shifts
 /// the date columns once, here, where the file's own column types are still known.
-fn shift_parquet_dates(columns: &[(String, gridcraft_parquet::ColumnType)], rows: &mut [Vec<Value>]) {
-    use gridcraft_parquet::ColumnType;
-    let offset = gridcraft_core::date::serial_from_ymd(gridcraft_core::DateSystem::D1900, 1970, 1, 1).unwrap_or(0.0);
+fn shift_parquet_dates(columns: &[(String, cella_parquet::ColumnType)], rows: &mut [Vec<Value>]) {
+    use cella_parquet::ColumnType;
+    let offset = cella_core::date::serial_from_ymd(cella_core::DateSystem::D1900, 1970, 1, 1).unwrap_or(0.0);
     if offset == 0.0 || rows.is_empty() {
         return;
     }
@@ -320,7 +320,7 @@ fn shift_parquet_dates(columns: &[(String, gridcraft_parquet::ColumnType)], rows
     }
 }
 
-fn pick_sheet<'a>(wb: &'a gridcraft_model::Workbook, name: &str) -> Result<&'a gridcraft_model::Sheet> {
+fn pick_sheet<'a>(wb: &'a cella_model::Workbook, name: &str) -> Result<&'a cella_model::Sheet> {
     match find_sheet(wb, name) {
         Some(sh) => Ok(sh),
         None if name.is_empty() => wb.active().ok_or(EngineError::NoDocument),
@@ -356,7 +356,7 @@ fn query_table(s: &mut Session, name: &str, depth: u32, seen: &mut Vec<String>) 
         other => source_table(s, other)?,
     };
     seen.pop();
-    gridcraft_query::apply(table, &steps).map_err(pipeline_error)
+    cella_query::apply(table, &steps).map_err(pipeline_error)
 }
 
 /// Every file in a folder, stacked: the files that match the filter, read the way a single csv
@@ -375,8 +375,8 @@ fn folder_table(path: &str, filter: &str) -> Result<Table> {
     let mut rows: Vec<Vec<Value>> = Vec::new();
     for file in &files {
         let bytes = crate::io::read_file(file)?;
-        let opts = gridcraft_xlsx::CsvOptions { delimiter: 0, parse_values: false, ..Default::default() };
-        let wb = gridcraft_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(format!("{file}: {e}")))?;
+        let opts = cella_xlsx::CsvOptions { delimiter: 0, parse_values: false, ..Default::default() };
+        let wb = cella_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(format!("{file}: {e}")))?;
         let sh = wb.sheet(0).ok_or(EngineError::NoDocument)?;
         let grid = grid_from_sheet(sh, None).map_err(|e| EngineError::Other(format!("{file}: {e}")))?;
         let mut lines = grid.rows.into_iter();
@@ -467,7 +467,7 @@ fn json_value(v: Option<&Json>) -> Value {
 }
 
 /// The sheet's used range (or the range given), bounded before anything is allocated.
-fn grid_from_sheet(sh: &gridcraft_model::Sheet, range: Option<RangeRef>) -> Result<Table> {
+fn grid_from_sheet(sh: &cella_model::Sheet, range: Option<RangeRef>) -> Result<Table> {
     let r = match range {
         Some(r) => r,
         None => sh.used_range().ok_or_else(|| EngineError::Other("The source is empty: there are no rows to import.".into()))?,
@@ -476,7 +476,7 @@ fn grid_from_sheet(sh: &gridcraft_model::Sheet, range: Option<RangeRef>) -> Resu
     Table::from_rows(rows, false).map_err(pipeline_error)
 }
 
-fn grid_rows(sh: &gridcraft_model::Sheet, r: RangeRef) -> Result<Vec<Vec<Value>>> {
+fn grid_rows(sh: &cella_model::Sheet, r: RangeRef) -> Result<Vec<Vec<Value>>> {
     let (rows, cols) = (r.height() as usize, r.width() as usize);
     if rows > MAX_ROWS || cols > MAX_COLUMNS || rows.saturating_mul(cols) > MAX_CELLS {
         return Err(EngineError::Other(format!(
@@ -494,7 +494,7 @@ fn grid_rows(sh: &gridcraft_model::Sheet, r: RangeRef) -> Result<Vec<Vec<Value>>
     Ok(out)
 }
 
-fn pipeline_error(e: gridcraft_query::QueryError) -> EngineError {
+fn pipeline_error(e: cella_query::QueryError) -> EngineError {
     EngineError::Other(e.to_string())
 }
 
@@ -522,10 +522,10 @@ fn load_into_model(s: &mut Session, name: &str, table: &Table) -> Result<()> {
                 "The data model would hold more than {MAX_MODEL_CELLS} cells (this query adds {cells}). Load it to a sheet instead."
             )));
         }
-        if cx.wb.model.tables.len() >= gridcraft_model::MAX_MODEL_TABLES && !cx.wb.model.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name)) {
-            return Err(EngineError::Other(format!("The data model holds at most {} tables.", gridcraft_model::MAX_MODEL_TABLES)));
+        if cx.wb.model.tables.len() >= cella_model::MAX_MODEL_TABLES && !cx.wb.model.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name)) {
+            return Err(EngineError::Other(format!("The data model holds at most {} tables.", cella_model::MAX_MODEL_TABLES)));
         }
-        let t = gridcraft_model::ModelTable {
+        let t = cella_model::ModelTable {
             name: name.to_string(),
             columns: table.columns.clone(),
             rows: table.rows.clone(),
@@ -656,7 +656,7 @@ fn run_query(s: &mut Session, name: &str) -> Result<Ran> {
         (q.source.clone(), q.steps.clone(), q.load.clone())
     };
     let table = source_table(s, &source)?;
-    let table = gridcraft_query::apply(table, &steps).map_err(pipeline_error)?;
+    let table = cella_query::apply(table, &steps).map_err(pipeline_error)?;
     let sheet = match &load {
         QueryLoad::Sheet { sheet } => Some(load_table(s, name, sheet.as_deref(), &table)?),
         QueryLoad::Model => {
@@ -693,13 +693,13 @@ fn derived_name(s: &Session, from: &str, fallback: &str) -> String {
     let base = base.trim();
     let base = if base.is_empty() { fallback } else { base };
     let queries = s.doc().map(|d| d.wb.queries.clone()).unwrap_or_default();
-    if gridcraft_model::query_name_is_free(&queries, base, None) {
+    if cella_model::query_name_is_free(&queries, base, None) {
         return base.to_string();
     }
     let mut n = 2;
     loop {
         let candidate = format!("{base} ({n})");
-        if gridcraft_model::query_name_is_free(&queries, &candidate, None) {
+        if cella_model::query_name_is_free(&queries, &candidate, None) {
             return candidate;
         }
         n += 1;
@@ -818,8 +818,8 @@ fn add_step(s: &mut Session, p: &Json) -> Result<Json> {
     let (index, mut steps) = {
         let d = s.doc()?;
         let q = d.wb.queries.get(query_index(&d.wb, &name)?).ok_or_else(|| bad("data.query.addStep", "gone"))?;
-        if q.steps.len() >= gridcraft_model::MAX_STEPS {
-            return Err(EngineError::Other(format!("\"{name}\" already holds the most steps a query can ({}).", gridcraft_model::MAX_STEPS)));
+        if q.steps.len() >= cella_model::MAX_STEPS {
+            return Err(EngineError::Other(format!("\"{name}\" already holds the most steps a query can ({}).", cella_model::MAX_STEPS)));
         }
         (q.steps.len(), q.steps.clone())
     };
@@ -976,7 +976,7 @@ fn preview(s: &mut Session, p: &Json) -> Result<Json> {
     let mut table = source_table(s, &source)?;
     let mut failed: Option<Json> = None;
     for (index, step) in steps.iter().enumerate() {
-        match gridcraft_query::apply_step(table.clone(), step, index) {
+        match cella_query::apply_step(table.clone(), step, index) {
             Ok(next) => table = next,
             Err(e) => {
                 failed = Some(json!({"index": index, "label": step.label(), "error": e.to_string()}));
@@ -990,7 +990,7 @@ fn preview(s: &mut Session, p: &Json) -> Result<Json> {
         let step: QueryStep =
             serde_json::from_value(trial.clone()).map_err(|e| bad("data.query.preview", format!("step is not a QueryStep: {e}")))?;
         let at = u32_param(p, "at").map_or(steps.len(), |i| i as usize);
-        match gridcraft_query::apply_step(table.clone(), &step, at) {
+        match cella_query::apply_step(table.clone(), &step, at) {
             Ok(next) => {
                 table = next;
                 failed = None;
@@ -1039,7 +1039,7 @@ fn steps_of(s: &mut Session, p: &Json) -> Result<Json> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridcraft_parquet::ColumnType;
+    use cella_parquet::ColumnType;
 
     #[test]
     fn a_parquet_date_column_is_shifted_to_the_sheets_own_epoch() {

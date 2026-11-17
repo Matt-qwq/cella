@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use gridcraft_core::Value;
-use gridcraft_model::{QueryAggregate, QueryStep};
+use cella_core::Value;
+use cella_model::{QueryAggregate, QueryStep};
 
 use crate::{QueryError, Table, cell_text, compare, convert, matches};
 
@@ -58,13 +58,7 @@ fn demote(table: &mut Table, index: usize, step: &QueryStep) -> Result<(), Query
     Ok(())
 }
 
-fn change_type(
-    table: &mut Table,
-    index: usize,
-    step: &QueryStep,
-    columns: &[String],
-    to: gridcraft_model::QueryColumnType,
-) -> Result<(), QueryError> {
+fn change_type(table: &mut Table, index: usize, step: &QueryStep, columns: &[String], to: cella_model::QueryColumnType) -> Result<(), QueryError> {
     let targets: Vec<usize> = if columns.is_empty() {
         (0..table.width()).collect()
     } else {
@@ -125,8 +119,8 @@ fn rename(table: &mut Table, index: usize, step: &QueryStep, from: &str, to: &st
     if name.is_empty() {
         return Err(invalid(index, step, "the new name is blank"));
     }
-    if name.chars().count() > gridcraft_model::MAX_NAME {
-        return Err(invalid(index, step, format!("the new name is longer than {} characters", gridcraft_model::MAX_NAME)));
+    if name.chars().count() > cella_model::MAX_NAME {
+        return Err(invalid(index, step, format!("the new name is longer than {} characters", cella_model::MAX_NAME)));
     }
     if let Some(other) = table.columns.iter().position(|x| x.eq_ignore_ascii_case(name))
         && other != c
@@ -144,7 +138,7 @@ fn filter(
     index: usize,
     step: &QueryStep,
     column: &str,
-    op: gridcraft_model::QueryFilterOp,
+    op: cella_model::QueryFilterOp,
     value: Option<&str>,
 ) -> Result<(), QueryError> {
     let c = column_index(table, step, index, column)?;

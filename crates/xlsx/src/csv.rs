@@ -3,9 +3,9 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use gridcraft_core::parse::parse_input;
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, Value};
-use gridcraft_model::{Cell, NumFmt, Sheet, StyleId, StyleTable, Workbook};
+use cella_core::parse::parse_input;
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, Value};
+use cella_model::{Cell, NumFmt, Sheet, StyleId, StyleTable, Workbook};
 
 use crate::{CsvOptions, IoError};
 

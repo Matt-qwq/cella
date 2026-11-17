@@ -1,7 +1,7 @@
 //! The pipeline's own tests: each step's contract, the errors a person will hit, and the caps.
 
-use gridcraft_core::{CellError, Value};
-use gridcraft_model::{QueryAggregate, QueryColumnType, QueryFilterOp, QueryStep};
+use cella_core::{CellError, Value};
+use cella_model::{QueryAggregate, QueryColumnType, QueryFilterOp, QueryStep};
 
 use crate::*;
 

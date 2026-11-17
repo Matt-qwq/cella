@@ -13,7 +13,7 @@
 //! (calculated fields without a readable formula, numeric grouping…) becomes a warning.
 //!
 //! A cache that is not a worksheet range — a data model (Power Pivot), an OLAP cube, a connection
-//! — is a report GridCraft does not compute: it is read as a [`PivotTable`] with
+//! — is a report Cella does not compute: it is read as a [`PivotTable`] with
 //! [`PivotSourceKind::DataModel`] and a reason, its cached values stay the cells they are, and
 //! its parts are carried by the pass-through byte for byte. An OLAP engine plugs in here: it fills
 //! in the records instead of the range reader, and the report stops being read-only.
@@ -22,11 +22,11 @@ use crate::IoError;
 use crate::read::Ctx;
 use crate::write::{NS_MAIN, NS_REL, Out, Rels, XML_DECL, abs_range};
 use crate::xml::{El, esc_attr};
-use gridcraft_core::date::datetime_from_serial;
-use gridcraft_core::{CellRef, DateSystem, RangeRef, Value, number_to_text};
-use gridcraft_formula::quote_sheet;
-use gridcraft_model::pivot_item;
-use gridcraft_model::{
+use cella_core::date::datetime_from_serial;
+use cella_core::{CellRef, DateSystem, RangeRef, Value, number_to_text};
+use cella_formula::quote_sheet;
+use cella_model::pivot_item;
+use cella_model::{
     PivotCalcField, PivotCalcItem, PivotDateGroup, PivotField, PivotFilter, PivotFilterArea, PivotFunc, PivotLayout, PivotNumberGroup, PivotShowAs,
     PivotSort, PivotSourceKind, PivotTable, PivotValue, Workbook,
 };

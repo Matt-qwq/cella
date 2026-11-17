@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS};
 
 use crate::adjust::{Adjusted as Canonical, Axis, CellMove, Edit, adjust_canonical};
 use crate::ast::{BinOp, Expr, RefKind, Reference, StructItem, UnOp, line_at};
@@ -92,7 +92,7 @@ impl Shape {
     /// was (one spelling, so one intern key and one text per cell).
     ///
     /// `file_rewrite` travels with the tree: a rewrite that moves names or coordinates keeps the
-    /// syntax of the shape, and the `_xlfn.` half of the answer lives in `gridcraft-xlsx`, above
+    /// syntax of the shape, and the `_xlfn.` half of the answer lives in `cella-xlsx`, above
     /// this crate.
     pub fn rewritten(&self, tree: Expr) -> Option<Shape> {
         let mut shape = Shape::from_canonical(tree);
@@ -196,7 +196,7 @@ fn tree_bytes(e: &Expr) -> u32 {
 /// `xlsx::fmla::needs_file_rewrite`.
 ///
 /// The other half — the `_xlfn.` / `_xlws.` spelling of newer function names — is a file-format
-/// table that lives in `gridcraft-xlsx` (this crate is below it, see `cargo xtask layers`), so a
+/// table that lives in `cella-xlsx` (this crate is below it, see `cargo xtask layers`), so a
 /// reader or writer that interns a shape ORs that answer into [`Shape::file_rewrite`] before
 /// interning (S3 of `plan/SHAPE-SHARING.md`). Neither half depends on the cell's position, which
 /// is why the answer belongs to the shape.

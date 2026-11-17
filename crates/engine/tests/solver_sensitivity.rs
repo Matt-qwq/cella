@@ -6,8 +6,8 @@
 //! and 1 for the three plants, plant 1's hours ranging down by 2 and up without limit, plants 2
 //! and 3 by 6 either way, the doors' profit over 0..7.5 and the windows' over 2 and up.
 
-use gridcraft_core::Value;
-use gridcraft_engine::Session;
+use cella_core::Value;
+use cella_engine::Session;
 use serde_json::{Value as Json, json};
 
 fn run(s: &mut Session, command: &str, params: Json) -> Json {
@@ -26,7 +26,7 @@ fn close(got: &[f64], want: &[f64]) -> bool {
 fn at(s: &Session, sheet: &str, cell: &str) -> Value {
     let d = s.doc().unwrap();
     let sh = d.wb.sheet_index(sheet).and_then(|i| d.wb.sheet(i)).unwrap();
-    sh.value(gridcraft_core::CellRef::parse(cell).unwrap())
+    sh.value(cella_core::CellRef::parse(cell).unwrap())
 }
 
 /// The row of a report whose Cell column reads the given text.
@@ -35,14 +35,14 @@ fn row_of(s: &Session, sheet: &str, text: &str) -> u32 {
     let sh = d.wb.sheet_index(sheet).and_then(|i| d.wb.sheet(i)).unwrap();
     let r = sh.used_range().unwrap();
     (r.start.row..=r.end.row)
-        .find(|row| sh.value(gridcraft_core::CellRef::new(*row, 1)).display() == text)
+        .find(|row| sh.value(cella_core::CellRef::new(*row, 1)).display() == text)
         .unwrap_or_else(|| panic!("no report row holds {text}"))
 }
 
 /// The numbers in cols of the row whose Cell column reads the given text.
 fn report_row(s: &Session, sheet: &str, text: &str, cols: &[u32]) -> Vec<f64> {
     let r = row_of(s, sheet, text);
-    cols.iter().map(|c| at(s, sheet, &format!("{}{}", gridcraft_core::col_to_letters(*c), r + 1)).as_f64().unwrap_or(f64::NAN)).collect()
+    cols.iter().map(|c| at(s, sheet, &format!("{}{}", cella_core::col_to_letters(*c), r + 1)).as_f64().unwrap_or(f64::NAN)).collect()
 }
 
 /// Column D on: the final value, the price or cost, the coefficient or right side, and the two
@@ -85,7 +85,7 @@ fn sensitivity_report_gives_the_wyndor_shadow_prices_and_ranges() {
     assert_eq!(solved["status"], "optimal", "{solved}");
     assert_eq!(solved["reports"], json!(["Sensitivity Report 1"]), "{solved}");
     let rep = "Sensitivity Report 1";
-    assert_eq!(at(&s, rep, "A1"), Value::text("GridCraft Sensitivity Report"));
+    assert_eq!(at(&s, rep, "A1"), Value::text("Cella Sensitivity Report"));
     // The report's shape: Excel's tables' rows under our headers.
     assert_eq!(at(&s, rep, "B5"), Value::text("Cell"));
     // Variable cells: final value, reduced cost, objective coefficient, allowable increase and

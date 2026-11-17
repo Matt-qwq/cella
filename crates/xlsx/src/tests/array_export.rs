@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{Cell, DefinedName, Formula, Sheet, Table, TableColumn, TotalsFn, Workbook};
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::{Cell, DefinedName, Formula, Sheet, Table, TableColumn, TotalsFn, Workbook};
 
 use crate::package::Package;
 use crate::xml::El;

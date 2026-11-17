@@ -1,8 +1,8 @@
 //! More ribbon commands: Chart Design and Format, object arrangement, workbook views, table
 //! tools, Get Data, scripts (Automate), cell checkboxes, theme colours and fonts.
 
-use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::*;
+use cella_core::{CellRef, RangeRef, Value};
+use cella_model::*;
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -446,7 +446,7 @@ fn add_element(s: &mut Session, p: &Json) -> Result<Json> {
                 }
                 let t = trendline_param(p)?;
                 let eligible: Vec<usize> =
-                    targets.into_iter().filter(|i| gridcraft_chart::supports_trendline(gridcraft_chart::series_plot_kind(c, *i))).collect();
+                    targets.into_iter().filter(|i| cella_chart::supports_trendline(cella_chart::series_plot_kind(c, *i))).collect();
                 if eligible.is_empty() {
                     return Err(bad("chart.addElement", "trendlines need a 2-D column, bar, line, area, scatter or bubble series"));
                 }
@@ -586,7 +586,7 @@ fn select_data(s: &mut Session, p: &Json) -> Result<Json> {
             let src = d.wb.sheet(src_si).ok_or(EngineError::NoDocument)?;
             let by_rows = bool_param(p, "byRows").unwrap_or(r.width() > r.height() + 1);
             let series = super::insert::series_from_range(src, r, by_rows);
-            Some((series, format!("{}!{}", gridcraft_formula::quote_sheet(&src.name), r.a1()), by_rows))
+            Some((series, format!("{}!{}", cella_formula::quote_sheet(&src.name), r.a1()), by_rows))
         }
         None => None,
     };
@@ -603,8 +603,8 @@ fn select_data(s: &mut Session, p: &Json) -> Result<Json> {
             };
             let r = RangeRef::parse(body).ok_or_else(|| bad("chart.selectData", "`categories` is not a range"))?;
             let name = d.wb.sheet(si).map(|sh| sh.name.clone()).ok_or(EngineError::NoDocument)?;
-            let abs = |c: CellRef| format!("${}${}", gridcraft_core::col_to_letters(c.col), c.row + 1);
-            Some(Some(format!("{}!{}:{}", gridcraft_formula::quote_sheet(&name), abs(r.start), abs(r.end))))
+            let abs = |c: CellRef| format!("${}${}", cella_core::col_to_letters(c.col), c.row + 1);
+            Some(Some(format!("{}!{}:{}", cella_formula::quote_sheet(&name), abs(r.start), abs(r.end))))
         }
     };
     let mut remove: Vec<usize> = p
@@ -833,7 +833,7 @@ fn ruler(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"on": on}))
 }
 
-/// The stash keys of the workbook-level JSON GridCraft keeps in hidden defined names: the custom
+/// The stash keys of the workbook-level JSON Cella keeps in hidden defined names: the custom
 /// views, the scripts and the Watch Window list. Each is stored as `_gc_<key>_<n>` (see
 /// [`super::stash`] for the chunking, the limits and the escape); a workbook written before that
 /// keeps it in one `_sc_<key>` name, which is still read.
@@ -1132,8 +1132,8 @@ fn from_csv(s: &mut Session, p: &Json) -> Result<Json> {
             let delim = str_param(p, "delimiter")
                 .and_then(|d| d.chars().next())
                 .unwrap_or(if text.lines().next().is_some_and(|l| l.contains('\t')) { '\t' } else { ',' });
-            let opts = gridcraft_xlsx::CsvOptions { delimiter: delim as u8, ..Default::default() };
-            let wb = gridcraft_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+            let opts = cella_xlsx::CsvOptions { delimiter: delim as u8, ..Default::default() };
+            let wb = cella_xlsx::read_csv(&bytes, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
             let sh = wb.sheet(0).ok_or(EngineError::NoDocument)?;
             let Some(u) = sh.used_range() else { return Err(EngineError::Other("The file is empty.".into())) };
             (u.start.row..=u.end.row)
@@ -1270,7 +1270,7 @@ pub(crate) fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
         .as_object()
         .map(|o| o.iter().map(|(k, v)| json!({"name": k, "steps": v.as_array().map_or(0, Vec::len), "trusted": trusted})).collect())
         .unwrap_or_default();
-    // A preserved VBA project is reported alongside GridCraft's own scripts; it is carried on
+    // A preserved VBA project is reported alongside Cella's own scripts; it is carried on
     // save but never executed here, so it has no step count.
     if let Some(bytes) = &wb.vba_project {
         list.push(json!({"name": "(VBA)", "steps": 0, "kind": "vba", "size": bytes.len(), "executed": false}));
@@ -1278,7 +1278,7 @@ pub(crate) fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
     Ok(Json::Array(list))
 }
 
-/// Whether `wb` carries GridCraft scripts (a workbook opened with them starts untrusted).
+/// Whether `wb` carries Cella scripts (a workbook opened with them starts untrusted).
 pub(crate) fn has_scripts(wb: &Workbook) -> bool {
     stash_map(wb, SCRIPTS_KEY).as_object().is_some_and(|o| !o.is_empty())
 }
@@ -1483,7 +1483,7 @@ pub(crate) fn rename_script(s: &mut Session, p: &Json) -> Result<Json> {
 pub const CHECKBOX_FORMAT: &str = "\"☐\";\"☐\";\"☐\";[=1]\"☑\"";
 
 /// Whether `c` has checkbox formatting.
-pub(crate) fn is_checkbox_cell(wb: &gridcraft_model::Workbook, sh: &gridcraft_model::Sheet, c: CellRef) -> bool {
+pub(crate) fn is_checkbox_cell(wb: &cella_model::Workbook, sh: &cella_model::Sheet, c: CellRef) -> bool {
     wb.styles.get(sh.style_id(c)).num_fmt.as_str() == "checkbox"
 }
 
@@ -1614,7 +1614,7 @@ fn recently_used(s: &mut Session, _: &Json) -> Result<Json> {
             continue;
         }
         let input = p.get("input").and_then(Json::as_str).unwrap_or("");
-        if let Ok(e) = gridcraft_formula::parse(input.trim_start_matches('=')) {
+        if let Ok(e) = cella_formula::parse(input.trim_start_matches('=')) {
             for f in e.functions() {
                 if !seen.iter().any(|x| x == f) {
                     seen.push(f.to_string());

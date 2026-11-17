@@ -7,10 +7,10 @@
 //! before egui sees it (there is no `egui::Key` variant), so Shift+F10 is the reachable pair. See
 //! `docs/ui-parity.md` (keyboard audit).
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, Value};
+use cella_ui_egui::{SheetApp, grid};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, pos2};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, Value};
-use gridcraft_ui_egui::{SheetApp, grid};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

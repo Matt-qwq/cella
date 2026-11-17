@@ -1,9 +1,9 @@
 [package]
-name = "gridcraft-core"
+name = "cella-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft core types: cell addresses, values, errors, date serials, fonts and the text engine"
+description = "Cella core types: cell addresses, values, errors, date serials, fonts and the text engine"
 
 [lints]
 workspace = true

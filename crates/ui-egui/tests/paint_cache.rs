@@ -2,11 +2,11 @@
 //! too slow to rebuild every frame, so the grid keeps it until the document changes: a repaint
 //! that follows no change lays nothing out, and an edit lays it out again.
 
+use cella_engine::Session;
+use cella_engine::cf::stats_built;
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::grid::object_layouts;
 use egui::vec2;
-use gridcraft_engine::Session;
-use gridcraft_engine::cf::stats_built;
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::grid::object_layouts;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

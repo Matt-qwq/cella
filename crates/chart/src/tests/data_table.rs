@@ -12,7 +12,7 @@ fn table_chart(kind: ChartKind) -> Chart {
     c.y_title = None;
     c.legend = LegendPos::None;
     c.data_labels = false;
-    c.data_table = Some(gridcraft_model::ChartDataTable::default());
+    c.data_table = Some(cella_model::ChartDataTable::default());
     c
 }
 
@@ -103,7 +103,7 @@ fn the_legend_key_and_the_table_are_independent_of_the_chart_legend() {
     let header_y = at(&p, "Jan").1;
     assert_eq!(keys(&p, header_y), 1, "one key row per series, with the legend itself off");
     let mut no_keys = c.clone();
-    no_keys.data_table = Some(gridcraft_model::ChartDataTable { show_keys: false, ..Default::default() });
+    no_keys.data_table = Some(cella_model::ChartDataTable { show_keys: false, ..Default::default() });
     let p = render(&no_keys, &d, 600.0, 400.0, &ApproxMeasure);
     assert_eq!(keys(&p, at(&p, "Jan").1), 0);
     // A table-less chart draws no header row at all, and the axis labels come back.
@@ -120,7 +120,7 @@ fn the_three_border_sets_are_drawn_independently() {
     d.category_levels = vec![vec!["2025".into(), "".into(), "".into(), "2026".into(), "".into(), "".into()]];
     assert_eq!(d.series.len(), 3);
     for (h, v, outline, want) in [(false, false, false, 0), (true, false, false, 4), (false, true, false, 6), (false, false, true, 4)] {
-        c.data_table = Some(gridcraft_model::ChartDataTable { horizontal_border: h, vertical_border: v, outline, show_keys: false });
+        c.data_table = Some(cella_model::ChartDataTable { horizontal_border: h, vertical_border: v, outline, show_keys: false });
         let p = render(&c, &d, 900.0, 600.0, &ApproxMeasure);
         // The outer level's name is in the table's first row, so everything below it is the table.
         let year_y = at(&p, "2025").1;

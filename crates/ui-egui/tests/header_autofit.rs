@@ -1,8 +1,8 @@
 //! Header AutoFit and resize gestures, driven through real egui pointer events.
 
+use cella_engine::Session;
+use cella_ui_egui::{SheetApp, grid::Geo};
 use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
-use gridcraft_engine::Session;
-use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 fn harness(selection: &str) -> egui_kittest::Harness<'static, SheetApp> {
@@ -184,9 +184,9 @@ fn table_filter_autofit_works_through_command_and_header_double_click() {
             let app = h.state();
             let sheet = app.session.active().unwrap().wb.active().unwrap();
             let geo = Geo::new(sheet, app.grid.rect.unwrap(), app.view().scroll);
-            let cell = gridcraft_engine::core::CellRef::new(0, 0);
+            let cell = cella_engine::core::CellRef::new(0, 0);
             let rect = geo.cell_rect(sheet, cell);
-            let button = gridcraft_ui_egui::grid::filter_button_rect(&geo, sheet, cell);
+            let button = cella_ui_egui::grid::filter_button_rect(&geo, sheet, cell);
             let style = app.session.active().unwrap().wb.styles.get(sheet.style_id(cell));
             let measure = app.session.text_width.as_ref().expect("logic() installs the grid's font measure");
             let text = "Quarterly Revenue";
@@ -198,7 +198,7 @@ fn table_filter_autofit_works_through_command_and_header_double_click() {
             // case a constant-slot fit would fail; above 100% the slot stays 12.5 pt.
             if zoom <= 100 {
                 let screen_slot = slot * geo.z;
-                let at_100 = 12.5 * 96.0 / 72.0 * gridcraft_ui_egui::grid::DISPLAY_SCALE;
+                let at_100 = 12.5 * 96.0 / 72.0 * cella_ui_egui::grid::DISPLAY_SCALE;
                 assert!(
                     (screen_slot - at_100).abs() < 0.01,
                     "the dropdown must keep its screen width below 100%: zoom={zoom}, slot {screen_slot}px, 100% slot {at_100}px"

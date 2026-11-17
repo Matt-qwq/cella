@@ -13,8 +13,8 @@
 
 use std::io::Read;
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS};
-use gridcraft_model::{Anchor, AnchorMode, Image, Shape, ShapeKind, Sheet};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS};
+use cella_model::{Anchor, AnchorMode, Image, Shape, ShapeKind, Sheet};
 
 /// Deepest nesting of OfficeArt containers followed (the real tree is four levels).
 const MAX_DEPTH: usize = 8;
@@ -296,11 +296,11 @@ fn read_shape_container(container: &[u8], sheet: &Sheet, out: &mut Vec<Shape>, s
         id: 0,
         kind,
         anchor,
-        fill: gridcraft_model::Color::default(),
-        line: gridcraft_model::Color::default(),
+        fill: cella_model::Color::default(),
+        line: cella_model::Color::default(),
         text: String::new(),
         alt: None,
-        format: gridcraft_model::ShapeFormat::default(),
+        format: cella_model::ShapeFormat::default(),
     });
 }
 

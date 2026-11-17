@@ -1,9 +1,9 @@
 //! Opening a password-protected workbook asks for its password (#11).
 
+use cella_engine::{Session, core::CellRef, core::Value};
+use cella_ui_egui::{Inbox, Services, SheetApp};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::{Session, core::CellRef, core::Value};
-use gridcraft_ui_egui::{Inbox, Services, SheetApp};
 use serde_json::json;
 
 const PW: &str = "synthetic-pw-8842";
@@ -28,13 +28,13 @@ fn encrypted_bytes() -> Vec<u8> {
     let mut s = Session::new();
     s.new_workbook();
     s.run("cell.set", json!({"cell": "A1", "input": "42"})).unwrap();
-    let xlsx = gridcraft_engine::io::save_bytes(&s.active().unwrap().wb, "book.xlsx").unwrap();
-    gridcraft_xlsx::testing::encrypt_workbook(&xlsx, PW)
+    let xlsx = cella_engine::io::save_bytes(&s.active().unwrap().wb, "book.xlsx").unwrap();
+    cella_xlsx::testing::encrypt_workbook(&xlsx, PW)
 }
 
 /// `encrypted_bytes()` written to `Secret.xlsx` in a fresh temp dir named after `tag`.
 fn encrypted_file(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("gridcraft-encrypted-ui-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cella-encrypted-ui-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Secret.xlsx");
     std::fs::write(&path, encrypted_bytes()).unwrap();
@@ -68,7 +68,7 @@ fn opening_an_encrypted_file_asks_for_its_password() {
     h.get_by_label("   OK   ").click();
     h.run_steps(3);
     let msg = h.state().message.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
-    assert!(msg.contains(gridcraft_engine::io::WRONG_PASSWORD), "{msg}");
+    assert!(msg.contains(cella_engine::io::WRONG_PASSWORD), "{msg}");
     assert!(!msg.contains("wrong-guess"), "the password is never quoted: {msg}");
     assert_eq!(dialog(&h).as_deref(), Some("openPassword"));
     assert_eq!(h.state().dialog.as_ref().and_then(|d| d.values.get("password")), Some(&json!("")));
@@ -131,7 +131,7 @@ fn an_untouched_password_field_is_incorrect_not_required() {
     h.get_by_label("   OK   ").click();
     h.run_steps(3);
     let msg = h.state().message.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
-    assert!(msg.contains(gridcraft_engine::io::WRONG_PASSWORD), "{msg}");
+    assert!(msg.contains(cella_engine::io::WRONG_PASSWORD), "{msg}");
     assert_eq!(dialog(&h).as_deref(), Some("openPassword"));
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -140,7 +140,7 @@ fn an_untouched_password_field_is_incorrect_not_required() {
 fn the_backstage_closes_once_the_password_opens_the_workbook() {
     let path = encrypted_file("backstage");
     let mut h = harness(Services::default());
-    h.state_mut().backstage = Some(gridcraft_ui_egui::backstage::Backstage::new(gridcraft_ui_egui::backstage::Page::Open));
+    h.state_mut().backstage = Some(cella_ui_egui::backstage::Backstage::new(cella_ui_egui::backstage::Page::Open));
     h.state_mut().open_path(&path.to_string_lossy());
     h.run_steps(3);
     h.state_mut().dialog.as_mut().unwrap().values.insert("password".into(), json!(PW));
@@ -153,7 +153,7 @@ fn the_backstage_closes_once_the_password_opens_the_workbook() {
 
 #[test]
 fn app_open_over_the_control_channel_never_opens_a_dialog() {
-    use gridcraft_ui_egui::control::{Outcome, handle};
+    use cella_ui_egui::control::{Outcome, handle};
     let path = encrypted_file("control");
     let p = path.to_string_lossy().to_string();
     let mut h = harness(Services::default());
@@ -164,7 +164,7 @@ fn app_open_over_the_control_channel_never_opens_a_dialog() {
     };
     let r = reply(handle(h.state_mut(), &ctx, "app.open", json!({"path": p})));
     assert_eq!(r["ok"], json!(false), "{r}");
-    assert!(r["error"].as_str().unwrap_or_default().contains(gridcraft_engine::io::PASSWORD_REQUIRED), "{r}");
+    assert!(r["error"].as_str().unwrap_or_default().contains(cella_engine::io::PASSWORD_REQUIRED), "{r}");
     assert_eq!(dialog(&h), None, "programmatic calls never open dialogs");
     let r = reply(handle(h.state_mut(), &ctx, "app.open", json!({"path": p, "password": PW})));
     assert_eq!(r["ok"], json!(true), "{r}");

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellError, CellRef, RangeRef, Value};
-use gridcraft_model::{Cell, CellPicture, Formula, Sheet, Workbook};
+use cella_core::{CellError, CellRef, RangeRef, Value};
+use cella_model::{Cell, CellPicture, Formula, Sheet, Workbook};
 
 use super::{declaring, make_zip};
 use crate::package::Package;
@@ -245,7 +245,7 @@ fn picture_metadata_limits_and_relationship_read_errors_do_not_block_workbooks()
     replace(&mut parts, "sheets/data.xml", "</sheetData>", "<row r=\"3\"><c r=\"C3\"><v>42</v></c></row></sheetData>");
     let oversized_xml = declaring(zip(&parts), "rich/values.xml", 16 * 1024 * 1024 + 1);
     // A relationship part over this process's per-part cap: skipped, never a reason not to open.
-    // The cap follows GRIDCRAFT_MAX_PART_MB, so the forged size has to follow it too.
+    // The cap follows CELLA_MAX_PART_MB, so the forged size has to follow it too.
     let Ok(over) = u32::try_from(crate::max_part() + 1) else { return };
     let broken_rels = declaring(zip(&parts), "rich/_rels/images.xml.rels", over);
     let (_, values) = parts.iter_mut().find(|(path, _)| path == "rich/values.xml").unwrap();

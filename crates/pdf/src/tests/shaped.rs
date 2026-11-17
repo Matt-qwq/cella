@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::text::{FontSize, ShapedText, TextEngine};
+use cella_core::text::{FontSize, ShapedText, TextEngine};
 
 use super::*;
 
@@ -15,8 +15,8 @@ fn ubuntu() -> Face {
 
 /// An embeddable face for `script` from the platform's fonts (or `CRAFT_FONTS_DIR`), if this
 /// machine has one. Script tests skip with a message when it does not, like the core text tests.
-fn script_face(script: gridcraft_core::fonts::Script) -> Option<Face> {
-    let font = gridcraft_core::fonts::resolve_for_script(script).ok()?;
+fn script_face(script: cella_core::fonts::Script) -> Option<Face> {
+    let font = cella_core::fonts::resolve_for_script(script).ok()?;
     Face::parse(font.data).ok()
 }
 
@@ -202,7 +202,7 @@ fn a_composed_accent_extracts_as_both_characters() {
 
 #[test]
 fn an_rtl_run_is_drawn_in_visual_order() {
-    let face = script_face!(gridcraft_core::fonts::Script::Arabic);
+    let face = script_face!(cella_core::fonts::Script::Arabic);
     let text = "مرحبا";
     let shaped = shape_with(&face, text, Direction::Auto, 20.0);
     assert_eq!(shaped.runs.len(), 1);
@@ -231,7 +231,7 @@ fn an_rtl_run_is_drawn_in_visual_order() {
 
 #[test]
 fn a_right_to_left_base_direction_mirrors_neutral_text() {
-    let face = script_face!(gridcraft_core::fonts::Script::Arabic);
+    let face = script_face!(cella_core::fonts::Script::Arabic);
     let (doc, content) = shaped_page(&face, "(", Direction::Rtl);
     let cids = shown_cids(&content);
     let font = doc.font.borrow();
@@ -243,7 +243,7 @@ fn a_right_to_left_base_direction_mirrors_neutral_text() {
 
 #[test]
 fn a_multi_glyph_cluster_extracts_once_and_spans_its_whole_advance() {
-    let face = script_face!(gridcraft_core::fonts::Script::Devanagari);
+    let face = script_face!(cella_core::fonts::Script::Devanagari);
     let text = "नि";
     let size = 20.0;
     let shaped = shape_with(&face, text, Direction::Ltr, size);
@@ -284,7 +284,7 @@ fn a_multi_glyph_cluster_extracts_once_and_spans_its_whole_advance() {
 
 #[test]
 fn a_glyph_that_extracts_differently_gets_its_own_cid() {
-    let face = script_face!(gridcraft_core::fonts::Script::Devanagari);
+    let face = script_face!(cella_core::fonts::Script::Devanagari);
     // The base न stands alone (carrier, full advance) and again inside नि (component, no advance).
     let text = "न नि";
     let (doc, content) = shaped_page(&face, text, Direction::Ltr);
@@ -308,7 +308,7 @@ fn a_glyph_that_extracts_differently_gets_its_own_cid() {
 
 #[test]
 fn a_thai_mark_is_raised_without_advancing() {
-    let face = script_face!(gridcraft_core::fonts::Script::Thai);
+    let face = script_face!(cella_core::fonts::Script::Thai);
     let text = "ก่";
     let size = 20.0;
     let shaped = shape_with(&face, text, Direction::Ltr, size);
@@ -349,8 +349,8 @@ fn a_thai_mark_is_raised_without_advancing() {
 fn a_string_over_the_shape_limit_keeps_the_stored_order_path() {
     let mut font = FontUse::new(ubuntu());
     assert!(font.shape("Ж", Direction::Ltr, 12.0).is_some());
-    let over = "Ж".repeat(gridcraft_core::text::MAX_TEXT_BYTES / 2 + 1);
-    assert!(over.len() > gridcraft_core::text::MAX_TEXT_BYTES);
+    let over = "Ж".repeat(cella_core::text::MAX_TEXT_BYTES / 2 + 1);
+    assert!(over.len() > cella_core::text::MAX_TEXT_BYTES);
     assert!(font.shape(&over, Direction::Ltr, 12.0).is_none(), "over the engine limit: fall back");
 }
 

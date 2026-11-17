@@ -1,9 +1,9 @@
 [package]
-name = "gridcraft-xlsx"
+name = "cella-xlsx"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GridCraft file formats: XLSX (SpreadsheetML) and CSV import/export"
+description = "Cella file formats: XLSX (SpreadsheetML) and CSV import/export"
 
 [lints]
 workspace = true
@@ -18,9 +18,9 @@ test-support = []
 # structures, and a second hand-written definition of it would be a copy that drifts from the model.
 # The queries part stays hand-written. serde_json is also the oracle of tests/queries.rs, which
 # proves that part's bytes are the model's own serde shape.
-gridcraft-core = { workspace = true }
-gridcraft-formula = { workspace = true }
-gridcraft-model = { workspace = true }
+cella-core = { workspace = true }
+cella-formula = { workspace = true }
+cella-model = { workspace = true }
 thiserror = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }

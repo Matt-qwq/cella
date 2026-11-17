@@ -9,8 +9,8 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS};
-use gridcraft_model::{Anchor, AnchorMode, Color, Equation, Image, Shape, ShapeFormat, ShapeKind, ShapeTextAlign, ShapeTextAnchor, Sheet, Theme};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS};
+use cella_model::{Anchor, AnchorMode, Color, Equation, Image, Shape, ShapeFormat, ShapeKind, ShapeTextAlign, ShapeTextAnchor, Sheet, Theme};
 use quick_xml::events::Event;
 
 use crate::IoError;
@@ -230,7 +230,7 @@ pub fn read_drawing(cx: &mut Ctx<'_>, part: &str, sheet: &mut Sheet) -> Result<(
                         // would dangle.
                         let rels = cx.pkg.rels(&target)?;
                         // A kept part is written back on its own, so it may only carry relationships
-                        // GridCraft writes again: a chart's own style and colour parts are, for a
+                        // Cella writes again: a chart's own style and colour parts are, for a
                         // chartex part and a classic one alike.
                         let kept_ok =
                             rels.is_empty() || rels.iter().all(|r| !r.external && matches!(r.kind.as_str(), "chartStyle" | "chartColorStyle"));
@@ -249,7 +249,7 @@ pub fn read_drawing(cx: &mut Ctx<'_>, part: &str, sheet: &mut Sheet) -> Result<(
                                     ch.id = cx.next_object_id();
                                     ch.anchor = anchor;
                                     ch.alt = read_alt(obj.path(&["nvGraphicFramePr", "cNvPr"]));
-                                    // The part is kept so the options GridCraft does not model survive
+                                    // The part is kept so the options Cella does not model survive
                                     // a save: a classic part is patched element by element, a
                                     // chartex part too (its hidden `_xlchart` names are recorded on
                                     // it by the reader and written again).
@@ -262,14 +262,14 @@ pub fn read_drawing(cx: &mut Ctx<'_>, part: &str, sheet: &mut Sheet) -> Result<(
                                     }
                                     sheet.charts.push(ch);
                                 }
-                                // A kind GridCraft cannot model (3-D, surface, pie of pie, Pareto, a
+                                // A kind Cella cannot model (3-D, surface, pie of pie, Pareto, a
                                 // filled map) is kept whole with its frame: rebuilding it from the
                                 // model would silently lose the chart.
                                 None if kept_ok => {
                                     let id = cx.next_object_id();
-                                    cx.warn(format!("chart {target} is a kind GridCraft does not model: kept as it was, not drawn"));
+                                    cx.warn(format!("chart {target} is a kind Cella does not model: kept as it was, not drawn"));
                                     let (style, colors) = crate::chartex::read_style_parts(cx, &rels);
-                                    sheet.kept_charts.push(gridcraft_model::KeptChart {
+                                    sheet.kept_charts.push(cella_model::KeptChart {
                                         id,
                                         anchor,
                                         xml: text.into(),
@@ -591,9 +591,9 @@ pub fn srgb(c: &Color, theme: &Theme) -> Option<String> {
 /// One drawing object to write.
 pub enum Obj<'a> {
     Image(&'a Image, String),
-    Chart(&'a gridcraft_model::Chart, String),
-    /// A chart of a kind GridCraft does not model: its frame only (the part is written as it was).
-    RawChart(&'a gridcraft_model::KeptChart, String),
+    Chart(&'a cella_model::Chart, String),
+    /// A chart of a kind Cella does not model: its frame only (the part is written as it was).
+    RawChart(&'a cella_model::KeptChart, String),
     Shape(&'a Shape),
     /// An equation: a text-box shape whose paragraph is the `a14:m` math extension.
     Equation(&'a Equation),
@@ -913,7 +913,7 @@ mod tests {
         "<m:oMathPara><m:oMath><m:f><m:num><m:r><m:t>1</m:t></m:r></m:num><m:den><m:r><m:t>2</m:t></m:r></m:den></m:f></m:oMath></m:oMathPara>";
 
     /// A drawing part holding one equation (a shape whose text body is math) and one plain text box,
-    /// written by hand in code: an equation is invisible to GridCraft only when nothing reads it.
+    /// written by hand in code: an equation is invisible to Cella only when nothing reads it.
     fn drawing() -> String {
         format!(
             r##"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(eq.source, "12", "the linear form is the runs, flattened");
         assert_eq!(eq.omml.as_deref(), Some(FRACTION), "the file's math is kept verbatim");
         assert_eq!(eq.alt.as_deref(), Some("a half"), "alt text comes with it");
-        assert_eq!(eq.line, gridcraft_model::Color::Auto, "a:ln/a:noFill is no outline");
+        assert_eq!(eq.line, cella_model::Color::Auto, "a:ln/a:noFill is no outline");
         assert_eq!(eq.anchor.width, 128.0, "the box is the cells it spans: two default columns wide");
     }
 

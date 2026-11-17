@@ -6,8 +6,8 @@
 //! again and replayed. The replay is compared against the edited steps run by hand, cell by cell
 //! and format by format, so a script that skipped, reordered or lost a step shows up.
 
-use gridcraft_core::CellRef;
-use gridcraft_engine::Session;
+use cella_core::CellRef;
+use cella_engine::Session;
 use serde_json::{Value as Json, json};
 
 /// The sequence the test records. Every step is undoable and rewrites the same value, so the
@@ -63,7 +63,7 @@ fn content(s: &Session) -> Vec<String> {
             out.push(format!("{} table {} {}", sh.name, t.name, t.range.a1()));
         }
     }
-    for n in wb.names.iter().filter(|n| gridcraft_engine::cmd::stash::item_key(&n.name).is_none()) {
+    for n in wb.names.iter().filter(|n| cella_engine::cmd::stash::item_key(&n.name).is_none()) {
         out.push(format!("name {} {}", n.name, n.formula));
     }
     out
@@ -116,9 +116,9 @@ fn a_recorded_script_with_an_edited_step_replays_to_the_same_workbook() {
     assert_eq!(content(&s), empty, "editing the script changes no cell");
 
     // 4. The script travels with the file; opening it starts the scripts disabled.
-    let bytes = gridcraft_engine::io::save_bytes(&s.doc().expect("doc").wb, "book.xlsx").expect("save");
+    let bytes = cella_engine::io::save_bytes(&s.doc().expect("doc").wb, "book.xlsx").expect("save");
     let mut replayed = Session::new();
-    run(&mut replayed, "file.open", json!({"name": "book.xlsx", "base64": gridcraft_engine::io::base64_encode(&bytes)}));
+    run(&mut replayed, "file.open", json!({"name": "book.xlsx", "base64": cella_engine::io::base64_encode(&bytes)}));
     assert!(!replayed.active().expect("doc").scripts_trusted, "a script that came with a file starts disabled");
     assert_eq!(content(&replayed), empty, "the file holds the script, not what it does");
     let ran = run(&mut replayed, "automate.runScript", json!({"name": "Build", "trusted": true}));

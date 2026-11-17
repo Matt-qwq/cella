@@ -91,7 +91,7 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
         s.ui_requests.push(crate::UiRequest::Dialog("open".into(), json!({})));
         return ok();
     };
-    let encrypted = from_file.is_none() && gridcraft_xlsx::sniff(&bytes) == gridcraft_xlsx::Format::Encrypted;
+    let encrypted = from_file.is_none() && cella_xlsx::sniff(&bytes) == cella_xlsx::Format::Encrypted;
     let (mut wb, warnings) = match from_file {
         Some((wb, warnings)) => (wb, warnings),
         None => crate::io::open_bytes_with(&name, &bytes, password, bool_param(p, "csvAsText").unwrap_or(false))?,
@@ -106,7 +106,7 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     };
     let imported =
         matches!(crate::io::FileKind::from_path(&name), Some(crate::io::FileKind::Ods | crate::io::FileKind::Xlsb | crate::io::FileKind::Xls))
-            || matches!(gridcraft_xlsx::sniff(&bytes), gridcraft_xlsx::Format::Ods | gridcraft_xlsx::Format::Xlsb | gridcraft_xlsx::Format::Xls);
+            || matches!(cella_xlsx::sniff(&bytes), cella_xlsx::Format::Ods | cella_xlsx::Format::Xlsb | cella_xlsx::Format::Xls);
     let title = if imported {
         format!("{} (imported).xlsx", std::path::Path::new(&name).file_stem().and_then(|n| n.to_str()).unwrap_or("Book"))
     } else {
@@ -125,8 +125,8 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     // An encrypted workbook is saved back with the password it was opened with, and with the
     // scheme it was written in: a Standard file stays Standard instead of silently changing form.
     doc.password = if encrypted { password.map(str::to_string) } else { None };
-    doc.encryption = if encrypted { gridcraft_xlsx::encryption_scheme(&bytes).unwrap_or_default() } else { Default::default() };
-    if crate::io::FileKind::from_path(&name).is_none() && gridcraft_xlsx::sniff(&bytes) == gridcraft_xlsx::Format::Xlsx {
+    doc.encryption = if encrypted { cella_xlsx::encryption_scheme(&bytes).unwrap_or_default() } else { Default::default() };
+    if crate::io::FileKind::from_path(&name).is_none() && cella_xlsx::sniff(&bytes) == cella_xlsx::Format::Xlsx {
         doc.content_kind = Some(crate::io::FileKind::Xlsx);
     }
     let i = s.add_document(doc);
@@ -147,8 +147,8 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
 /// The scheme a password-protected save writes: the `encryption` param (`"agile"` — the default —
 /// or `"standard"`), else the one the document's file was written with. An unknown name is an
 /// error that lists the two accepted values.
-fn scheme_param(cmd: &str, p: &Json, d: &DocState) -> Result<gridcraft_xlsx::EncryptionScheme> {
-    use gridcraft_xlsx::EncryptionScheme;
+fn scheme_param(cmd: &str, p: &Json, d: &DocState) -> Result<cella_xlsx::EncryptionScheme> {
+    use cella_xlsx::EncryptionScheme;
     match str_param(p, "encryption") {
         Some(name) => EncryptionScheme::from_name(name).ok_or_else(|| {
             bad(
@@ -182,7 +182,7 @@ fn save(s: &mut Session, p: &Json) -> Result<Json> {
     // The document's own file keeps the format its content had when opened; any other path
     // goes by its extension. Relative paths to linked workbooks are rewritten for the new folder.
     let kind = crate::io::FileKind::from_path(&path).or(d.content_kind.filter(|_| d.path.as_deref() == Some(path.as_str())));
-    let rebased = crate::io::source_dir(&path).and_then(|f| gridcraft_xlsx::rebase_links(&d.wb, &f));
+    let rebased = crate::io::source_dir(&path).and_then(|f| cella_xlsx::rebase_links(&d.wb, &f));
     let wb = rebased.as_ref().unwrap_or(&d.wb);
     let bytes = match kind {
         Some(kind) => crate::io::save_bytes_as_with(wb, &path, kind, password.as_deref(), scheme)?,
@@ -276,7 +276,7 @@ fn export_parquet(s: &mut Session, p: &Json) -> Result<Json> {
     let (bytes, report) = {
         let d = s.doc()?;
         let sh = d.wb.sheet(sheet).ok_or_else(|| bad("file.exportParquet", "no such sheet"))?;
-        gridcraft_parquet::export_sheet(sh, gridcraft_parquet::Options { header, range }).map_err(|e| bad("file.exportParquet", e.to_string()))?
+        cella_parquet::export_sheet(sh, cella_parquet::Options { header, range }).map_err(|e| bad("file.exportParquet", e.to_string()))?
     };
     let target = if path.to_ascii_lowercase().ends_with(".parquet") { path } else { format!("{path}.parquet") };
     crate::io::write_file(&target, &bytes)?;
@@ -314,9 +314,9 @@ fn options(s: &mut Session, _: &Json) -> Result<Json> {
     let calculation = s.active().map(|d| {
         let c = &d.wb.calc;
         let mode = match c.mode {
-            gridcraft_model::CalcMode::Automatic => "automatic",
-            gridcraft_model::CalcMode::AutomaticExceptTables => "automaticExceptTables",
-            gridcraft_model::CalcMode::Manual => "manual",
+            cella_model::CalcMode::Automatic => "automatic",
+            cella_model::CalcMode::AutomaticExceptTables => "automaticExceptTables",
+            cella_model::CalcMode::Manual => "manual",
         };
         json!({"mode": mode, "iterative": c.iterative, "maxIterations": c.max_iterations, "maxChange": c.max_change, "precisionAsDisplayed": c.precision_as_displayed})
     });

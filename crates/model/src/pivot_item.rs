@@ -12,8 +12,8 @@
 //! and the caller resolves them against the field's real items (so a self-reference is simply an
 //! unknown name).
 
-use gridcraft_core::{CellError, Value};
-use gridcraft_formula::{BinOp, Expr, UnOp};
+use cella_core::{CellError, Value};
+use cella_formula::{BinOp, Expr, UnOp};
 
 /// Longest formula accepted, in characters (Excel's limit for formula contents).
 pub const MAX_FORMULA_LEN: usize = 8_192;
@@ -178,7 +178,7 @@ pub fn compile(field: &str, formula: &str) -> Result<Compiled, String> {
             }
         }
     }
-    let body = gridcraft_formula::parse(&out).map_err(|e| format!("The formula is not valid: {e}"))?;
+    let body = cella_formula::parse(&out).map_err(|e| format!("The formula is not valid: {e}"))?;
     let mut nodes = 0usize;
     body.walk(&mut |_| nodes += 1);
     if nodes > MAX_TERMS {

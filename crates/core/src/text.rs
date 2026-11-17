@@ -32,7 +32,7 @@
 //! not push the working set out.
 //!
 //! ```
-//! use gridcraft_core::text::{Direction, FontSize, TextEngine, TextError};
+//! use cella_core::text::{Direction, FontSize, TextEngine, TextError};
 //!
 //! let mut engine = TextEngine::new();
 //! // The bytes are validated once, here: a phone book is not a font, and nothing panics.

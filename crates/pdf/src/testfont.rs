@@ -61,7 +61,7 @@ pub(crate) struct Builder {
 
 impl Default for Builder {
     fn default() -> Self {
-        Builder { glyphs: vec![Vec::new()], advances: vec![600], cmap: Vec::new(), loca_long: true, family: "GridCraft Synthetic".to_string() }
+        Builder { glyphs: vec![Vec::new()], advances: vec![600], cmap: Vec::new(), loca_long: true, family: "Cella Synthetic".to_string() }
     }
 }
 

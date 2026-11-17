@@ -1,7 +1,7 @@
 //! PivotTable slicers and timelines on the sheet: a titled frame of value tiles, and a timeline's
 //! caption, time unit and full-range track.
 //!
-//! This is the *PivotTable* widget ([`gridcraft_engine::model::PivotSlicer`]); a table slicer is
+//! This is the *PivotTable* widget ([`cella_engine::model::PivotSlicer`]); a table slicer is
 //! drawn by [`crate::chartview::paint_slicers`]. Everything here is drawing and hit-testing: the
 //! commands (`slicer.toggle`, `slicer.clear`, `slicer.move`, `slicer.delete`, `slicer.setStyle`)
 //! live in the engine, and the grid calls them in one undo step.
@@ -21,9 +21,9 @@
 //! [`widget_rect`] clamps the frame, text is elided before it is laid out, and only the visible
 //! tiles are laid out and painted (never one rect per item).
 
+use cella_engine::core::{MAX_COLS, MAX_ROWS};
+use cella_engine::model::{Anchor, PivotSlicer, PivotTimeline, Sheet, TimeUnit, TimelineRange, Workbook};
 use egui::{Align2, Color32, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
-use gridcraft_engine::core::{MAX_COLS, MAX_ROWS};
-use gridcraft_engine::model::{Anchor, PivotSlicer, PivotTimeline, Sheet, TimeUnit, TimelineRange, Workbook};
 
 use crate::SheetApp;
 use crate::grid::Geo;
@@ -340,7 +340,7 @@ pub(crate) fn ensure_timeline_axes(app: &mut SheetApp, wb: &Workbook, sh: &Sheet
         if app.grid.timeline_axes.get(&(uid, tl.id)).is_some_and(|(cached, _)| *cached == rev) {
             continue;
         }
-        let axis = gridcraft_engine::cmd::slicer::timeline_axis(wb, tl);
+        let axis = cella_engine::cmd::slicer::timeline_axis(wb, tl);
         app.grid.timeline_axes.insert((uid, tl.id), (rev, axis));
     }
     // Timelines deleted from the sheet, and documents switched away from, must not pile up.
@@ -362,7 +362,7 @@ pub(crate) fn begin_timeline_drag(app: &SheetApp, geo: &Geo, sh: &Sheet, wb: &Wo
         if !frame.contains(p) {
             continue;
         }
-        let bounds = axis_of(app, tl.id).or_else(|| gridcraft_engine::cmd::slicer::timeline_axis(wb, tl))?;
+        let bounds = axis_of(app, tl.id).or_else(|| cella_engine::cmd::slicer::timeline_axis(wb, tl))?;
         if !bounds.0.is_finite() || !bounds.1.is_finite() || bounds.1 <= bounds.0 {
             return None;
         }
@@ -412,7 +412,7 @@ pub(crate) fn timeline_cursor(app: &SheetApp, geo: &Geo, sh: &Sheet, wb: &Workbo
 
 /// A serial day as the ISO text `slicer.setRange` accepts.
 fn iso_date(wb: &Workbook, serial: f64) -> Option<String> {
-    let d = gridcraft_engine::core::date::datetime_from_serial(wb.date_system, serial)?;
+    let d = cella_engine::core::date::datetime_from_serial(wb.date_system, serial)?;
     Some(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day))
 }
 

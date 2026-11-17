@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (a chart's data table: the four `c:dTable` flags modelled, read, written and drawn under the plot, with `chart.addElement` `dataTable` and the Format pane's Data Table section) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
-Excel's chart types and chart elements against GridCraft. Part of
+Excel's chart types and chart elements against Cella. Part of
 [target-app-parity.md](target-app-parity.md). **Breadth ~50%, ready ~40%, 25–40 h** (estimated).
 
 Sources: `crates/model/src/features.rs` (`ChartKind`, `Chart`, `Series`, `AxisOptions`,
@@ -13,7 +13,7 @@ edit into a kept part), the option matrix below, merged PRs #62, #116,
 
 ## Chart types
 
-| Excel type | Excel subtypes | GridCraft | Notes |
+| Excel type | Excel subtypes | Cella | Notes |
 |---|---|---|---|
 | Column | clustered, stacked, 100% stacked, 3-D clustered/stacked/100%, 3-D column | 3 of 7 | no 3-D |
 | Bar | clustered, stacked, 100%, 3-D ×3 | 3 of 6 | no 3-D |
@@ -36,7 +36,7 @@ edit into a kept part), the option matrix below, merged PRs #62, #116,
 
 ## Chart elements and formatting
 
-| Element | Excel | GridCraft |
+| Element | Excel | Cella |
 |---|---|---|
 | Move and resize the chart object | yes | yes (#190): eight handles (corners and edge midpoints) work on charts, pictures, shapes and slicers; a left/top drag carries the anchor, Shift keeps the aspect ratio, a 20-point minimum size holds, Esc cancels the drag and arrow keys nudge (Shift+arrow resizes); the Format Chart Area Size fields stay. Dragging stops at the sheet's top-left |
 | Chart title, axis titles | text, linked to cells, full formatting | text only |
@@ -63,7 +63,7 @@ edit into a kept part), the option matrix below, merged PRs #62, #116,
 
 ## Option matrix
 
-What GridCraft models, reads, writes and draws. "Survives" means open → save without editing →
+What Cella models, reads, writes and draws. "Survives" means open → save without editing →
 reopen gives the same option (`crates/xlsx/src/tests/chart_options_roundtrip.rs`); "drawn" means
 `crates/chart` uses it, so a saved option and the picture agree.
 
@@ -112,7 +112,7 @@ point's own text (`PointLabel::text`), as Excel writes one. A kept chartex part'
 options are patched like a classic part's; the chart's own *style* and *colour* parts (`styleN.xml`,
 `colorsN.xml`) are kept with its chart part and written back byte for byte, so a style applied in
 Excel survives a save. A part that has to be regenerated — the chart's kind or set of series changed
-— drops them and gets GridCraft's default style. A chartex chart of a kind GridCraft cannot model is
+— drops them and gets Cella's default style. A chartex chart of a kind Cella cannot model is
 kept whole (see `KeptChart`), its own style and colour parts with it, and its hidden names are not
 re-defined.
 
@@ -137,13 +137,13 @@ from the file: byte for byte while the chart is untouched, and by patching only 
 changed when it is edited (`crates/xlsx/src/chart_patch.rs` for classic parts,
 `crates/xlsx/src/chartex_patch.rs` for chartex parts; tests in
 `crates/xlsx/src/tests/chart_options_roundtrip.rs`). A chartex part's hidden `_xlchart.v1.N` names
-are recorded on the kept part and written again with their references. A chart of a kind GridCraft
+are recorded on the kept part and written again with their references. A chart of a kind Cella
 cannot model is not read into the model at all: its part and drawing frame are kept whole
 (`Sheet::kept_charts`, `crates/xlsx/src/tests/chart_unmodelled_kinds.rs`).
 
 | Difference after save and reopen (kept parts) | Why | Status |
 |---|---|---|
-| a chartex chart's style and colour parts | GridCraft used to write its own `styleN.xml`/`colorsN.xml` | **fixed**: a part read from a file keeps its own style and colour parts byte for byte; only a regenerated part (its kind or series changed) is styled from the defaults |
+| a chartex chart's style and colour parts | Cella used to write its own `styleN.xml`/`colorsN.xml` | **fixed**: a part read from a file keeps its own style and colour parts byte for byte; only a regenerated part (its kind or series changed) is styled from the defaults |
 | a secondary value axis left automatic reads back as `crosses: max` | that is Excel's own crossing for a secondary value axis (it keeps the hidden secondary category axis on the right), and it is what a combo chart created here writes | by design (same picture) |
 
 **Measured (10-26).** Each of the 25 kinds created by `insert.chart`, saved, reopened and compared
@@ -160,7 +160,7 @@ titles and every series' name, categories, values and colour survive. What still
 | a histogram reads back without categories | a histogram bins its values; it has no category axis | by design |
 
 Series data, categories and names may refer to defined names, as dynamic (OFFSET) ranges do:
-Excel writes a workbook-scoped name as `[0]!Name` in `<c:f>`. GridCraft reads it as the bare
+Excel writes a workbook-scoped name as `[0]!Name` in `<c:f>`. Cella reads it as the bare
 name and writes it back with `[0]!`; a sheet-scoped name is written `Sheet!Name`. Excel needs the
 qualifier: with a bare name in `<c:f>` it draws the whole chart blank, without a repair prompt
 (observed in Excel for Windows, Microsoft 365). External books (`[1]Sheet1!…`) are kept as they

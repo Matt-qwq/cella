@@ -5,8 +5,8 @@
 use std::io::Read;
 use std::sync::Arc;
 
-use gridcraft_core::CellRef;
-use gridcraft_model::{
+use cella_core::CellRef;
+use cella_model::{
     Anchor, AxisCrossing, AxisOptions, Chart, ChartDataTable, ChartKind, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines,
     LabelFont, LabelOptions, LabelPosition, LegendPos, PointFormat, PointLabel, Series, Sheet, Workbook,
 };
@@ -108,11 +108,11 @@ fn full_chart() -> Chart {
 fn bar_workbook() -> Workbook {
     let mut s = Sheet::new("Data");
     for (i, name) in ["Name", "Sales", "Cost", "Plan", "Forecast"].iter().enumerate() {
-        s.set_value(CellRef::new(0, i as u32), gridcraft_core::Value::Text((*name).into()));
+        s.set_value(CellRef::new(0, i as u32), cella_core::Value::Text((*name).into()));
     }
     for r in 0..4u32 {
         for col in 1..=4u32 {
-            s.set_value(CellRef::new(r + 1, col), gridcraft_core::Value::Number(f64::from(col * 10 + r)));
+            s.set_value(CellRef::new(r + 1, col), cella_core::Value::Number(f64::from(col * 10 + r)));
         }
     }
     s.charts.push(full_chart());
@@ -208,7 +208,7 @@ fn a_log_axis_and_a_reversed_value_axis_round_trip() {
     );
 }
 
-/// A chart part with options GridCraft has no model field for: a theme-coloured plot area, a
+/// A chart part with options Cella has no model field for: a theme-coloured plot area, a
 /// manual layout, a title's run formatting and an extension block.
 fn unmodelled_chart_xml() -> String {
     r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -217,7 +217,7 @@ fn unmodelled_chart_xml() -> String {
 }
 
 /// A chart style part as Excel writes one after the style gallery applies a style: a filled title
-/// and a layered point line. GridCraft models none of it, so the part is the whole of the look.
+/// and a layered point line. Cella models none of it, so the part is the whole of the look.
 const CUSTOM_STYLE: &str = concat!(
     "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n",
     "<cs:chartStyle xmlns:cs=\"http://schemas.microsoft.com/office/drawing/2012/chartStyle\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" id=\"201\">",
@@ -362,8 +362,8 @@ fn a_deleted_point_label_is_read_and_written_in_the_series_labels() {
     c.series[0].points = vec![PointFormat { index: 0, no_label: true, ..PointFormat::default() }];
     let mut s = Sheet::new("Data");
     for (i, v) in [1.0, 2.0, 3.0, 4.0].iter().enumerate() {
-        s.set_value(CellRef::new(i as u32 + 1, 0), gridcraft_core::Value::Number(*v));
-        s.set_value(CellRef::new(i as u32 + 1, 1), gridcraft_core::Value::Number(*v * 2.0));
+        s.set_value(CellRef::new(i as u32 + 1, 0), cella_core::Value::Number(*v));
+        s.set_value(CellRef::new(i as u32 + 1, 1), cella_core::Value::Number(*v * 2.0));
     }
     s.charts.push(c);
     let wb = Workbook { sheets: vec![Arc::new(s)], ..Workbook::default() };
@@ -385,8 +385,8 @@ fn a_chart_that_labels_only_one_series_hides_the_others() {
     // And it stays that way round the writer.
     let mut sheet = Sheet::new("Data");
     for (i, v) in [1.0, 2.0, 3.0, 4.0].iter().enumerate() {
-        sheet.set_value(CellRef::new(i as u32 + 1, 1), gridcraft_core::Value::Number(*v));
-        sheet.set_value(CellRef::new(i as u32 + 1, 2), gridcraft_core::Value::Number(*v * 3.0));
+        sheet.set_value(CellRef::new(i as u32 + 1, 1), cella_core::Value::Number(*v));
+        sheet.set_value(CellRef::new(i as u32 + 1, 2), cella_core::Value::Number(*v * 3.0));
     }
     let mut chart = c;
     chart.anchor = Anchor { cell: CellRef::new(0, 4), width: 480.0, height: 300.0, ..Anchor::default() };
@@ -397,7 +397,7 @@ fn a_chart_that_labels_only_one_series_hides_the_others() {
     assert_eq!(back.sheets[0].charts[0].series[1].labels, Some(LabelOptions { hidden: true, ..LabelOptions::default() }));
 }
 
-/// A chart part carrying options GridCraft has no model field for: a manual plot layout, a themed
+/// A chart part carrying options Cella has no model field for: a manual plot layout, a themed
 /// plot-area fill, date-axis units, minor units and gridline formatting, a custom label callout
 /// with leader lines, an error-bar line style, title run formatting, a legend-entry delete, a
 /// series extension, a data table, print settings and chart/chartSpace extension blocks.
@@ -479,7 +479,7 @@ const RICH_PART: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes
 </c:chartSpace>
 "##;
 
-/// Everything in [`RICH_PART`] that GridCraft has no field for. Each must still be in the part
+/// Everything in [`RICH_PART`] that Cella has no field for. Each must still be in the part
 /// after an edit and a save.
 const SURVIVORS: &[&str] = &[
     "<c:manualLayout>",
@@ -676,17 +676,17 @@ fn adding_and_removing_trendlines_and_point_formats_patches_the_repeated_element
     {
         let sheet = Arc::make_mut(&mut again.sheets[0]);
         let s = &mut sheet.charts[0].series[0];
-        s.trendlines.push(gridcraft_model::Trendline {
-            kind: gridcraft_model::TrendlineKind::Linear,
+        s.trendlines.push(cella_model::Trendline {
+            kind: cella_model::TrendlineKind::Linear,
             name: Some("Plan".into()),
             forward: 2.0,
-            ..gridcraft_model::Trendline::default()
+            ..cella_model::Trendline::default()
         });
         s.points.retain(|p| p.index != 1);
     }
     let back = part_of(&write_xlsx(&again).unwrap());
     assert!(back.contains("<c:trendline><c:name>Plan</c:name>"), "{back}");
-    // The cleared point keeps the parts GridCraft does not model and loses its colours.
+    // The cleared point keeps the parts Cella does not model and loses its colours.
     assert!(!back.contains("C00000") && !back.contains("00B050"), "the cleared point's colours are gone: {back}");
     assert!(back.contains("<c:idx val=\"1\"/><c:invertIfNegative val=\"1\"/><c:explosion val=\"25\"/>"), "the point's other options stay: {back}");
     // The trendline sits between the label element and the error bars.
@@ -844,7 +844,7 @@ fn a_deleted_legend_entry_of_a_regenerated_part_is_written_from_the_model() {
 
 // ---------------------------------------------------------------- chartex parts
 
-/// A modelled chartex part (a histogram) carrying options GridCraft has no field for: a title fill,
+/// A modelled chartex part (a histogram) carrying options Cella has no field for: a title fill,
 /// a per-point label format, binning, display units, formatted gridlines and tick labels, and an
 /// extension block. Everything here has to survive a patched edit byte for byte.
 const CHARTEX_HISTOGRAM: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1041,8 +1041,8 @@ fn a_chartex_box_whisker_quartile_edit_patches_the_statistics_element() {
     let (mut wb, _rep) = read_xlsx(&chartex_package(&original)).unwrap();
     {
         let sheet = Arc::make_mut(&mut wb.sheets[0]);
-        assert_eq!(sheet.charts[0].series[0].quartiles, gridcraft_model::QuartileMethod::Exclusive);
-        sheet.charts[0].series[0].quartiles = gridcraft_model::QuartileMethod::Inclusive;
+        assert_eq!(sheet.charts[0].series[0].quartiles, cella_model::QuartileMethod::Exclusive);
+        sheet.charts[0].series[0].quartiles = cella_model::QuartileMethod::Inclusive;
     }
     let part = chartex_part_of(&write_xlsx(&wb).unwrap());
     assert_eq!(
@@ -1051,7 +1051,7 @@ fn a_chartex_box_whisker_quartile_edit_patches_the_statistics_element() {
         "the quartile edit touched more than the attribute:\n{part}"
     );
     let (again, _rep) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
-    assert_eq!(again.sheets[0].charts[0].series[0].quartiles, gridcraft_model::QuartileMethod::Inclusive);
+    assert_eq!(again.sheets[0].charts[0].series[0].quartiles, cella_model::QuartileMethod::Inclusive);
 }
 
 // ---------------------------------------------------------------- chartex point and label options
@@ -1060,11 +1060,11 @@ fn a_chartex_box_whisker_quartile_edit_patches_the_statistics_element() {
 fn chartex_workbook(c: Chart) -> Workbook {
     let mut s = Sheet::new("Data");
     for (i, name) in ["Name", "Sales"].iter().enumerate() {
-        s.set_value(CellRef::new(0, i as u32), gridcraft_core::Value::Text((*name).into()));
+        s.set_value(CellRef::new(0, i as u32), cella_core::Value::Text((*name).into()));
     }
     for (r, (name, v)) in [("One", -2.0), ("Two", 4.0), ("Three", 9.0), ("Four", 16.0)].into_iter().enumerate() {
-        s.set_value(CellRef::new(r as u32 + 1, 0), gridcraft_core::Value::Text(name.into()));
-        s.set_value(CellRef::new(r as u32 + 1, 1), gridcraft_core::Value::Number(v));
+        s.set_value(CellRef::new(r as u32 + 1, 0), cella_core::Value::Text(name.into()));
+        s.set_value(CellRef::new(r as u32 + 1, 1), cella_core::Value::Number(v));
     }
     s.charts.push(c);
     Workbook { sheets: vec![Arc::new(s)], ..Workbook::default() }
@@ -1141,13 +1141,13 @@ fn chartex_point_formats_and_label_fonts_round_trip() {
     assert_eq!(chartex_part_of(&write_xlsx(&back).unwrap()), part);
 }
 
-/// A chartex part carrying more than GridCraft models: a point's own properties with an unknown
+/// A chartex part carrying more than Cella models: a point's own properties with an unknown
 /// child, a data label's callout outline, leader lines, a number format, a subtotal, the chart's
 /// text body and extension blocks. The chartex twin of the classic RICH_PART fixture.
 const CHARTEX_RICH: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cx:chartSpace xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chartData><cx:data id="0"><cx:strDim type="cat"><cx:f>_xlchart.v1.0</cx:f><cx:lvl ptCount="4"><cx:pt idx="0">One</cx:pt><cx:pt idx="1">Two</cx:pt><cx:pt idx="2">Three</cx:pt><cx:pt idx="3">Four</cx:pt></cx:lvl></cx:strDim><cx:numDim type="val"><cx:f>_xlchart.v1.2</cx:f></cx:numDim></cx:data></cx:chartData><cx:chart><cx:title pos="t" align="ctr" overlay="0"><cx:tx><cx:txData><cx:v>Old</cx:v></cx:txData></cx:tx></cx:title><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="waterfall" uniqueId="{00000000-0000-0000-0000-000000000001}"><cx:tx><cx:txData><cx:f>_xlchart.v1.1</cx:f><cx:v>Sales</cx:v></cx:txData></cx:tx><cx:spPr><a:solidFill><a:schemeClr val="accent1"/></a:solidFill><a:ln w="28575"><a:solidFill><a:srgbClr val="203864"/></a:solidFill></a:ln></cx:spPr><cx:dataPt idx="1"><cx:spPr><a:solidFill><a:srgbClr val="C00000"/></a:solidFill><a:ln w="28575"><a:solidFill><a:srgbClr val="00B050"/></a:solidFill></a:ln></cx:spPr><cx:unknownPtThing xmlns:cx15="http://schemas.microsoft.com/office/drawing/2015/9/8/chartex" val="7"/></cx:dataPt><cx:dataLabels pos="ctr"><cx:visibility seriesName="0" categoryName="1" value="1"/><cx:dataLabel idx="2"><cx:visibility seriesName="0" categoryName="0" value="1"/><cx:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="7F7F7F"/></a:solidFill></a:ln></cx:spPr></cx:dataLabel><cx:leaderLines><cx:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="D9D9D9"/></a:solidFill></a:ln></cx:spPr></cx:leaderLines><cx:numFmt formatCode="0.0&quot;%&quot;" sourceLinked="0"/><cx:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="900" b="0"/></a:pPr><a:endParaRPr lang="en-US"/></a:p></cx:txPr></cx:dataLabels><cx:dataId val="0"/><cx:layoutPr><cx:subtotals><cx:idx val="3"/></cx:subtotals></cx:layoutPr><cx:extLst><cx:ext uri="{55555555-5555-5555-5555-555555555555}"><cx15:unknownSerThing xmlns:cx15="http://schemas.microsoft.com/office/drawing/2015/9/8/chartex" val="7"/></cx:ext></cx:extLst></cx:series></cx:plotAreaRegion><cx:axis id="0"><cx:catScaling gapWidth="0.5"/><cx:tickLabels/></cx:axis><cx:axis id="1"><cx:valScaling min="0" max="20"/><cx:majorGridlines><cx:spPr><a:ln w="6350"><a:solidFill><a:srgbClr val="D9D9D9"/></a:solidFill></a:ln></cx:spPr></cx:majorGridlines><cx:tickLabels><cx:spPr><a:ln><a:noFill/></a:ln></cx:spPr></cx:tickLabels></cx:axis></cx:plotArea><cx:legend pos="b" align="ctr" overlay="0"/></cx:chart><cx:spPr><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></cx:spPr><cx:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1000"/></a:pPr><a:endParaRPr lang="en-US"/></a:p></cx:txPr><cx:extLst><cx:ext uri="{66666666-6666-6666-6666-666666666666}"><cx15:unknownChartThing xmlns:cx15="http://schemas.microsoft.com/office/drawing/2015/9/8/chartex" val="1"/></cx:ext></cx:extLst></cx:chartSpace>"##;
 
-/// Everything in CHARTEX_RICH GridCraft has no field for: each must still be in the part after an
+/// Everything in CHARTEX_RICH Cella has no field for: each must still be in the part after an
 /// edit and a save.
 const CHARTEX_SURVIVORS: &[&str] = &[
     r#"<cx:numFmt formatCode="0.0&quot;%&quot;" sourceLinked="0"/>"#,
@@ -1311,9 +1311,9 @@ fn a_point_label_text_and_position_round_trip() {
     ];
     let mut s = Sheet::new("Data");
     for (i, v) in [1.0, 2.0, 3.0, 4.0].iter().enumerate() {
-        s.set_value(CellRef::new(i as u32 + 1, 0), gridcraft_core::Value::Number(*v));
-        s.set_value(CellRef::new(i as u32 + 1, 1), gridcraft_core::Value::Number(*v * 2.0));
-        s.set_value(CellRef::new(i as u32 + 1, 2), gridcraft_core::Value::Text("note".into()));
+        s.set_value(CellRef::new(i as u32 + 1, 0), cella_core::Value::Number(*v));
+        s.set_value(CellRef::new(i as u32 + 1, 1), cella_core::Value::Number(*v * 2.0));
+        s.set_value(CellRef::new(i as u32 + 1, 2), cella_core::Value::Text("note".into()));
     }
     let wanted = c.series[0].point_labels.clone();
     s.charts.push(c);
@@ -1715,9 +1715,9 @@ fn a_charts_alt_text_round_trips_and_is_escaped() {
     // and come back exactly as written.
     let tricky = "Sales by \"region\" <chart> & totals";
     sheet.charts[0].alt = Some(tricky.into());
-    sheet.shapes.push(gridcraft_model::Shape {
+    sheet.shapes.push(cella_model::Shape {
         id: 7,
-        kind: gridcraft_model::ShapeKind::Rectangle,
+        kind: cella_model::ShapeKind::Rectangle,
         anchor: Anchor::default(),
         fill: Color::default(),
         line: Color::default(),

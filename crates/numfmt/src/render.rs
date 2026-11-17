@@ -1,7 +1,7 @@
 //! Rendering a value with a parsed section.
 
-use gridcraft_core::DateSystem;
-use gridcraft_core::date::{datetime_from_serial, max_serial};
+use cella_core::DateSystem;
+use cella_core::date::{datetime_from_serial, max_serial};
 
 use crate::calendar::Calendar;
 use crate::decimal::{decimal_digits, fixed, fixed_from_digits, format_general_fit};

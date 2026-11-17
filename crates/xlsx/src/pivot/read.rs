@@ -44,7 +44,7 @@ struct CalcIn {
 #[derive(Clone, Debug, Default)]
 struct CacheIn {
     source: String,
-    /// Why GridCraft can't compute this report (its cache is not a worksheet range): the file's
+    /// Why Cella can't compute this report (its cache is not a worksheet range): the file's
     /// cached values are kept, the source is never queried. `None` for a range cache.
     read_only_reason: Option<String>,
     fields: Vec<FieldIn>,
@@ -83,20 +83,20 @@ fn item_label_el(e: &El, sys: DateSystem) -> String {
     }
 }
 /// Why a PivotTable whose cache is not a worksheet range is read-only, in words for the user.
-/// Only a range cache (the one kind GridCraft computes) skips this.
+/// Only a range cache (the one kind Cella computes) skips this.
 fn not_computed_reason(cx: &mut Ctx<'_>, part: &str, ty: &str) -> String {
     // A data-model cache carries its records in `xl/model/*`, related to the cache definition
     // with the `powerPivotData` type; an OLAP cube's cache holds no such part. Either way the
     // parts are kept and the source is never queried, so only the wording differs.
     let model = cx.pkg.rels(part).map(|r| r.iter().any(|q| q.kind.eq_ignore_ascii_case("powerPivotData"))).unwrap_or(false);
     match (ty, model) {
-        ("olap", true) => "built on the workbook's data model (Power Pivot), which GridCraft keeps but does not query".to_string(),
-        ("olap", false) => "built on an OLAP connection, which GridCraft keeps but does not query".to_string(),
-        ("external", _) => "built on an external data source, which GridCraft keeps but does not query".to_string(),
-        ("consolidation", _) => "built on several consolidated ranges, which GridCraft keeps but does not query".to_string(),
+        ("olap", true) => "built on the workbook's data model (Power Pivot), which Cella keeps but does not query".to_string(),
+        ("olap", false) => "built on an OLAP connection, which Cella keeps but does not query".to_string(),
+        ("external", _) => "built on an external data source, which Cella keeps but does not query".to_string(),
+        ("consolidation", _) => "built on several consolidated ranges, which Cella keeps but does not query".to_string(),
         _ => {
-            cx.warn(format!("a PivotTable source of type \"{ty}\" is not computed by GridCraft; it is kept as it is"));
-            format!("built on \"{ty}\" data, which GridCraft keeps but does not query")
+            cx.warn(format!("a PivotTable source of type \"{ty}\" is not computed by Cella; it is kept as it is"));
+            format!("built on \"{ty}\" data, which Cella keeps but does not query")
         }
     }
 }
@@ -108,8 +108,8 @@ fn read_cache(cx: &mut Ctx<'_>, part: &str, sheet_name: &str) -> Option<CacheIn>
     }
     let src = x.child("cacheSource");
     let ty = src.and_then(|s| s.attr("type")).unwrap_or("worksheet");
-    // A cache GridCraft does not query (a data model, an OLAP cube, a connection): the report is
-    // read as one GridCraft does not compute. Its cached values stay on the sheet, and the parts
+    // A cache Cella does not query (a data model, an OLAP cube, a connection): the report is
+    // read as one Cella does not compute. Its cached values stay on the sheet, and the parts
     // the pass-through kept are written back as they came — never recomputed over a made-up range.
     let read_only_reason = (ty != "worksheet").then(|| not_computed_reason(cx, part, ty));
     let ws = src.and_then(|s| s.child("worksheetSource"));

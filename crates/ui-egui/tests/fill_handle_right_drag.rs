@@ -1,11 +1,11 @@
 //! Dragging the fill handle with the right button fills nothing on release: it opens Excel's fill
 //! menu (Copy Cells, Fill Series, Fill Formatting Only, Fill Without Formatting, Series…).
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, RangeRef, Value};
+use cella_ui_egui::{SheetApp, grid::Drag, grid::Geo};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, RangeRef, Value};
-use gridcraft_ui_egui::{SheetApp, grid::Drag, grid::Geo};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

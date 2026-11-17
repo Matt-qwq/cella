@@ -1,13 +1,13 @@
-//! Performance scenarios on large workbooks — the measurement half of GridCraft's performance
+//! Performance scenarios on large workbooks — the measurement half of Cella's performance
 //! gate (the gate itself is `cargo xtask perf`; what each scenario means is in
 //! `docs/performance.md`).
 //!
 //! ```text
-//! cargo run --release -p gridcraft-engine --example perf                # 100k and 1M rows
-//! cargo run --release -p gridcraft-engine --example perf -- 1000000     # one row count
-//! cargo run --release -p gridcraft-engine --example perf -- --json      # machine-readable
-//! cargo run --release -p gridcraft-engine --example perf -- --scenario=fill.values,sort.desc
-//! cargo run --release -p gridcraft-engine --example perf -- --repeat=3   # best of three passes
+//! cargo run --release -p cella-engine --example perf                # 100k and 1M rows
+//! cargo run --release -p cella-engine --example perf -- 1000000     # one row count
+//! cargo run --release -p cella-engine --example perf -- --json      # machine-readable
+//! cargo run --release -p cella-engine --example perf -- --scenario=fill.values,sort.desc
+//! cargo run --release -p cella-engine --example perf -- --repeat=3   # best of three passes
 //! ```
 //!
 //! Every scenario runs against one session, in the order listed in [`STEPS`], because that is how
@@ -20,7 +20,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use gridcraft_engine::Session;
+use cella_engine::Session;
 use serde_json::{Value, json};
 
 /// Version of the `--json` shape (the gate parses it).
@@ -89,7 +89,7 @@ const MAX_REPEAT: usize = 10;
 
 const USAGE: &str = "usage: perf [rows...] [--rows=N[,N...]] [--json] [--scenario=ID[,ID...]] [--repeat=N] [--list]
 
-Runs the performance scenarios of GridCraft's engine against a session of N rows × 6 columns and
+Runs the performance scenarios of Cella's engine against a session of N rows × 6 columns and
 reports one number in ms per scenario. Default rows: 100000 and 1000000.
 
   --json              print one JSON object (the gate reads it) instead of a table
@@ -354,7 +354,7 @@ fn open_csv(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
     // Importing a million-row export is a daily action for the people this app is for, so the
     // reader is measured on a real file of that size: the export is the setup, the open is the
     // number.
-    let path = std::env::temp_dir().join(format!("gridcraft-perf-open-{rows}.csv"));
+    let path = std::env::temp_dir().join(format!("cella-perf-open-{rows}.csv"));
     let path = path.to_string_lossy().into_owned();
     let exported = b.exec("file.exportCsv", json!({"path": path}))?;
     let bytes = exported.get("bytes").and_then(Value::as_u64).ok_or("exportCsv returned no byte count")?;
@@ -414,11 +414,8 @@ fn fmt_time(ms: f64) -> String {
 fn render_table(all: &[Measurement], repeat: usize) -> String {
     let mut s = String::new();
     let passes = if repeat > 1 { format!(", best of {repeat} passes") } else { String::new() };
-    s += &format!(
-        "GridCraft performance — {} scenario run(s), {} build{passes}\n\n",
-        all.len(),
-        if cfg!(debug_assertions) { "debug" } else { "release" }
-    );
+    s +=
+        &format!("Cella performance — {} scenario run(s), {} build{passes}\n\n", all.len(), if cfg!(debug_assertions) { "debug" } else { "release" });
     let mut scenario_width = "scenario".len();
     for m in all {
         scenario_width = scenario_width.max(m.scenario.len());

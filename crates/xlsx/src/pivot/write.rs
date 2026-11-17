@@ -114,7 +114,7 @@ pub struct PivotWriter {
     pending: Vec<Pending>,
     tables: u32,
     /// The cache ids the file's own reports keep (see [`Self::add_read_only`]): their parts are
-    /// written as they came, so a report GridCraft computes must not take the same id.
+    /// written as they came, so a report Cella computes must not take the same id.
     taken_cache_ids: HashSet<u32>,
     /// Whether the ids those reports keep have been collected from the whole workbook yet.
     reserved: bool,
@@ -138,7 +138,7 @@ impl PivotWriter {
             self.reserve_read_only(wb);
         }
         for (idx, pt) in sheet.pivots.iter().enumerate() {
-            // A report GridCraft does not compute is carried, not built: its parts come back as the
+            // A report Cella does not compute is carried, not built: its parts come back as the
             // file had them (the cache id it names included), and the cells under it are its
             // cached values, which nothing here touches.
             if pt.is_read_only() {
@@ -182,7 +182,7 @@ impl PivotWriter {
         }
     }
 
-    /// The cache id to write a report GridCraft computes' cache under: the lowest one no other
+    /// The cache id to write a report Cella computes' cache under: the lowest one no other
     /// report of the package took (a carried report keeps the id the file gave it).
     fn next_cache_id(&mut self) -> u32 {
         let taken = |id: u32, caches: &[(u32, String)]| caches.iter().any(|(c, _)| *c == id);
@@ -198,7 +198,7 @@ impl PivotWriter {
     }
 
     /// Records the cache ids the workbook's carried reports keep, before anything is written: the
-    /// reports come in sheet order, and one of them can be on a later sheet than a report GridCraft
+    /// reports come in sheet order, and one of them can be on a later sheet than a report Cella
     /// computes.
     fn reserve_read_only(&mut self, wb: &Workbook) {
         for sheet in &wb.sheets {
@@ -210,12 +210,12 @@ impl PivotWriter {
         }
     }
 
-    /// Writes a PivotTable GridCraft does not compute: its own part, its cache definition, its
+    /// Writes a PivotTable Cella does not compute: its own part, its cache definition, its
     /// records and the data model behind them, exactly as the file had them. Only the part names
     /// are ours (the report keeps its `pivotTableN.xml` numbering and its cache the id it names),
     /// and its `cacheId` therefore still points at its own cache. Nothing is recomputed and
     /// nothing is repaired: the report is a document, not a query.
-    fn add_read_only(&mut self, sheet: &gridcraft_model::Sheet, pt: &PivotTable, out: &mut Out, rels: &mut Rels) {
+    fn add_read_only(&mut self, sheet: &cella_model::Sheet, pt: &PivotTable, out: &mut Out, rels: &mut Rels) {
         let Some((table, cache)) = kept_read_only(sheet, &pt.name) else { return };
         let Some(key) = crate::passthrough::pivot_key(&pt.name) else { return };
         let cache_id = cache_id_of(&table);
@@ -224,11 +224,11 @@ impl PivotWriter {
         // `cacheId` is in its bytes, so the cache keeps that number); every other part of the
         // graph — the data model above all — keeps the name it came with.
         let same = |a: &str, b: &str| crate::package::normalize(a) == crate::package::normalize(b);
-        let target_of = |part: &gridcraft_model::PreservedPart, kind: &str| {
+        let target_of = |part: &cella_model::PreservedPart, kind: &str| {
             part.rels.iter().find(|r| r.rel_type.rsplit('/').next() == Some(kind) && !r.external).map(|r| r.target.clone())
         };
         let records = target_of(&cache, "pivotCacheRecords");
-        let name_of = |q: &gridcraft_model::PreservedPart| -> String {
+        let name_of = |q: &cella_model::PreservedPart| -> String {
             if same(&q.name, &table.name) {
                 format!("xl/pivotTables/pivotTable{t}.xml")
             } else if same(&q.name, &cache.name) {
@@ -316,12 +316,12 @@ impl PivotWriter {
     }
 }
 /// The kept parts of a carried report: its own pivotTable part and its cache definition part, as
-/// the pass-through kept them. `None` when the file had nothing to carry (a report GridCraft
+/// the pass-through kept them. `None` when the file had nothing to carry (a report Cella
 /// created, or one whose parts were dropped on read).
-fn kept_read_only(sheet: &gridcraft_model::Sheet, name: &str) -> Option<(gridcraft_model::PreservedPart, gridcraft_model::PreservedPart)> {
+fn kept_read_only(sheet: &cella_model::Sheet, name: &str) -> Option<(cella_model::PreservedPart, cella_model::PreservedPart)> {
     let key = crate::passthrough::pivot_key(name)?;
     let (parts, sources) = crate::passthrough::owner_kept(sheet.preserved.as_deref(), Some(&key));
-    let find = |kind: &str| -> Option<gridcraft_model::PreservedPart> {
+    let find = |kind: &str| -> Option<cella_model::PreservedPart> {
         let r = sources.iter().find(|r| r.rel_type.rsplit('/').next() == Some(kind) && !r.external)?;
         parts.iter().find(|q| crate::package::normalize(&q.name) == crate::package::normalize(&r.target)).cloned()
     };
@@ -333,7 +333,7 @@ fn kept_read_only(sheet: &gridcraft_model::Sheet, name: &str) -> Option<(gridcra
 }
 /// The `cacheId` a carried report part names: the id its cache is written under, which the report
 /// part keeps byte for byte.
-fn cache_id_of(table: &gridcraft_model::PreservedPart) -> u32 {
+fn cache_id_of(table: &cella_model::PreservedPart) -> u32 {
     crate::xml::parse(&table.data).ok().and_then(|x| x.attr_u32("cacheId")).unwrap_or(0)
 }
 /// Resolves a pivot source to (sheet, range including the header row, worksheetSource XML).
@@ -359,7 +359,7 @@ fn resolve_source(wb: &Workbook, text: &str, default_sheet: usize, depth: u32) -
         let xml = if valid { format!("<worksheetSource name=\"{}\"/>", esc_attr(&tb.name)) } else { range_source_xml(&sh.name, r) };
         return Some((si, r, xml));
     }
-    let (sheet, body) = gridcraft_core::split_sheet(t);
+    let (sheet, body) = cella_core::split_sheet(t);
     if let Some(r) = RangeRef::parse(body) {
         let si = match &sheet {
             Some(n) => wb.sheet_index(n)?,
@@ -395,7 +395,7 @@ fn header_text(v: &Value) -> String {
 /// The cache field names a source range gets: its header row, with empty headers numbered
 /// (`ColumnN`) and repeats suffixed (`Region2`), exactly as `build_cache` writes them. Also used
 /// to check a slicer's field before the pivot cache is built.
-fn header_names(sh: &gridcraft_model::Sheet, r: RangeRef) -> Vec<String> {
+fn header_names(sh: &cella_model::Sheet, r: RangeRef) -> Vec<String> {
     let mut names = Vec::new();
     // Lower-case names taken, and the next suffix for each header (linear for repeated headers).
     let mut taken = std::collections::HashSet::new();
@@ -755,7 +755,7 @@ fn cache_xml(c: &Cache, cache_id: u32, records_rid: Option<&str>, sys: DateSyste
     // No `refreshOnLoad`: with it Excel rebuilt the cache on every open and re-anchored a number
     // field's grouping at the data's minimum, changing the report's labels. Records are saved
     // (`r:id` above), so the cache is complete without a refresh.
-    s.push_str(" refreshedBy=\"GridCraft\" createdVersion=\"6\" refreshedVersion=\"6\" minRefreshableVersion=\"3\">");
+    s.push_str(" refreshedBy=\"Cella\" createdVersion=\"6\" refreshedVersion=\"6\" minRefreshableVersion=\"3\">");
     let _ = write!(s, "<cacheSource type=\"worksheet\">{}</cacheSource>", c.source_xml);
     let _ = write!(s, "<cacheFields count=\"{}\">", c.fields.len());
     for f in &c.fields {
@@ -1146,7 +1146,7 @@ fn table_xml(pt: &PivotTable, idx: usize, cache_id: u32, c: &Cache, fmt_id: &dyn
         let _ = write!(s, " name=\"{}\"", esc_attr(&pt.style));
     }
     s.push_str(" showRowHeaders=\"1\" showColHeaders=\"1\" showRowStripes=\"0\" showColStripes=\"0\" showLastColumn=\"1\"/>");
-    // One `<extLst>`: the extension GridCraft writes for the model, then the source's own.
+    // One `<extLst>`: the extension Cella writes for the model, then the source's own.
     let mut exts = String::new();
     if hide_values_row {
         let _ = write!(exts, "<ext uri=\"{EXT_X14_PIVOT_TABLE}\" xmlns:x14=\"{NS_X14}\"><x14:pivotTableDefinition hideValuesRow=\"1\"/></ext>");

@@ -12,9 +12,9 @@
 //! row level.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use gridcraft_core::{CellError, CellRef, Value};
-use gridcraft_model::{PivotLayout, PivotTable, Sheet, StyleId, Workbook};
-use gridcraft_numfmt::{NumberFormat, format_value};
+use cella_core::{CellError, CellRef, Value};
+use cella_model::{PivotLayout, PivotTable, Sheet, StyleId, Workbook};
+use cella_numfmt::{NumberFormat, format_value};
 
 /// The PivotTable whose last written report covers `at`.
 pub fn pivot_at(wb: &Workbook, sheet: usize, at: CellRef) -> Option<&PivotTable> {
@@ -126,7 +126,7 @@ fn value_index(pt: &PivotTable, data_field: &str) -> Option<usize> {
     found
 }
 
-fn find_field(fields: &[gridcraft_model::PivotField], name: &str) -> Option<usize> {
+fn find_field(fields: &[cella_model::PivotField], name: &str) -> Option<usize> {
     fields.iter().position(|f| f.source_col.eq_ignore_ascii_case(name))
 }
 

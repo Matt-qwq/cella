@@ -1,8 +1,8 @@
 //! In-cell / formula-bar editing state: point mode, reference colouring, function
 //! autocomplete and argument hints.
 
+use cella_engine::core::{CellRef, RangeRef};
 use egui::Color32;
-use gridcraft_engine::core::{CellRef, RangeRef};
 
 /// Colours for references in a formula being edited (our own palette).
 pub const REF_COLORS: [Color32; 8] = [
@@ -20,7 +20,7 @@ pub const REF_COLORS: [Color32; 8] = [
 pub struct EditState {
     pub sheet: usize,
     /// Syntax of this edit, captured when it starts (prevents a language switch reinterpreting it).
-    pub locale: gridcraft_engine::formula::FormulaLocale,
+    pub locale: cella_engine::formula::FormulaLocale,
     pub cell: CellRef,
     pub text: String,
     /// Started by typing (Enter mode: arrows commit) rather than F2 (Edit mode: arrows move the caret).
@@ -260,12 +260,12 @@ impl EditState {
 pub fn formula_refs(text: &str) -> Vec<(usize, usize, RangeRef, Option<String>, usize)> {
     let body = text.strip_prefix('=').or_else(|| text.strip_prefix('+')).unwrap_or(text);
     let offset = text.len() - body.len();
-    let Ok(toks) = gridcraft_engine::formula::lexer::tokenize(body) else { return vec![] };
+    let Ok(toks) = cella_engine::formula::lexer::tokenize(body) else { return vec![] };
     let mut out: Vec<(usize, usize, RangeRef, Option<String>, usize)> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut i = 0;
     while i < toks.len() {
-        use gridcraft_engine::formula::lexer::Tok;
+        use cella_engine::formula::lexer::Tok;
         let (sheet, start, j) = match &toks[i].tok {
             Tok::Sheet(a, _) => (Some(a.clone()), toks[i].start, i + 1),
             _ => (None, toks[i].start, i),
@@ -318,7 +318,7 @@ pub fn ref_is_on_sheet(ref_sheet: Option<&str>, origin: &str, shown: &str) -> bo
 
 /// Excel-style AutoComplete: the one distinct text entry in the same column (contiguous data
 /// above and below) that starts with `typed` (case-insensitive). `None` when ambiguous.
-pub fn column_completion(sheet: &gridcraft_engine::model::Sheet, at: CellRef, typed: &str) -> Option<String> {
+pub fn column_completion(sheet: &cella_engine::model::Sheet, at: CellRef, typed: &str) -> Option<String> {
     if typed.is_empty() || typed.starts_with('=') || typed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
         return None;
     }
@@ -327,8 +327,8 @@ pub fn column_completion(sheet: &gridcraft_engine::model::Sheet, at: CellRef, ty
     let mut ambiguous = false;
     let mut scan = |row: u32| -> bool {
         match sheet.value(CellRef::new(row, at.col)) {
-            gridcraft_engine::core::Value::Empty => false,
-            gridcraft_engine::core::Value::Text(t) => {
+            cella_engine::core::Value::Empty => false,
+            cella_engine::core::Value::Text(t) => {
                 let folded = t.to_lowercase();
                 if folded.starts_with(&lower) && folded.len() > lower.len() {
                     match &found {

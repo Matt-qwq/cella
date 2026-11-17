@@ -2,13 +2,13 @@
 //! with its menu, and the two indent buttons. Every test asserts both halves of "the
 //! button works": the engine's style/merge state and what the grid paints for it.
 
+use cella_engine::Session;
+use cella_engine::core::{CellRef, RangeRef, Value};
+use cella_engine::model::{HAlign, Style, VAlign};
+use cella_ui_egui::SheetApp;
+use cella_ui_egui::grid::Geo;
 use egui::{Rect, Shape, accesskit::Role};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::{CellRef, RangeRef, Value};
-use gridcraft_engine::model::{HAlign, Style, VAlign};
-use gridcraft_ui_egui::SheetApp;
-use gridcraft_ui_egui::grid::Geo;
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

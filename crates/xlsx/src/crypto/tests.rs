@@ -491,8 +491,8 @@ fn an_independent_reader_follows_the_difat_of_a_large_encrypted_package() {
 
 #[test]
 fn a_saved_encrypted_workbook_holds_a_package_we_would_accept() {
-    use gridcraft_core::{CellRef, Value};
-    let mut wb = gridcraft_model::Workbook::new();
+    use cella_core::{CellRef, Value};
+    let mut wb = cella_model::Workbook::new();
     wb.sheet_mut(0).unwrap().set_value(CellRef::parse("A1").unwrap(), Value::Number(42.0));
     let xlsx = crate::write_xlsx(&wb).unwrap();
     let file = encrypt_workbook_with_spin(&xlsx, PASSWORD, 1000).unwrap();

@@ -3,16 +3,16 @@
 //!
 //! Fonts: the bidi, Latin and robustness tests use the faces compiled into `epaint_default_fonts`
 //! bound as a test family, so they run on every machine. Arabic, Hebrew, Devanagari and Thai read
-//! the platform's own faces through [`gridcraft_engine::core::fonts`] (the same discovery the app
+//! the platform's own faces through [`cella_engine::core::fonts`] (the same discovery the app
 //! uses) and skip with a printed reason when this machine has no face for the script — never
 //! committing a font binary (AGENTS.md).
 
 use super::*;
+use cella_engine::core::fonts;
 use egui::FontFamily;
-use gridcraft_engine::core::fonts;
 
 /// A family name no test context binds, for the fallback tests.
-const MISSING: &str = "GridCraft No Such Face";
+const MISSING: &str = "Cella No Such Face";
 
 fn ubuntu_context() -> Context {
     test_context("test-ubuntu", epaint_default_fonts::UBUNTU_LIGHT, 0)
@@ -328,7 +328,7 @@ fn autofit_falls_back_to_the_plain_measure_without_a_face() {
     // measure instead of failing or shaping with bytes the renderer does not have.
     let ctx = ubuntu_context();
     let engine = ubuntu_engine();
-    let missing = model::Font { name: "GridCraft No Such Family".into(), size: 11.0, ..Default::default() };
+    let missing = model::Font { name: "Cella No Such Family".into(), size: 11.0, ..Default::default() };
     let text = "مبيعات 2024";
     assert_eq!(
         engine.cell_text_width(&ctx, text, &missing, true),
@@ -368,7 +368,7 @@ fn a_family_the_font_set_does_not_bind_falls_back_to_the_unshaped_galley() {
 fn text_over_the_engines_limit_is_refused_not_shaped() {
     let ctx = ubuntu_context();
     let engine = ubuntu_engine();
-    let huge = "س".repeat(gridcraft_engine::core::text::MAX_TEXT_BYTES / 2 + 1);
+    let huge = "س".repeat(cella_engine::core::text::MAX_TEXT_BYTES / 2 + 1);
     // The engine refuses it (never allocates gigabytes) and the UI falls back to the unshaped
     // path; asking for the shape directly is what a `line` call does first.
     assert!(engine.shape(&ctx, &font(11.0), &huge, Direction::Auto).is_none());

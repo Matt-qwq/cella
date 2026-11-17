@@ -1,5 +1,5 @@
+use cella_engine::model::Style;
 use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use gridcraft_engine::model::Style;
 
 use crate::SheetApp;
 use crate::keytips::keytip_table;
@@ -36,7 +36,7 @@ pub(super) fn active_style(app: &SheetApp) -> Style {
 }
 
 pub(super) fn theme_colors(app: &SheetApp) -> [u32; 12] {
-    app.session.active().map(|d| d.wb.theme.colors).unwrap_or(gridcraft_engine::model::Theme::default().colors)
+    app.session.active().map(|d| d.wb.theme.colors).unwrap_or(cella_engine::model::Theme::default().colors)
 }
 
 /// Runs a command from a ribbon click (menu-style: no params may open a dialog).

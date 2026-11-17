@@ -1,9 +1,9 @@
 //! The functions the evaluator implements itself, the names they answer to, and the static
 //! references a formula's tree yields.
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_formula::{BinOp, Expr, Reference, SheetSel, StructItem};
-use gridcraft_model::Workbook;
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
+use cella_formula::{BinOp, Expr, Reference, SheetSel, StructItem};
+use cella_model::Workbook;
 
 use super::{Area, Ev, FULL_SIZE_BOUNDED_CELLS, FULL_SIZE_CELLS};
 
@@ -104,7 +104,7 @@ impl NameCache {
     /// table's name stands for that table.
     pub(crate) fn target(&mut self, wb: &Workbook, sheet: usize, n: &str) -> NameTarget {
         let (scope_sheet, bare) = match n.split_once('!') {
-            Some((s, b)) => match wb.sheet_index(&gridcraft_core::unquote_sheet(s)) {
+            Some((s, b)) => match wb.sheet_index(&cella_core::unquote_sheet(s)) {
                 Some(i) => (i, b),
                 None => return NameTarget::Unresolved,
             },
@@ -142,7 +142,7 @@ impl NameCache {
     /// (a definition tree is a handful of nodes); one a formula also holds is charged its pointer.
     pub(crate) fn memory(&self) -> usize {
         use std::mem::size_of;
-        let mut bytes = gridcraft_model::hash_index_bytes(self.by_sheet.capacity(), size_of::<(usize, Vec<CachedName>)>());
+        let mut bytes = cella_model::hash_index_bytes(self.by_sheet.capacity(), size_of::<(usize, Vec<CachedName>)>());
         for list in self.by_sheet.values() {
             bytes = bytes.saturating_add(list.capacity().saturating_mul(size_of::<CachedName>()));
             for c in list {
@@ -167,10 +167,10 @@ impl NameCache {
 /// The definition of `formula` (a name's `refersTo` text) as a target, its unqualified
 /// references meaning `scope`.
 fn resolve_definition(formula: &str, scope: usize) -> NameTarget {
-    let Ok(expr) = gridcraft_formula::parse_name(formula) else { return NameTarget::Unresolved };
+    let Ok(expr) = cella_formula::parse_name(formula) else { return NameTarget::Unresolved };
     // A relative reference in a name is relative to A1, so it moves by the offset of the cell
     // that uses the name: usable per cell, but never one fixed area.
-    if gridcraft_formula::adjust::has_relative_refs(&expr) {
+    if cella_formula::adjust::has_relative_refs(&expr) {
         return NameTarget::Relative(std::sync::Arc::new(expr), scope);
     }
     NameTarget::Definition(std::sync::Arc::new(expr), scope)
@@ -191,7 +191,7 @@ pub struct Precedents {
     /// One of its references is read through the used range (see [`trimmed`]).
     pub trim: bool,
     /// It calls a function whose answer changes on its own (`NOW`, `RAND`, `TODAY`… see
-    /// [`FnSpec::volatile`](gridcraft_functions::FnSpec)).
+    /// [`FnSpec::volatile`](cella_functions::FnSpec)).
     pub volatile: bool,
     /// It reads `SUBTOTAL` or `AGGREGATE`, whose value leaves out the rows a filter, a collapsed
     /// group or a row height of zero hides: showing or hiding rows changes it with no cell it names
@@ -283,7 +283,7 @@ fn precedents_at(
         // The registry entry of a call's function, looked up once for the two questions below ask
         // of it: is it volatile, and is it a function at all?
         let call = match x {
-            Expr::Call(n, _) => Some((n, gridcraft_functions::lookup(n))),
+            Expr::Call(n, _) => Some((n, cella_functions::lookup(n))),
             _ => None,
         };
         // A volatile function's cached value is out of date by definition, so a formula calling one
@@ -479,5 +479,5 @@ pub const SPECIAL_FUNCTIONS: &[&str] = &[
 ];
 
 pub fn is_known_function(n: &str) -> bool {
-    is_special(&n.to_ascii_uppercase()) || gridcraft_functions::lookup(n).is_some()
+    is_special(&n.to_ascii_uppercase()) || cella_functions::lookup(n).is_some()
 }

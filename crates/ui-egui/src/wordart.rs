@@ -1,9 +1,9 @@
 //! Insert › Text › WordArt: the style gallery. Previews are drawn in code from the engine's
-//! preset palette (`gridcraft_engine::cmd::wordart::STYLES`); picking one runs `insert.wordArt`.
+//! preset palette (`cella_engine::cmd::wordart::STYLES`); picking one runs `insert.wordArt`.
 
+use cella_engine::cmd::wordart::{STYLES, WordArtStyle};
+use cella_engine::model::Theme;
 use egui::{Align2, Color32, FontId, Painter, Rect, Sense, Ui, vec2};
-use gridcraft_engine::cmd::wordart::{STYLES, WordArtStyle};
-use gridcraft_engine::model::Theme;
 use serde_json::json;
 
 use crate::widgets::tr;
@@ -16,7 +16,7 @@ pub(crate) fn paint_sample(p: &Painter, r: Rect, style: &WordArtStyle, theme_dat
     let font = FontId::new(px, family);
     let c = r.center();
     // An automatic colour has nothing to resolve to here: the preview is a sample, not a cell.
-    let col = |c: gridcraft_engine::model::Color| c.resolve(theme_data).map(theme::color32).unwrap_or(Color32::BLACK);
+    let col = |c: cella_engine::model::Color| c.resolve(theme_data).map(theme::color32).unwrap_or(Color32::BLACK);
     if let Some(sh) = style.shadow {
         p.text(c + vec2(1.5, 1.5), Align2::CENTER_CENTER, "Abc", font.clone(), col(sh));
     }

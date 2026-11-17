@@ -6,7 +6,7 @@
 //! DrawingML shape, Part 1 §22.9 for the OMML inside it). A shape whose text body holds no math is
 //! a plain shape, not an equation, so the distinction is the markup, not the shape kind.
 //!
-//! **GridCraft does not lay mathematics out in two dimensions.** What it paints inside the
+//! **Cella does not lay mathematics out in two dimensions.** What it paints inside the
 //! object's box is the equation's `source`, its linear text; what it keeps and writes is the real
 //! math: `omml` holds the `a14:m` element's content exactly as the file had it, so fractions,
 //! radicals, sums, delimiters and matrices in an existing file survive a save byte for byte. So a
@@ -32,7 +32,7 @@ pub struct Equation {
     pub fill: Color,
     /// Box outline; `Color::Auto` for none, which is Excel's default for an equation.
     pub line: Color,
-    /// The equation as linear text: what GridCraft paints in the box, and what an edit types.
+    /// The equation as linear text: what Cella paints in the box, and what an edit types.
     /// Reading flattens the markup's structure into its runs in document order — the text of a
     /// fraction is its numerator's and denominator's runs side by side, with no bar — because the
     /// layout belongs to the file, not to this model.

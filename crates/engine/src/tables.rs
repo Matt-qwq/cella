@@ -1,8 +1,8 @@
 //! Table styles: how a cell inside a table looks (our own palettes, keyed by the familiar
 //! `TableStyleLight1…21 / Medium1…28 / Dark1…11` names so files round-trip).
 
-use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_model::*;
+use cella_core::{CellRef, RangeRef};
+use cella_model::*;
 
 /// (family, number) from a style name, e.g. `TableStyleMedium2` → ("Medium", 2).
 pub fn parse_style_name(name: &str) -> (&'static str, u32) {
@@ -237,7 +237,7 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
     // `plan/SHAPE-SHARING.md` made the renames shape-level: an *unqualified* structured reference
     // (`[@Qty]`) belongs to the table whose body holds the cell, so the answer to "does this
     // formula name the renamed table" is the cell's position, not the shape's.
-    let mut shapes = gridcraft_formula::ShapeTable::default();
+    let mut shapes = cella_formula::ShapeTable::default();
     for i in 0..cx.wb.sheets.len() {
         let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> =
             cx.wb.sheets.get(i).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
@@ -245,7 +245,7 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
             let Some(e) = f.expr_at(c) else { continue };
             let mut hit = false;
             let ne = e.map(&mut |x| match x {
-                gridcraft_formula::Expr::Struct(mut st) => {
+                cella_formula::Expr::Struct(mut st) => {
                     for (si, table, range, old, name) in &renames {
                         let this = if st.table.is_empty() { i == *si && range.contains(c) } else { st.table.eq_ignore_ascii_case(table) };
                         if this {
@@ -257,7 +257,7 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
                             }
                         }
                     }
-                    gridcraft_formula::Expr::Struct(st)
+                    cella_formula::Expr::Struct(st)
                 }
                 o => o,
             });
@@ -265,7 +265,7 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
                 && let Some(sh) = cx.wb.sheet_mut(i)
                 && let Some(mut cell) = sh.cells.get(c)
             {
-                let rewrite = gridcraft_xlsx::needs_file_rewrite(&ne);
+                let rewrite = cella_xlsx::needs_file_rewrite(&ne);
                 cell.formula = Some(std::sync::Arc::new(Formula::from_expr_at(ne, c, &mut shapes, rewrite)));
                 sh.cells.set(c, cell);
             }
@@ -345,7 +345,7 @@ fn sync_table_headers(cx: &mut crate::cmd::Ctx, si: usize, ti: usize, renames: &
         }
         let cell = CellRef::new(range.start.row, range.start.col.saturating_add(*i as u32));
         let style = sh.style_id(cell);
-        sh.cells.set(cell, Cell { value: gridcraft_core::Value::text(name.as_str()), style, ..Default::default() });
+        sh.cells.set(cell, Cell { value: cella_core::Value::text(name.as_str()), style, ..Default::default() });
     }
     for (i, name, _) in &plan {
         if let Some(old_name) = old.get(*i)
@@ -358,7 +358,7 @@ fn sync_table_headers(cx: &mut crate::cmd::Ctx, si: usize, ti: usize, renames: &
 
 #[cfg(test)]
 mod tests {
-    use gridcraft_core::Value;
+    use cella_core::Value;
     use serde_json::json;
 
     use crate::Session;
@@ -380,13 +380,13 @@ mod tests {
         let sh = d.wb.sheet(0).unwrap();
         let names: Vec<&str> = sh.tables[0].columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["zz", "Column2", "ZZ2"]);
-        assert_eq!(sh.value(gridcraft_core::CellRef::new(0, 1)), Value::from("Column2"));
-        assert_eq!(sh.value(gridcraft_core::CellRef::new(0, 2)), Value::from("ZZ2"));
+        assert_eq!(sh.value(cella_core::CellRef::new(0, 1)), Value::from("Column2"));
+        assert_eq!(sh.value(cella_core::CellRef::new(0, 2)), Value::from("ZZ2"));
         s.execute("range.setValues", json!({"range": "A1", "values": [["x", "x", 5]]})).unwrap();
         let sh = s.doc().unwrap().wb.sheet(0).unwrap();
         let names: Vec<&str> = sh.tables[0].columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["x", "x2", "5"]);
-        assert_eq!(sh.value(gridcraft_core::CellRef::new(0, 2)), Value::from("5"));
+        assert_eq!(sh.value(cella_core::CellRef::new(0, 2)), Value::from("5"));
     }
 
     #[test]

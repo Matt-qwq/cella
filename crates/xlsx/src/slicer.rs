@@ -21,7 +21,7 @@
 //!   relationship, a timeline cache whose state, range or refresh version this model does not
 //!   carry, a sort order other than the default, a damaged part) is not touched: every part,
 //!   relationship and extension stays as it is, and a save keeps it byte for byte;
-//! - modelling is all-or-nothing for each kind: one cache GridCraft cannot fully understand leaves
+//! - modelling is all-or-nothing for each kind: one cache Cella cannot fully understand leaves
 //!   *every* slicer in that workbook on the kept path, and the same for timelines. That is stricter
 //!   than per-part modelling, and it means a model is never a partial rewrite of the same lists;
 //! - a modelled slicer/timeline whose PivotTable is gone is not written (its cache goes with it),
@@ -36,7 +36,7 @@
 //! `<state><selection startDate endDate>` with `filterType="dateBetween"`, and no selection with
 //! `filterType="unknown"`. The two are written together, so only those two pairs are read: a
 //! state that says one and carries the other is contradictory and stays on the kept path. A date
-//! written in any form other than the `YYYY-MM-DDThh:mm:ss` GridCraft writes (a fraction of a
+//! written in any form other than the `YYYY-MM-DDThh:mm:ss` Cella writes (a fraction of a
 //! second, a zone, a short date) also stays kept, because a save could not spell it back exactly;
 //! so does a selection whose level differs from the level shown ([`timeline_widget`]).
 //!
@@ -50,14 +50,14 @@
 //! (sections 2.2.4.8, 2.2.4.11, 2.2.4.12, 2.4.36–2.4.50, 2.6.67–2.6.114), the drawing frames are
 //! [MS-XLSX] 2.2.4.2 with the slicer/timeline drawing schemas of 5.2 and 5.7, and the frame's
 //! shape is ECMA-376's `xdr:graphicFrame`. Nothing here is copied from Excel's artwork or theme
-//! XML; a style is a name the file carries, and how it looks is GridCraft's own drawing code.
+//! XML; a style is a name the file carries, and how it looks is Cella's own drawing code.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use gridcraft_core::CellRef;
-use gridcraft_core::date::{datetime_from_serial, serial_from_ymd, time_fraction};
-use gridcraft_model::{
+use cella_core::CellRef;
+use cella_core::date::{datetime_from_serial, serial_from_ymd, time_fraction};
+use cella_model::{
     Anchor, AnchorMode, FilterCriterion, PivotSlicer, PivotTimeline, Slicer, SlicerItem, SlicerSort, SlicerValue, Table, TimeUnit, TimelineRange,
     Workbook,
 };
@@ -159,7 +159,7 @@ fn from_workbook(part: &str) -> String {
 /// preserved content so the pass-through does not write them a second time.
 ///
 /// Called once, after every sheet, PivotTable, table and kept part has been read. Both kinds are
-/// modelled all-or-nothing: anything GridCraft does not fully understand leaves that kind raw.
+/// modelled all-or-nothing: anything Cella does not fully understand leaves that kind raw.
 pub fn read(wb: &mut Workbook, cx: &mut Ctx<'_>, wb_xml: &El, wb_rels: &[crate::package::Rel]) {
     let items = pivot_cache_items(cx, wb_xml, wb_rels);
     let slicers = read_slicers(wb, cx, &items);
@@ -224,7 +224,7 @@ pub fn read(wb: &mut Workbook, cx: &mut Ctx<'_>, wb_xml: &El, wb_rels: &[crate::
 /// dropped whole by the writer (`passthrough::remap`), so this is what keeps the kept path from
 /// writing a second `<x14:slicerCaches>` list or a second cache part.
 fn strip(wb: &mut Workbook, caches: &HashSet<String>, slicers: &HashSet<String>, timelines: &HashSet<String>) {
-    let drop_rel = |r: &gridcraft_model::PreservedRel| {
+    let drop_rel = |r: &cella_model::PreservedRel| {
         let kind = r.rel_type.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
         let target = normalize(&r.target);
         match kind.as_str() {
@@ -308,7 +308,7 @@ fn shared_items(field: &El) -> Option<Vec<SlicerValue>> {
 }
 
 /// Every kept part with content type `ct`, deduplicated across the workbook and all sheets.
-fn kept_parts<'a>(wb: &'a Workbook, ct: &str) -> Vec<&'a gridcraft_model::PreservedPart> {
+fn kept_parts<'a>(wb: &'a Workbook, ct: &str) -> Vec<&'a cella_model::PreservedPart> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let sources = wb.preserved.iter().map(|p| &**p).chain(wb.sheets.iter().filter_map(|s| s.preserved.as_deref()));
@@ -423,7 +423,7 @@ fn read_slicers(wb: &mut Workbook, cx: &mut Ctx<'_>, items: &HashMap<u32, HashMa
                 break 'sheets;
             };
             if !part.rels.is_empty() {
-                why = Some(format!("{}: it has relationships GridCraft does not model", part.name));
+                why = Some(format!("{}: it has relationships Cella does not model", part.name));
                 break 'sheets;
             }
             let Ok(root) = xml::parse(&part.data) else {
@@ -440,7 +440,7 @@ fn read_slicers(wb: &mut Workbook, cx: &mut Ctx<'_>, items: &HashMap<u32, HashMa
             }
             for el in root.kids("slicer") {
                 let Some(view) = read_view(el) else {
-                    why = Some(format!("{}: a slicer has an attribute GridCraft does not model", part.name));
+                    why = Some(format!("{}: a slicer has an attribute Cella does not model", part.name));
                     break 'sheets;
                 };
                 let Some(cache) = caches.iter().find(|c| c.name.eq_ignore_ascii_case(&view.cache)) else {
@@ -534,7 +534,7 @@ fn read_slicers(wb: &mut Workbook, cx: &mut Ctx<'_>, items: &HashMap<u32, HashMa
 }
 
 /// Parses one slicer cache part. `Err` explains why it has to stay on the kept path.
-fn read_cache(part: &gridcraft_model::PreservedPart, items: &HashMap<u32, HashMap<String, Vec<SlicerValue>>>) -> Result<CacheRead, String> {
+fn read_cache(part: &cella_model::PreservedPart, items: &HashMap<u32, HashMap<String, Vec<SlicerValue>>>) -> Result<CacheRead, String> {
     let root = xml::parse(&part.data).map_err(|_| format!("{}: not XML", part.name))?;
     if root.name != "slicerCacheDefinition" {
         return Err(format!("{}: not a slicer cache definition", part.name));
@@ -546,7 +546,7 @@ fn read_cache(part: &gridcraft_model::PreservedPart, items: &HashMap<u32, HashMa
     if !attrs_match(&root, &["name", "sourceName", "Ignorable"], &[]) {
         return Err(format!("{}: an attribute of the cache is not modelled", part.name));
     }
-    // Only the children and attributes GridCraft writes again are modelled; anything else would be
+    // Only the children and attributes Cella writes again are modelled; anything else would be
     // lost on save.
     let mut table_ext: Option<&El> = None;
     for c in &root.children {
@@ -664,7 +664,7 @@ fn frame_anchor(cx: &Ctx<'_>, name: &str, timeline: bool) -> Option<Anchor> {
     cx.widget_frames.iter().find(|f| f.timeline == timeline && f.name.eq_ignore_ascii_case(name)).map(|f| f.anchor)
 }
 
-fn parts_by_name<'a>(parts: &[&'a gridcraft_model::PreservedPart], name: &str) -> Option<&'a gridcraft_model::PreservedPart> {
+fn parts_by_name<'a>(parts: &[&'a cella_model::PreservedPart], name: &str) -> Option<&'a cella_model::PreservedPart> {
     let n = normalize(name);
     parts.iter().copied().find(|p| normalize(&p.name) == n)
 }
@@ -714,7 +714,7 @@ fn read_selection(tab: &El, n: usize) -> Result<Option<Vec<bool>>, String> {
             *v = true;
         }
         if !it.children.is_empty() {
-            return Err("an item carries a property GridCraft does not model".into());
+            return Err("an item carries a property Cella does not model".into());
         }
     }
     Ok(Some(selected))
@@ -765,7 +765,7 @@ fn timeline_bounds(wb: &Workbook, sheet: usize, pivots: &[String], field: &str) 
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
         for row in range.start.row.saturating_add(1)..=range.end.row {
-            if let gridcraft_core::Value::Number(n) = sh.value(CellRef::new(row, col)).scalar()
+            if let cella_core::Value::Number(n) = sh.value(CellRef::new(row, col)).scalar()
                 && n.is_finite()
             {
                 lo = lo.min(n);
@@ -830,7 +830,7 @@ fn read_timelines(wb: &mut Workbook, cx: &mut Ctx<'_>) -> Option<TimelinesRead> 
                 break 'sheets;
             };
             if !part.rels.is_empty() {
-                why = Some(format!("{}: it has relationships GridCraft does not model", part.name));
+                why = Some(format!("{}: it has relationships Cella does not model", part.name));
                 break 'sheets;
             }
             let Ok(root) = xml::parse(&part.data) else {
@@ -857,7 +857,7 @@ fn read_timelines(wb: &mut Workbook, cx: &mut Ctx<'_>) -> Option<TimelinesRead> 
                     break 'sheets;
                 };
                 if !cache.rels.is_empty() {
-                    why = Some(format!("{}: it has relationships GridCraft does not model", cache.name));
+                    why = Some(format!("{}: it has relationships Cella does not model", cache.name));
                     break 'sheets;
                 }
                 let Ok(croot) = xml::parse(&cache.data) else {
@@ -872,7 +872,7 @@ fn read_timelines(wb: &mut Workbook, cx: &mut Ctx<'_>) -> Option<TimelinesRead> 
                     }
                 };
                 let Some(mut widget) = timeline_widget(el, cache_name) else {
-                    why = Some(format!("{}: a timeline has an attribute GridCraft does not model", part.name));
+                    why = Some(format!("{}: a timeline has an attribute Cella does not model", part.name));
                     break 'sheets;
                 };
                 let Some(pivots) = pivot_table_names(&croot) else {
@@ -945,11 +945,11 @@ fn timeline_cache_problem<'a>(wb: &Workbook, root: &'a El) -> Result<TimelineSta
         return Err("its extensions are not modelled".into());
     }
     let Some(state) = state else { return Err("it has no state".into()) };
-    // The refresh versions and the single-range flag are not modelled: only the values GridCraft
+    // The refresh versions and the single-range flag are not modelled: only the values Cella
     // writes itself can be written back.
     let defaults: [(&str, &str); 3] = [("minimalRefreshVersion", "0"), ("lastRefreshVersion", "0"), ("singleRangeFilterState", "true")];
     if !attrs_match(state, &["pivotCacheId", "filterType"], &defaults) {
-        return Err("its state carries a refresh version or a filter state GridCraft does not model".into());
+        return Err("its state carries a refresh version or a filter state Cella does not model".into());
     }
     // `filterType` and the selection are one statement: `dateBetween` means a range, `unknown`
     // means none. Any other type, or one contradicting the children, is not ours to rewrite.
@@ -993,7 +993,7 @@ fn timeline_range(wb: &Workbook, el: &El) -> Result<TimelineRange, String> {
         return Err("its selection needs a start and an end date".into());
     };
     let (Some(start), Some(end)) = (timeline_date(wb, start), timeline_date(wb, end)) else {
-        return Err("a date of its selection is not one GridCraft writes back verbatim".into());
+        return Err("a date of its selection is not one Cella writes back verbatim".into());
     };
     if start > end {
         return Err("its selection ends before it starts".into());
@@ -1535,7 +1535,7 @@ fn live_pivots(wb: &Workbook, names: &[String], field: Option<&str>) -> Option<V
 /// name (letters, digits and `_`, not a cell reference). `None` when every candidate is taken.
 fn unique_name(wanted: &str, taken: &mut HashSet<String>) -> Option<String> {
     let mut base: String = wanted.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).take(200).collect();
-    if base.is_empty() || !base.starts_with(|c: char| c.is_alphabetic() || c == '_') || gridcraft_core::CellRef::parse(&base).is_some() {
+    if base.is_empty() || !base.starts_with(|c: char| c.is_alphabetic() || c == '_') || cella_core::CellRef::parse(&base).is_some() {
         base = format!("Slicer{base}");
     }
     if taken.insert(base.to_lowercase()) {
@@ -1554,7 +1554,7 @@ fn unique_name(wanted: &str, taken: &mut HashSet<String>) -> Option<String> {
 /// A cache name not already used by a pivot or table slicer cache; `None` when every candidate is.
 fn unique_cache_name(wanted: &str, w: &SlicerWriter) -> Option<String> {
     let base: String = wanted.trim().chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).take(200).collect();
-    let base = if base.is_empty() || !base.starts_with(|c: char| c.is_alphabetic() || c == '_') || gridcraft_core::CellRef::parse(&base).is_some() {
+    let base = if base.is_empty() || !base.starts_with(|c: char| c.is_alphabetic() || c == '_') || cella_core::CellRef::parse(&base).is_some() {
         format!("Slicer_{base}")
     } else {
         base

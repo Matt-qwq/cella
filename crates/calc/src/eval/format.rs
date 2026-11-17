@@ -1,6 +1,6 @@
 //! Number-format codes (CELL format) and R1C1 reference text.
 
-use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, Value};
+use cella_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, Value};
 
 /// CELL("format") code for a number format.
 pub(super) fn cell_format_code(code: &str) -> String {
@@ -60,7 +60,7 @@ pub fn r1c1_to_a1(s: &str, at: CellRef) -> Result<Option<String>, CellError> {
         };
         let (Some(r), Some(c)) = (num(rpart, at.row, MAX_ROWS), num(cpart, at.col, MAX_COLS)) else { return Ok(None) };
         let (Some((r, ra)), Some((c, ca))) = (r, c) else { return Err(CellError::Ref) };
-        Ok(Some(format!("{}{}{}{}", if ca { "$" } else { "" }, gridcraft_core::col_to_letters(c), if ra { "$" } else { "" }, r + 1)))
+        Ok(Some(format!("{}{}{}{}", if ca { "$" } else { "" }, cella_core::col_to_letters(c), if ra { "$" } else { "" }, r + 1)))
     };
     let out = match body.split_once(':') {
         Some((a, b)) => match (conv(a)?, conv(b)?) {

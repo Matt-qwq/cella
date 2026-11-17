@@ -15,7 +15,7 @@ pub const MAX_TOTAL: u64 = 1024 * 1024 * 1024;
 
 /// The limits the reading in this process actually uses.
 ///
-/// They are the defaults above unless `GRIDCRAFT_MAX_PART_MB` / `GRIDCRAFT_MAX_TOTAL_MB` say
+/// They are the defaults above unless `CELLA_MAX_PART_MB` / `CELLA_MAX_TOTAL_MB` say
 /// otherwise: real reports and data exports do exceed 512 MB in one sheet, and someone opening
 /// their own file is not the threat these caps are about. The defaults stay hostile-input safe;
 /// an override is clamped so a typo cannot ask for terabytes.
@@ -36,8 +36,8 @@ fn limits() -> (u64, u64) {
                 .map(|v| v * 1024 * 1024)
                 .unwrap_or(default)
         };
-        let part = mb("GRIDCRAFT_MAX_PART_MB", MAX_PART);
-        let total = mb("GRIDCRAFT_MAX_TOTAL_MB", MAX_TOTAL).max(part);
+        let part = mb("CELLA_MAX_PART_MB", MAX_PART);
+        let total = mb("CELLA_MAX_TOTAL_MB", MAX_TOTAL).max(part);
         (part, total)
     })
 }

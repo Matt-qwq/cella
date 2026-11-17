@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{Array, CellError, RangeRef, Value, compare};
-use gridcraft_formula::Expr;
-use gridcraft_functions::Arg;
+use cella_core::{Array, CellError, RangeRef, Value, compare};
+use cella_formula::Expr;
+use cella_functions::Arg;
 
 use super::array::{Acc, Agg, broadcast_len, single, zip2, zip3};
 use super::format::{cell_format_code, same_kind};
@@ -96,14 +96,14 @@ impl<'h> Evaluator<'h> {
                 if let Value::Array(_) = index {
                     // An array of indexes picks element by element: `CHOOSE({1,2},A1:A3,B1:B3)`
                     // is a two-column array. The library CHOOSE lifts over its arguments.
-                    let Some(spec) = gridcraft_functions::lookup(name) else { return err(CellError::Name) };
+                    let Some(spec) = cella_functions::lookup(name) else { return err(CellError::Name) };
                     let mut evaluated = vec![Arg { value: index, from_ref: false }];
                     for a in &args[1..] {
                         let value = self.value(a);
                         evaluated.push(Arg { value, from_ref: false });
                     }
                     let mut ctx = FnCtx { ev: self, criteria: None, lambda: None };
-                    return gridcraft_functions::call(spec, &evaluated, &mut ctx).pipe(Ev::V);
+                    return cella_functions::call(spec, &evaluated, &mut ctx).pipe(Ev::V);
                 }
                 let i = match index.to_number() {
                     Ok(n) => n.trunc() as i64,
@@ -235,7 +235,7 @@ impl<'h> Evaluator<'h> {
                         Ok(c) => c,
                         Err(e) => return Value::Error(e),
                     };
-                    match gridcraft_numfmt::text_function(v, &code, sys) {
+                    match cella_numfmt::text_function(v, &code, sys) {
                         Ok(s) => Value::text(s),
                         Err(e) => Value::Error(e),
                     }
@@ -258,7 +258,7 @@ impl<'h> Evaluator<'h> {
                 Ev::L(Arc::new(Lambda { params, body: body.clone(), env: self.env.clone() }))
             }
             "ISOMITTED" => {
-                let r = matches!(args.first(), Some(Expr::Name(n)) if self.env.iter().rev().find(|(k, _)| gridcraft_formula::same_name(k, n)).is_some_and(|(_, v)| matches!(v, Ev::V(Value::Empty))));
+                let r = matches!(args.first(), Some(Expr::Name(n)) if self.env.iter().rev().find(|(k, _)| cella_formula::same_name(k, n)).is_some_and(|(_, v)| matches!(v, Ev::V(Value::Empty))));
                 Ev::V(Value::Bool(r))
             }
             "MAP" | "REDUCE" | "SCAN" | "BYROW" | "BYCOL" | "MAKEARRAY" => self.higher_order(name, args),
@@ -285,7 +285,7 @@ impl<'h> Evaluator<'h> {
     }
 
     pub(super) fn builtin(&mut self, name: &str, args: &[Expr]) -> Ev {
-        let Some(spec) = gridcraft_functions::lookup(name) else {
+        let Some(spec) = cella_functions::lookup(name) else {
             // A defined name holding a LAMBDA, or a LET-bound lambda.
             if let Ev::L(l) = self.name(name) {
                 return self.apply_lambda(&l, args);
@@ -318,7 +318,7 @@ impl<'h> Evaluator<'h> {
                 lambda = Some(l.clone());
                 ev = Ev::V(Value::Empty);
             }
-            if spec.category == gridcraft_functions::Category::Database
+            if spec.category == cella_functions::Category::Database
                 && i == 2
                 && let Ev::R(areas) = &ev
                 && let [area] = areas.as_slice()
@@ -360,7 +360,7 @@ impl<'h> Evaluator<'h> {
         }
         let database = criteria.is_some();
         let mut ctx = FnCtx { ev: self, criteria, lambda };
-        let v = gridcraft_functions::call(spec, &evaluated, &mut ctx);
+        let v = cella_functions::call(spec, &evaluated, &mut ctx);
         // A computed criterion that ran out of work counted as not met: the result would leave
         // records out, so the whole call is `#CALC!`.
         if database && self.exhausted {
@@ -434,9 +434,9 @@ impl<'h> Evaluator<'h> {
             // The function already knows how a direct argument coerces (`MAX("7")` is 7) and what
             // an array of them folds to, so a non-reference argument goes through it.
             let name = if kind == Agg::Max { "MAX" } else { "MIN" };
-            let Some(f) = gridcraft_functions::lookup(name) else { return Err(err(CellError::Name)) };
+            let Some(f) = cella_functions::lookup(name) else { return Err(err(CellError::Name)) };
             let args = [Arg { value, from_ref }];
-            match gridcraft_functions::call(f, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
+            match cella_functions::call(f, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
                 Value::Number(n) => {
                     acc.sum += n;
                     acc.count = acc.count.saturating_add(1);
@@ -446,18 +446,18 @@ impl<'h> Evaluator<'h> {
                 other => return Err(Ev::V(other)),
             }
         }
-        let (Some(sum), Some(count)) = (gridcraft_functions::lookup("SUM"), gridcraft_functions::lookup("COUNT")) else {
+        let (Some(sum), Some(count)) = (cella_functions::lookup("SUM"), cella_functions::lookup("COUNT")) else {
             return Err(err(CellError::Name));
         };
         let args = [Arg { value, from_ref }];
         if kind != Agg::Count {
-            match gridcraft_functions::call(sum, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
+            match cella_functions::call(sum, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
                 Value::Number(n) => acc.sum += n,
                 other => return Err(Ev::V(other)),
             }
         }
         if kind != Agg::Sum {
-            match gridcraft_functions::call(count, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
+            match cella_functions::call(count, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
                 Value::Number(n) => acc.count = acc.count.saturating_add(n as u64),
                 other => return Err(Ev::V(other)),
             }
@@ -531,11 +531,11 @@ impl<'h> Evaluator<'h> {
     /// that name.
     fn function_by_name(&self, e: &Expr) -> Option<String> {
         let Expr::Name(n) = e else { return None };
-        if self.env.iter().any(|(k, _)| gridcraft_formula::same_name(k, n)) || self.host.workbook().name(n, self.sheet).is_some() {
+        if self.env.iter().any(|(k, _)| cella_formula::same_name(k, n)) || self.host.workbook().name(n, self.sheet).is_some() {
             return None;
         }
         let u = n.to_ascii_uppercase();
-        gridcraft_functions::lookup(&u).map(|_| u)
+        cella_functions::lookup(&u).map(|_| u)
     }
 
     /// The function argument of a LAMBDA helper; a function given by name takes `arity`
@@ -673,7 +673,7 @@ impl<'h> Evaluator<'h> {
 
     /// `MEASURE(name, [field, value]…)`: a data-model measure evaluated in a filter context.
     ///
-    /// GridCraft's own function, not Excel's: Excel reaches a model's measures through a PivotTable
+    /// Cella's own function, not Excel's: Excel reaches a model's measures through a PivotTable
     /// or the CUBE family, whose first argument is a connection string this workbook does not have.
     /// A field is written `Table[Column]`, or as a bare column name when exactly one model table
     /// has it.
@@ -706,12 +706,12 @@ impl<'h> Evaluator<'h> {
             return err(CellError::Name);
         }
         let Some(m) = wb.model.measure(&name) else { return err(CellError::Name) };
-        let mut ctx = gridcraft_dax::Context::new();
+        let mut ctx = cella_dax::Context::new();
         for (field, value) in filters {
             let Some((table, column)) = split_model_field(&wb.model, &field) else { return err(CellError::Name) };
             ctx = ctx.filter(&table, &column, value);
         }
-        match gridcraft_dax::evaluate(&wb.model, &m.formula, &ctx) {
+        match cella_dax::evaluate(&wb.model, &m.formula, &ctx) {
             Ok(v) => Ev::V(v),
             Err(e) => Ev::V(Value::Error(model_error(&e))),
         }
@@ -733,7 +733,7 @@ impl<'h> Evaluator<'h> {
         let wb = self.host.workbook();
         let sheet = wb.sheet(a.sheet);
         match kind.as_str() {
-            "address" => Ev::V(Value::text(format!("${}${}", gridcraft_core::col_to_letters(c.col), c.row + 1))),
+            "address" => Ev::V(Value::text(format!("${}${}", cella_core::col_to_letters(c.col), c.row + 1))),
             "row" => Ev::V(Value::number(c.row as f64 + 1.0)),
             "col" => Ev::V(Value::number(c.col as f64 + 1.0)),
             "contents" => Ev::V(self.host.cell_value(a.sheet, c)),
@@ -745,7 +745,7 @@ impl<'h> Evaluator<'h> {
                     _ => "v",
                 }))
             }
-            "width" => Ev::V(Value::number(sheet.map_or(8.43, |s| gridcraft_model::points_to_chars(s.col_width(c.col) as f64)).round())),
+            "width" => Ev::V(Value::number(sheet.map_or(8.43, |s| cella_model::points_to_chars(s.col_width(c.col) as f64)).round())),
             // Excel's `<folder>/[<file>]<sheet>`, which the classic sheet-name formula splits on
             // the `]`. Empty until the workbook has a file of its own, as in Excel (#1489).
             "filename" => Ev::V(Value::text(match &wb.source_path {
@@ -871,14 +871,14 @@ impl<'h> Evaluator<'h> {
             }
         }
         if let Some(k) = k {
-            return Ev::V(gridcraft_functions::aggregate_values_k(func, &values, &k));
+            return Ev::V(cella_functions::aggregate_values_k(func, &values, &k));
         }
-        Ev::V(gridcraft_functions::aggregate_values(func, &values))
+        Ev::V(cella_functions::aggregate_values(func, &values))
     }
 }
 
 /// Splits `Table[Column]` (or a bare column name that exactly one table has) into its two names.
-fn split_model_field(model: &gridcraft_model::DataModel, field: &str) -> Option<(String, String)> {
+fn split_model_field(model: &cella_model::DataModel, field: &str) -> Option<(String, String)> {
     let text = field.trim();
     if let Some((table, rest)) = text.split_once('[')
         && let Some(column) = rest.strip_suffix(']')
@@ -903,8 +903,8 @@ fn split_model_field(model: &gridcraft_model::DataModel, field: &str) -> Option<
 
 /// The worksheet error a measure's failure becomes: an unknown name is `#NAME?`, a formula that
 /// cannot be computed is `#VALUE!`, and a measure that recurses too deep is `#NUM!`.
-fn model_error(e: &gridcraft_dax::DaxError) -> CellError {
-    use gridcraft_dax::DaxError;
+fn model_error(e: &cella_dax::DaxError) -> CellError {
+    use cella_dax::DaxError;
     match e {
         DaxError::UnknownMeasure { .. } | DaxError::UnknownTable { .. } | DaxError::UnknownColumn { .. } => CellError::Name,
         DaxError::Cycle { .. } | DaxError::TooDeep { .. } => CellError::Num,

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef};
-use gridcraft_formula::adjust::{Axis, Edit};
-use gridcraft_model::{Anchor, AnchorMode, Sheet, Visibility};
+use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef};
+use cella_formula::adjust::{Axis, Edit};
+use cella_model::{Anchor, AnchorMode, Sheet, Visibility};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -240,14 +240,14 @@ fn shift_sheet_features(sh: &mut Sheet, axis: Axis, at: u32, count: u32, insert:
 }
 
 /// Rewrites every formula reference (and chart series) for a structural edit on `target`.
-pub(super) fn rewrite(wb: &mut gridcraft_model::Workbook, target: &str, e: &Edit) {
+pub(super) fn rewrite(wb: &mut cella_model::Workbook, target: &str, e: &Edit) {
     super::edit::rewrite_all_formulas(wb, target, e);
     for si in 0..wb.sheets.len() {
         let host = wb.sheets.get(si).map(|s| s.name.clone()).unwrap_or_default();
         let Some(sh) = wb.sheet_mut(si) else { continue };
         let fix = |text: &str| -> String {
-            match gridcraft_formula::parse(text) {
-                Ok(expr) => gridcraft_formula::print(&gridcraft_formula::adjust::adjust(expr, &host, target, e)),
+            match cella_formula::parse(text) {
+                Ok(expr) => cella_formula::print(&cella_formula::adjust::adjust(expr, &host, target, e)),
                 Err(_) => text.to_string(),
             }
         };
@@ -267,9 +267,9 @@ pub(super) fn rewrite(wb: &mut gridcraft_model::Workbook, target: &str, e: &Edit
         // moves them, so table and name sources keep their text.
         for pt in sh.pivots.iter_mut() {
             let body = pt.source.trim().trim_start_matches('=');
-            if let Ok(expr) = gridcraft_formula::parse(body) {
-                let before = gridcraft_formula::print(&expr);
-                let after = gridcraft_formula::print(&gridcraft_formula::adjust::adjust(expr, &host, target, e));
+            if let Ok(expr) = cella_formula::parse(body) {
+                let before = cella_formula::print(&expr);
+                let after = cella_formula::print(&cella_formula::adjust::adjust(expr, &host, target, e));
                 if after != before {
                     pt.source = after;
                 }
@@ -317,7 +317,7 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
             if at > 0 {
                 let prev = if axis == Axis::Rows { sh.rows.get(&(at - 1)).copied() } else { sh.cols.get(&(at - 1)).copied() };
                 if let Some(info) = prev {
-                    let info = gridcraft_model::LineInfo { hidden: false, outline: 0, collapsed: false, ..info };
+                    let info = cella_model::LineInfo { hidden: false, outline: 0, collapsed: false, ..info };
                     let map = if axis == Axis::Rows { &mut sh.rows } else { &mut sh.cols };
                     map.insert_range(at, count, &info);
                 }
@@ -744,7 +744,7 @@ pub(crate) fn drop_sheet(cx: &mut Ctx, i: usize) {
     // Every formula that names the sheet becomes `#REF!`, rewritten one shape at a time (S5 of
     // `plan/SHAPE-SHARING.md`): a 3-D span shrinks to its neighbour by the tab order, which no
     // cell's position decides.
-    super::edit::rewrite_shapes(&mut cx.wb, |_, e| Some(gridcraft_formula::adjust::delete_sheet(e, &name, &order)));
+    super::edit::rewrite_shapes(&mut cx.wb, |_, e| Some(cella_formula::adjust::delete_sheet(e, &name, &order)));
     cx.wb.names.retain(|n| n.scope != Some(i));
     for n in cx.wb.names.iter_mut() {
         if let Some(sc) = n.scope.as_mut()
@@ -753,10 +753,10 @@ pub(crate) fn drop_sheet(cx: &mut Ctx, i: usize) {
             *sc -= 1;
         }
         // Names referring to the sheet become #REF!.
-        if let Ok(e) = gridcraft_formula::parse_name(&n.formula) {
-            let ne = gridcraft_formula::adjust::delete_sheet(e.clone(), &name, &order);
+        if let Ok(e) = cella_formula::parse_name(&n.formula) {
+            let ne = cella_formula::adjust::delete_sheet(e.clone(), &name, &order);
             if ne != e {
-                n.formula = gridcraft_formula::print(&ne);
+                n.formula = cella_formula::print(&ne);
             }
         }
     }
@@ -778,7 +778,7 @@ fn check_lines_protection(s: &Session, p: &Json, axis: Axis, at: u32, count: u32
         (Axis::Cols, true) => pr.insert_columns,
         (Axis::Cols, false) => pr.delete_columns,
     };
-    let locked = |st: gridcraft_model::StyleId| wb.styles.get(st).protection.locked;
+    let locked = |st: cella_model::StyleId| wb.styles.get(st).protection.locked;
     let refuse = || EngineError::Other(PROTECTED.into());
     if !allowed {
         return Err(refuse());
@@ -833,12 +833,12 @@ fn rename_sheet(s: &mut Session, p: &Json) -> Result<Json> {
         // One tree rewrite per shape, one text per cell that names the sheet (S5 of
         // `plan/SHAPE-SHARING.md`: a rename maps names, never coordinates, so every cell a shape
         // serves spells the same answer).
-        super::edit::rewrite_shapes(&mut cx.wb, |_, e| Some(gridcraft_formula::adjust::rename_sheet(e, &old, &name)));
+        super::edit::rewrite_shapes(&mut cx.wb, |_, e| Some(cella_formula::adjust::rename_sheet(e, &old, &name)));
         for si in 0..cx.wb.sheets.len() {
             let Some(sh) = cx.wb.sheet_mut(si) else { continue };
             let fix = |t: &str| {
-                gridcraft_formula::parse(t)
-                    .map(|e| gridcraft_formula::print(&gridcraft_formula::adjust::rename_sheet(e, &old, &name)))
+                cella_formula::parse(t)
+                    .map(|e| cella_formula::print(&cella_formula::adjust::rename_sheet(e, &old, &name)))
                     .unwrap_or_else(|_| t.to_string())
             };
             for ch in sh.charts.iter_mut() {
@@ -856,8 +856,8 @@ fn rename_sheet(s: &mut Session, p: &Json) -> Result<Json> {
             }
         }
         for n in cx.wb.names.iter_mut() {
-            if let Ok(e) = gridcraft_formula::parse_name(&n.formula) {
-                n.formula = gridcraft_formula::print(&gridcraft_formula::adjust::rename_sheet(e, &old, &name));
+            if let Ok(e) = cella_formula::parse_name(&n.formula) {
+                n.formula = cella_formula::print(&cella_formula::adjust::rename_sheet(e, &old, &name));
             }
         }
         cx.structural = true;
@@ -892,16 +892,16 @@ fn move_sheet(s: &mut Session, p: &Json) -> Result<Json> {
             sh.preserved = None; // kept file content (form controls, OLE objects…) stays with the original
             let at = to.min(n);
             // The copy gets its own copies of the sheet's names, referring to the copy.
-            let copies: Vec<gridcraft_model::DefinedName> = cx
+            let copies: Vec<cella_model::DefinedName> = cx
                 .wb
                 .names
                 .iter()
                 .filter(|nm| nm.scope == Some(i))
                 .map(|nm| {
-                    let formula = gridcraft_formula::parse_name(&nm.formula)
-                        .map(|e| gridcraft_formula::print(&gridcraft_formula::adjust::rename_sheet(e, &base, &sh.name)))
+                    let formula = cella_formula::parse_name(&nm.formula)
+                        .map(|e| cella_formula::print(&cella_formula::adjust::rename_sheet(e, &base, &sh.name)))
                         .unwrap_or_else(|_| nm.formula.clone());
-                    gridcraft_model::DefinedName { scope: Some(at), formula, ..nm.clone() }
+                    cella_model::DefinedName { scope: Some(at), formula, ..nm.clone() }
                 })
                 .collect();
             for nm in cx.wb.names.iter_mut() {
@@ -940,7 +940,7 @@ fn tab_color(s: &mut Session, p: &Json) -> Result<Json> {
     let i = target_any_sheet(s, p)?;
     let c = super::format::color_param(p.get("color"));
     edit(s, |cx| {
-        cx.sheet_mut(i)?.tab_color = c.filter(|c| *c != gridcraft_model::Color::Auto);
+        cx.sheet_mut(i)?.tab_color = c.filter(|c| *c != cella_model::Color::Auto);
         Ok(Json::Null)
     })
 }
@@ -1006,16 +1006,16 @@ fn step_sheet(s: &mut Session, dir: isize) -> Result<Json> {
 
 /// Where a range of the edited sheet goes after a structural edit (`None` = deleted).
 pub(crate) fn map_range(r: RangeRef, e: &Edit) -> Option<RangeRef> {
-    let (Some(start), Some(end)) = (gridcraft_formula::Anchor::at(r.start, false, false), gridcraft_formula::Anchor::at(r.end, false, false)) else {
+    let (Some(start), Some(end)) = (cella_formula::Anchor::at(r.start, false, false), cella_formula::Anchor::at(r.end, false, false)) else {
         // A range outside the sheet is not one the editor can hold; leave it where it is.
         return Some(r);
     };
-    let expr = gridcraft_formula::Expr::Ref(gridcraft_formula::Reference {
-        sheet: gridcraft_formula::SheetSel::Current,
-        kind: gridcraft_formula::RefKind::Range(start, end),
+    let expr = cella_formula::Expr::Ref(cella_formula::Reference {
+        sheet: cella_formula::SheetSel::Current,
+        kind: cella_formula::RefKind::Range(start, end),
     });
-    match gridcraft_formula::adjust::adjust(expr, "S", "S", e) {
-        gridcraft_formula::Expr::Ref(r) => Some(r.range()),
+    match cella_formula::adjust::adjust(expr, "S", "S", e) {
+        cella_formula::Expr::Ref(r) => Some(r.range()),
         _ => None,
     }
 }
@@ -1092,7 +1092,7 @@ pub(super) fn shift_cell_features(sh: &mut Sheet, e: &Edit) {
 
 /// Columns inserted inside a table become new table columns (with names no other column has);
 /// deleted ones leave it.
-fn shift_table_columns(t: &mut gridcraft_model::Table, at: u32, count: u32, insert: bool) {
+fn shift_table_columns(t: &mut cella_model::Table, at: u32, count: u32, insert: bool) {
     if insert {
         if at > t.range.start.col && at <= t.range.end.col {
             let idx = (at - t.range.start.col) as usize;
@@ -1105,14 +1105,8 @@ fn shift_table_columns(t: &mut gridcraft_model::Table, at: u32, count: u32, inse
                         break name;
                     }
                 };
-                let col = gridcraft_model::TableColumn {
-                    name,
-                    totals: Default::default(),
-                    totals_label: None,
-                    formula: None,
-                    unique_name: None,
-                    xml: None,
-                };
+                let col =
+                    cella_model::TableColumn { name, totals: Default::default(), totals_label: None, formula: None, unique_name: None, xml: None };
                 t.columns.insert((idx + k).min(t.columns.len()), col);
             }
         }

@@ -1,9 +1,9 @@
 //! The in-cell editor covers the edited cell exactly, as in Excel, at every zoom (#1755).
 
+use cella_engine::Session;
+use cella_engine::core::CellRef;
+use cella_ui_egui::{SheetApp, grid::Geo};
 use egui::{Color32, Event, Modifiers, PointerButton, Rect, Shape};
-use gridcraft_engine::Session;
-use gridcraft_engine::core::CellRef;
-use gridcraft_ui_egui::{SheetApp, grid::Geo};
 use serde_json::json;
 
 type Harness = egui_kittest::Harness<'static, SheetApp>;

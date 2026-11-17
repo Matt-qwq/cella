@@ -13,9 +13,9 @@
 //! name, the header cells always hold the column names, and a rename (when it is unavoidable) is
 //! made in memory, on the later column, by position — never silently on save.
 
-use gridcraft_core::CellRef;
-use gridcraft_engine::model::{Table, TableColumn, TotalsFn, Workbook};
-use gridcraft_engine::{DocState, Session, io};
+use cella_core::CellRef;
+use cella_engine::model::{Table, TableColumn, TotalsFn, Workbook};
+use cella_engine::{DocState, Session, io};
 use serde_json::json;
 
 fn session() -> Session {
@@ -51,7 +51,7 @@ fn header_state(wb: &Workbook) -> Vec<(Vec<String>, Vec<String>)> {
 fn reload(wb: &Workbook) -> Workbook {
     let bytes = io::save_bytes(wb, "regression.xlsx").expect("save");
     // Every save in these tests goes through the package validator.
-    gridcraft_xlsx::testing::check_package(&bytes).expect("a valid package");
+    cella_xlsx::testing::check_package(&bytes).expect("a valid package");
     io::open_bytes("regression.xlsx", &bytes).expect("reload").0
 }
 
@@ -66,13 +66,13 @@ fn opened_with_table(last_col: &str, headers: &[&str]) -> Session {
     let mut wb = Workbook::new();
     if let Some(sh) = wb.sheet_mut(0) {
         for (i, h) in headers.iter().enumerate() {
-            sh.set_value(CellRef::new(0, i as u32), gridcraft_core::Value::text(*h));
-            sh.set_value(CellRef::new(1, i as u32), gridcraft_core::Value::Number(i as f64 + 1.0));
+            sh.set_value(CellRef::new(0, i as u32), cella_core::Value::text(*h));
+            sh.set_value(CellRef::new(1, i as u32), cella_core::Value::Number(i as f64 + 1.0));
         }
         sh.tables.push(Table {
             id: 1,
             name: "T".into(),
-            range: gridcraft_core::RangeRef::parse(&format!("A1:{last_col}3")).expect("range"),
+            range: cella_core::RangeRef::parse(&format!("A1:{last_col}3")).expect("range"),
             header_row: true,
             totals_row: false,
             columns: headers.iter().map(|h| column(h)).collect(),

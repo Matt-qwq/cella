@@ -1,7 +1,7 @@
 //! What a formula is written as: the fast path that keeps the canonical text and the rewrite
 //! that spells a file's form of it must agree, formula by formula.
 
-use gridcraft_model::Formula;
+use cella_model::Formula;
 
 use crate::fmla::{self, to_file};
 
@@ -66,7 +66,7 @@ fn the_rewrite_is_skipped_exactly_when_it_changes_nothing() {
         let Some(e) = f.text_tree() else { continue };
         // A file spells a formula differently exactly when the rewrite's text differs from the
         // canonical text.
-        let changes = fmla::expr_to_file_for_test(e.clone()) != gridcraft_formula::print(&e);
+        let changes = fmla::expr_to_file_for_test(e.clone()) != cella_formula::print(&e);
         assert_eq!(fmla::needs_file_rewrite_for_test(&e), changes, "{text}: the scan and the rewrite disagree (the file text would be wrong)");
     }
 }
