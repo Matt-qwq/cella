@@ -73,10 +73,17 @@ pub struct HistoryEntry {
     /// ([`compress_history_entry`]).
     pub retained_bytes: usize,
     /// Whether `wb`'s sheets hold the bands this snapshot retains as compressed pages (see
-    /// [`gridcraft_model::CellStore::spill_retained_against`]). An undo that restores such a
-    /// snapshot decodes it first ([`expand_history_entry`]), so what it restores behaves as a
-    /// snapshot taken now.
+    /// [`gridcraft_model::CellStore::spill_retained_against`]), so `retained_bytes` is what its
+    /// pages cost and not what the bands they decode to would. An undo restores such a snapshot
+    /// *as it is*, pages and all: nothing is decoded, and the workbook reads a page when it reads
+    /// a cell in it.
     compressed: bool,
+    /// The formula cells `wb` and the workbook that replaced it disagree on — what a restore of
+    /// `wb` has to put back in the graph — or `None` when the two versions could not be compared
+    /// cell by cell (see [`formula_delta`]). Recorded when the step is written, while both
+    /// versions are live: an undo holds only the snapshot, and finding the same cells there would
+    /// mean decoding the pages it kept instead of reading the handful of cells that changed.
+    formula_delta: Option<Vec<(usize, CellRef)>>,
 }
 
 /// An undo group opened with [`Session::group_begin`]. Hand it back to [`Session::group_end`]
@@ -252,12 +259,77 @@ fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
     bytes
 }
 
-/// Pushes an undo entry, dropping the oldest ones past the byte budget; returns how many went.
-fn push_history(history: &mut Vec<HistoryEntry>, label: String, wb: Arc<Workbook>, next: &Workbook, selection: Selection) -> usize {
-    push_history_with_budget(history, label, wb, next, selection, UNDO_BYTES_LIMIT)
+/// The formula cells two versions of a workbook disagree on, in the older version's coordinates:
+/// what a restore of `older` has to put back in the graph. `None` when the two versions cannot be
+/// compared cell by cell, which is exactly when [`Calc::restore`](gridcraft_calc::recalc::Calc::restore)
+/// would rebuild instead of re-inserting.
+///
+/// Called as a step is spilled ([`compress_history_entry`](compress_history_entry)), while both
+/// versions are still live, so the walk skips every band they share and every page whose header
+/// says it holds no formula: it costs the bands the edit touched, not the sheet.
+fn formula_delta(older: &Workbook, newer: &Workbook) -> Option<Vec<(usize, CellRef)>> {
+    if older.sheets.len() != newer.sheets.len() || older.names != newer.names {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (index, (a, b)) in older.sheets.iter().zip(&newer.sheets).enumerate() {
+        // What a reference resolves to lives beside the cells: the sheet's own name, its tables,
+        // and the report definitions a GETPIVOTDATA reads. A formula's precedents depend on all of
+        // them, so a version that moved one is not compared cell by cell.
+        if a.name != b.name || a.tables != b.tables || a.pivots != b.pivots {
+            return None;
+        }
+        for (at, _) in b.cells.formula_changes_against(&a.cells)? {
+            out.push((index, at));
+        }
+    }
+    Some(out)
 }
 
-fn push_history_with_budget(
+/// Pushes an undo entry, dropping the oldest ones past the byte budget; returns how many went.
+///
+/// The step carries no formula delta yet: a snapshot kept live is compared cell by cell when it is
+/// restored (`Calc::restore`), which is exact and costs the bands the edit touched. Only a step
+/// that becomes pages records one — see [`compress_history_entry`] — so an edit pays for what its
+/// step costs, and not for what it might cost if the budget later makes pages of it.
+fn push_history(history: &mut Vec<HistoryEntry>, label: String, wb: Arc<Workbook>, next: &Workbook, selection: Selection) -> usize {
+    push_history_with_budget(history, Step { label, wb, selection, delta: None, spill_newest: true }, next, UNDO_BYTES_LIMIT)
+}
+
+/// What a step's recorded formula delta costs in memory: the cells, sixteen bytes each (a sheet
+/// index and a reference). Charged with the step, because the history keeps it alive.
+fn delta_bytes(delta: Option<&Vec<(usize, CellRef)>>) -> usize {
+    delta.map_or(0, |cells| cells.capacity().saturating_mul(std::mem::size_of::<(usize, CellRef)>()))
+}
+
+/// Pushes a step an undo or a redo restored: it carries the delta the step it came from recorded —
+/// the same cells, the transition only travels the other way — and its stack's newest step is not
+/// spilled, because the undo that pushed it has answered in the time a keypress is allowed.
+fn push_restored(
+    history: &mut Vec<HistoryEntry>,
+    label: String,
+    wb: Arc<Workbook>,
+    next: &Workbook,
+    selection: Selection,
+    delta: Option<Vec<(usize, CellRef)>>,
+) -> usize {
+    push_history_with_budget(history, Step { label, wb, selection, delta, spill_newest: false }, next, UNDO_BYTES_LIMIT)
+}
+
+/// One history step to push: the snapshot, what it restores, and whether the push may spill the
+/// stack's newest step as well as its older ones.
+struct Step {
+    label: String,
+    wb: Arc<Workbook>,
+    selection: Selection,
+    delta: Option<Vec<(usize, CellRef)>>,
+    spill_newest: bool,
+}
+
+/// [`push_history_with_budget`] with a budget spelled out and no recorded delta — the shape a
+/// command pushes a step in, and the one the history tests push with.
+#[cfg(test)]
+pub(crate) fn push_test_history(
     history: &mut Vec<HistoryEntry>,
     label: String,
     wb: Arc<Workbook>,
@@ -265,13 +337,19 @@ fn push_history_with_budget(
     selection: Selection,
     byte_budget: usize,
 ) -> usize {
+    push_history_with_budget(history, Step { label, wb, selection, delta: None, spill_newest: true }, next, byte_budget)
+}
+
+fn push_history_with_budget(history: &mut Vec<HistoryEntry>, step: Step, next: &Workbook, byte_budget: usize) -> usize {
+    let Step { label, wb, selection, delta, spill_newest } = step;
     let retained_bytes = history_retained_bytes(&wb, next);
-    history.push(HistoryEntry { label, wb, selection, retained_bytes, compressed: false });
+    history.push(HistoryEntry { label, wb, selection, retained_bytes, compressed: false, formula_delta: delta });
     let mut total = history.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
     let mut dropped = 0;
-    // Always preserve the latest action, even if that one edit exceeds the budget: a stack of one
-    // is never emptied.
-    while history.len() > 1 {
+    // The latest action is always preserved, even if that one edit exceeds the budget: a stack of
+    // one is never emptied. The loop still runs for a stack of one, because the step it holds can
+    // be spilled when it alone outweighs the budget (see the newest-step rule below).
+    while !history.is_empty() {
         if history.len() > UNDO_LIMIT {
             total = total.saturating_sub(history.remove(0).retained_bytes);
             dropped += 1;
@@ -283,12 +361,19 @@ fn push_history_with_budget(
         // Over budget: nothing is dropped while a step can still be kept cheaply. Offer the oldest
         // step that the encode gate accepts and that has room — a compressed snapshot costs its
         // deflated bands, a fraction of the sheet it replaced — and look again; dropping the oldest
-        // step is the last resort, as it always was. The newest entry is never a candidate: it is
-        // the step the next Ctrl+Z restores, and that one must never be a decode. The gate is what
-        // keeps this from stalling an edit: an encode the edit cannot afford, or one whose pages
-        // the budget still cannot hold, is refused before a byte is written.
+        // step is the last resort, as it always was. The gate is what keeps this from stalling an
+        // edit: an encode the edit cannot afford, or one whose pages the budget still cannot hold,
+        // is refused before a byte is written.
+        //
+        // The newest step is offered a chance too, but only when it is the step the budget has no
+        // other answer for: a snapshot charged more than the whole budget alone cannot be made to
+        // fit by dropping anything, and the alternative is holding the sheet it replaced. That
+        // spill is the whole sheet's worth of encodes, so it happens only here — never on an undo
+        // (see `push_restored`) — and an undo of that step reads the pages lazily instead of
+        // decoding them (see `HistoryEntry`).
+        let newest = history.len().saturating_sub(1);
         let mut candidate = None;
-        for (index, entry) in history.iter().enumerate().take(history.len().saturating_sub(1)) {
+        for (index, entry) in history.iter().enumerate() {
             if entry.compressed {
                 continue;
             }
@@ -298,16 +383,36 @@ fn push_history_with_budget(
             if newer > byte_budget {
                 continue;
             }
-            if can_compress(history_compressible_bands(entry, next), newer, byte_budget) {
+            let bands = history_compressible_bands(entry, next);
+            let worth = if index == newest {
+                spill_newest && worth_spilling_newest(entry.retained_bytes, newer, bands, byte_budget)
+            } else {
+                can_compress(bands, newer, byte_budget)
+            };
+            if worth {
                 candidate = Some(index);
                 break;
             }
         }
-        if let Some(index) = candidate
-            && compress_history_entry(&mut history[index], next)
-        {
-            total = history.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
-            continue;
+        if let Some(index) = candidate {
+            // An older step gives up everything it keeps. The newest one gives up only what it has
+            // to: whatever it holds past the room the budget leaves it, so the encode an edit pays
+            // is the part that does not fit, not the whole sheet.
+            let within = if index == newest {
+                let room = total.saturating_sub(history[index].retained_bytes);
+                Some(byte_budget.saturating_sub(room))
+            } else {
+                None
+            };
+            if compress_history_entry(&mut history[index], next, within) {
+                total = history.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
+                continue;
+            }
+        }
+        // Dropping the oldest is the last resort, and the last step is never dropped: the stack of
+        // one stays, however big it is (its spill was offered above).
+        if history.len() <= 1 {
+            break;
         }
         total = total.saturating_sub(history.remove(0).retained_bytes);
         dropped += 1;
@@ -321,8 +426,43 @@ fn push_history_with_budget(
 /// step too big to encode quickly turns an edit into a stall, and a step whose pages the budget
 /// would still not hold is encoded only to be dropped. `false` costs nothing — the caller drops
 /// the step as it always did.
+///
+/// The newest step is not asked: it is the one the next undo restores, and it is spilled only when
+/// it is over the whole budget by itself — the one case the budget has no other answer for (see
+/// [`push_history_with_budget`]).
 pub(crate) fn can_compress(bands: usize, newer_retained: usize, byte_budget: usize) -> bool {
     bands > 0 && bands <= COMPRESS_MAX_BANDS && newer_retained.saturating_add(bands.saturating_mul(COMPRESS_BYTES_PER_BAND)) <= byte_budget
+}
+
+/// Whether the newest step is offered its spill, gated by the same quantity as any other step: how
+/// many bands have to be encoded, at the ~100 µs a band an encode costs ([COMPRESS_MAX_BANDS]), and
+/// whether the pages they become fit beside the older steps.
+///
+/// The newest step is the one the next Ctrl+Z restores, so it is left live — an undo of a live
+/// snapshot reads no page — unless it alone costs more than the whole budget. Even then only the
+/// part that does not fit is spilled, and if *that* part is more than an edit may spend encoding
+/// (the gate's ceiling), it is not spilled at all: the step stays live and is charged what it
+/// really costs, which is what the budget did before pages existed. A million-row step is exactly
+/// that case — a third of the sheet is thousands of bands, a second and a half of encode inside the
+/// fill that pushed it — and paying it to save memory the round before had not yet asked for was
+/// the trade this gate refuses.
+fn worth_spilling_newest(retained: usize, newer_retained: usize, bands: usize, byte_budget: usize) -> bool {
+    // What the step costs and what it may keep: the room the older steps leave of the budget.
+    let room = byte_budget.saturating_sub(newer_retained);
+    let needed = retained.saturating_sub(room);
+    if bands == 0 || needed == 0 {
+        return false;
+    }
+    // How many of its bands that part is — the count `can_compress` gates an older step's whole
+    // spill with. A band's page costs [COMPRESS_BYTES_PER_BAND] and frees the rest of what the band
+    // cost the step, so the part that does not fit is that many bands at the difference.
+    let per_band = retained / bands;
+    let freed_per_band = per_band.saturating_sub(COMPRESS_BYTES_PER_BAND);
+    if freed_per_band == 0 {
+        return false;
+    }
+    let spill = needed.div_ceil(freed_per_band);
+    spill <= bands && spill <= COMPRESS_MAX_BANDS
 }
 
 /// The bands a history step would have to spill: its own, on the sheets the next version no longer
@@ -340,12 +480,30 @@ fn history_compressible_bands(entry: &HistoryEntry, next: &Workbook) -> usize {
 
 /// Compresses one history snapshot's own bands into a page file of its own (see
 /// [`gridcraft_model::CellStore::spill_retained_against`]), so the step costs its compressed
-/// pages rather than the decoded bands it replaced. Returns whether it spilled anything; a
-/// snapshot another owner still shares is left whole, since copying it to compress it would cost
-/// the bytes it is there to save.
-pub(crate) fn compress_history_entry(entry: &mut HistoryEntry, next: &Workbook) -> bool {
+/// pages rather than the decoded bands it replaced. Returns whether the step is now as cheap as it
+/// is going to get; a snapshot another owner still shares is left whole, since copying it to
+/// compress it would cost the bytes it is there to save.
+pub(crate) fn compress_history_entry(entry: &mut HistoryEntry, next: &Workbook, within: Option<usize>) -> bool {
     if entry.compressed {
         return false;
+    }
+    // A snapshot an undo restored is already a paged store: its own bands *are* pages, and a
+    // second page file over them would free nothing. It is charged what those pages cost, which is
+    // the whole point, so nothing is left to do here.
+    if entry.wb.sheets.iter().any(|sheet| sheet.cells.paged_band_count() > 0) {
+        entry.compressed = true;
+        entry.retained_bytes = history_retained_bytes(&entry.wb, next).saturating_add(delta_bytes(entry.formula_delta.as_ref()));
+        return true;
+    }
+    // Record the formulas this step's snapshot and the workbook that replaced it disagree on
+    // *before* the bands become pages: afterwards, finding them would mean decoding the page file
+    // this call is writing. `next` is the workbook at this moment, which for the step being pushed
+    // is the one that replaced it and for an older step is a later version of it — a later version
+    // is a superset of the cells the step itself changed, and a restore of a superset re-inserts the
+    // same nodes plus a few it would have found anyway.
+    if entry.formula_delta.is_none() {
+        entry.formula_delta = formula_delta(&entry.wb, next);
+        entry.retained_bytes = history_retained_bytes(&entry.wb, next).saturating_add(delta_bytes(entry.formula_delta.as_ref()));
     }
     let Some(wb) = Arc::get_mut(&mut entry.wb) else { return false };
     let empty = gridcraft_model::CellStore::new();
@@ -358,30 +516,18 @@ pub(crate) fn compress_history_entry(entry: &mut HistoryEntry, next: &Workbook) 
         }
         // The bands the next version does not share are this snapshot's own; the rest stay shared.
         let next_cells = next.sheets.get(index).map_or(&empty, |next_sheet| &next_sheet.cells);
-        spilled = spilled.saturating_add(Arc::make_mut(sheet).cells.spill_retained_against(next_cells));
+        let cells = &mut Arc::make_mut(sheet).cells;
+        spilled = spilled.saturating_add(match within {
+            Some(target) => cells.spill_retained_within(next_cells, target),
+            None => cells.spill_retained_against(next_cells),
+        });
     }
     if spilled == 0 {
         return false;
     }
     entry.compressed = true;
-    entry.retained_bytes = history_retained_bytes(&entry.wb, next);
+    entry.retained_bytes = history_retained_bytes(&entry.wb, next).saturating_add(delta_bytes(entry.formula_delta.as_ref()));
     true
-}
-
-/// Decodes a compressed history snapshot before it becomes the live workbook: the bands
-/// [`compress_history_entry`] spilled are read back into the store, which leaves the restored
-/// workbook exactly what an uncompressed snapshot would have given — a band-by-band formula diff
-/// (`Calc::restore`) instead of a graph rebuild, no recalculation, and a save that writes the same
-/// bytes the pre-edit save did.
-pub(crate) fn expand_history_entry(entry: &mut HistoryEntry) {
-    if !entry.compressed {
-        return;
-    }
-    entry.compressed = false;
-    let wb = Arc::make_mut(&mut entry.wb);
-    for sheet in wb.sheets.iter_mut() {
-        Arc::make_mut(sheet).cells.expand_pages();
-    }
 }
 
 impl DocState {

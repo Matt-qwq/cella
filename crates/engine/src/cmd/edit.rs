@@ -758,23 +758,34 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
+    // The formula cells the undone steps changed, when every one of them recorded them: a restore
+    // that knows them re-inserts those nodes and reads the snapshot's formula for them alone — no
+    // page of a spilled snapshot is decoded to find out what changed (see `Calc::restore_cells`).
+    let mut cells: Option<Vec<(usize, gridcraft_core::CellRef)>> = Some(Vec::new());
     for _ in 0..steps {
         let Some(mut e) = d.undo.pop() else { break };
         let cur_wb = d.wb.clone();
         // Redo goes back to the undone edit's cells, not wherever the user clicked before undoing (#1855).
         let cur_selection = e.selection.clone();
         label = e.label.clone();
-        // A snapshot the byte budget compressed is decoded back into live bands first, so what
-        // comes back is exactly what an uncompressed snapshot holds (see expand_history_entry).
-        crate::expand_history_entry(&mut e);
+        // A snapshot the byte budget spilled stays paged: it becomes the live workbook as it is,
+        // and the pages are read as cells in them are read. Nothing is decoded here.
+        let delta = e.formula_delta.take();
+        match (cells.as_mut(), delta.as_ref()) {
+            (Some(all), Some(delta)) => all.extend_from_slice(delta),
+            _ => cells = None,
+        }
         d.wb = e.wb;
         d.selection = e.selection;
-        d.history_dropped += crate::push_history(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection) as u64;
+        d.history_dropped += crate::push_restored(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection, delta) as u64;
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
     // The snapshot carries the values the undone edit replaced, so nothing is recalculated: only
-    // the graph the edit changed is put back (see `Calc::restore`).
-    d.calc.restore(&now, &d.wb);
+    // the graph the edit changed is put back (see `Calc::restore` and `Calc::restore_cells`).
+    match cells {
+        Some(cells) => d.calc.restore_cells(&d.wb, &cells),
+        None => d.calc.restore(&now, &d.wb),
+    };
     d.revision += 1;
     Ok(json!({"undone": label}))
 }
@@ -784,18 +795,26 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc_mut()?;
     let mut label = String::new();
     let now = d.wb.clone();
+    let mut cells: Option<Vec<(usize, gridcraft_core::CellRef)>> = Some(Vec::new());
     for _ in 0..steps {
         let Some(mut e) = d.redo.pop() else { break };
         let cur_wb = d.wb.clone();
         let cur_selection = d.selection.clone();
         label = e.label.clone();
-        crate::expand_history_entry(&mut e);
+        let delta = e.formula_delta.take();
+        match (cells.as_mut(), delta.as_ref()) {
+            (Some(all), Some(delta)) => all.extend_from_slice(delta),
+            _ => cells = None,
+        }
         d.wb = e.wb;
         d.selection = e.selection;
-        d.history_dropped += crate::push_history(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection) as u64;
+        d.history_dropped += crate::push_restored(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection, delta) as u64;
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
-    d.calc.restore(&now, &d.wb);
+    match cells {
+        Some(cells) => d.calc.restore_cells(&d.wb, &cells),
+        None => d.calc.restore(&now, &d.wb),
+    };
     d.revision += 1;
     Ok(json!({"redone": label}))
 }
