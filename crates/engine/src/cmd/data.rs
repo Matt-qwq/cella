@@ -414,9 +414,12 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     && let Some(f) = &c.formula
                 {
                     body_arrays |= f.array.is_some() || f.dynamic;
-                    if let Some(e) = f.expr_at(src) {
-                        let shifted = gridcraft_formula::adjust::shift_relative(e, dst.row as i64 - src.row as i64, dst.col as i64 - src.col as i64);
-                        c.formula = Some(Arc::new(Formula::from_expr(shifted)));
+                    // A row permutation is the **identity** in R1C1: `=A1` in row 2 moving to
+                    // row 1 says `=A2`, and the shape is the same one. Only a reference that
+                    // would leave the sheet changes it, and only that cell materialises a private
+                    // shape with the `#REF!` Excel shows (SHAPE-SHARING.md §4.9).
+                    if let Some(moved) = f.copied_to(src, dst) {
+                        c.formula = Some(Arc::new(moved));
                     }
                 }
                 if !sh.cell_pictures.is_empty()
@@ -1280,8 +1283,9 @@ fn text_to_columns(s: &mut Session, p: &Json) -> Result<Json> {
                 out.push((CellRef::new(dest.row + i as u32, dest.col + j as u32), part));
             }
         }
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for (c, t) in out {
-            let cell = super::edit::input_to_cell(&t, sheet, c, &mut cx.wb).unwrap_or(None);
+            let cell = super::edit::input_to_cell(&t, sheet, c, &mut cx.wb, &mut shapes).unwrap_or(None);
             let shm = cx.sheet_mut(sheet)?;
             match cell {
                 Some(x) => shm.set_cell(c, x),

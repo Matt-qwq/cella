@@ -55,7 +55,7 @@ use gridcraft_model::Workbook;
 
 pub use crypto::{DecryptError, EncryptionScheme, check_encryption, decrypt, encrypt_workbook, encrypt_workbook_as, encryption_scheme};
 pub use csv::{MAX_CSV_BYTES, read_csv, write_csv, write_csv_limited};
-pub use fmla::KnownFunctions;
+pub use fmla::{KnownFunctions, needs_file_rewrite};
 pub use ods::read_ods;
 pub use package::MAX_PART;
 

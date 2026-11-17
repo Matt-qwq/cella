@@ -529,14 +529,16 @@ impl SheetState<'_> {
             Ok(e) => {
                 let text = gridcraft_formula::print(&e);
                 // Parsing the text it just printed is the second parse of this formula (the RPN
-                // decode is the first); it is what proves the model's text reads back, so it stays
-                // until the .xls reader is measured (SHAPE-SHARING.md §3.4.3). The shape keeps the
-                // tree, so nothing downstream parses it again.
-                let mut f = Formula::new_at(&text, pos, &mut self.shapes);
-                if f.shape.is_none() {
+                // decode is the first); it is what proves the model's text reads back — the text is
+                // what a save writes — so it stays until the .xls reader is measured
+                // (SHAPE-SHARING.md §3.4.3). The shape keeps the tree, so nothing downstream parses
+                // it again.
+                if gridcraft_formula::parse(&text).is_err() {
                     self.unsupported("syntax GridCraft can't parse yet");
                     return;
                 }
+                let rewrite = crate::fmla::needs_file_rewrite(&e);
+                let mut f = Formula::from_expr_at(e, pos, &mut self.shapes, rewrite);
                 f.array = array.filter(|r| !r.is_single());
                 if let Some(mut cell) = self.sheet.cells.get(pos) {
                     cell.formula = Some(Arc::new(f));

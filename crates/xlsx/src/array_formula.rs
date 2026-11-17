@@ -43,7 +43,10 @@ impl Shape {
 }
 
 pub(crate) fn needs_array(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula) -> bool {
-    let Some(expr) = formula.expr_arc() else { return false };
+    // The tree the cell reads at its own position: a shape cell resolves there (sizes are the
+    // same wherever it resolves, §4.12 of SHAPE-SHARING.md — this is the only place that needs
+    // coordinates, for a name's definition).
+    let Some(expr) = formula.expr_at(at) else { return false };
     // The budget covers every node of a formula as long as Excel allows (8,192 characters make
     // at most about 8,200 nodes), so only names that expand a lot fall back to array evaluation.
     let mut scan = Scan { wb, at, remaining: 16_384, locals: Vec::new() };
@@ -376,7 +379,8 @@ fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &m
         }
         // Text round trip: the stored expression is exactly what the text parses to.
         if let Some(out) = reads_back(out) {
-            return Some(Formula::new_at(&gridcraft_formula::print(&out), at, shapes));
+            let rewrite = crate::fmla::needs_file_rewrite(&out);
+            return Some(Formula::from_expr_at(out, at, shapes, rewrite));
         }
         // The reading's `` take it past the parser's nesting limit: handled as unfinished.
     }
@@ -387,7 +391,10 @@ fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &m
     // it was read.
     let whole = matches!(&expr, Expr::Unary(UnOp::At, _));
     let multi = legacy.top != Kind::Scalar || (legacy.certain && legacy.complete);
-    (multi && !whole).then(|| self::at(expr.clone())).and_then(reads_back).map(|e| Formula::new_at(&gridcraft_formula::print(&e), at, shapes))
+    (multi && !whole).then(|| self::at(expr.clone())).and_then(reads_back).map(|e| {
+        let rewrite = crate::fmla::needs_file_rewrite(&e);
+        Formula::from_expr_at(e, at, shapes, rewrite)
+    })
 }
 
 /// `e` when its text (the printer writes only the parentheses the expression has) reads back as

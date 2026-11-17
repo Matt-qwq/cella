@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gridcraft_core::date::{MONTHS, WEEKDAYS, datetime_from_serial, days_in_month, serial_from_ymd};
 use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{Cell, Formula};
+use gridcraft_model::Cell;
 use gridcraft_numfmt::{FormatKind, NumberFormat};
 
 use crate::Result;
@@ -133,13 +133,13 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
                 FillMode::ValuesOnly | FillMode::Series | FillMode::Alternate | FillMode::Copy | FillMode::Extend => {
                     let style = if mode == FillMode::ValuesOnly { sh.cell(*t).map(|c| c.style).unwrap_or_default() } else { cell.style };
                     if let Some(f) = &cell.formula {
-                        if let Some(e) = f.expr_at(sc) {
-                            // The source tree stays where it is: shift_relative_copy walks it once,
-                            // where reading it out and shifting the copy walked it twice.
-                            let dr = t.row as i64 - sc.row as i64;
-                            let dc = t.col as i64 - sc.col as i64;
-                            let shifted = gridcraft_formula::adjust::shift_relative_copy(&e, dr, dc);
-                            cell.formula = Some(Arc::new(Formula::from_expr(shifted)));
+                        // One shape for the whole fill: when it fits the target cell (no reference
+                        // of it falls off the sheet) the target shares the source's tree and only
+                        // its own text is printed — a million rows cost a million prints and a
+                        // million `Arc` clones, and one parse for the source, where each cell used
+                        // to get its own five-node tree (SHAPE-SHARING.md §3.4).
+                        if let Some(moved) = f.copied_to(sc, *t) {
+                            cell.formula = Some(Arc::new(moved));
                             cell.value = Value::Empty;
                         }
                     } else if let Some(v) = match per_cell.get(src_i) {
@@ -647,6 +647,35 @@ fn synthesize(src: &str, dst: &str) -> Vec<Program> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The headline of the shape work (SHAPE-SHARING.md §5.2 S3): a thousand rows filled down from
+    /// one formula share **one** tree, and each cell still spells its own text. Before the shapes
+    /// every cell held five nodes of its own, built by a copy-and-shift of the source.
+    #[test]
+    fn a_fill_of_a_thousand_rows_interns_one_shape() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", serde_json::json!({"range": "A1", "values": [[1, 2, 3]]})).unwrap();
+        s.execute("cell.set", serde_json::json!({"cell": "B1", "input": "=A1*2+3"})).unwrap();
+        s.execute("edit.autoFill", serde_json::json!({"source": "B1", "target": "B1:B1000"})).unwrap();
+        let sh = s.doc().unwrap().wb.active().unwrap();
+        let mut first: Option<std::sync::Arc<gridcraft_formula::Shape>> = None;
+        for row in 0..1_000u32 {
+            let at = CellRef::new(row, 1);
+            let f = sh.cells.get(at).and_then(|c| c.formula).expect("a formula in every filled cell");
+            let shape = f.shape().expect("filled cells hold a shape");
+            match &first {
+                None => first = Some(std::sync::Arc::clone(&shape)),
+                Some(a) => assert!(std::sync::Arc::ptr_eq(a, &shape), "row {row}: its own tree"),
+            }
+            // The cell's own text, and the tree it resolves to, are the source's formula moved down.
+            assert_eq!(f.text, format!("A{}*2+3", row + 1));
+            assert_eq!(shape.print_at(at).as_deref(), Some(f.text.as_str()), "row {row}");
+        }
+        // The values were recalculated from the shared tree: `=A1*2+3` at B1, and A10 is blank.
+        assert_eq!(sh.value(CellRef::new(0, 1)), Value::Number(5.0));
+        assert_eq!(sh.value(CellRef::new(9, 1)), Value::Number(3.0));
+    }
 
     #[test]
     fn flash_fill_reads_shown_text() {

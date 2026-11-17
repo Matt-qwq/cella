@@ -53,7 +53,12 @@ pub(crate) fn needs_file_rewrite_for_test(e: &Expr) -> bool {
 /// `LET`/`LAMBDA` parameter prefix, the `#`, `@` or trim-reference operator, or a structured
 /// reference (all spelled out in [`expr_to_file`]). Nothing else is rewritten, so a formula that
 /// holds none of them keeps its own text.
-fn needs_file_rewrite(e: &Expr) -> bool {
+///
+/// The answer belongs to the formula's **shape** (`Shape::file_rewrite`), not to the cell: a reader
+/// or an editor ORs it in where the shape is interned, so a save of a million formulas never walks
+/// a tree to decide how to spell one. Public because the engine interns shapes too (a typed
+/// formula), and only this crate holds the `_xlfn.` table.
+pub fn needs_file_rewrite(e: &Expr) -> bool {
     let mut need = false;
     e.walk(&mut |x| match x {
         // `LET`/`LAMBDA` declare parameters its calls reference, so the scope has to be built.
@@ -190,7 +195,7 @@ pub fn formula_from_file_at(text: &str, at: CellRef, shapes: &mut ShapeTable) ->
             // A save must not resolve a tree to find this out: the `_xlfn.` table is this crate's,
             // so the reader ORs its answer into the shape before interning it.
             let file_rewrite = needs_file_rewrite(&e);
-            Formula::from_expr_at_file(e, at, shapes, file_rewrite)
+            Formula::from_expr_at(e, at, shapes, file_rewrite)
         }
         Err(_) => Formula { text: body.to_string(), expr: None, shape: None, expr_bytes: 0, array: None, dynamic: false },
     }
@@ -378,7 +383,9 @@ mod tests {
             "",
         ] {
             let one = formula_from_file_at(text, at, &mut shapes);
-            let two = Formula::new_at(&from_file(text), at, &mut shapes);
+            let model_text = from_file(text);
+            let rewrite = gridcraft_formula::parse(&model_text).is_ok_and(|e| needs_file_rewrite(&e));
+            let two = Formula::new_at(&model_text, at, &mut shapes, rewrite);
             assert_eq!(one.text, two.text, "{text:?}");
             assert_eq!(one.shape.is_some(), two.shape.is_some(), "{text:?}");
             // The model's text is what a save writes, so it must not have changed either.

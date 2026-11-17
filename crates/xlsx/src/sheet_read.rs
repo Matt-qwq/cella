@@ -1324,7 +1324,9 @@ fn decode_cell(dc: &DecodeCtx<'_>, warn: &mut Vec<String>, st: &mut RowState, c:
     };
     // A formula without dynamic-array metadata is a legacy formula, unless entered as a
     // Ctrl+Shift+Enter array or unwrapped from Google Sheets' export (both mark it dynamic).
-    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && f.expr_arc().is_some()) {
+    // "It parses" without asking the text again: a formula the reader could parse holds a shape
+    // (or, from the legacy-array rewriter, a tree), and one it could not holds neither.
+    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && (f.shape.is_some() || f.expr.is_some())) {
         st.legacy.push(pos);
     }
     let value = if formula.is_none() && st.derived.iter().any(|r| r.contains(pos) && r.start != pos) { Value::Empty } else { value };
@@ -1375,13 +1377,12 @@ fn read_formula_text(
                 // The family is named by the file: the member reuses the master's shape, so the
                 // family costs one parse however many cells it has (2M formulas in a handful of
                 // families on an Excel-written sheet, where every cell would otherwise parse).
-                let RowState { shared, shapes, .. } = st;
-                let Some(sh) = shared.get(&si) else {
+                let Some(sh) = st.shared.get(&si) else {
                     warn.push("a shared formula refers to a missing master cell; kept the cached value".into());
                     return None;
                 };
                 *unwrapped |= sh.unwrapped;
-                Some((Formula::copied_from(sh.shape.as_ref(), &sh.text, sh.anchor, pos, shapes).unwrap_or_else(|| Formula::new(&sh.text)), None))
+                Some((Formula::copied_from(sh.shape.as_ref(), &sh.text, sh.anchor, pos).unwrap_or_else(|| Formula::new(&sh.text)), None))
             }
         }
         "array" => {

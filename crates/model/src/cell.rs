@@ -62,10 +62,13 @@ impl Formula {
     }
     /// [`Formula::new`] for a formula entered at `at`: the tree becomes a **shape** interned in
     /// `shapes`, so a fill of this cell down a million rows shares one tree.
-    pub fn new_at(text: &str, at: CellRef, shapes: &mut ShapeTable) -> Formula {
+    ///
+    /// `file_rewrite` is whether a file spells this formula differently from the model's text, the
+    /// answer a save reads back from the shape (see [`Formula::from_expr_at`]).
+    pub fn new_at(text: &str, at: CellRef, shapes: &mut ShapeTable, file_rewrite: bool) -> Formula {
         let body = text.strip_prefix('=').unwrap_or(text);
         match gridcraft_formula::parse(body) {
-            Ok(e) => Formula::from_expr_at(e, at, shapes),
+            Ok(e) => Formula::from_expr_at(e, at, shapes, file_rewrite),
             Err(_) => Formula::unparseable(body),
         }
     }
@@ -74,15 +77,14 @@ impl Formula {
     }
     /// [`Formula::from_expr`] for a formula at `at`: the tree is canonicalised into a shape and
     /// interned, and the cell keeps its own A1 text (what a save writes).
-    pub fn from_expr_at(e: Expr, at: CellRef, shapes: &mut ShapeTable) -> Formula {
-        Formula::from_expr_at_file(e, at, shapes, false)
-    }
-    /// [`Formula::from_expr_at`] with the file-format half of the "a file spells this formula
-    /// differently" answer. `gridcraft-formula` cannot compute it — the `_xlfn.` function table
-    /// lives in `gridcraft-xlsx`, above it — so a reader ORs it into
-    /// [`Shape::file_rewrite`] **before** interning; a writer then never resolves a tree to decide
-    /// how to spell a formula (S3 of `plan/SHAPE-SHARING.md`).
-    pub fn from_expr_at_file(e: Expr, at: CellRef, shapes: &mut ShapeTable, file_rewrite: bool) -> Formula {
+    ///
+    /// `file_rewrite` is the half of "a file spells this formula differently" that this crate
+    /// cannot compute: `gridcraft-formula` knows the syntax cases (`LET`/`LAMBDA`, `#`, `@`, a trim
+    /// reference, `[@Col]`) but the `_xlfn.`/`_xlws.` function table lives in `gridcraft-xlsx`,
+    /// above model. It is ORed into [`Shape::file_rewrite`] **before** interning, so a save never
+    /// resolves a tree to decide how to spell a formula (S3 of `plan/SHAPE-SHARING.md`) — a shape
+    /// interned without it would be saved under the model's own spelling.
+    pub fn from_expr_at(e: Expr, at: CellRef, shapes: &mut ShapeTable, file_rewrite: bool) -> Formula {
         let text = gridcraft_formula::print(&e);
         let mut shape = Shape::from_expr(e, at);
         shape.file_rewrite |= file_rewrite;
@@ -117,21 +119,25 @@ impl Formula {
     ///
     /// `None` when the formula cannot be moved at all (its text does not parse), which the callers
     /// treat as "keep the source cell as it is", exactly as the copy-and-shift code did.
-    pub fn copied_to(&self, from: CellRef, at: CellRef, shapes: &mut ShapeTable) -> Option<Formula> {
-        Formula::copied_from(self.shape.as_ref(), &self.text, from, at, shapes)
+    pub fn copied_to(&self, from: CellRef, at: CellRef) -> Option<Formula> {
+        Formula::copied_from(self.shape.as_ref(), &self.text, from, at)
     }
     /// [`Formula::copied_to`] from the two halves a file's shared-formula family holds — the shape
     /// its master cell interned and, for the rare family member that cannot reuse it, the text.
-    pub fn copied_from(shape: Option<&Arc<Shape>>, text: &str, from: CellRef, at: CellRef, shapes: &mut ShapeTable) -> Option<Formula> {
+    pub fn copied_from(shape: Option<&Arc<Shape>>, text: &str, from: CellRef, at: CellRef) -> Option<Formula> {
         if let Some(shape) = shape
             && shape.fits(at)
             && let Some(text) = shape.print_at(at)
         {
             return Some(Formula { text, expr: None, shape: Some(Arc::clone(shape)), expr_bytes: 0, array: None, dynamic: false });
         }
+        // A member the family's shape cannot serve (a reference of it leaves the sheet at this
+        // cell) gets its own tree, exactly as the per-cell shift gave it: a tree, not a shape,
+        // because a private shape would have to carry a file-spelling answer this crate cannot
+        // compute (see `from_expr_at`).
         let e = shape.map_or_else(|| gridcraft_formula::parse(text).ok(), |s| s.resolve(from))?;
         let shifted = shift_relative_copy(&e, i64::from(at.row) - i64::from(from.row), i64::from(at.col) - i64::from(from.col));
-        Some(Formula::from_expr_at(shifted, at, shapes))
+        Some(Formula::from_expr(shifted))
     }
     /// The absolute tree the cell's **text** spells, at the position it was written for: the tree a
     /// structural rewrite (`adjust`) must shift, where [`Formula::expr_at`] is the tree at the cell

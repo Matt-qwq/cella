@@ -130,8 +130,9 @@ fn auto_sum(s: &mut Session, p: &Json) -> Result<Json> {
             .collect();
         let sheet = d.wb.active_sheet;
         edit(s, |cx| {
+            let mut shapes = gridcraft_formula::ShapeTable::default();
             for (c, f) in &writes {
-                let cell = super::edit::input_to_cell(f, sheet, *c, &mut cx.wb)?.unwrap_or_default();
+                let cell = super::edit::input_to_cell(f, sheet, *c, &mut cx.wb, &mut shapes)?.unwrap_or_default();
                 cx.sheet_mut(sheet)?.set_cell(*c, cell);
                 cx.touch(sheet, *c);
             }
