@@ -31,6 +31,20 @@ Performance is a feature, not an afterthought: the 1,000,000-row × 6-column ref
 **1.14 GB** of live heap, saves in ~2 s and opens in ~4 s on the development machine. The numbers,
 the harness and the gate are in [docs/performance.md](docs/performance.md).
 
+## Look around
+
+<img src="docs/images/hero-sales.png" alt="Cella showing a quarterly sales dashboard: a styled table with banded rows, filter buttons, a totals row, data bars, arrow icons and sparklines, next to a clustered column chart and a pie chart" width="100%">
+<sub><b>Quarterly sales dashboard.</b> A table with a totals row, conditional formatting, sparklines
+and two live charts — the sample workbook (`File → New → Sample`), rendered offscreen by
+`crates/ui-egui/examples/snapshot.rs`.</sub>
+
+<table>
+<tr>
+<td width="50%" valign="top"><img src="docs/images/pivot.png" alt="A pivot table summarising revenue by region and product with a report filter, grand totals and the PivotTable Fields pane" width="100%"><p><sub><b>PivotTables.</b> Field list, filters, layouts, date grouping and show-values-as, saved to and read from XLSX.</sub></p></td>
+<td width="50%" valign="top"><img src="docs/images/dark-insert.png" alt="The sales dashboard in dark mode with the Insert tab open" width="100%"><p><sub><b>Dark mode</b> and the Insert tab: tables, charts, sparklines, pictures, shapes, links and comments.</sub></p></td>
+</tr>
+</table>
+
 ## Quick start
 
 ```bash
