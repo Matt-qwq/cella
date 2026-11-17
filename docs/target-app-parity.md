@@ -225,11 +225,16 @@ Excel recalculates on every core (multi-threaded recalculation), streams large f
 | Mapped value write-back | 1M values: identity 36–42 ms; after a row insert **35 ms** (was 131–135), after a column insert **33 ms** (was 116–142) | immediate | measured 2026-10-29, `_gridcraft-bench` release probe |
 | Packed walk / owned gate | Dense block **2.5–3.3 ns/cell** on identity or a mapped column (was 30.6); owned/formula gate over 1M paged rows **0.84 ms** (was 9.5) | fine | measured 2026-10-29, `_gridcraft-bench` release probe |
 | Save, 200k formula cells | **12 % faster** (514 → 460 ms of a 7.0 MB save): a formula whose file spelling is its own text is written without rebuilding its tree; bytes unchanged | flat | measured 2026-11-13, release, A/B on one binary, `sha256` identical |
+| Save a 1M × 6 / 72 MB workbook | **2.45 s** at 8 threads (100k rows: **211 ms**); the row XML was 91 % of the save and is now 46–49 %, built in parallel windows with the shared string table resolved by a pre-pass; package bytes identical | 1–3 s | measured 2026-11-17, the gate harness best of three on an idle machine; 3.7 s before the round |
+| Live heap, 1M × 6 with 2M formulas | **2.56 GB** — cells 1.27 GB (formula trees 768 MB, text + `Formula` 165 MB, row side tables 144 MB), graph 516 MB (nodes 172, areas 201, dependents map 143), undo 738 MB, journal 42 MB; **1.84 GB reopened** | not published | measured 2026-11-17, `crates/engine/examples/memory.rs`: arithmetic on lengths, capacities and layouts, not a heap census; `total == Σ parts` is a test per crate |
 | Save a large workbook | 31.7M cells: **3.48 s, 1,283.9 MiB peak**; 100M-cell export: **28.42 s, 1,814.3 MiB peak** | should stay flat | measured 2026-10-29, `session_breakdown` release with counting allocator; per-sheet deflate, bytes identical |
 | Whole-sheet operations | Bounded: Remove Duplicates on 1M×10 falls from 91 s to 12 s, Sort 3.2 s, Fill Down of 1M rows 1.45 s; sort/remove duplicates/setValues cap at 12M cells (1M×20 refused in 1.3 s) | fine | measured on `max_1048576.xlsx` / `wide_1m_x20.xlsx`, `gridcraft-cli` |
 
 Work: the deferred page-file rewrite and post-beta streaming save, then M17 zone maps and the M21
-Parquet read half after beta. The 2026-11-13 round removed the per-frame work (used range, CF
+Parquet read half after beta. The 2026-11-17 accounting ranks the memory work: formula trees
+(768 MB — one tree per formula *shape*, a validated design in `plan/SHAPE-SHARING.md`, ≈512 MB),
+the undo stack (737.6 MB — every fill keeps a whole copy of the sheet), graph nodes and the area
+arena (373 MB, 81 MB of it capacity a fill never fills), and the journal's base64 copy of a file. The 2026-11-13 round removed the per-frame work (used range, CF
 statistics, chart/sparkline layouts), the per-evaluation name resolution, the per-commit store diff
 and the per-formula tree rebuild on save; the remaining cheap wins are `MODE`'s quadratic count,
 `VLOOKUP`/`MATCH` copying their key column, and `check_arrays` still walking the store on a sheet

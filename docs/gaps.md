@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
+> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory and save round (§2): a session reports its live heap by part (2.56 GB at 1M × 6 — formula trees 768 MB, graph 516 MB, undo 738 MB), the precedent index is 478.2 → 142.6 MB with `fill.chained` 5.24–5.55 → 4.35–4.63 s in a same-binary A/B, and worksheet rows are built in parallel windows (save 3.7 → 2.45 s, bytes identical). Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -187,6 +187,37 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   writes a formula whose file spelling is its own text without rebuilding it (**200k formula cells:
   12 % of a save**, bytes identical). No behaviour change; the engine suite is green again (a stale
   `custom_filter_blanks` had been reading the pre-bitmap hidden flag since `d2c55e7a`).
+- **Landed (11-17): a session reports its live heap by part.** `CellStore::memory` → `StoreMemory`
+  (bands, stripes, value dictionaries, texts, row extras, formula text and trees, arrays, page
+  cache), `Graph::memory`/`Calc::memory` → nodes, areas, the dependents map and its long lists,
+  spills, cycles and the name cache, and `Session::memory_report` adding the workbook and the
+  history stacks; `crates/engine/examples/memory.rs` prints the table (<1 s at 1M rows) and
+  `total == Σ parts` is a test in each crate. The reference workbook (1M × 6, 2M formulas) holds
+  **2.56 GB live**: cells 1.27 GB (formula trees 768 MB, text + `Formula` 165 MB, row side tables
+  144 MB), the graph 516 MB, the undo stack 738 MB, the journal 42 MB; **1.84 GB reopened**. The
+  same change made `Band::heap_bytes` the page cache's decoded-band charge, which had under-counted
+  a band (two text-dictionary vectors, overflow vectors, `len` vs `capacity`).
+- **Landed (11-17): the precedent index is per sheet and a one-to-one pair.** The 5M-entry
+  `Key → Deps` map was the graph's cost — 478.2 MB, 95.6 B an entry, every entry `Deps::One`: it is
+  now one table per sheet keyed by `CellRef`, a bare pair for the cell exactly one formula reads, a
+  `Vec` from the second on, plus a separate cross-sheet table — **142.6 MB, 28.5 B an entry**.
+  `fill.formulas` 3.61–3.85 → 3.13–3.21 s and `fill.chained` 5.24–5.55 → 4.35–4.63 s (a stashed
+  same-binary A/B); `rebuild.graph` and `edit.recalc` flat, 154 calc tests green. A sorted arena
+  would have been 80 MB and was rejected: a fill inserts out of order, so every insert would
+  memmove a megabyte-long tail.
+- **Landed (11-17): worksheet rows are built in parallel windows.** The shared string table is
+  filled by a pre-pass over row windows in the file's first-use order, then `<sheetData>` is built
+  in parallel windows concatenated in row order; per-sheet part numbering and `Out` mutations stay
+  serial and in sheet order. The XML build fell from **91 % to 46–49 %** of a save: **save 3.7 →
+  2.45 s** at 1M rows, 356 → 211 ms at 100k, package bytes identical (the golden 37,185 B, and a
+  test compares 1/2/8 windows on the whole package).
+- **Measured 11-17, what is left of the memory bill:** formula trees 768 MB (one interned tree per
+  *shape* — the validated design, 27 call sites and seven steps are in `plan/SHAPE-SHARING.md`;
+  ≈512 MB, its own round); the undo stack 737.6 MB (a fill rewrites every band, so each entry keeps
+  a whole copy of the sheet and the budget always keeps the latest — needs a snapshot
+  representation with undo latency kept usable, 27 ms today); graph nodes 172 MB and the area arena
+  201 MB (81 MB of it capacity a fill never fills: flags into the length word −34 MB, a `u32` sheet
+  in `Area` −32 MB, a realloc trigger −81 MB); the journal's base64 copy of a file (42–94 MB).
 - **Missing:** dependent chains that never become a wave of leaves remain sequential; whole-sheet
   clear/copy/paste still clone the stored cells (they scale with the data, not the file); the
   per-band value dictionaries still cost full price when values do not repeat;
@@ -212,6 +243,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   1.28 GB report are Excel's stale cache — 276 cells of the same `IFERROR(XLOOKUP(...))` shape in the
   same workbook cache `#N/A` — not a calculation difference.
 - **Evidence:** `crates/xlsx/src/sheet_read.rs`, `crates/model/src/store.rs`, `crates/model/src/line.rs`,
+  `crates/engine/src/memory.rs` + `crates/engine/examples/memory.rs` (the live-heap report),
   `docs/roadmap.md` (M17–M21), and the harness kept beside the fork (`_gridcraft-bench/`).
 - **Impact:** finance and data users routinely have big workbooks.
 - **Status (10-29): the large-workbook beta gate is met.** Recalc, edit latency, 1M-row operations,
