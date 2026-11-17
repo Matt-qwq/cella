@@ -165,16 +165,22 @@ best of three passes on an otherwise idle machine** (`cargo run --release -p gri
 
 | scenario (1M rows × 6 columns, 72 MB .xlsx) | before | after | change |
 |---|---|---|---|
-| open 72 MB + full recalc | 15.29 s | **5.94–6.26 s** | −60% |
-| sort 1M rows | 11.40 s | **6.92 s** | −39% |
-| fill 1M values | 4.48 s | **2.44–2.50 s** | −45% |
-| fill 1M formulas | 5.49 s | **2.64 s** | −52% |
-| 1M chained formulas | 6.21 s | **3.58 s** | −42% |
-| save 72 MB | 4.22 s | **3.46–3.52 s** | −17% |
-| edit one cell → recalc 1M cells | 2.47 s | **2.12 s** | −14% |
-| undo of that edit | 4.03 s | **24 ms** | −99% |
-| aggregates | 1.15 s | **0.96–0.99 s** | −17% |
-| dependency-graph rebuild, 2M formulas | 3.87 s | **1.58–1.86 s** | −57% |
+| open 72 MB + rebuild + whatever the file asks to recalculate | 15.29 s | **5.4–5.6 s** | −64% |
+| sort 1M rows | 11.40 s | **7.9 s** | −31% |
+| fill 1M values | 4.48 s | **2.2 s** | −50% |
+| fill 1M formulas | 5.49 s | **2.8 s** | −49% |
+| 1M chained formulas | 6.21 s | **4.0 s** | −36% |
+| save 72 MB | 4.22 s | **3.7 s** | −13% |
+| edit one cell → recalc 1M cells | 2.47 s | **2.3 s** | −6% |
+| undo of that edit | 4.03 s | **30 ms** | −99% |
+| aggregates | 1.15 s | **1.1 s** | −5% |
+| dependency-graph rebuild, 2M formulas | 3.87 s | **1.7 s** | −56% |
+| **open a 57 MB CSV (1M rows)** | 1.97 s | **0.65 s** | −67% |
+
+The 100k-row numbers the gate uses, all at 1/4 to 1/5 of the budget: fill values 213 ms, formulas
+309 ms, chained 396 ms, aggregate 108 ms, edit+recalc 225 ms, undo 3 ms, sort 625 ms, save 356 ms,
+open 473 ms, rebuild 147 ms, open.csv 66 ms.
+
 
 What each batch did, in one line each:
 
