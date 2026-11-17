@@ -519,6 +519,17 @@ impl LineMap {
         bytes
     }
 
+    /// Heap bytes this map holds: its chunk index and the chunks' entry vectors. Not counted: the
+    /// axis map's runs (a handful of segments per structural edit, not per line).
+    pub fn memory(&self) -> usize {
+        use std::mem::size_of;
+        let entry = size_of::<(u8, LineInfo)>();
+        let mut bytes = size_of::<LineMap>().saturating_add(crate::store::btree_index_bytes(self.chunks.len(), size_of::<(u32, Arc<LineChunk>)>()));
+        for chunk in self.chunks.values() {
+            bytes = bytes.saturating_add(size_of::<LineChunk>()).saturating_add(chunk.entries.capacity().saturating_mul(entry));
+        }
+        bytes
+    }
     /// Drops every entry whose physical line is in `physical..physical + len`.
     fn remove_physical_run(&mut self, physical: u32, len: u32) {
         if len == 0 {
