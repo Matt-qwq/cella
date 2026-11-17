@@ -2,7 +2,7 @@
 //! answers which dependents cover a cell without walking every range.
 
 use std::collections::BTreeSet;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 use serde::Serialize;
 
@@ -40,97 +40,243 @@ pub(super) type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<FxH
 
 pub type Key = (usize, CellRef);
 
-/// The formulas that read one precedent cell.
+/// A precedent cell a list holds this many dependents of before adding one stops checking whether
+/// it is already in the list.
+const LONG_LIST: usize = 8;
+
+/// The dependents of a set of precedent cells: `K` is a precedent key, `V` the key of one formula
+/// that reads it.
 ///
-/// A sheet of a million rows is mostly cells one formula reads (`B2` feeding `G2`) and then cells
-/// two do (`=$A$1` read by a whole column of formulas). Those live inline, so linking a formula
-/// into the index allocates nothing at all; the third dependent moves the list to a `Vec` that
-/// grows from there. The shape this replaced — a `HashSet` per precedent cell — allocated a table
-/// for every cell a fill touched, which was the largest cost of building a million-row graph.
-#[derive(Clone, Debug)]
-pub(super) enum Deps {
-    One(Key),
-    Two(Key, Key),
-    Many(Vec<Key>),
+/// Two tables, because the entry that dominates a workbook should carry nothing it does not use: a
+/// cell exactly one formula reads (`B2` feeding `G2`) sits in `one` as a bare key and value — no
+/// representation tag, no room for a second dependent. The second dependent moves the cell to
+/// `many` and a `Vec`, allocated at two (the commonest multi length).
+///
+/// The shape this replaced was one table of `Key → One(Key) | Two(Key, Key) | Many(Vec<Key>)`: a
+/// 40-byte value of which a one-dependent cell used the first 16, over a key of two machine words
+/// and hashbrown's control byte — 57 bytes of table a slot, or 95 an entry, on the 478 MB that the
+/// million-row reference workbook's precedent index was.
+///
+/// The key types say what a table knows: in the per-sheet table both are a `CellRef`, because a
+/// formula normally reads a cell of its own sheet and the sheet is the table's; in the cross-sheet
+/// table both are full `Key`s. Dropping the sheet from both sides halves the entry again.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Deps<K, V> {
+    /// The precedent cells exactly one formula reads.
+    one: HashMap<K, V>,
+    /// The precedent cells two or more formulas read, each with its list (never empty).
+    many: HashMap<K, Vec<V>>,
 }
 
-impl Deps {
-    /// The list with `k` added, unless it is already there.
+impl<K, V> Deps<K, V> {
+    fn is_empty(&self) -> bool {
+        self.one.is_empty() && self.many.is_empty()
+    }
+
+    /// Heap bytes of this table and how many multi-dependent lists it holds (see
+    /// [`GraphMemory`]). The lists are the one pass over entries the report makes: a `Vec`'s
+    /// capacity is not derivable from the table's.
+    fn memory(&self) -> (usize, usize) {
+        use std::mem::size_of;
+        let mut bytes = gridcraft_model::hash_index_bytes(self.one.capacity(), size_of::<(K, V)>())
+            .saturating_add(gridcraft_model::hash_index_bytes(self.many.capacity(), size_of::<(K, Vec<V>)>()));
+        let mut lists = 0usize;
+        for v in self.many.values() {
+            lists = lists.saturating_add(1);
+            bytes = bytes.saturating_add(v.capacity().saturating_mul(size_of::<V>()));
+        }
+        (bytes, lists)
+    }
+
+    /// The slot counts of both tables, for the test that ratchets the index's size.
+    #[cfg(test)]
+    fn slots(&self) -> usize {
+        gridcraft_model::hash_index_bytes(self.one.capacity(), 0).saturating_add(gridcraft_model::hash_index_bytes(self.many.capacity(), 0))
+    }
+}
+
+impl<K: Copy + Eq + Hash, V: Copy + Eq> Deps<K, V> {
+    fn reserve(&mut self, entries: usize) {
+        self.one.reserve(entries);
+    }
+
+    /// The table with the dependent `k` of precedent cell `c` added, unless it is already there.
     ///
     /// A formula's areas are deduplicated before they reach here, so the graph itself never adds a
-    /// dependent twice: the check is for short lists (a handful of compares) and is skipped for
-    /// long ones, since a cell a million formulas read has to stay O(1) to add to.
-    fn added(self, k: Key) -> Deps {
-        match self {
-            Deps::One(a) if a == k => Deps::One(a),
-            Deps::One(a) => Deps::Two(a, k),
-            Deps::Two(a, b) if a == k || b == k => Deps::Two(a, b),
-            Deps::Two(a, b) => Deps::Many(vec![a, b, k]),
-            Deps::Many(mut v) => {
-                if v.len() > 8 || !v.contains(&k) {
-                    v.push(k);
-                }
-                Deps::Many(v)
+    /// dependent twice: the check is for short lists (a compare, a handful) and is skipped for long
+    /// ones, since a cell a million formulas read has to stay O(1) to add to.
+    fn link(&mut self, c: K, k: V) {
+        if let Some(v) = self.many.get_mut(&c) {
+            if v.len() > LONG_LIST || !v.contains(&k) {
+                v.push(k);
+            }
+            return;
+        }
+        match self.one.get_mut(&c) {
+            None => {
+                self.one.insert(c, k);
+            }
+            Some(first) if *first == k => {}
+            Some(first) => {
+                // The second dependent: a two-slot list, which is what a cell two formulas read
+                // costs — the same as the inline pair this replaced, and to the right table.
+                let v = vec![*first, k];
+                self.one.remove(&c);
+                self.many.insert(c, v);
             }
         }
     }
 
-    /// The list without `k`, or `None` when it held nothing else.
-    fn without(self, k: Key) -> Option<Deps> {
-        match self {
-            Deps::One(a) => (a != k).then_some(Deps::One(a)),
-            Deps::Two(a, b) => {
-                if a == k {
-                    Some(Deps::One(b))
-                } else if b == k {
-                    Some(Deps::One(a))
-                } else {
-                    Some(Deps::Two(a, b))
+    /// The table without the dependent `k` of precedent cell `c`; a cell nothing reads any more
+    /// leaves it, so a query never walks an empty list, and a list of one goes back to `one` — so
+    /// a workbook edited often keeps the compact shape.
+    fn unlink(&mut self, c: K, k: V) {
+        let Some(v) = self.many.get_mut(&c) else {
+            if self.one.get(&c) == Some(&k) {
+                self.one.remove(&c);
+            }
+            return;
+        };
+        v.retain(|x| *x != k);
+        let left = v.len();
+        let last = v.first().copied();
+        match left {
+            0 => {
+                self.many.remove(&c);
+            }
+            1 => {
+                self.many.remove(&c);
+                if let Some(last) = last {
+                    self.one.insert(c, last);
                 }
             }
-            Deps::Many(mut v) => {
-                v.retain(|x| *x != k);
-                match v.len() {
-                    0 => None,
-                    1 => v.pop().map(Deps::One),
-                    _ => Some(Deps::Many(v)),
-                }
-            }
+            _ => {}
         }
     }
 
-    fn push_into(&self, out: &mut Vec<Key>) {
-        match self {
-            Deps::One(a) => out.push(*a),
-            Deps::Two(a, b) => {
-                out.push(*a);
-                out.push(*b);
+    /// Appends the dependents of `c` to `out`, `to_key` turning a stored dependent into its
+    /// [`Key`].
+    fn push_into(&self, c: K, out: &mut Vec<Key>, to_key: impl Fn(V) -> Key) {
+        if let Some(v) = self.one.get(&c) {
+            out.push(to_key(*v));
+        }
+        if let Some(v) = self.many.get(&c) {
+            out.extend(v.iter().map(|x| to_key(*x)));
+        }
+    }
+
+    /// Calls `f` for every precedent cell and dependent the table holds.
+    fn for_each(&self, mut f: impl FnMut(K, V)) {
+        for (c, v) in &self.one {
+            f(*c, *v);
+        }
+        for (c, v) in &self.many {
+            for x in v {
+                f(*c, *x);
             }
-            Deps::Many(v) => out.extend(v.iter().copied()),
         }
     }
 }
 
-/// Adds the dependent `k` to what precedent cell `c` answers with.
-fn link(map: &mut HashMap<Key, Deps>, c: Key, k: Key) {
-    if let Some(deps) = map.get_mut(&c) {
-        let taken = std::mem::replace(deps, Deps::One(k));
-        *deps = taken.added(k);
-    } else {
-        map.insert(c, Deps::One(k));
-    }
+/// Which formulas read which single cell: the bulk of the graph, and the bulk of its memory.
+///
+/// A formula nearly always reads a cell of its own sheet, so that case drops the sheet from both
+/// sides of the entry (the table is the sheet's): 8-byte key, 8-byte dependent, hashbrown's control
+/// byte — 17 bytes a slot against the 57 of the single `Key → Deps` table this replaced. A formula
+/// reading another sheet (a summary tab over a data tab) is the rare case and keeps full [`Key`]s,
+/// in a table of its own so it costs the common one nothing.
+#[derive(Clone, Debug, Default)]
+pub(super) struct CellDeps {
+    /// sheet → the precedents in it, and the formulas of that sheet that read them.
+    same: HashMap<usize, Deps<CellRef, CellRef>>,
+    /// precedent → the formulas of another sheet that read it.
+    cross: Deps<Key, Key>,
 }
 
-/// Drops the dependent `k` from what precedent cell `c` answers with; a cell nothing reads any
-/// more leaves the map, so a query never walks an empty list.
-fn unlink(map: &mut HashMap<Key, Deps>, c: Key, k: Key) {
-    let Some(deps) = map.get_mut(&c) else { return };
-    let taken = std::mem::replace(deps, Deps::One(k));
-    match taken.without(k) {
-        Some(left) => *deps = left,
-        None => {
-            map.remove(&c);
+impl CellDeps {
+    /// Whether nothing reads anything any more (a sheet's table leaves when its last dependent
+    /// does, so there is nothing to walk).
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.same.is_empty() && self.cross.is_empty()
+    }
+
+    fn sheet_mut(&mut self, sheet: usize) -> &mut Deps<CellRef, CellRef> {
+        self.same.entry(sheet).or_default()
+    }
+
+    /// Reserves room in the table of `sheet` for `entries` precedent cells: a bulk build of a sheet
+    /// would otherwise grow it a dozen times, and each growth rehashes every entry already in it.
+    fn reserve(&mut self, sheet: usize, entries: usize) {
+        self.sheet_mut(sheet).reserve(entries);
+    }
+
+    /// Adds the dependent `k` to what precedent cell `c` answers with.
+    fn link(&mut self, c: Key, k: Key) {
+        if c.0 == k.0 {
+            self.sheet_mut(c.0).link(c.1, k.1);
+        } else {
+            self.cross.link(c, k);
         }
+    }
+
+    /// Drops the dependent `k` from what precedent cell `c` answers with.
+    fn unlink(&mut self, c: Key, k: Key) {
+        if c.0 == k.0 {
+            let sheet = c.0;
+            let Some(deps) = self.same.get_mut(&sheet) else { return };
+            deps.unlink(c.1, k.1);
+            if deps.is_empty() {
+                self.same.remove(&sheet);
+            }
+        } else {
+            self.cross.unlink(c, k);
+        }
+    }
+
+    /// The formulas of any sheet that read cell `c` of `sheet`.
+    fn dependents_into(&self, sheet: usize, c: CellRef, out: &mut Vec<Key>) {
+        if let Some(deps) = self.same.get(&sheet) {
+            deps.push_into(c, out, |v| (sheet, v));
+        }
+        self.cross.push_into((sheet, c), out, |k| k);
+    }
+
+    /// Calls `f` for every precedent cell of `sheet` and a formula that reads it.
+    fn for_each_in(&self, sheet: usize, mut f: impl FnMut(CellRef, Key)) {
+        if let Some(deps) = self.same.get(&sheet) {
+            deps.for_each(|c, v| f(c, (sheet, v)));
+        }
+        self.cross.for_each(|c, v| {
+            if c.0 == sheet {
+                f(c.1, v);
+            }
+        });
+    }
+
+    /// Heap bytes of the index and how many multi-dependent lists it holds (see
+    /// [`GraphMemory`]).
+    fn memory(&self) -> (usize, usize) {
+        use std::mem::size_of;
+        let mut bytes = gridcraft_model::hash_index_bytes(self.same.capacity(), size_of::<(usize, Deps<CellRef, CellRef>)>());
+        let mut lists = 0usize;
+        for deps in self.same.values() {
+            let (part, count) = deps.memory();
+            bytes = bytes.saturating_add(part);
+            lists = lists.saturating_add(count);
+        }
+        let (part, count) = self.cross.memory();
+        (bytes.saturating_add(part), lists.saturating_add(count))
+    }
+
+    /// The slot counts of every table (see [`Graph::cell_deps_slots`]).
+    #[cfg(test)]
+    fn slots(&self) -> usize {
+        let mut slots = gridcraft_model::hash_index_bytes(self.same.capacity(), 0).saturating_add(self.cross.slots());
+        for deps in self.same.values() {
+            slots = slots.saturating_add(deps.slots());
+        }
+        slots
     }
 }
 
@@ -348,10 +494,9 @@ impl<T: Copy + Ord> Intervals<T> {
 /// The live heap bytes of a [`Graph`], by allocation class: what [`Graph::memory`] returns.
 ///
 /// Every figure is a `len`/`capacity`/*`size_of`* product. The one pass over entries is the
-/// `Deps::Many` vectors ([`GraphMemory::cell_deps`]): a `Vec`'s capacity is not derivable from the
-/// map's own capacity, so the values are visited once — no allocation, about a nanosecond an entry
-/// (a few milliseconds on the reference workload's 1.5M precedent cells, which is why this is a
-/// diagnostic and not something to ask for every frame).
+/// multi-dependent lists ([`GraphMemory::cell_deps`]): a `Vec`'s capacity is not derivable from the
+/// table's own capacity, so its values are visited once — no allocation, about a nanosecond an
+/// entry, which is why this is a diagnostic and not something to ask for every frame.
 ///
 /// Not counted: the parsed expression trees the nodes point at. The cell owns the tree (its text
 /// is the source of truth and the store's report charges the tree), so charging it here would
@@ -362,9 +507,9 @@ pub struct GraphMemory {
     pub nodes: usize,
     /// The precedent-area arena, including the garbage [`Graph::settle`] has not packed away.
     pub areas: usize,
-    /// The single-cell precedent → dependents table, and every `Deps::Many` vector it holds.
+    /// The single-cell precedent → dependents index, and every multi-dependent list it holds.
     pub cell_deps: usize,
-    /// How many of that table's entries are `Deps::Many` lists (what the one walk above counts).
+    /// How many of that index's entries are lists of two or more (what the one walk above counts).
     pub many_lists: usize,
     /// The per-column interval index of range precedents.
     pub cols: usize,
@@ -406,7 +551,7 @@ pub struct Graph {
     /// Areas no node points at any more.
     area_garbage: usize,
     /// precedent cell → the formulas that read it
-    pub(super) cell_deps: HashMap<Key, Deps>,
+    pub(super) cell_deps: CellDeps,
     /// (sheet, col) → row intervals of the ranges (up to `WIDE` columns) that cover the column
     pub(super) col_deps: HashMap<(usize, u32), Intervals<Key>>,
     /// sheet → row intervals of wider ranges, with their columns: (first, last, dependent)
@@ -451,6 +596,13 @@ impl Graph {
         self.areas.get(start..start.saturating_add(node.len as usize)).unwrap_or(&[])
     }
 
+    /// The slot counts of the single-cell precedent index (see [`CellDeps::slots`]): the test
+    /// that ratchets the index's size divides its bytes by them.
+    #[cfg(test)]
+    pub(super) fn cell_deps_slots(&self) -> usize {
+        self.cell_deps.slots()
+    }
+
     /// The number of areas the arena holds (live ones plus the garbage `settle` has not packed
     /// away yet) — tests check that a bulk replacement does not leave them behind.
     #[cfg(test)]
@@ -470,12 +622,14 @@ impl Graph {
         self.nodes.get(&k).is_some_and(Node::is_volatile)
     }
 
-    /// Reserves room for `formulas` formulas, so a bulk build does not grow its tables a dozen
-    /// times (each growth rehashes every entry already in it).
-    pub(super) fn reserve(&mut self, formulas: usize) {
+    /// Reserves room for `formulas` formulas of `sheet`, so a bulk build does not grow its tables
+    /// a dozen times (each growth rehashes every entry already in it). The precedent table reserved
+    /// is the sheet's own, where its formulas' same-sheet references land; a formula reading another
+    /// sheet's cells goes to the cross table, which grows as it fills.
+    pub(super) fn reserve(&mut self, sheet: usize, formulas: usize) {
         self.nodes.reserve(formulas);
         let precedent_cells = formulas.saturating_mul(3).saturating_div(2);
-        self.cell_deps.reserve(precedent_cells);
+        self.cell_deps.reserve(sheet, precedent_cells);
         self.areas.reserve(formulas.saturating_mul(2));
     }
 
@@ -568,7 +722,7 @@ impl Graph {
         let old_areas = self.areas.get(start..start.saturating_add(old.len as usize)).unwrap_or(&[]);
         Self::entries(old_areas, &mut cells, &mut cols, &mut wide);
         for &c in &cells {
-            unlink(&mut self.cell_deps, c, k);
+            self.cell_deps.unlink(c, k);
         }
         for &(s, c, r0, r1) in &cols {
             if let Some(v) = self.col_deps.get_mut(&(s, c)) {
@@ -607,7 +761,7 @@ impl Graph {
         let (mut cells, mut cols, mut wide) = self.take_scratch();
         Self::entries(areas, &mut cells, &mut cols, &mut wide);
         for &c in &cells {
-            link(&mut self.cell_deps, c, k);
+            self.cell_deps.link(c, k);
         }
         for &(s, c, r0, r1) in &cols {
             self.col_deps.entry((s, c)).or_default().insert(r0, r1, k);
@@ -663,9 +817,7 @@ impl Graph {
 
     /// Formulas that read cell `c` of `sheet`.
     pub fn dependents(&self, sheet: usize, c: CellRef, out: &mut Vec<Key>) {
-        if let Some(v) = self.cell_deps.get(&(sheet, c)) {
-            v.push_into(out);
-        }
+        self.cell_deps.dependents_into(sheet, c, out);
         if let Some(v) = self.col_deps.get(&(sheet, c.col)) {
             v.query(c.row, c.row, &mut |k| out.push(*k));
         }
@@ -682,16 +834,15 @@ impl Graph {
     pub fn dependents_of_range(&self, sheet: usize, range: RangeRef, out: &mut Vec<Key>) {
         if range.count() <= 4096 {
             for c in range.iter() {
-                if let Some(v) = self.cell_deps.get(&(sheet, c)) {
-                    v.push_into(out);
-                }
+                self.cell_deps.dependents_into(sheet, c, out);
             }
         } else {
-            for ((s, c), v) in &self.cell_deps {
-                if *s == sheet && range.contains(*c) {
-                    v.push_into(out);
+            // A range too big to probe cell by cell: walk the sheet's precedents instead.
+            self.cell_deps.for_each_in(sheet, |c, k| {
+                if range.contains(c) {
+                    out.push(k);
                 }
-            }
+            });
         }
         let (r0, r1) = (range.start.row, range.end.row);
         if (range.width() as usize) <= self.col_deps.len() {
@@ -723,14 +874,16 @@ impl Graph {
 
     /// The live heap bytes of this graph, by allocation class: the numbers a memory report shows,
     /// and the shape a later representation change has to be measured against. Everything is
-    /// `len`/`capacity`/`size_of` arithmetic except the `Deps::Many` vectors, which the map cannot
-    /// size for us; see [`GraphMemory`].
+    /// `len`/`capacity`/`size_of` arithmetic except the multi-dependent lists, which the table
+    /// cannot size for us; see [`GraphMemory`].
     pub fn memory(&self) -> GraphMemory {
         use std::mem::size_of;
-        let mut m = GraphMemory {
+        let (cell_deps, many_lists) = self.cell_deps.memory();
+        GraphMemory {
             nodes: gridcraft_model::hash_index_bytes(self.nodes.capacity(), size_of::<(Key, Node)>()),
             areas: self.areas.capacity().saturating_mul(size_of::<Area>()),
-            cell_deps: gridcraft_model::hash_index_bytes(self.cell_deps.capacity(), size_of::<(Key, Deps)>()),
+            cell_deps,
+            many_lists,
             cols: gridcraft_model::hash_index_bytes(self.col_deps.capacity(), size_of::<((usize, u32), Intervals<Key>)>())
                 .saturating_add(self.col_deps.values().map(Intervals::memory).sum::<usize>()),
             wide: gridcraft_model::hash_index_bytes(self.wide_deps.capacity(), size_of::<(usize, Intervals<(u32, u32, Key)>)>())
@@ -748,16 +901,7 @@ impl Graph {
                 .saturating_mul(size_of::<Key>())
                 .saturating_add(self.scratch_cols.capacity().saturating_mul(size_of::<(usize, u32, u32, u32)>()))
                 .saturating_add(self.scratch_wide.capacity().saturating_mul(size_of::<(usize, RangeRef)>())),
-            ..GraphMemory::default()
-        };
-        // The one entry pass: a `Deps::Many` vector's capacity is not derivable from the table.
-        for deps in self.cell_deps.values() {
-            if let Deps::Many(v) = deps {
-                m.many_lists = m.many_lists.saturating_add(1);
-                m.cell_deps = m.cell_deps.saturating_add(v.capacity().saturating_mul(size_of::<Key>()));
-            }
         }
-        m
     }
 }
 
@@ -798,22 +942,154 @@ mod tests {
         assert_eq!(m.wide, 0, "no range is wider than 64 columns here");
     }
 
-    /// One precedent read by a thousand formulas is the `Deps::Many` case: the list leaves the
-    /// inline `One`/`Two` shapes and the report grows by its vector (the one entry pass the
-    /// report makes).
+    /// One precedent read by a thousand formulas is the multi-dependent case: the cell leaves the
+    /// one-to-one table and the report grows by its list (the one entry pass the report makes).
     #[test]
     fn one_precedent_read_by_a_thousand_formulas_grows_the_dependents_map() {
         let mut g = Graph::default();
         g.insert(key(0, 0, 6), &[single(0, 5, 0)], None, Node::new(None, false, false, false));
         let first = g.memory();
-        assert_eq!(first.many_lists, 0, "one dependent fits inline");
+        assert_eq!(first.many_lists, 0, "one dependent is a one-to-one entry");
         for row in 1..1000u32 {
             g.insert(key(0, row, 6), &[single(0, 5, 0)], None, Node::new(None, false, false, false));
         }
         let many = g.memory();
         assert_eq!(many.many_lists, 1, "one precedent holds the list");
-        let trunk = 1000 * std::mem::size_of::<Key>();
-        assert!(many.cell_deps >= first.cell_deps + trunk, "the vector of 1000 keys is charged: {} vs {}", many.cell_deps, first.cell_deps);
+        let trunk = 1000 * std::mem::size_of::<CellRef>();
+        assert!(many.cell_deps >= first.cell_deps + trunk, "the list of 1000 dependents is charged: {} vs {}", many.cell_deps, first.cell_deps);
         assert!(many.nodes > first.nodes, "the formulas' nodes are charged");
+    }
+
+    /// The reference workload's shape — a column of formulas each reading its own single-cell
+    /// precedents, so every entry a one-to-one pair — is the shape the precedent index has to be
+    /// cheap in. It cost 57 bytes of table a slot (a 16-byte key, the 40-byte `One | Two | Many`
+    /// value, hashbrown's control byte) and costs 17 now: a ratchet, so a later change cannot
+    /// silently buy the entry back.
+    #[test]
+    fn the_precedent_index_is_narrower_than_the_shape_it_replaced() {
+        let mut g = Graph::default();
+        for row in 0..5_000u32 {
+            g.insert(key(0, row, 6), &[single(0, row, 1), single(0, row, 2), single(0, row, 3)], None, Node::new(None, false, false, false));
+        }
+        let m = g.memory();
+        assert_eq!(m.many_lists, 0, "every entry is a single dependent");
+        let slots = g.cell_deps_slots();
+        // What one slot of the table this replaced cost: the 16-byte `Key`, the 40-byte `Deps`
+        // (`One(Key)`, `Two(Key, Key)` and the tag around them) and the control byte.
+        let replaced = slots.saturating_mul(16 + 40 + 1);
+        assert!(
+            m.cell_deps.saturating_mul(100) <= replaced.saturating_mul(35),
+            "the index costs {} bytes for {slots} slots; the shape it replaced cost {replaced}",
+            m.cell_deps
+        );
+        // …and it really is the narrow entry: an 8-byte key, an 8-byte dependent, a control byte.
+        assert_eq!(std::mem::size_of::<(CellRef, CellRef)>() + 1, 17);
+    }
+
+    /// A precedent with one, two, three and ten thousand dependents answers exactly those keys;
+    /// a dependent added twice is one entry while the list is short, and a long list stops
+    /// checking (the O(1) add a cell a million formulas read needs — see `Deps::link`).
+    #[test]
+    fn a_precedent_answers_the_dependents_it_has() {
+        let mut g = Graph::default();
+        let mut out = Vec::new();
+        for n in [1u32, 2, 3, 10_000] {
+            for row in 0..n {
+                g.insert(key(0, row, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+            }
+            out.clear();
+            g.dependents(0, CellRef::new(0, 0), &mut out);
+            out.sort_unstable();
+            let want: Vec<Key> = (0..n).map(|row| key(0, row, 6)).collect();
+            assert_eq!(out, want, "{n} dependents");
+            assert_eq!(g.memory().many_lists, usize::from(n > 1), "{n} dependents is a list from two on");
+        }
+        // A list walked back down: removing one of ten thousand leaves it a list…
+        g.remove(key(0, 2, 6));
+        out.clear();
+        g.dependents(0, CellRef::new(0, 0), &mut out);
+        assert_eq!(out.len(), 9_999, "one dependent dropped");
+        // …and a list of one returns to the one-to-one table, so a workbook edited often keeps
+        // the compact shape.
+        let mut small = Graph::default();
+        for row in 0..3u32 {
+            small.insert(key(0, row, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+        }
+        assert_eq!(small.memory().many_lists, 1, "three dependents are a list");
+        small.remove(key(0, 2, 6));
+        assert_eq!(small.memory().many_lists, 1, "two are still a list");
+        small.remove(key(0, 1, 6));
+        assert_eq!(small.memory().many_lists, 0, "one is a one-to-one entry again");
+        out.clear();
+        small.dependents(0, CellRef::new(0, 0), &mut out);
+        assert_eq!(out, vec![key(0, 0, 6)]);
+        small.remove(key(0, 0, 6));
+        assert!(small.cell_deps.is_empty(), "the sheet's table leaves with its last dependent");
+    }
+
+    /// A precedent read by a formula of its own sheet and by one of another sheet answers both,
+    /// through a cell lookup and through the walk a range too big to probe cell by cell uses, and
+    /// the index holds nothing once the formulas are gone.
+    #[test]
+    fn a_precedent_read_from_two_sheets_answers_both() {
+        let mut g = Graph::default();
+        g.insert(key(0, 1, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+        g.insert(key(1, 1, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+        let both = vec![key(0, 1, 6), key(1, 1, 6)];
+        let mut out = Vec::new();
+        g.dependents(0, CellRef::new(0, 0), &mut out);
+        out.sort_unstable();
+        assert_eq!(out, both);
+        let small = RangeRef::new(CellRef::new(0, 0), CellRef::new(9, 9));
+        out.clear();
+        g.dependents_of_range(0, small, &mut out);
+        out.sort_unstable();
+        out.dedup();
+        assert_eq!(out, both, "a small range probes the cell");
+        // 201 rows by 41 columns is past the 4096 cells a range query probes one at a time.
+        let wide = RangeRef::new(CellRef::new(0, 0), CellRef::new(200, 40));
+        assert!(wide.count() > 4096, "the walk this checks");
+        out.clear();
+        g.dependents_of_range(0, wide, &mut out);
+        out.sort_unstable();
+        out.dedup();
+        assert_eq!(out, both, "a wide range walks the sheet");
+        out.clear();
+        g.dependents_of_range(0, RangeRef::new(CellRef::new(300, 0), CellRef::new(400, 40)), &mut out);
+        assert!(out.is_empty(), "a range that does not cover the precedent names nobody: {out:?}");
+        for k in [key(0, 1, 6), key(1, 1, 6)] {
+            g.remove(k);
+        }
+        out.clear();
+        g.dependents(0, CellRef::new(0, 0), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert!(g.cell_deps.is_empty(), "a sheet's table leaves with its last dependent");
+        assert_eq!(g.memory().many_lists, 0);
+    }
+
+    /// The dedup a short list does and a long one skips, directly on the index (a formula's areas
+    /// are deduplicated before they reach the graph, so `link` is the only place that sees a
+    /// repeat).
+    #[test]
+    fn a_short_list_holds_a_dependent_once_and_a_long_one_stops_checking() {
+        let c = key(0, 0, 0);
+        let mut out = Vec::new();
+        let mut short = CellDeps::default();
+        short.link(c, key(0, 1, 6));
+        short.link(c, key(0, 1, 6));
+        short.link(c, key(0, 1, 6));
+        short.dependents_into(0, CellRef::new(0, 0), &mut out);
+        assert_eq!(out, vec![key(0, 1, 6)], "a short list holds a dependent once");
+
+        let mut long = CellDeps::default();
+        for col in 0..LONG_LIST as u32 + 1 {
+            long.link(c, key(0, col, 7));
+        }
+        long.link(c, key(0, 0, 7));
+        out.clear();
+        long.dependents_into(0, CellRef::new(0, 0), &mut out);
+        assert_eq!(out.len(), LONG_LIST + 2, "a long list takes the repeat: {out:?}");
+        out.retain(|k| *k == key(0, 0, 7));
+        assert_eq!(out.len(), 2, "the long list stopped checking");
     }
 }

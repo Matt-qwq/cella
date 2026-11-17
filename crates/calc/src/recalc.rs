@@ -712,7 +712,7 @@ impl Calc {
             // One pass to learn the size (moving, not cloning, what the store hands out): the
             // graph's tables then grow once instead of rehashing every entry a dozen times.
             let formulas: Vec<_> = sheet.cells.formulas().collect();
-            self.graph.reserve(formulas.len());
+            self.graph.reserve(si, formulas.len());
             for (c, f, _) in formulas {
                 if let Some(e) = f.expr_arc() {
                     let reads = precedents_into(&mut self.names, wb, si, &e, &mut self.scratch_areas);
