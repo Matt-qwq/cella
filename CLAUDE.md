@@ -17,7 +17,7 @@ Standards and learnings shared across the crafting apps live in `../../craftrule
 - Prefer art generated in code: the UI icon set (`crates/ui-egui/src/icons.rs`), table and cell style palettes, themes and sample workbooks are drawn/defined in code and original.
 - Never copy Office's icons, ribbon artwork, theme XML, table-style definitions, templates, clip art or wording beyond feature names. Excel feature *names* (menu labels, function names) are fine.
 - Screenshots of Microsoft software are never committed (they live only in `plan/excel/screenshots/`).
-- The ArtCraft brand files in `docs/brand/` are ArtCraft trademarks under `docs/brand/LICENSE-brand.txt`, the one exception.
+- This repository carries **no third-party brand assets**. The ArtCraft marks that upstream ships in `docs/brand/` were removed when this tree became an independent product (upstream's brand licence requires a modified version to remove them); do not add them back, and do not present this software as an ArtCraft product. Attribution for the forked code lives in `NOTICE` and `ATTRIBUTION.md`.
 
 ## Never crash
 People trust GridCraft with their numbers; a crash loses their work. **This outranks feature work.** Standard: [`craftrules/standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).

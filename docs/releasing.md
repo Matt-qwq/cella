@@ -1,14 +1,14 @@
 # Releasing GridCraft
 
-Every push to the `release` branch runs `.github/workflows/release.yml`. The workflow builds
-signed installers for macOS, Windows, Linux, FreeBSD and the web, then creates or updates a
-**draft** GitHub Release named `GridCraft v<version>`. Nobody sees a draft until a maintainer
-publishes it.
+**This tree has no release pipeline.** The upstream workflow that used to run on a push to the
+`release` branch called `storytold/craft-common-actions` and the ArtCraft signing secrets; it was
+removed when this repository stopped being a fork kept to propose changes upstream (the same change
+removed `docs/brand/`, the Sonar project and the store manifest). The packaging scripts under
+`packaging/` remain and build local installers; nothing publishes them.
 
-This is GridCraft's implementation of the shared [release playbook](release-playbook.md)
-(craftrules `release/playbook.md`), copied from DesignCraft and renamed. User-facing names say
-**GridCraft**. Files, binaries and ids stay lowercase
-(`gridcraft-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.gridcraft`).
+The identity values in the table below are **upstream's** and are being replaced — see
+[`roadmap.md`](roadmap.md) § Product position. Until that lands, a build still carries them, so
+**do not distribute a build**.
 
 | App-specific value | Where |
 |---|---|

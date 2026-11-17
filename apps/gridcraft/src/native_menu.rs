@@ -169,15 +169,7 @@ fn tree() -> Vec<(&'static str, Vec<Entry>)> {
             ],
         ),
         ("Window", vec![("New Window", "view.newWindow", None), ("Next Sheet", "sheet.next", None), ("Previous Sheet", "sheet.previous", None)]),
-        (
-            "Help",
-            vec![
-                ("Agent Control (MCP)…", "dialog:agents", None),
-                ("Contributors…", "dialog:about:Contributors", None),
-                ("GridCraft on getartcraft.com", "url:https://getartcraft.com/apps/gridcraft", None),
-                ("Join the ArtCraft Discord…", "url:https://discord.gg/artcraft", None),
-            ],
-        ),
+        ("Help", vec![("Agent Control (MCP)…", "dialog:agents", None), ("Contributors…", "dialog:about:Contributors", None)]),
     ]
 }
 
