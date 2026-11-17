@@ -449,8 +449,10 @@ pub fn write_sheet(
     // order can establish it, so the sheet's strings are counted and given their ids first (a
     // pre-pass, `SstCollector`), and the row builder that follows only reads them (`Sst::id`).
     // That is what lets a window of rows be built without the `Out` the save is assembling.
-    walk_rows(sheet, RangeRef::all(), &additions, &mut SstCollector { sst: &mut out.sst })?;
-    let (rows_xml, flags) = build_rows(wb, si, sheet, &additions, &out.sst, styles, workers)?;
+    let windows = window_plan(sheet, &additions, workers);
+    let strings = collect_strings(sheet, &additions, &windows)?;
+    out.sst.extend(strings.refs, &strings.strings);
+    let (rows_xml, flags) = build_rows(wb, si, sheet, &additions, &out.sst, styles, &windows)?;
     out.needs_calc |= flags.needs_calc;
     out.dynamic_arrays |= flags.dynamic_arrays;
     s.push_str(&rows_xml);
@@ -948,15 +950,28 @@ fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMa
     Ok(())
 }
 
-/// Fills the workbook's shared string table from a sheet's cells: every text a cell writes is
-/// counted, and its first use gives it the next id (see [`Sst`]). This is the pre-pass a save needs
-/// because the table's order is the file's order, and a row window cannot know what the windows
-/// before it put in the table.
-struct SstCollector<'a> {
-    sst: &'a mut Sst,
+/// The texts one window of a sheet writes: its distinct strings in first-use order, the strings
+/// already seen in the window, and how many text cells it wrote (a repeat still counts as a
+/// reference). This is the pre-pass a save needs because the shared string table's order is the
+/// file's order, and a row window cannot know what the windows before it put in the table.
+#[derive(Default)]
+struct SstBatch {
+    strings: Vec<std::sync::Arc<str>>,
+    seen: HashSet<std::sync::Arc<str>>,
+    refs: u64,
 }
 
-impl RowVisitor for SstCollector<'_> {
+impl SstBatch {
+    /// Appends `other`'s strings after this batch's, keeping first-use order across the windows,
+    /// and adds up the references they stand for.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn append(&mut self, other: SstBatch) {
+        self.refs = self.refs.saturating_add(other.refs);
+        self.strings.extend(other.strings);
+    }
+}
+
+impl RowVisitor for SstBatch {
     fn row_open(&mut self, _row: u32, _info: &LineInfo) {}
     fn row_empty(&mut self) {}
     fn row_cells(&mut self) {}
@@ -968,7 +983,12 @@ impl RowVisitor for SstCollector<'_> {
             return Ok(());
         }
         if let Value::Text(t) = cell_value(cell, a.override_text, a.value) {
-            self.sst.index(&t);
+            self.refs = self.refs.saturating_add(1);
+            // The cell's own `Arc<str>` is kept, not a copy: the string is already in memory beside
+            // the cell that holds it.
+            if self.seen.insert(t.clone()) {
+                self.strings.push(t);
+            }
         }
         Ok(())
     }
@@ -1084,6 +1104,66 @@ fn row_windows(last_row: u32, cells: usize, workers: usize) -> Vec<(u32, u32)> {
     windows
 }
 
+/// The window a sheet with one window writes: the whole of it.
+fn sole_window(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>) -> (u32, u32) {
+    (0, last_written_row(sheet, additions))
+}
+
+/// The windows a sheet is built in (see [`row_windows`]). wasm has no OS threads: one window,
+/// built on the calling thread.
+#[cfg(not(target_arch = "wasm32"))]
+fn window_plan(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, workers: usize) -> Vec<(u32, u32)> {
+    row_windows(last_written_row(sheet, additions), sheet.cells.len(), workers)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn window_plan(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, _workers: usize) -> Vec<(u32, u32)> {
+    vec![sole_window(sheet, additions)]
+}
+
+/// Runs `each` over the windows on worker threads and returns their results in window order. A
+/// worker that panicked is a failed save, not a part with a hole in it: the join reports it and the
+/// panic payload is dropped inside the scope, so nothing unwinds out of it.
+#[cfg(not(target_arch = "wasm32"))]
+fn in_windows<T, F>(windows: &[(u32, u32)], what: &str, each: F) -> Vec<Result<T, IoError>>
+where
+    T: Send,
+    F: Fn((u32, u32)) -> Result<T, IoError> + Send + Sync,
+{
+    std::thread::scope(|scope| {
+        let each = &each;
+        let handles: Vec<_> = windows.iter().map(|&rows| scope.spawn(move || each(rows))).collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(IoError::Zip(format!("a worksheet {what} panicked"))))).collect()
+    })
+}
+
+/// One window's shared strings, collected on this thread.
+fn collect_window(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, rows: (u32, u32)) -> Result<SstBatch, IoError> {
+    let mut batch = SstBatch::default();
+    walk_rows(sheet, RangeRef::rows(rows.0, rows.1), additions, &mut batch)?;
+    Ok(batch)
+}
+
+/// The texts a sheet writes, window by window and merged in row order: the shared string table's
+/// order is the file's first-use order, so the windows have to be put back in that order before
+/// their strings are interned.
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_strings(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, windows: &[(u32, u32)]) -> Result<SstBatch, IoError> {
+    if windows.len() < 2 {
+        return collect_window(sheet, additions, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)));
+    }
+    let mut merged = SstBatch::default();
+    for batch in in_windows(windows, "shared string collector", |rows| collect_window(sheet, additions, rows)) {
+        merged.append(batch?);
+    }
+    Ok(merged)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn collect_strings(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, windows: &[(u32, u32)]) -> Result<SstBatch, IoError> {
+    collect_window(sheet, additions, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)))
+}
+
 /// One window of a sheet's rows, built on this thread.
 fn build_window(
     wb: &Workbook,
@@ -1110,19 +1190,12 @@ fn build_rows(
     additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>,
     sst: &Sst,
     styles: StyleIds,
-    workers: usize,
+    windows: &[(u32, u32)],
 ) -> Result<(String, RowFlags), IoError> {
-    let last_row = last_written_row(sheet, additions);
-    let windows = row_windows(last_row, sheet.cells.len(), workers);
     if windows.len() < 2 {
-        return build_window(wb, si, sheet, additions, sst, styles, (0, last_row));
+        return build_window(wb, si, sheet, additions, sst, styles, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)));
     }
-    let built: Vec<Result<(String, RowFlags), IoError>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = windows.iter().map(|&rows| scope.spawn(move || build_window(wb, si, sheet, additions, sst, styles, rows))).collect();
-        // A worker that panicked is a failed save, not a part with a hole in it: the join reports
-        // it and the payload is dropped here, so nothing unwinds out of the scope.
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(IoError::Zip("a worksheet row builder panicked".into())))).collect()
-    });
+    let built = in_windows(windows, "row builder", |rows| build_window(wb, si, sheet, additions, sst, styles, rows));
     let capacity = built.iter().filter_map(|w| w.as_ref().ok()).map(|(xml, _)| xml.len()).sum();
     let mut xml = String::with_capacity(capacity);
     let mut flags = RowFlags::default();
@@ -1144,10 +1217,9 @@ fn build_rows(
     additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>,
     sst: &Sst,
     styles: StyleIds,
-    workers: usize,
+    windows: &[(u32, u32)],
 ) -> Result<(String, RowFlags), IoError> {
-    let _ = workers;
-    build_window(wb, si, sheet, additions, sst, styles, (0, last_written_row(sheet, additions)))
+    build_window(wb, si, sheet, additions, sst, styles, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)))
 }
 
 /// The formula a cell writes: an override (a table header's text, a spilled value) replaces the

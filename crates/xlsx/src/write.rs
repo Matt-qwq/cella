@@ -86,26 +86,41 @@ impl Rels {
     }
 }
 
-/// Shared string table being built.
+/// Shared string table being built. The strings are the `Arc`s the cells hold (a text cell is a
+/// reference into this table), so interning one costs a refcount and a hash, not a copy.
 #[derive(Default)]
 pub struct Sst {
-    list: Vec<String>,
-    map: HashMap<String, u32>,
+    list: Vec<std::sync::Arc<str>>,
+    map: HashMap<std::sync::Arc<str>, u32>,
     pub count: u64,
 }
 
 impl Sst {
-    pub fn index(&mut self, s: &str) -> u32 {
-        self.count += 1;
-        if let Some(&i) = self.map.get(s) {
+    /// Gives `s` its id if it has none, without counting a reference: the save's pre-pass counts
+    /// references itself (a row window totals them), because it interns the strings a window at a
+    /// time in the file's first-use order.
+    pub fn intern(&mut self, s: &std::sync::Arc<str>) -> u32 {
+        if let Some(&i) = self.map.get(s.as_ref()) {
             return i;
         }
         let i = self.list.len() as u32;
-        self.list.push(s.to_string());
-        self.map.insert(s.to_string(), i);
+        self.list.push(std::sync::Arc::clone(s));
+        self.map.insert(std::sync::Arc::clone(s), i);
         i
     }
-    /// The id [`Sst::index`] gave `s`, for a reader that must not grow the table. A save fills the
+    /// Adds a sheet's pre-passed strings, in the order the file first uses them, and the number of
+    /// text cells they stand for.
+    pub fn extend(&mut self, count: u64, strings: &[std::sync::Arc<str>]) {
+        self.count = self.count.saturating_add(count);
+        // Room for the whole batch up front: a sheet's strings arrive in one go, and growing both
+        // tables as they fill rehashes and copies what is already there.
+        self.list.reserve(strings.len());
+        self.map.reserve(strings.len());
+        for s in strings {
+            self.intern(s);
+        }
+    }
+    /// The id [`Sst::intern`] gave `s`, for a reader that must not grow the table. A save fills the
     /// table in a pre-pass over the sheets (in file order), so the row builder that writes the cells
     /// can look ids up while a window of rows is built on a worker thread.
     pub fn id(&self, s: &str) -> Option<u32> {
@@ -685,7 +700,7 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     let mut sst = format!("{XML_DECL}<sst xmlns=\"{NS_MAIN}\" count=\"{}\" uniqueCount=\"{}\">", out.sst.count, out.sst.list.len());
     for t in &out.sst.list {
         sst.push_str("<si>");
-        crate::xml::push_si_body(&mut sst, t, phonetics.get(t.as_str()).copied());
+        crate::xml::push_si_body(&mut sst, t, phonetics.get(&**t).copied());
         sst.push_str("</si>");
     }
     sst.push_str("</sst>");
