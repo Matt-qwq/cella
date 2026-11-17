@@ -731,11 +731,14 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
     let mut label = String::new();
     let now = d.wb.clone();
     for _ in 0..steps {
-        let Some(e) = d.undo.pop() else { break };
+        let Some(mut e) = d.undo.pop() else { break };
         let cur_wb = d.wb.clone();
         // Redo goes back to the undone edit's cells, not wherever the user clicked before undoing (#1855).
         let cur_selection = e.selection.clone();
         label = e.label.clone();
+        // A snapshot the byte budget compressed is decoded back into live bands first, so what
+        // comes back is exactly what an uncompressed snapshot holds (see expand_history_entry).
+        crate::expand_history_entry(&mut e);
         d.wb = e.wb;
         d.selection = e.selection;
         d.history_dropped += crate::push_history(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection) as u64;
@@ -754,10 +757,11 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
     let mut label = String::new();
     let now = d.wb.clone();
     for _ in 0..steps {
-        let Some(e) = d.redo.pop() else { break };
+        let Some(mut e) = d.redo.pop() else { break };
         let cur_wb = d.wb.clone();
         let cur_selection = d.selection.clone();
         label = e.label.clone();
+        crate::expand_history_entry(&mut e);
         d.wb = e.wb;
         d.selection = e.selection;
         d.history_dropped += crate::push_history(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection) as u64;

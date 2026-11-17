@@ -39,7 +39,18 @@ including tests, 2026-10-10.
    `Session::execute` catches escaped panics and restores the workbook (never-crash guard).
 2. **Edits** change the model through copy-on-write bands; undo keeps the previous snapshot.
    Undo retains at most 100 steps and trims older steps when its estimated retained cell storage
-   exceeds 128 MiB. The newest step remains undoable even if that step alone exceeds the budget.
+   exceeds 128 MiB. A step the budget would otherwise drop is first compressed: the bands it does
+   not share with the next version are spilled into a page file of its own (the `GPB1` form the
+   reader already pages with) and the step is charged its deflated bytes, so the same budget keeps
+   more history. That chance is **gated on its own cost**: a step may spill at most 600 bands
+   (about 60 ms to encode, projected at 5 kB a band for the pages it will take), and only when the
+   newer steps leave room for those pages. A step past the gate is dropped exactly as before,
+   without an encode — so no edit pays a second to keep a step the budget will not hold. The undo that restores a compressed step decodes it back into live bands before it
+   becomes the workbook, which keeps the band-by-band formula diff of `Calc::restore` (no graph
+   rebuild, nothing recalculated). The **newest** step is never compressed — it is what the next
+   Ctrl+Z restores, so the first undo is never a decode — and it remains undoable even if that step
+   alone exceeds the budget. At a million rows a single full-sheet snapshot is the whole budget, so
+   nothing is compressed there: decoding it would cost seconds where the undo costs a second.
    The estimate is a history policy, not a measure or hard cap of process memory.
 3. **Recalc** marks dependents of changed cells dirty through the dependency graph (with range
    nodes for range dependents), evaluates in topological order, spills dynamic arrays and reports
@@ -82,5 +93,6 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 | 2026-11-16 | major | The upstream-adoption round changed five subsystems this page describes: **the JSON workbook is a versioned envelope** (`{formatVersion, workbook}` with unknown fields retained at every level and read caps); **Undo groups** (`group_begin`/`group_end`/`group_rollback`, one group is one history entry and Undo/Redo refuse while one is open, which is what makes a script run atomic); **a macro engine** in `crates/engine/src/macros` (recorder, runner, trust policy, step-through) bound to the workbook's existing script list, so `macro.*` are aliases over `automate.*` rather than a second document shape; **form controls** as model objects (`crates/model/src/controls.rs`) written as ctrlProps + `mc:AlternateContent` + VML; **one view per window** (`WindowView { selection, sheet, sheet_name, sheet_selections }`, swapped around a command, and a swap is not an edit). The workbook's own data store moved from one literal per defined name to `_gc_<key>_<n>` chunks that respect Excel's 255-character literal and 8,192-unit formula limits || 2026-11-16 | minor | Document the evaluator's work budget, LAMBDA fuel and native-stack guard |
 | 2026-11-16 | minor | Document the registry value parameters (single-value arguments that reject a multi-cell reference) |
 | 2026-11-16 | minor | Document the evaluator work budget, LAMBDA fuel and native-stack guard |
+| 2026-11-17 | minor | Document compressed history steps (a step the budget would drop is kept as `GPB1` pages and decoded by the undo that restores it) and that the newest step is never compressed |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |

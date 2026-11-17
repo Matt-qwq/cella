@@ -70,12 +70,15 @@ impl WorkbookMemory {
 /// The snapshot and the history stacks are reported as their own lines, and each is measured *as
 /// what it retains beyond the live workbook* (the figure [`crate::HistoryEntry`] budgets with): a
 /// snapshot shares every band the edit did not touch, so charging it in full would count the live
-/// workbook twice.
+/// workbook twice. A history step the byte budget compressed is charged its deflated pages, not the
+/// bands they decode to.
 ///
 /// # What is deliberately skipped
 ///
 /// Allocator slack beyond a `Vec`'s `capacity`; the `Arc` control blocks of bands, sheets and
-/// snapshots; the page files on disk; the contents of an object — a table's rows, a chart's series,
+/// snapshots; the page files on disk *as disk* — a snapshot that keeps its bands as pages is
+/// charged their compressed length, which is what it costs to keep the step (see
+/// [`crate::HistoryEntry`]); the contents of an object — a table's rows, a chart's series,
 /// a shape's text, a picture's bytes, a pivot cache, a preserved (unmodelled) file part (a VBA
 /// blob's bytes are counted, its contents are not decoded anywhere); the `Value`s inside an
 /// `Arc<Array>` (see [`StoreMemory`]); and the expression trees the graph's nodes point at,
