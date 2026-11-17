@@ -1,6 +1,6 @@
 //! Cell entry, selection, undo/redo, clipboard, clear, fill, find & replace.
 
-use gridcraft_core::{CellRef, MAX_ROWS, RangeRef, Value};
+use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
 use gridcraft_model::{Cell, Formula, StyleId};
 use serde_json::{Value as Json, json};
 
@@ -1402,18 +1402,153 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"pasted": s.doc()?.selection.a1()}))
 }
 
+/// One rewrite per **shape**, and a print per cell whose text changes: the rename half of S5 of
+/// `plan/SHAPE-SHARING.md`. `map` rewrites a formula's tree and returns `None` when it leaves it
+/// alone. A rename maps names — a sheet, a table, a defined name — and never coordinates, so its
+/// answer is the same for every cell a shape serves, and one tree rewrite serves all of them.
+///
+/// `map` is given the index of the sheet the formula lives on, because a name can resolve
+/// differently there (a sheet-scoped name hiding a workbook one) and because a rename may apply to
+/// some sheets only.
+///
+/// A cell whose formula has no shape yet (text alone) or one that does not resolve where it sits
+/// (a fill that clamped a relative part) takes the per-cell path: its text is parsed, rewritten
+/// and interned at the cell, as before.
+pub(crate) fn rewrite_shapes(wb: &mut gridcraft_model::Workbook, map: impl Fn(usize, gridcraft_formula::Expr) -> Option<gridcraft_formula::Expr>) {
+    let mut shapes = gridcraft_formula::ShapeTable::default();
+    for si in 0..wb.sheets.len() {
+        let keys: Vec<(CellRef, std::sync::Arc<Formula>)> =
+            wb.sheets.get(si).map(|s| s.cells.formulas().map(|(c, f, _)| (c, f)).collect()).unwrap_or_default();
+        if keys.is_empty() {
+            continue;
+        }
+        // One rewritten tree per shape, interned once. `None` is "the map left this shape alone".
+        let mut planned: std::collections::HashMap<usize, Option<std::sync::Arc<gridcraft_formula::Shape>>> = std::collections::HashMap::new();
+        let Some(sheet) = wb.sheet_mut(si) else { continue };
+        for (c, f) in keys {
+            let shape = f.shape.clone().filter(|s| s.fits(c));
+            if let Some(shape) = shape {
+                let key = std::sync::Arc::as_ptr(&shape) as usize;
+                let slot = planned
+                    .entry(key)
+                    .or_insert_with(|| map(si, shape.tree().clone()).and_then(|tree| shape.rewritten(tree)).map(|s| shapes.intern(s)));
+                let Some(new) = slot.clone() else { continue };
+                let Some(text) = new.print_at(c) else { continue };
+                if text == f.text && f.shape.as_ref().is_some_and(|old| std::sync::Arc::ptr_eq(old, &new)) {
+                    continue;
+                }
+                if let Some(mut cell) = sheet.cells.get(c) {
+                    let nf = Formula { text, shape: Some(new), array: f.array.clone(), dynamic: f.dynamic };
+                    cell.formula = Some(std::sync::Arc::new(nf));
+                    sheet.cells.set(c, cell);
+                }
+                continue;
+            }
+            // Text alone, or a shape that does not resolve here: the cell's own parse.
+            let Some(tree) = f.text_tree() else { continue };
+            let Some(new) = map(si, tree) else { continue };
+            let text = gridcraft_formula::print(&new);
+            if let Some(mut cell) = sheet.cells.get(c) {
+                let rewrite = gridcraft_xlsx::needs_file_rewrite(&new);
+                let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
+                nf.array = f.array.clone();
+                nf.dynamic = f.dynamic;
+                if text != f.text {
+                    cell.formula = Some(std::sync::Arc::new(nf));
+                    sheet.cells.set(c, cell);
+                }
+            }
+        }
+    }
+}
+
+/// The cell a formula sat at before `e` moved it, in the same terms as the store's shift: the
+/// position the cell's text was written for, which is the one its shape resolves at. `None` when
+/// the position has no predecessor (the line an insert opened) or the edit is one that moves a
+/// block rather than the lines a shape is anchored to.
+fn cell_before(c: CellRef, e: &gridcraft_formula::adjust::Edit) -> Option<CellRef> {
+    use gridcraft_formula::adjust::{Axis, Edit};
+    let (axis, at, count) = match e {
+        Edit::Insert { axis, at, count } | Edit::Delete { axis, at, count } => (*axis, *at, *count),
+        _ => return None,
+    };
+    let insert = matches!(e, Edit::Insert { .. });
+    let (row, col) = (c.row, c.col);
+    let v = if axis == Axis::Rows { row } else { col };
+    let before = if insert {
+        if v >= at.checked_add(count)? {
+            v - count
+        } else if v < at {
+            v
+        } else {
+            return None;
+        }
+    } else if v >= at {
+        v.checked_add(count)?
+    } else {
+        v
+    };
+    let max = if axis == Axis::Rows { MAX_ROWS } else { MAX_COLS };
+    if before >= max {
+        return None;
+    }
+    Some(if axis == Axis::Rows { CellRef::new(before, col) } else { CellRef::new(row, before) })
+}
+
+/// What a shape says a cell becomes after `e`, when the shape level can say it: the shape rewritten
+/// **once** per (shape, whether the edit moves the cell) — S5 of `plan/SHAPE-SHARING.md` — and the
+/// cell's own text printed at the cell.
+///
+/// `None` is "only this cell can say": it holds no shape yet, its shape does not resolve where it
+/// now sits, the edit moved a block rather than lines, or one of its references straddles the edit
+/// ([`Shape::straddles`]) so its offset must change with the cell. The caller then parses,
+/// adjusts and interns that one cell, exactly as before.
+fn form_by_shape(
+    f: &Formula,
+    c: CellRef,
+    host: &str,
+    target: &str,
+    e: &gridcraft_formula::adjust::Edit,
+    shapes: &mut gridcraft_formula::ShapeTable,
+    planned: &mut std::collections::HashMap<(usize, bool), Option<std::sync::Arc<gridcraft_formula::Shape>>>,
+) -> Option<(String, std::sync::Arc<gridcraft_formula::Shape>)> {
+    use gridcraft_formula::{Adjusted, adjust::CellMove};
+    let shape = f.shape.clone()?;
+    let old = cell_before(c, e)?;
+    if shape.straddles(old, e) {
+        return None;
+    }
+    let moves = old != c;
+    let key = (std::sync::Arc::as_ptr(&shape) as usize, moves);
+    let new = {
+        let slot = planned.entry(key).or_insert_with(|| match shape.adjust(host, target, e, if moves { CellMove::Moves } else { CellMove::Stays }) {
+            // Nothing of the shape moves: the cells keep the `Arc` they share, which is the whole
+            // win — a million formulas of a fill keep one tree between them.
+            Adjusted::Unchanged => Some(std::sync::Arc::clone(&shape)),
+            Adjusted::Moved(s) => Some(shapes.intern(s)),
+            Adjusted::PerCell => None,
+        });
+        slot.clone()?
+    };
+    let text = new.print_at(c)?;
+    Some((text, new))
+}
+
 /// Applies a reference adjustment to every cell formula and defined name in the workbook.
+///
+/// The tree work is **one rewrite per shape** (S5 of `plan/SHAPE-SHARING.md`): the cells an edit
+/// moves hold a handful of shapes, so a million formulas cost a handful of new trees and one print
+/// per cell whose text really changed.
 pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &str, e: &gridcraft_formula::adjust::Edit) {
     use gridcraft_formula::adjust::Edit;
     // Rows and columns inserted or deleted on the target sheet move its legacy array ranges too
     // (a cut moves its arrays itself).
     let moves_arrays = matches!(e, Edit::Insert { .. } | Edit::Delete { .. } | Edit::InsertCells { .. } | Edit::DeleteCells { .. });
     // Every [`Edit`] variant moves cells: rows, columns or a block inserted or deleted, or a cut
-    // pasted here or on another sheet. A shape is anchored at the cell it was interned for, so a
-    // moved formula cell is interned again even when its text does not change — inserting a row
-    // above `=A1` moves the formula and not the cell it names. (S5 of `plan/SHAPE-SHARING.md`
-    // rewrites the shape instead, one per shape, and this walk becomes a text update of the cells
-    // whose text really changes.)
+    // pasted here or on another sheet. That is what the per-cell fallback needs to know: a shape is
+    // a cache of (text, position), so a formula a cut moved is renamed onto the tree its text
+    // spells even when that text does not change. The shape-level path (`form_by_shape`) reads the
+    // cell's movement from the edit itself.
     let moves_cells = matches!(
         e,
         Edit::Insert { .. }
@@ -1434,19 +1569,34 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
             continue;
         }
         let on_target = moves_arrays && host.eq_ignore_ascii_case(target);
+        // One answer per shape — and per side of the edit, because a reference the edit leaves
+        // alone is a line further away from a cell that moved (S5 of `plan/SHAPE-SHARING.md`).
+        let mut planned: std::collections::HashMap<(usize, bool), Option<std::sync::Arc<gridcraft_formula::Shape>>> =
+            std::collections::HashMap::new();
         let Some(sheet) = wb.sheet_mut(si) else { continue };
         for (c, f) in keys {
-            // The cell's *text* spells the tree the formula holds, at the position it was written
-            // for: this rewrite runs after the store moved the cells the edit inserted, deleted or
-            // moved, so the cell a shape resolves at is no longer the cell it was interned for
-            // (SHAPE-SHARING.md §5.1 S5 makes this a rewrite of the shape itself, one per shape).
-            let Some(expr) = f.text_tree() else { continue };
-            let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
-            let text = gridcraft_formula::print(&new);
             let array: Option<RangeRef> = match f.array.as_deref() {
                 Some(a) if on_target => super::sheet::map_range(*a, e),
                 a => a.copied(),
             };
+            if let Some((text, shape)) = form_by_shape(&f, c, &host, target, e, &mut shapes, &mut planned) {
+                let same_shape = f.shape.as_ref().is_some_and(|old| std::sync::Arc::ptr_eq(old, &shape));
+                if text == f.text && same_shape && array == f.array.as_deref().copied() {
+                    continue;
+                }
+                if let Some(mut cell) = sheet.cells.get(c) {
+                    let nf = Formula { text, shape: Some(shape), array: array.map(Box::new), dynamic: f.dynamic };
+                    cell.formula = Some(std::sync::Arc::new(nf));
+                    sheet.cells.set(c, cell);
+                }
+                continue;
+            }
+            // Only this cell can say (see `form_by_shape`): the cell's *text* spells the tree the
+            // formula holds at the position it was written for, so the parse is the tree the edit
+            // must adjust — this is the per-cell path S5 kept for what it cannot answer.
+            let Some(expr) = f.text_tree() else { continue };
+            let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
+            let text = gridcraft_formula::print(&new);
             if (text != f.text || array != f.array.as_deref().copied() || (moves_cells && f.shape.is_some()))
                 && let Some(mut cell) = sheet.cells.get(c)
             {

@@ -233,7 +233,10 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
     if renames.is_empty() {
         return;
     }
-    // Structured references follow the new names.
+    // Structured references follow the new names. This one stays per cell, where S5 of
+    // `plan/SHAPE-SHARING.md` made the renames shape-level: an *unqualified* structured reference
+    // (`[@Qty]`) belongs to the table whose body holds the cell, so the answer to "does this
+    // formula name the renamed table" is the cell's position, not the shape's.
     let mut shapes = gridcraft_formula::ShapeTable::default();
     for i in 0..cx.wb.sheets.len() {
         let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> =

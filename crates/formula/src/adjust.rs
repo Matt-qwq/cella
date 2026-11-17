@@ -339,6 +339,173 @@ fn adjust_ref(r: Reference, edit: &Edit) -> Option<Reference> {
     }
 }
 
+// ---------------------------------------------------------------- shape level
+
+/// What a lines [`Edit`] makes of a **canonical** (shape) tree: the answer [`adjust`] gives at
+/// shape level (S5 of `plan/SHAPE-SHARING.md`).
+#[derive(Debug)]
+pub enum Adjusted {
+    /// No reference the edit touches moves: the shape serves every cell it holds unchanged.
+    Unchanged,
+    /// The tree moves, and the move is a property of the tree alone — an absolute part names a
+    /// cell, and a relative one is an offset from the formula's own cell, so it keeps itself. One
+    /// answer therefore serves every cell the shape lives in.
+    Moved(Expr),
+    /// The edit moves a reference differently depending on where the cell sits, so only the cell
+    /// can say: a cut moves the block's own references, Insert/Delete Cells move the part of a
+    /// reference inside their band, a delete shrinks or swallows a span it cuts through, and a
+    /// span with one `$` end is reordered by the values it resolves to.
+    PerCell,
+}
+
+/// Whether the cell a shape serves keeps its position through the edit. A relative reference the
+/// edit does not touch — a qualified one on another sheet, a 3-D span — keeps its *coordinates*,
+/// so a cell that moves spells it one line further away: the answer differs by that much, and a
+/// shape holds cells on both sides of an insert ([`Edit`] moves everything from `at` on).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellMove {
+    Stays,
+    Moves,
+}
+
+/// [`adjust`] for a **canonical** tree: its absolute parts move exactly as [`adjust`] moves them,
+/// its relative parts keep their offsets (relative to the formula's cell, they move with it or stay
+/// with it). Position-free, which is what lets one answer serve a million cells (S5 of
+/// `plan/SHAPE-SHARING.md`); see [`Adjusted::PerCell`] for what it cannot answer.
+///
+/// A cell for which this is not the same as `adjust(resolve(shape, cell))` — a reference that
+/// straddles the edit's boundary, so it moves while the cell does not or the other way round — is
+/// [`crate::Shape::straddles`]'s question, asked per cell.
+pub fn adjust_canonical(tree: &Expr, host: &str, target: &str, edit: &Edit, cell: CellMove) -> Adjusted {
+    let (axis, at, count, insert) = match edit {
+        Edit::Insert { axis, at, count } => (*axis, *at, *count, true),
+        Edit::Delete { axis, at, count } => (*axis, *at, *count, false),
+        // A cut, and the two Cells variants: where the cell is decides, always.
+        _ => {
+            let touches = tree.references().iter().any(|r| on_target(r, host, target));
+            return if touches { Adjusted::PerCell } else { Adjusted::Unchanged };
+        }
+    };
+    // The lines the cell itself gains (an insert) or loses (a delete): a relative reference the
+    // edit does not touch keeps its coordinates, so the cell spells it that much further away.
+    let carry = match (cell, insert) {
+        (CellMove::Stays, _) => 0,
+        (CellMove::Moves, true) => i32::try_from(count).map_or(i32::MAX, |c| c),
+        (CellMove::Moves, false) => i32::try_from(count).map_or(i32::MIN, |c| -c),
+    };
+    let mut changed = false;
+    let mut per_cell = false;
+    let out = tree.clone().map(&mut |x| match x {
+        Expr::Ref(r) if on_target(&r, host, target) => match canonical_ref(&r, axis, at, count, insert) {
+            Ok(Step::Keep) => Expr::Ref(r),
+            Ok(Step::Set(nr)) => {
+                changed = true;
+                Expr::Ref(nr)
+            }
+            Ok(Step::Gone) => {
+                changed = true;
+                Expr::Error(CellError::Ref)
+            }
+            Err(()) => {
+                per_cell = true;
+                Expr::Ref(r)
+            }
+        },
+        // A reference the edit does not touch (one qualified to another sheet, a 3-D span) whose
+        // parts are relative: they keep their coordinates and the cell does not, so every one of
+        // them is `carry` lines further away.
+        Expr::Ref(r) if carry != 0 => {
+            let kind = match &r.kind {
+                RefKind::Cell(a) => RefKind::Cell(carry_anchor(*a, axis, carry)),
+                RefKind::Range(a, b) => RefKind::Range(carry_anchor(*a, axis, carry), carry_anchor(*b, axis, carry)),
+                RefKind::Rows(r0, a0, r1, a1) => RefKind::Rows(carry_line(*r0, *a0, carry), *a0, carry_line(*r1, *a1, carry), *a1),
+                RefKind::Cols(c0, a0, c1, a1) => RefKind::Cols(carry_line(*c0, *a0, carry), *a0, carry_line(*c1, *a1, carry), *a1),
+            };
+            changed = true;
+            Expr::Ref(Reference { sheet: r.sheet, kind })
+        }
+        other => other,
+    });
+    if per_cell {
+        return Adjusted::PerCell;
+    }
+    if changed { Adjusted::Moved(out) } else { Adjusted::Unchanged }
+}
+
+/// Moves a relative part of a canonical reference by `carry` lines (an absolute part is a
+/// coordinate and stays where it names).
+fn carry_anchor(a: Anchor, axis: Axis, carry: i32) -> Anchor {
+    match axis {
+        Axis::Rows => Anchor { row: if a.row_abs { a.row } else { a.row.saturating_sub(carry) }, ..a },
+        Axis::Cols => Anchor { col: if a.col_abs { a.col } else { a.col.saturating_sub(carry) }, ..a },
+    }
+}
+
+fn carry_line(v: i32, abs: bool, carry: i32) -> i32 {
+    if abs { v } else { v.saturating_sub(carry) }
+}
+
+/// One reference of a canonical tree after a lines edit.
+enum Step {
+    /// Nothing in it moves.
+    Keep,
+    /// It moves — or a span is reordered, which [`adjust`] does on every edit it touches.
+    Set(Reference),
+    /// The edit swallows it: `#REF!`.
+    Gone,
+}
+
+/// The shape-level form of [`adjust_ref`] for a lines edit. `Err(())` is [`Adjusted::PerCell`]: the
+/// two ends of a span are one absolute and one relative, and which of them is the low end is the
+/// cell's position, not the tree's.
+fn canonical_ref(r: &Reference, axis: Axis, at: u32, count: u32, insert: bool) -> Result<Step, ()> {
+    let max = if axis == Axis::Rows { MAX_ROWS } else { MAX_COLS };
+    // A single coordinate of the edited axis: an absolute one is mapped as `adjust` maps it (a
+    // deleted line or one pushed past the end is `#REF!`), a relative one is an offset and keeps
+    // itself.
+    let index = |v: i32, abs: bool| -> Result<Option<i32>, ()> {
+        if !abs {
+            return Ok(None);
+        }
+        map_index(v, at, count, insert, max).map(Some).ok_or(())
+    };
+    // A span of the edited axis. Both ends absolute: `adjust`'s span arithmetic decides, so a
+    // whole-line span stays whole and a deleted line collapses an absolute end onto `at`. Both
+    // relative: the same arithmetic on offsets, which order by their own values. Mixed: only the
+    // cell can order them. `None` inside the `Ok` is a span the edit swallowed.
+    let span = |a: (i32, bool), b: (i32, bool)| -> Result<Option<(i32, i32)>, ()> {
+        match (a.1, b.1) {
+            (true, true) => Ok(map_span(a.0.min(b.0), a.0.max(b.0), at, count, insert, max)),
+            (false, false) => Ok(Some((a.0.min(b.0), a.0.max(b.0)))),
+            _ => Err(()),
+        }
+    };
+    let kind = match (&r.kind, axis) {
+        (RefKind::Cell(a), Axis::Rows) => RefKind::Cell(Anchor { row: index(a.row, a.row_abs)?.unwrap_or(a.row), ..*a }),
+        (RefKind::Cell(a), Axis::Cols) => RefKind::Cell(Anchor { col: index(a.col, a.col_abs)?.unwrap_or(a.col), ..*a }),
+        (RefKind::Range(a, b), Axis::Rows) => match span((a.row, a.row_abs), (b.row, b.row_abs))? {
+            Some((lo, hi)) => RefKind::Range(Anchor { row: lo, ..*a }, Anchor { row: hi, ..*b }),
+            None => return Ok(Step::Gone),
+        },
+        (RefKind::Range(a, b), Axis::Cols) => match span((a.col, a.col_abs), (b.col, b.col_abs))? {
+            Some((lo, hi)) => RefKind::Range(Anchor { col: lo, ..*a }, Anchor { col: hi, ..*b }),
+            None => return Ok(Step::Gone),
+        },
+        (RefKind::Rows(r0, a0, r1, a1), Axis::Rows) => match span((*r0, *a0), (*r1, *a1))? {
+            Some((lo, hi)) => RefKind::Rows(lo, *a0, hi, *a1),
+            None => return Ok(Step::Gone),
+        },
+        (RefKind::Cols(c0, a0, c1, a1), Axis::Cols) => match span((*c0, *a0), (*c1, *a1))? {
+            Some((lo, hi)) => RefKind::Cols(lo, *a0, hi, *a1),
+            None => return Ok(Step::Gone),
+        },
+        // The axis this edit does not move: nothing of it moves.
+        (k, _) => k.clone(),
+    };
+    let out = Reference { sheet: r.sheet.clone(), kind };
+    Ok(if out == *r { Step::Keep } else { Step::Set(out) })
+}
+
 /// Renames sheet references `old` → `new`.
 pub fn rename_sheet(e: Expr, old: &str, new: &str) -> Expr {
     e.map(&mut |x| match x {

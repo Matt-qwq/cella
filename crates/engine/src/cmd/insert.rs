@@ -611,33 +611,23 @@ fn table_rename(s: &mut Session, p: &Json) -> Result<Json> {
                 }
             }
         }
-        // Structured references follow the rename.
-        let mut shapes = gridcraft_formula::ShapeTable::default();
-        for i in 0..cx.wb.sheets.len() {
-            let keys: Vec<(CellRef, std::sync::Arc<Formula>)> =
-                cx.wb.sheets.get(i).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
-            // A bare name that is also a defined name resolves to the defined name, so it is not the table.
-            let shadowed = cx.wb.name(&old, i).is_some();
-            let Some(sh) = cx.wb.sheet_mut(i) else { continue };
-            for (c, f) in keys {
-                let Some(e) = f.expr_at(c) else { continue };
-                let ne = e.map(&mut |x| match x {
-                    gridcraft_formula::Expr::Struct(mut st) if st.table.eq_ignore_ascii_case(&old) => {
-                        st.table = name.clone();
-                        gridcraft_formula::Expr::Struct(st)
-                    }
-                    gridcraft_formula::Expr::Name(n) if !shadowed && n.eq_ignore_ascii_case(&old) => gridcraft_formula::Expr::Name(name.clone()),
-                    o => o,
-                });
-                // Interned at the cell it sits at (a rename does not move cells), so a save
-                // never walks this tree to spell it.
-                let rewrite = gridcraft_xlsx::needs_file_rewrite(&ne);
-                if let Some(mut cell) = sh.cells.get(c) {
-                    cell.formula = Some(std::sync::Arc::new(Formula::from_expr_at(ne, c, &mut shapes, rewrite)));
-                    sh.cells.set(c, cell);
+        // Structured references follow the rename: one tree rewrite per shape (S5 of
+        // `plan/SHAPE-SHARING.md`), a print per cell whose text changes.
+        let shadowed: Vec<bool> = (0..cx.wb.sheets.len()).map(|i| cx.wb.name(&old, i).is_some()).collect();
+        super::edit::rewrite_shapes(&mut cx.wb, |sheet, e| {
+            // A bare name that is also a defined name resolves to the defined name, so it is not
+            // the table.
+            let shadowed = shadowed.get(sheet).copied().unwrap_or(false);
+            let ne = e.map(&mut |x| match x {
+                gridcraft_formula::Expr::Struct(mut st) if st.table.eq_ignore_ascii_case(&old) => {
+                    st.table = name.clone();
+                    gridcraft_formula::Expr::Struct(st)
                 }
-            }
-        }
+                gridcraft_formula::Expr::Name(n) if !shadowed && n.eq_ignore_ascii_case(&old) => gridcraft_formula::Expr::Name(name.clone()),
+                o => o,
+            });
+            Some(ne)
+        });
         cx.structural = true;
         Ok(Json::Null)
     })

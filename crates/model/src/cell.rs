@@ -153,11 +153,12 @@ impl Formula {
     /// structural rewrite (`adjust`) must shift, where [`Formula::expr_at`] is the tree at the cell
     /// the formula sits at now.
     ///
-    /// Those differ only when a structural edit has just moved the cell away from the cell its
-    /// shape was interned for (a row inserted above it): the shape's base is stale by construction,
-    /// and the text is the only witness of what the formula said. That is what S5 of
-    /// `plan/SHAPE-SHARING.md` rewrites at shape level, one shape per edit; until then the one
-    /// caller (`rewrite_all_formulas`) reads the tree back out of the text.
+    /// S5 of `plan/SHAPE-SHARING.md` made this the **fallback** rather than the rule: a structural
+    /// edit rewrites one tree per shape (`Shape::adjust`) and only the cells it cannot answer that
+    /// way — a reference that straddles the edit, so it moves while the cell does not
+    /// (`Shape::straddles`), or a cell whose shape does not resolve where it now sits — parse their
+    /// own text here. The text is the only witness of what such a formula said, because its shape's
+    /// base is stale by construction.
     pub fn text_tree(&self) -> Option<Expr> {
         gridcraft_formula::parse(&self.text).ok()
     }

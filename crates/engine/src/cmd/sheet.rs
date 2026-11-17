@@ -741,22 +741,10 @@ pub(crate) fn drop_sheet(cx: &mut Ctx, i: usize) {
     let name = sheet.name.clone();
     let order: Vec<String> = cx.wb.sheets.iter().map(|s| s.name.clone()).collect();
     cx.wb.sheets.remove(i);
-    let mut shapes = gridcraft_formula::ShapeTable::default();
-    for si in 0..cx.wb.sheets.len() {
-        let keys: Vec<(CellRef, Arc<gridcraft_model::Formula>)> =
-            cx.wb.sheets.get(si).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
-        let Some(sh) = cx.wb.sheet_mut(si) else { continue };
-        for (c, f) in keys {
-            if let Some(e) = f.expr_at(c) {
-                let ne = gridcraft_formula::adjust::delete_sheet(e, &name, &order);
-                let rewrite = gridcraft_xlsx::needs_file_rewrite(&ne);
-                if let Some(mut cell) = sh.cells.get(c) {
-                    cell.formula = Some(Arc::new(gridcraft_model::Formula::from_expr_at(ne, c, &mut shapes, rewrite)));
-                    sh.cells.set(c, cell);
-                }
-            }
-        }
-    }
+    // Every formula that names the sheet becomes `#REF!`, rewritten one shape at a time (S5 of
+    // `plan/SHAPE-SHARING.md`): a 3-D span shrinks to its neighbour by the tab order, which no
+    // cell's position decides.
+    super::edit::rewrite_shapes(&mut cx.wb, |_, e| Some(gridcraft_formula::adjust::delete_sheet(e, &name, &order)));
     cx.wb.names.retain(|n| n.scope != Some(i));
     for n in cx.wb.names.iter_mut() {
         if let Some(sc) = n.scope.as_mut()
@@ -842,24 +830,12 @@ fn rename_sheet(s: &mut Session, p: &Json) -> Result<Json> {
     edit(s, |cx| {
         let old = cx.wb.sheet(i).map(|s| s.name.clone()).unwrap_or_default();
         cx.sheet_mut(i)?.name = name.clone();
-        let mut shapes = gridcraft_formula::ShapeTable::default();
+        // One tree rewrite per shape, one text per cell that names the sheet (S5 of
+        // `plan/SHAPE-SHARING.md`: a rename maps names, never coordinates, so every cell a shape
+        // serves spells the same answer).
+        super::edit::rewrite_shapes(&mut cx.wb, |_, e| Some(gridcraft_formula::adjust::rename_sheet(e, &old, &name)));
         for si in 0..cx.wb.sheets.len() {
-            let keys: Vec<(CellRef, Arc<gridcraft_model::Formula>)> =
-                cx.wb.sheets.get(si).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
             let Some(sh) = cx.wb.sheet_mut(si) else { continue };
-            for (c, f) in keys {
-                if let Some(e) = f.expr_at(c) {
-                    let ne = gridcraft_formula::adjust::rename_sheet(e, &old, &name);
-                    let text = gridcraft_formula::print(&ne);
-                    if text != f.text
-                        && let Some(mut cell) = sh.cells.get(c)
-                    {
-                        let rewrite = gridcraft_xlsx::needs_file_rewrite(&ne);
-                        cell.formula = Some(Arc::new(gridcraft_model::Formula::from_expr_at(ne, c, &mut shapes, rewrite)));
-                        sh.cells.set(c, cell);
-                    }
-                }
-            }
             let fix = |t: &str| {
                 gridcraft_formula::parse(t)
                     .map(|e| gridcraft_formula::print(&gridcraft_formula::adjust::rename_sheet(e, &old, &name)))
