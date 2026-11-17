@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§2): byte accounting per part, the dependency graph compacted (dependents 478.2 → 142.6 MB, nodes 172 → 138, areas 201 → 125), the save build parallelised, and formula **shape sharing** (2M formulas → 3 shapes). A 1M × 6 workbook is **2.90 → 1.17 GB** live (reopened 2.18 → 0.95 GB; `Formula` 48 B, `Node` 16 B, no per-cell tree) and no scenario is slower: save 3.7 → 1.97 s, open 5.5 → 4.08 s, fill formulas 2.8 → 2.15 s, recalc 2.3 → 1.81 s, rebuild 1.7 → 1.25 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
+> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§2), three waves: byte accounting per part; the dependency graph compacted twice (dependents 478.2 → 142.6 MB, nodes 172 → 104.9, areas 201 → 125); the save build parallelised; formula **shape sharing** (2M formulas → 3 shapes, the per-cell tree deleted, `Formula` 48 B, `Node` 16 B); a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s); and an **undo that restores a paged store**, gated so it never costs the edit (a sort of a paged store used to take minutes and now takes the sheet back into memory). A 1M × 6 workbook is **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower: save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, rebuild 1.7 → 1.12 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -233,6 +233,27 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   byte reduction at 1M (the budget keeps one newest entry, and compressing it turns a 23 ms undo into
   4.99 s, measured), but at 100k rows a depth of **4 → 15 for +13 % bytes**, behind a cost gate
   (`≤ 600 bands`, ≈60 ms of encode) so a refusal costs nothing (`CellStore::spill_retained_against`).
+- **Landed (11-17, third wave): a structural edit rewrites once per shape.** `rewrite_all_formulas`
+  is now one tree rewrite per (shape, side of the edit) plus a print per changed cell, with a per-cell
+  fallback only where a relative reference straddles the edit or a span has one `$` end on the edited
+  axis (the design's own `SUM($G$2:G2)` family); `sheet.rename`, `delete_sheet`,
+  `formulas.renameName` and `table.rename` go through the same `rewrite_shapes`. Insert a row above
+  2M formulas **8.29 → 3.97 s**, delete **8.61 → 3.59 s**, rename a sheet over a 1M-formula column
+  **8.58 → 4.86 s**; sort unchanged (it was already shape-level). Proven by a 14-formula × 14-edit
+  suite that strips every shape and asserts the two saved packages are **byte identical**, and a
+  20k-case proof that the shape-level adjust equals the per-cell one.
+- **Landed (11-17, third wave): the graph's node table is per sheet and `CellRef`-keyed** (33 → 25 B
+  a slot, `Node` 16 B; a values-only sheet takes no table at all): nodes 138.4 → **104.9 MB**, total
+  1.169 → **1.1359 GB**. Ratchet: ≤ 26 B a slot.
+- **Landed (11-17, third wave): an undo restores a paged store.** A spilled step records the cells
+  `Calc::restore` would have to re-insert (`formula_delta` at spill time), so undo hands back the
+  page file instead of decoding it: `edit.undo` 26 ms with **0 pages decoded**, history 241.6 →
+  131.9 MB *when it applies*. At 1M the cost gate refuses (the unfitting part is ~10,400 bands ≈ 1 s
+  of encode inside the edit — measured at +35 % on `fill.chained`, +40 % on `edit.recalc`), so the
+  step stays live and the charge is unchanged; the path is proved by a forced-spill test (paged
+  workbook, `last_recalc_cells == 0`, byte-identical save, a sort afterwards not pathological). A sort
+  of a paged store used to read a permutation band by band (minutes at 1M) and now takes the sheet
+  back into memory first; an audit found every other bulk command band-ordered.
 - **Measured 11-17, what is left of the memory bill:** formula text 133.4 MB (the file spelling, the
   JSON envelope, the formula bar and the save's fast path — kept by design; 24 B of struct a formula
   is what remains of the per-cell cost); graph nodes 138.4 MB (a per-sheet node table would take it
@@ -240,7 +261,9 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   the undo stack 241.6 MB *charged* (its own heap is a fraction of that; at 1M the structural answer
   is restoring into a paged store — attach the page file and let the byte-budget page cache decode
   bands on demand — not attempted); the journal's base64 copy of a file (42–94 MB); and a structural
-  edit still prints every moved cell's text (S5, bounded by the printing).
+  edit still prints every moved cell's text (S5's floor: one print per moved cell); and the undo of a
+  workbook *opened* paged (>200 MiB file) still walks the bands, because such a step never records a
+  delta.
 - **Missing:** dependent chains that never become a wave of leaves remain sequential; whole-sheet
   clear/copy/paste still clone the stored cells (they scale with the data, not the file); the
   per-band value dictionaries still cost full price when values do not repeat;
