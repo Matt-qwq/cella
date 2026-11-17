@@ -2829,6 +2829,65 @@ impl CellStore {
         self.pages.values().map(|p| p.page_len()).sum()
     }
 
+    /// Moves the bands this store keeps that `newer` no longer shares into a page file of its own,
+    /// so a history snapshot costs its compressed pages instead of the decoded bands the edit
+    /// replaced.
+    ///
+    /// A band `newer` still shares is left live: the workbook reads that same copy, and encoding
+    /// it here would write a second while freeing nothing. A store that already pages keeps its
+    /// file and this does nothing (returns 0): its pages belong to that file, and the bands it
+    /// keeps are the few an edit wrote. Returns the bands it spilled; 0 means the store was left
+    /// exactly as it was — nothing to spill, or no page file could be created. Paging never loses
+    /// cells: a band that cannot be encoded stays live.
+    ///
+    /// The snapshot's cache budget is zero: these pages are decoded once, when an undo restores
+    /// the snapshot ([`expand_pages`](Self::expand_pages)), so a cache would only keep alive the
+    /// bands the restore is about to take out of it.
+    pub fn spill_retained_against(&mut self, newer: &CellStore) -> usize {
+        if self.page_file.is_some() {
+            return 0;
+        }
+        let keys: Vec<u32> =
+            self.bands.iter().filter(|(key, band)| newer.bands.get(key).is_none_or(|next| !Arc::ptr_eq(next, band))).map(|(key, _)| *key).collect();
+        if keys.is_empty() {
+            return 0;
+        }
+        // The temp directory only: a snapshot's pages must not appear in the document's folder.
+        let Some(file) = page::PageFile::new(None, Some("undo"), 0) else { return 0 };
+        self.page_file = Some(Arc::new(file));
+        let before = self.pages.len();
+        for key in keys {
+            self.spill_band(key);
+        }
+        let spilled = self.pages.len().saturating_sub(before);
+        if spilled == 0 {
+            // Nothing could be encoded: leave no empty file behind.
+            self.page_file = None;
+        }
+        spilled
+    }
+
+    /// Decodes every page of this store back into a live band and drops the page file. This is
+    /// what the undo that restores a compressed snapshot does with it: the workbook then prints,
+    /// iterates and diffs itself band by band, exactly as the one the edit replaced did.
+    ///
+    /// Returns the bands decoded. A page that cannot be decoded stays paged — it reads as missing
+    /// there, as it does everywhere else — and the file is kept, so nothing is lost by trying. A
+    /// store that does not page returns 0 without touching anything.
+    pub fn expand_pages(&mut self) -> usize {
+        let keys: Vec<u32> = self.pages.keys().copied().collect();
+        let mut decoded = 0usize;
+        for key in keys {
+            if self.materialize(key).is_some() {
+                decoded = decoded.saturating_add(1);
+            }
+        }
+        if self.pages.is_empty() {
+            self.page_file = None;
+        }
+        decoded
+    }
+
     /// Reads one cell. The value is rebuilt rather than borrowed: cells live in packed pages, so
     /// there is no `Cell` to point at. A text cell shares its string, so the copy is a pointer
     /// bump, not a string copy.
@@ -6185,6 +6244,74 @@ mod tests {
         assert_eq!(s.page_cache_stats().expect("the store pages").spill_failures, 1);
         assert_eq!(s.get(c(400, 0)).map(|cell| cell.value), Some(Value::Number(400.0)));
         assert_eq!(s.paged_band_count(), paged, "the pages already written are still listed");
+    }
+
+    /// A history snapshot spills its own bands and reads them back exactly: what a compressed step
+    /// costs is its deflated pages, and the cells, formulas and styles come back as they were.
+    #[test]
+    fn a_snapshot_spills_its_own_bands_and_expands_back() {
+        let mut older = CellStore::new();
+        for row in 0..500u32 {
+            older.set(c(row, 0), Cell::value(Value::Text(Arc::<str>::from(format!("r{row}").as_str()))));
+            let mut cell = plain(row);
+            cell.formula = Some(Arc::new(Formula::new(format!("=B{}+1", row + 1).as_str())));
+            cell.style = StyleId(2);
+            older.set(c(row, 1), cell);
+        }
+        let len = older.len();
+        let mut newer = older.clone();
+        // An edit that touches the first band only: that band is the snapshot's own, the rest stay
+        // shared with the workbook that replaced it.
+        for row in 0..64u32 {
+            newer.set(c(row, 0), plain(row + 1));
+        }
+        let shared = older.retained_bytes_against(&newer);
+        assert_eq!(older.spill_retained_against(&newer), 1, "the one band the edit rewrote");
+        assert_eq!(older.paged_band_count(), 1);
+        assert_eq!(older.bands.len(), 7, "the shared bands were left live");
+        assert!(older.paged_bytes() > 0, "the page holds the deflated band");
+        let own = older.retained_bytes_against(&newer);
+        assert!(own < shared, "a compressed snapshot is charged {own}, live it was {shared}");
+        // A spilled band answers exactly what it held: value, formula and style.
+        assert_eq!(older.get(c(3, 0)).map(|cell| cell.value), Some(Value::Text(Arc::<str>::from("r3"))));
+        let formula = older.get(c(3, 1)).and_then(|cell| cell.formula);
+        assert_eq!(formula.map(|f| f.text.clone()), Some("B4+1".to_string()));
+        assert_eq!(older.get(c(3, 1)).map(|cell| cell.style), Some(StyleId(2)));
+        assert_eq!(older.len(), len);
+        // Expanding reads every page back into a live band and drops the file, so the snapshot is
+        // what it was before the spill.
+        assert_eq!(older.expand_pages(), 1);
+        assert_eq!((older.paged_band_count(), older.page_cache_stats()), (0, None));
+        assert_eq!(older.bands.len(), 8);
+        assert_eq!(older.len(), len);
+        assert_eq!(older.get(c(3, 1)).and_then(|cell| cell.formula).map(|f| f.text.clone()), Some("B4+1".to_string()));
+        // The decoded bands are the snapshot's own: the page keeps a row's formula table but not
+        // the sharing of it, so the expanded snapshot is charged those tables too — a few kB here,
+        // and never the sheet it replaced.
+        let expanded = older.retained_bytes_against(&newer);
+        assert!(expanded > own && expanded < shared * 5, "expanded costs {expanded}, live {shared}");
+        // Nothing is paged any more, and asking again is a no-op.
+        assert_eq!(older.expand_pages(), 0);
+    }
+
+    /// A store that already pages keeps its file: its pages belong to that file, and spilling its
+    /// live bands into a second one would write a copy without freeing anything.
+    #[test]
+    fn a_store_that_already_pages_is_not_spilled_for_history() {
+        let mut s = CellStore::new();
+        for row in 0..200u32 {
+            s.set(c(row, 0), plain(row));
+        }
+        assert!(s.enable_paging_with_cache(64 << 20));
+        let pages = s.paged_band_count();
+        assert!(pages > 0);
+        assert_eq!(s.spill_retained_against(&CellStore::new()), 0);
+        assert_eq!(s.paged_band_count(), pages);
+        assert_eq!(s.get(c(199, 0)), Some(plain(199)));
+        // Expanding is what an undo does with a snapshot: every page becomes a live band again.
+        assert_eq!(s.expand_pages(), pages);
+        assert_eq!((s.paged_band_count(), s.bands.len()), (0, 4));
+        assert_eq!(s.get(c(199, 0)), Some(plain(199)));
     }
 
     /// A process-unique number for a test's temp directory name (the clock is not read: it traps on

@@ -7105,3 +7105,271 @@ fn closing_the_last_window_of_a_dirty_document_asks_about_saving_first() {
     assert!(s.ui_requests.is_empty(), "{:?}", s.ui_requests);
     assert_eq!(s.documents().len(), 1);
 }
+
+/// History compression: a step the byte budget is about to drop is kept as compressed pages, and
+/// an undo decodes it back into the workbook the edit replaced — cell for cell, style for style,
+/// formula for formula, and with nothing recalculated. The newest step is never compressed: it is
+/// the one the next Ctrl+Z restores.
+mod compressed_history {
+    use serde_json::json;
+    use sha2::Digest;
+
+    use gridcraft_core::{CellRef, Value};
+
+    use crate::Session;
+
+    /// A new workbook, as the tests above build one.
+    fn fresh() -> Session {
+        super::s()
+    }
+
+    fn v(s: &Session, a: &str) -> Value {
+        s.doc().expect("a document").wb.active().expect("a sheet").value(CellRef::parse(a).expect("a cell"))
+    }
+
+    fn style(s: &Session, a: &str) -> gridcraft_model::StyleId {
+        s.doc().expect("a document").wb.active().expect("a sheet").style_id(CellRef::parse(a).expect("a cell"))
+    }
+
+    /// `rows` rows from `from`, four columns: text, a counter and two numbers.
+    fn fill(s: &mut Session, from: u32, rows: u32) {
+        let values: Vec<serde_json::Value> = (0..rows)
+            .map(|i| {
+                let n = from + i;
+                json!([format!("Item {n}"), n, n % 97, f64::from(n % 13) * 1.5])
+            })
+            .collect();
+        s.execute("range.setValues", json!({"range": format!("A{from}"), "values": values})).expect("setValues");
+    }
+
+    /// `=B*C+D` down `F`: one auto-fill step of its own.
+    fn formulas(s: &mut Session, from: u32, rows: u32) {
+        s.execute("cell.set", json!({"cell": format!("F{from}"), "input": format!("=B{from}*C{from}+D{from}")})).expect("a formula");
+        s.execute("edit.autoFill", json!({"source": format!("F{from}"), "target": format!("F{from}:F{}", from + rows - 1)})).expect("an auto fill");
+    }
+
+    /// Compresses the newest history step, as the byte budget does with the oldest one when the
+    /// stack no longer fits: only the bands that step does not share with the workbook are spilled.
+    fn compress_latest(s: &mut Session) -> bool {
+        let live = s.doc().expect("a document").wb.clone();
+        let d = s.doc_mut().expect("a document");
+        let Some(entry) = d.undo.last_mut() else { return false };
+        crate::compress_history_entry(entry, &live)
+    }
+
+    fn latest_retained(s: &Session) -> usize {
+        s.doc().expect("a document").undo.last().expect("a step").retained_bytes
+    }
+
+    /// The sha256 of the workbook saved as xlsx, for comparing a save taken before an edit with a
+    /// save taken after the undo that takes the edit back.
+    fn saved_sha(s: &mut Session) -> String {
+        let out = s.execute("file.saveBytes", json!({"format": "xlsx"})).expect("a save");
+        let text = out.get("base64").and_then(serde_json::Value::as_str).expect("the bytes");
+        let bytes = crate::io::base64_decode(text).expect("base64");
+        sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// A snapshot of a filled sheet costs its deflated pages, a fraction of the sheet: the ratchet
+    /// the compressed history is held to.
+    #[test]
+    fn a_compressed_snapshot_costs_a_fraction_of_its_sheet() {
+        let mut s = fresh();
+        fill(&mut s, 1, 1000);
+        formulas(&mut s, 1, 1000);
+        let cells = s.memory_report().sheets[0].cells.total();
+        let before = latest_retained(&s);
+        assert!(before > 0, "the step holds the sheet the fill replaced");
+        assert!(compress_latest(&mut s), "the step has bands of its own to spill");
+        let after = latest_retained(&s);
+        assert!(after * 3 < before, "compressed to {after} from {before} bytes");
+        assert!(after * 4 < cells, "{after} bytes of step against {cells} of live cells");
+        // The report charges the step what it now costs, not what it used to.
+        let report = s.memory_report();
+        assert!(report.undo < cells / 2, "{} against {cells}", report.undo);
+        // And the step still reads back exactly.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(v(&s, "F1000").is_empty());
+        assert_eq!(v(&s, "A1000"), Value::from("Item 1000"));
+    }
+
+    /// An undo of a compressed step restores every cell — values, text, styles and formulas — saves
+    /// the same bytes the pre-edit save did, and calculates nothing.
+    #[test]
+    fn an_undo_of_a_compressed_fill_restores_the_sheet_and_saves_the_same_bytes() {
+        let mut s = fresh();
+        fill(&mut s, 1, 200);
+        formulas(&mut s, 1, 200);
+        s.execute("home.bold", json!({"range": "A1:F1", "on": true})).unwrap();
+        let before = saved_sha(&mut s);
+        let bold = style(&s, "A1");
+        let row_style = style(&s, "A200");
+        // Ten thousand rows of values, formulas and a style: the step the undo takes back.
+        fill(&mut s, 201, 10_000);
+        formulas(&mut s, 201, 10_000);
+        s.execute("home.italic", json!({"range": "A201:A10200", "on": true})).unwrap();
+        assert!(compress_latest(&mut s), "the step is compressed before the undo takes it");
+        // The style, the two auto-fill steps and the value fill: four edits, the first of which is
+        // the compressed one (the step the style edit replaced).
+        for _ in 0..4 {
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(s.doc().unwrap().calc.last_recalc_cells, 0, "an undo restores values; it never calculates");
+        }
+        assert!(v(&s, "A201").is_empty());
+        assert!(v(&s, "F201").is_empty());
+        assert!(v(&s, "A10200").is_empty());
+        assert_eq!(v(&s, "A200"), Value::from("Item 200"));
+        assert_eq!(v(&s, "F200"), Value::from(200.0 * f64::from(200 % 97) + f64::from(200 % 13) * 1.5));
+        assert_eq!(style(&s, "A1"), bold, "the style the fill left alone is still there");
+        assert_eq!(style(&s, "A200"), row_style, "and so is the row's own");
+        assert_eq!(saved_sha(&mut s), before, "a save taken back is the same file byte for byte");
+        // Redo puts all four steps back.
+        for _ in 0..4 {
+            s.execute("edit.redo", json!({})).unwrap();
+        }
+        assert_eq!(v(&s, "A201"), Value::from("Item 201"));
+        assert_eq!(v(&s, "A10200"), Value::from("Item 10200"));
+        assert_ne!(style(&s, "A201"), style(&s, "A200"), "the italic step came back with them");
+        assert_ne!(v(&s, "F201"), Value::Empty, "and so did the formulas");
+    }
+
+    /// An undo group becomes one step like any other, and a compressed group is taken back whole.
+    #[test]
+    fn a_compressed_undo_group_is_taken_back_as_one_step() {
+        let mut s = fresh();
+        fill(&mut s, 1, 1000);
+        s.grouped("Bulk edit", |s| {
+            s.execute("cell.set", json!({"cell": "A1", "input": "first"}))?;
+            s.execute("cell.set", json!({"cell": "A2", "input": "second"}))?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.doc().unwrap().undo.len(), 2, "the group made one step of the two edits");
+        assert!(compress_latest(&mut s), "the group's step is compressed like any other");
+        assert!(s.doc().unwrap().undo.last().unwrap().compressed, "the step is a compressed one");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(v(&s, "A1"), Value::from("Item 1"));
+        assert_eq!(v(&s, "A2"), Value::from("Item 2"));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "A1"), Value::from("first"));
+        assert_eq!(v(&s, "A2"), Value::from("second"));
+    }
+
+    /// A compressed step after a structural edit, after a sort and after a style-only edit: each is
+    /// taken back exactly as it was, which is what a band map, not a band list, buys.
+    #[test]
+    fn compressed_steps_after_a_row_insert_a_sort_and_a_style_are_taken_back() {
+        // A row insert moves the row map instead of copying bands, so the step it leaves behind
+        // owns no band at all and there is nothing for it to compress — and it is taken back all
+        // the same, through a snapshot taken after it and restored from pages.
+        let mut s = fresh();
+        fill(&mut s, 1, 500);
+        s.execute("selection.set", json!({"range": "A5:A20"})).unwrap();
+        s.execute("home.insertRows", json!({"rows": "5:20"})).unwrap();
+        assert!(!compress_latest(&mut s), "a structural step remaps rows; it copies no band");
+        s.execute("home.italic", json!({"range": "A1:A500", "on": true})).unwrap();
+        assert!(compress_latest(&mut s), "the step after it does own its bands");
+        s.execute("edit.undo", json!({})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(v(&s, "A5"), Value::from("Item 5"), "the inserted rows are gone again");
+        assert_eq!(v(&s, "A20"), Value::from("Item 20"));
+        assert_eq!(v(&s, "A21"), Value::from("Item 21"));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "A5"), Value::Empty, "the insert left its gap");
+        assert_eq!(v(&s, "A21"), Value::from("Item 5"));
+
+        // A sort writes every row of its range: the step before it is a whole range of cells.
+        let mut s = fresh();
+        fill(&mut s, 1, 500);
+        s.execute("data.sortDescending", json!({"range": "A1:F500", "column": "B"})).unwrap();
+        assert!(compress_latest(&mut s));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(v(&s, "A1"), Value::from("Item 1"));
+        assert_eq!(v(&s, "A500"), Value::from("Item 500"));
+
+        // A style-only edit: the band's style runs and its style table.
+        let mut s = fresh();
+        fill(&mut s, 1, 500);
+        let plain = style(&s, "B1");
+        s.execute("home.italic", json!({"range": "B1:B400", "on": true})).unwrap();
+        assert_ne!(style(&s, "B1"), plain);
+        assert!(compress_latest(&mut s));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(style(&s, "B1"), plain);
+        assert_eq!(v(&s, "B1"), Value::from(1.0));
+    }
+
+    /// A snapshot of a paged store, and a store that starts paging after a snapshot was taken: the
+    /// pages a store opened with belong to its own file, so history compression leaves them alone,
+    /// and a snapshot taken before that file existed keeps its own bands.
+    #[test]
+    fn a_paged_store_and_a_store_paged_after_a_snapshot() {
+        let mut s = fresh();
+        fill(&mut s, 1, 2000);
+        let paged = {
+            let d = s.doc_mut().expect("a document");
+            let wb = std::sync::Arc::make_mut(&mut d.wb);
+            wb.sheet_mut(0).map(|sheet| sheet.cells.enable_paging_with_cache(1 << 20)).unwrap_or(false)
+        };
+        assert!(paged, "a page file was created");
+        fill(&mut s, 2001, 200);
+        // The step shares that file: compressing it would write a copy and free nothing.
+        assert!(!compress_latest(&mut s), "a paged store is left as it is");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(v(&s, "A2001").is_empty());
+        assert_eq!(v(&s, "A2000"), Value::from("Item 2000"));
+
+        // A snapshot taken while the store was live keeps its own bands, and the file the live
+        // store opens afterwards does not touch them.
+        let mut s = fresh();
+        fill(&mut s, 1, 2000);
+        formulas(&mut s, 1, 2000);
+        let older = s.doc().expect("a document").undo.len().saturating_sub(2);
+        {
+            let d = s.doc_mut().expect("a document");
+            let wb = std::sync::Arc::make_mut(&mut d.wb);
+            if let Some(sheet) = wb.sheet_mut(0) {
+                assert!(sheet.cells.enable_paging_with_cache(1 << 20));
+            }
+        }
+        // The older step did not page when it was taken, so it is still worth compressing.
+        let compressed = {
+            let live = s.doc().expect("a document").wb.clone();
+            let d = s.doc_mut().expect("a document");
+            match d.undo.get_mut(older) {
+                Some(entry) => crate::compress_history_entry(entry, &live),
+                None => false,
+            }
+        };
+        assert!(compressed, "a step taken before the store paged keeps its own bands");
+        assert_eq!(v(&s, "A2000"), Value::from("Item 2000"));
+    }
+
+    /// The budget still drops what it cannot keep, and the newest step is never compressed — it is
+    /// the one the next undo restores.
+    #[test]
+    fn the_budget_still_drops_the_steps_it_cannot_keep() {
+        use std::sync::Arc;
+
+        use gridcraft_model::{Cell, Formula, Workbook};
+
+        let mut current = Arc::new(Workbook::new());
+        let mut history = Vec::new();
+        let budget = 64 * 1024;
+        for version in 0..4 {
+            let previous = current.clone();
+            let mut next = (*previous).clone();
+            let sheet = next.sheet_mut(0).expect("a sheet");
+            for row in 0..128 {
+                sheet.cells.set(CellRef::new(row, 0), Cell::formula(Formula::new(format!("=B{}+{version}", row + 1).as_str())));
+            }
+            current = Arc::new(next);
+            crate::push_history_with_budget(&mut history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
+        }
+        assert_eq!(history.last().map(|entry| entry.label.as_str()), Some("edit 3"), "the latest step is kept");
+        assert!(!history.last().expect("a step").compressed, "the newest step is never compressed");
+        // Whatever stayed is charged what it costs, and the stack fits the budget (or is one step).
+        let total: usize = history.iter().map(|entry| entry.retained_bytes).sum();
+        assert!(total <= budget || history.len() == 1, "{total} bytes for {} steps", history.len());
+    }
+}

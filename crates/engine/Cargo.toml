@@ -35,6 +35,9 @@ ureq = { version = "3.5.2", optional = true }
 [dev-dependencies]
 gridcraft-xlsx = { workspace = true, features = ["test-support"] }
 zip = { workspace = true }
+# The save-identical check in the history tests: `sha2` is already in the workspace (the model
+# hashes passwords with it), so this adds no crate to the build.
+sha2 = { workspace = true }
 
 [features]
 # The two connectors that need the outside world: a SQLite database on disk and a URL over the
