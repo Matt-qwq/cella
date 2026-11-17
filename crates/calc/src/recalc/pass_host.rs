@@ -5,8 +5,8 @@
 use std::collections::VecDeque;
 
 use super::Graph;
-use super::graph::{HashMap, HashSet, Key};
-use crate::eval::{Area, Evaluator, Host};
+use super::graph::{HashMap, HashSet, Key, PackedArea};
+use crate::eval::{Evaluator, Host};
 use crate::spill_index::{Cover, SpillIndex};
 use gridcraft_core::{Array, CellError, CellRef, RangeRef, Value};
 use gridcraft_formula::Expr;
@@ -435,7 +435,7 @@ fn reads_own_spill(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
-    host.graph.areas_of(node).iter().any(|area| area.sheet == sheet && area.range.intersects(&range))
+    host.graph.areas_of(node).iter().any(|area| area.sheet() == sheet && area.range().intersects(&range))
 }
 
 /// How many formulas [`spill_feeds_its_source`] walks before it stops looking. A source range that
@@ -456,24 +456,24 @@ fn spill_feeds_its_source(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) 
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
     let mut seen: HashSet<Key> = HashSet::default();
-    let mut queue: VecDeque<Area> = host.graph.areas_of(node).iter().cloned().collect();
+    let mut queue: VecDeque<PackedArea> = host.graph.areas_of(node).iter().copied().collect();
     while let Some(area) = queue.pop_front() {
-        let Some(sh) = host.wb.sheet(area.sheet) else { continue };
-        for (c, cell) in sh.cells.iter_range(area.range) {
+        let Some(sh) = host.wb.sheet(area.sheet()) else { continue };
+        for (c, cell) in sh.cells.iter_range(area.range()) {
             if cell.formula.is_none() {
                 continue;
             }
-            let k = (area.sheet, c);
+            let k = (area.sheet(), c);
             // The anchor reading itself is circular whether or not it spills; `compute` refuses it
             // while it is in flight, and `reads_own_spill` handles the rest.
             if k == (sheet, anchor) || !seen.insert(k) {
                 continue;
             }
             let Some(n) = host.graph.nodes.get(&k) else { continue };
-            if host.graph.areas_of(n).iter().any(|x| x.sheet == sheet && x.range.intersects(&range)) {
+            if host.graph.areas_of(n).iter().any(|x| x.sheet() == sheet && x.range().intersects(&range)) {
                 return true;
             }
-            queue.extend(host.graph.areas_of(n).iter().cloned());
+            queue.extend(host.graph.areas_of(n).iter().copied());
             if seen.len() >= SPILL_LOOP_FORMULAS {
                 return false;
             }

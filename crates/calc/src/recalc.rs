@@ -15,8 +15,8 @@ use std::collections::VecDeque;
 mod graph;
 mod pass_host;
 
+use graph::{BULK_EDIT, HashMap, HashSet, Node};
 pub use graph::{FxHasher, Graph, GraphMemory, Key};
-use graph::{HashMap, HashSet, Node};
 use pass_host::{PassHost, Slot, Trees, holds_content, spilled_nothing, spills_as_before};
 
 use gridcraft_core::{CellError, CellRef, RangeRef, Value};
@@ -545,12 +545,12 @@ impl Calc {
                         let Some(node) = graph.nodes.get(&k) else { continue };
                         let mut leaf = true;
                         for area in graph.areas_of(node) {
-                            if area.range.count() > PARALLEL_LEAF_CELLS {
+                            if area.range().count() > PARALLEL_LEAF_CELLS {
                                 leaf = false;
                                 break;
                             }
-                            for c in area.range.iter() {
-                                if cells.contains(area.sheet, c) {
+                            for c in area.range().iter() {
+                                if cells.contains(area.sheet(), c) {
                                     leaf = false;
                                     break;
                                 }
@@ -902,6 +902,16 @@ impl Calc {
     pub fn cells_changed_with_used(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
         self.parallel_fallback = false;
         let mut cleared: Vec<(usize, RangeRef)> = Vec::new();
+        // A bulk edit — a fill, a paste of a column of formulas — inserts many nodes at once, and
+        // the tables grow a dozen times as it fills, each growth rehashing or copying everything
+        // already in them (`Graph::reserve_more`). Growing them once, to what the edit can add, is
+        // worth it on a sheet that already holds formulas — and a workbook that holds none (a fill
+        // of values) skips it without counting anything.
+        if changed.len() >= BULK_EDIT && self.graph.len() * 2 >= changed.len() {
+            // At most as many as the graph holds: a fill adds formulas, it does not double a
+            // browser's worth of nodes on a sheet whose other cells are values.
+            self.graph.reserve_more(changed.len().min(self.graph.len()));
+        }
         // Whether the edit put a formula anywhere: when it did not, and the workbook has none
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
         let mut formulas = false;
