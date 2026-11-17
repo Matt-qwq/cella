@@ -399,17 +399,25 @@ pub fn write_xlsx(wb: &Workbook, kind: XlsxKind) -> Result<Vec<u8>, IoError> {
 /// Writes the workbook for the file `book_name` (a bare file name). A PivotChart is bound to its
 /// PivotTable in Excel only when its link starts with the workbook in brackets.
 pub fn write_xlsx_named(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>) -> Result<Vec<u8>, IoError> {
-    write_xlsx_impl(wb, kind, book_name, true)
+    write_xlsx_impl(wb, kind, book_name, true, crate::sheet_write::default_workers())
 }
 
 /// The writer with the worksheet parts left raw. Tests compare it with the normal writer to prove
 /// that deflating each sheet as it is produced changes no byte; nothing else calls it.
 #[cfg(test)]
 pub(crate) fn write_xlsx_all_raw(wb: &Workbook, kind: XlsxKind) -> Result<Vec<u8>, IoError> {
-    write_xlsx_impl(wb, kind, None, false)
+    write_xlsx_impl(wb, kind, None, false, crate::sheet_write::default_workers())
 }
 
-fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, precompress_sheets: bool) -> Result<Vec<u8>, IoError> {
+/// The writer with each sheet's rows built on `workers` threads at most. Tests write the same
+/// workbook with 1, 2 and 8 to prove the row windows concatenate to the same bytes; nothing else
+/// calls it (a save uses the machine's parallelism).
+#[cfg(test)]
+pub(crate) fn write_xlsx_with_workers(wb: &Workbook, kind: XlsxKind, workers: usize) -> Result<Vec<u8>, IoError> {
+    write_xlsx_impl(wb, kind, None, true, workers)
+}
+
+fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, precompress_sheets: bool, workers: usize) -> Result<Vec<u8>, IoError> {
     if wb.sheets.is_empty() {
         return Err(IoError::Format("a workbook needs at least one sheet".into()));
     }
@@ -502,7 +510,7 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
             sheet_id += 1;
             continue;
         }
-        let (xml, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers)?;
+        let (xml, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers, workers)?;
         pivots.add_sheet(wb, i, &mut out, &mut rels, &slicers);
         let name = format!("xl/worksheets/sheet{}.xml", i + 1);
         if precompress_sheets {

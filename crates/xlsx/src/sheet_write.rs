@@ -182,14 +182,18 @@ pub fn write_chart_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out
     s.push_str("</chartsheet>");
     (s, rels)
 }
-/// The worksheet's part and its relationships. The only way it can fail is a text cell whose
-/// string the shared-string pre-pass never saw, which would be a writer bug, not a workbook one.
+/// The worksheet's part and its relationships, with the sheet's rows built on at most `workers`
+/// threads (see [`default_workers`]: a save passes the machine's parallelism, and the tests pass 1,
+/// 2 and 8 to prove the row windows concatenate to exactly the bytes one walk writes). The only way
+/// it can fail is a text cell whose string the shared-string pre-pass never saw, which would be a
+/// writer bug, not a workbook one.
 pub fn write_sheet(
     wb: &Workbook,
     si: usize,
     selected: bool,
     out: &mut Out,
     slicers: &crate::slicer::SlicerWriter,
+    workers: usize,
 ) -> Result<(String, Rels), IoError> {
     let mut rels = Rels::default();
     let Some(sheet) = wb.sheet(si) else { return Ok((String::new(), rels)) };
@@ -446,11 +450,10 @@ pub fn write_sheet(
     // pre-pass, `SstCollector`), and the row builder that follows only reads them (`Sst::id`).
     // That is what lets a window of rows be built without the `Out` the save is assembling.
     walk_rows(sheet, RangeRef::all(), &additions, &mut SstCollector { sst: &mut out.sst })?;
-    let mut rows = RowBuilder { wb, si, styles, sst: &out.sst, xml: String::new(), flags: RowFlags::default() };
-    walk_rows(sheet, RangeRef::all(), &additions, &mut rows)?;
-    out.needs_calc |= rows.flags.needs_calc;
-    out.dynamic_arrays |= rows.flags.dynamic_arrays;
-    s.push_str(&rows.xml);
+    let (rows_xml, flags) = build_rows(wb, si, sheet, &additions, &out.sst, styles, workers)?;
+    out.needs_calc |= flags.needs_calc;
+    out.dynamic_arrays |= flags.dynamic_arrays;
+    s.push_str(&rows_xml);
     s.push_str("</sheetData>");
 
     // sheetProtection
@@ -983,6 +986,12 @@ struct RowBuilder<'a> {
     flags: RowFlags,
 }
 
+impl<'a> RowBuilder<'a> {
+    fn new(wb: &'a Workbook, si: usize, styles: StyleIds, sst: &'a Sst) -> RowBuilder<'a> {
+        RowBuilder { wb, si, styles, sst, xml: String::new(), flags: RowFlags::default() }
+    }
+}
+
 impl RowBuilder<'_> {
     fn push_cell(&mut self, at: CellRef, cell: Option<&Cell>, a: &Additions<'_>) -> Result<(), IoError> {
         // A non-spilling formula may still need array evaluation to avoid implicit intersection.
@@ -1012,6 +1021,133 @@ impl RowVisitor for RowBuilder<'_> {
     fn cell(&mut self, at: CellRef, cell: Option<&Cell>, a: &Additions<'_>) -> Result<(), IoError> {
         self.push_cell(at, cell, a)
     }
+}
+
+/// Rows a window holds at least: below this the fixed cost of a window (its own walk, its own
+/// buffers) costs more than another thread saves.
+#[cfg(not(target_arch = "wasm32"))]
+const MIN_WINDOW_ROWS: u32 = 4096;
+/// Cells a sheet needs before its rows are built on more than one thread: below this one walk is
+/// shorter than starting the threads.
+#[cfg(not(target_arch = "wasm32"))]
+const PARALLEL_MIN_CELLS: usize = 20_000;
+/// Threads a sheet's rows are split over at most: past this a save contends for memory bandwidth
+/// more than it gains.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_WORKERS: usize = 8;
+
+/// How many threads to build a save's rows on: the machine's parallelism, capped. wasm has no OS
+/// threads, so its rows are always built on the calling thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn default_workers() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, MAX_WORKERS)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn default_workers() -> usize {
+    1
+}
+
+/// The last row a sheet writes: its last cell in the store, an addition (a spilled value, a table
+/// header, a picture), a row it has line info for, or one a filter hides.
+fn last_written_row(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>) -> u32 {
+    let store = sheet.cells.used_range().map(|u| u.end.row);
+    let lines = sheet.rows.keys().last();
+    let hidden = sheet.filter_hidden.rows().last();
+    let additions = additions.keys().next_back().copied();
+    [store, lines, hidden, additions].into_iter().flatten().max().unwrap_or(0)
+}
+
+/// The row windows a sheet is built in, in order: one per worker, never smaller than
+/// [`MIN_WINDOW_ROWS`] rows, and one window for a sheet too small to pay for the threads.
+#[cfg(not(target_arch = "wasm32"))]
+fn row_windows(last_row: u32, cells: usize, workers: usize) -> Vec<(u32, u32)> {
+    let workers = workers.clamp(1, MAX_WORKERS);
+    if workers < 2 || cells < PARALLEL_MIN_CELLS {
+        return vec![(0, last_row)];
+    }
+    let rows = u64::from(last_row) + 1;
+    let size = (rows / workers as u64).max(u64::from(MIN_WINDOW_ROWS)).min(rows) as u32;
+    let mut windows = Vec::with_capacity(workers);
+    let mut first = 0u32;
+    loop {
+        let last = first.saturating_add(size.saturating_sub(1)).min(last_row);
+        windows.push((first, last));
+        if last >= last_row {
+            break;
+        }
+        first = last.saturating_add(1);
+    }
+    if windows.len() < 2 {
+        return vec![(0, last_row)];
+    }
+    windows
+}
+
+/// One window of a sheet's rows, built on this thread.
+fn build_window(
+    wb: &Workbook,
+    si: usize,
+    sheet: &Sheet,
+    additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>,
+    sst: &Sst,
+    styles: StyleIds,
+    rows: (u32, u32),
+) -> Result<(String, RowFlags), IoError> {
+    let mut builder = RowBuilder::new(wb, si, styles, sst);
+    walk_rows(sheet, RangeRef::rows(rows.0, rows.1), additions, &mut builder)?;
+    Ok((builder.xml, builder.flags))
+}
+
+/// A sheet's `<sheetData>` content, and the flags the workbook assembly reads back. A sheet big
+/// enough is built in row windows, one per thread, and the windows are concatenated in row order:
+/// the XML is the one walk a single thread would have produced, byte for byte.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_rows(
+    wb: &Workbook,
+    si: usize,
+    sheet: &Sheet,
+    additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>,
+    sst: &Sst,
+    styles: StyleIds,
+    workers: usize,
+) -> Result<(String, RowFlags), IoError> {
+    let last_row = last_written_row(sheet, additions);
+    let windows = row_windows(last_row, sheet.cells.len(), workers);
+    if windows.len() < 2 {
+        return build_window(wb, si, sheet, additions, sst, styles, (0, last_row));
+    }
+    let built: Vec<Result<(String, RowFlags), IoError>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = windows.iter().map(|&rows| scope.spawn(move || build_window(wb, si, sheet, additions, sst, styles, rows))).collect();
+        // A worker that panicked is a failed save, not a part with a hole in it: the join reports
+        // it and the payload is dropped here, so nothing unwinds out of the scope.
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(IoError::Zip("a worksheet row builder panicked".into())))).collect()
+    });
+    let capacity = built.iter().filter_map(|w| w.as_ref().ok()).map(|(xml, _)| xml.len()).sum();
+    let mut xml = String::with_capacity(capacity);
+    let mut flags = RowFlags::default();
+    for window in built {
+        let (part, window_flags) = window?;
+        flags.needs_calc |= window_flags.needs_calc;
+        flags.dynamic_arrays |= window_flags.dynamic_arrays;
+        xml.push_str(&part);
+    }
+    Ok((xml, flags))
+}
+
+/// [`build_rows`] for wasm: no OS threads, so the rows are built on the calling thread.
+#[cfg(target_arch = "wasm32")]
+fn build_rows(
+    wb: &Workbook,
+    si: usize,
+    sheet: &Sheet,
+    additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>,
+    sst: &Sst,
+    styles: StyleIds,
+    workers: usize,
+) -> Result<(String, RowFlags), IoError> {
+    let _ = workers;
+    build_window(wb, si, sheet, additions, sst, styles, (0, last_written_row(sheet, additions)))
 }
 
 /// The formula a cell writes: an override (a table header's text, a spilled value) replaces the
@@ -1269,6 +1405,31 @@ pub(crate) const DEFAULT_NOTE_BOX: NoteBox = NoteBox {
     size_pt: Some(DEFAULT_NOTE_SIZE_PT),
 };
 const DEFAULT_NOTE_SIZE_PT: (f64, f64) = (108.0, 59.25);
+// The window plan is native-only: wasm builds a sheet's rows in one window on the calling thread.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// The window plan: one window per worker for a sheet long enough and big enough to pay for the
+    /// threads, one window for a short sheet or a small one, and never a window below the minimum
+    /// size.
+    #[test]
+    fn row_windows_split_long_sheets_and_keep_short_ones_whole() {
+        let eight: Vec<(u32, u32)> = (0..8).map(|i| (i * 125_000, (i + 1) * 125_000 - 1)).collect();
+        assert_eq!(row_windows(999_999, 8_000_000, 8), eight);
+        // Shorter than eight minimum-size windows: three, the last one cut at the sheet's end.
+        assert_eq!(row_windows(11_999, 24_000, 8), vec![(0, 4095), (4096, 8191), (8192, 11_999)]);
+        // A short sheet, and a sheet with too few cells to pay for the threads: one window.
+        assert_eq!(row_windows(100, 24_000, 8), vec![(0, 100)]);
+        assert_eq!(row_windows(11_999, 1_000, 8), vec![(0, 11_999)]);
+        assert_eq!(row_windows(0, 8_000_000, 8), vec![(0, 0)]);
+        // One worker asked for is one window, however long the sheet.
+        assert_eq!(row_windows(999_999, 8_000_000, 1), vec![(0, 999_999)]);
+        // More workers than the cap are clamped.
+        assert_eq!(row_windows(999_999, 8_000_000, 64).len(), MAX_WORKERS);
+    }
+}
+
 #[cfg(test)]
 mod perf {
     use super::*;
@@ -1327,7 +1488,8 @@ mod perf {
         let mut xml_bytes = 0usize;
         for (i, sheet) in wb.sheets.iter().enumerate() {
             let t = std::time::Instant::now();
-            let (xml, _) = write_sheet(&wb, i, i == wb.active_sheet, &mut out, &crate::slicer::SlicerWriter::default()).expect("sheet");
+            let (xml, _) =
+                write_sheet(&wb, i, i == wb.active_sheet, &mut out, &crate::slicer::SlicerWriter::default(), default_workers()).expect("sheet");
             build += t.elapsed();
             xml_bytes += xml.len();
             println!(
@@ -1364,6 +1526,7 @@ mod perf {
                 false,
                 &mut out,
                 &crate::slicer::SlicerWriter::default(),
+                default_workers(),
             )
             .expect("sheet");
             let data = xml.as_bytes();
