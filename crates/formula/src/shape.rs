@@ -22,8 +22,9 @@ use std::sync::{Arc, Weak};
 
 use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS};
 
+use crate::adjust::{Adjusted as Canonical, Axis, CellMove, Edit, adjust_canonical};
 use crate::ast::{BinOp, Expr, RefKind, Reference, StructItem, UnOp, line_at};
-use crate::printer::{print, print_r1c1};
+use crate::printer::{print_at, print_r1c1};
 
 /// A formula's shape: its tree with every relative reference stored as an offset from A1.
 #[derive(Debug)]
@@ -47,17 +48,108 @@ pub struct Shape {
     pub file_rewrite: bool,
 }
 
+/// What a structural edit makes of a shape (S5 of `plan/SHAPE-SHARING.md`).
+#[derive(Debug)]
+pub enum Adjusted {
+    /// No reference the edit touches moves: every cell keeps its tree and its text.
+    Unchanged,
+    /// One new tree serves every cell the shape holds, and each cell's text is its print at that
+    /// cell — which changes for every cell that moved, because a relative part is spelled from
+    /// the cell's own position.
+    Moved(Shape),
+    /// No shape-level answer: the edit moves a reference differently for different cells (see
+    /// [`crate::adjust::Adjusted::PerCell`]). The caller materialises per cell instead.
+    PerCell,
+}
+
 impl Shape {
     /// Canonicalises the absolute tree a parser produced for the cell at `at`.
     pub fn from_expr(e: Expr, at: CellRef) -> Shape {
-        let bytes = tree_bytes(&e);
-        let file_rewrite = file_spelling_differs(&e);
-        let tree = e.map(&mut |x| match x {
+        Shape::from_canonical(e.map(&mut |x| match x {
             Expr::Ref(r) => Expr::Ref(r.offset_at(at)),
             other => other,
-        });
+        }))
+    }
+
+    /// The shape a **canonical** tree is: `bytes`, the offset bounds and the syntax half of
+    /// `file_rewrite` are facts about the tree and nothing else. The rewrites below work on
+    /// canonical trees, so their answers are built here rather than canonicalised a second time.
+    pub fn from_canonical(tree: Expr) -> Shape {
+        let bytes = tree_bytes(&tree);
+        let file_rewrite = file_spelling_differs(&tree);
         let (min_row, max_row, min_col, max_col) = bounds_of(&tree);
         Shape { tree, bytes, min_row, max_row, min_col, max_col, file_rewrite }
+    }
+
+    /// The intern key: the shape's R1C1 spelling seen from A1, which **is** the shape (§5.1 of
+    /// `plan/SHAPE-SHARING.md`). Two shapes with one spelling are one shape, so a rewrite compares
+    /// this to say whether it changed anything.
+    pub fn spelling(&self) -> String {
+        print_r1c1(&self.tree, CellRef::new(0, 0))
+    }
+
+    /// The shape a rewritten canonical tree is, or `None` when the rewrite leaves the shape as it
+    /// was (one spelling, so one intern key and one text per cell).
+    ///
+    /// `file_rewrite` travels with the tree: a rewrite that moves names or coordinates keeps the
+    /// syntax of the shape, and the `_xlfn.` half of the answer lives in `gridcraft-xlsx`, above
+    /// this crate.
+    pub fn rewritten(&self, tree: Expr) -> Option<Shape> {
+        let mut shape = Shape::from_canonical(tree);
+        shape.file_rewrite |= self.file_rewrite;
+        (shape.spelling() != self.spelling()).then_some(shape)
+    }
+
+    /// The shape a structural edit makes of this one, reused by every cell that holds it (S5 of
+    /// `plan/SHAPE-SHARING.md`): one tree rewrite per shape instead of one per cell.
+    ///
+    /// `host` is the sheet the cells live on and `target` the sheet the edit is on — an unqualified
+    /// reference belongs to its own sheet, so the same shape on two sheets can answer differently.
+    /// `cell` says whether the cell taking this answer keeps its line or moves ([`CellMove`]): a
+    /// shape holds cells on both sides of an insert, and a reference the edit leaves alone is one
+    /// line further away from a cell that moved.
+    pub fn adjust(&self, host: &str, target: &str, edit: &Edit, cell: CellMove) -> Adjusted {
+        match adjust_canonical(&self.tree, host, target, edit, cell) {
+            Canonical::Moved(tree) => self.rewritten(tree).map_or(Adjusted::Unchanged, Adjusted::Moved),
+            Canonical::Unchanged => Adjusted::Unchanged,
+            Canonical::PerCell => Adjusted::PerCell,
+        }
+    }
+
+    /// Whether the lines `edit` moves a reference of this shape differently from the cell it lives
+    /// in, at `old` — the cell's position **before** the edit. Then the shape-level answer
+    /// ([`Shape::adjust`]) is not this cell's: the reference moved while the cell stayed, or the
+    /// other way round, so the offset itself must change and the cell needs a shape of its own.
+    ///
+    /// O(1) from the stored offset bounds. An edit moves every coordinate at or after `at` on its
+    /// axis — and swallows the band `[at, at + count)` — so a shape whose whole offset interval
+    /// falls in the same class as the cell is served by one answer; one that spans the boundary
+    /// answers "per cell". The test is conservative: never the other way round.
+    pub fn straddles(&self, old: CellRef, edit: &Edit) -> bool {
+        let (axis, at, count, insert) = match edit {
+            Edit::Insert { axis, at, count } => (*axis, *at, *count, true),
+            Edit::Delete { axis, at, count } => (*axis, *at, *count, false),
+            // A cut moves one block's references and nothing else's: where the cell is decides.
+            _ => return true,
+        };
+        let (x, lo, hi) = match axis {
+            Axis::Rows => (i64::from(old.row), i64::from(self.min_row), i64::from(self.max_row)),
+            Axis::Cols => (i64::from(old.col), i64::from(self.min_col), i64::from(self.max_col)),
+        };
+        let (at, count) = (i64::from(at), i64::from(count));
+        // What the edit does to a coordinate: 0 below its band (it stays), 1 inside a deleted band
+        // (it is gone), 2 at or past it (it moves). An insert's band is empty.
+        let place = |v: i64| -> i8 {
+            if v >= at && (insert || v >= at + count) {
+                2
+            } else if v >= at {
+                1
+            } else {
+                0
+            }
+        };
+        let here = place(x);
+        here == 1 || place(x.saturating_add(lo)) != here || place(x.saturating_add(hi)) != here
     }
 
     /// The canonical tree: structure, sizes and names. Its references are offsets, so a caller that
@@ -73,9 +165,12 @@ impl Shape {
         resolve_copy(&self.tree, at)
     }
 
-    /// [`print`] of the resolved tree: the cell's own text, i.e. invariant §4.3 of the design.
+    /// [`crate::print`] of the resolved tree: the cell's own text, i.e. invariant §4.3 of the
+    /// design. Printed in one walk without building the tree — a structural edit does this once per
+    /// cell it moves (S5 of `plan/SHAPE-SHARING.md`), where it used to resolve, adjust, print and
+    /// intern.
     pub fn print_at(&self, at: CellRef) -> Option<String> {
-        self.resolve(at).map(|e| print(&e))
+        self.fits(at).then(|| print_at(&self.tree, at))
     }
 
     /// Whether this cell can share the shape unchanged: no reference of it clamps at `at`. Decided
@@ -265,6 +360,7 @@ mod tests {
     use super::*;
     use crate::adjust::shift_relative_copy;
     use crate::parse;
+    use crate::printer::print;
 
     /// One of everything the syntax can hold: absolute and relative cells, mixed `$` parts, whole
     /// rows and columns, 3-D spans, structured references, names, array constants, trim references
@@ -484,6 +580,117 @@ mod tests {
         let sh = Shape::from_expr(parsed("A1:A3*2"), CellRef::new(4, 4));
         let RefKind::Range(a, b) = &sh.tree().references()[0].kind else { panic!("expected a range") };
         assert_eq!((b.row - a.row, b.col - a.col), (2, 0));
+    }
+
+    /// The positions a cell can be moved by the edits below, before and after: the sheet's corners,
+    /// the lines a fill lives on, and the edges.
+    fn moved_by(at: CellRef, edit: &Edit) -> Option<CellRef> {
+        let (axis, from, count, insert) = match edit {
+            Edit::Insert { axis, at: a, count } => (*axis, *a, *count, true),
+            Edit::Delete { axis, at: a, count } => (*axis, *a, *count, false),
+            _ => return None,
+        };
+        let max = if axis == Axis::Rows { MAX_ROWS } else { MAX_COLS };
+        let main = if axis == Axis::Rows { at.row } else { at.col };
+        let after = if insert {
+            if main >= from { main.checked_add(count)? } else { main }
+        } else if main < from {
+            main
+        } else if main >= from.checked_add(count)? {
+            main - count
+        } else {
+            return None;
+        };
+        if after >= max {
+            return None;
+        }
+        Some(if axis == Axis::Rows { CellRef::new(after, at.col) } else { CellRef::new(at.row, after) })
+    }
+
+    /// The edits a structural command makes, at the sheet's start, its middle and its edges.
+    fn line_edits() -> Vec<Edit> {
+        let mut v = Vec::new();
+        for axis in [Axis::Rows, Axis::Cols] {
+            let max = if axis == Axis::Rows { MAX_ROWS } else { MAX_COLS };
+            for at in [0, 1, 2, 3, 5, max - 2, max - 1] {
+                for count in [1, 2, 5] {
+                    v.push(Edit::Insert { axis, at, count });
+                    v.push(Edit::Delete { axis, at, count });
+                }
+            }
+        }
+        v
+    }
+
+    /// A cell's position after moving it and back, for the cells a shape serves.
+    fn served_cells() -> Vec<CellRef> {
+        let mut v = Vec::new();
+        for &r in &[0u32, 1, 2, 3, 4, 5, 6, 7, 1023, MAX_ROWS - 3, MAX_ROWS - 2, MAX_ROWS - 1] {
+            for &c in &[0u32, 1, 2, 6, 7, MAX_COLS - 1] {
+                v.push(CellRef::new(r, c));
+            }
+        }
+        v
+    }
+
+    /// **The property S5 needs** (§4.11 of `plan/SHAPE-SHARING.md`): the shape-level answer is the
+    /// per-cell answer for every cell `Shape::straddles` lets it serve — the text the cell spells
+    /// is `print(adjust(resolve(shape, old)))`, and the shape the cell keeps is that tree
+    /// canonicalised at its new position. Where the gate says "per cell", only that cell's own
+    /// materialisation is right, and the engine makes it.
+    #[test]
+    fn the_shape_level_adjust_is_the_per_cell_adjust() {
+        let edits = line_edits();
+        let cells = served_cells();
+        let mut checked = 0usize;
+        for src in CORPUS {
+            let e = parsed(src);
+            for made_at in positions() {
+                let sh = Shape::from_expr(e.clone(), made_at);
+                for (host, target) in [("Sheet1", "Sheet1"), ("Other", "Sheet1"), ("Sheet1", "Other")] {
+                    for edit in &edits {
+                        for old in &cells {
+                            let Some(old_tree) = sh.resolve(*old) else { continue };
+                            // A cell moves only when the edit is on its own sheet.
+                            let new = if host == target {
+                                let Some(new) = moved_by(*old, edit) else { continue };
+                                new
+                            } else {
+                                *old
+                            };
+                            if sh.straddles(*old, edit) {
+                                continue;
+                            }
+                            let cell = if new == *old { CellMove::Stays } else { CellMove::Moves };
+                            let level = sh.adjust(host, target, edit, cell);
+                            let want = crate::adjust::adjust(old_tree, host, target, edit);
+                            let at_new = match &level {
+                                Adjusted::Unchanged => &sh,
+                                Adjusted::Moved(s) => s,
+                                Adjusted::PerCell => continue,
+                            };
+                            // A shape that would clamp at the cell it moved to is the per-cell
+                            // path's case too: it materialises the `#REF!` the cell then spells.
+                            if !at_new.fits(new) {
+                                continue;
+                            }
+                            assert_eq!(
+                                at_new.print_at(new),
+                                Some(print(&want)),
+                                "{src} made at {made_at:?} on {host}/{target} after {edit:?}, cell {old:?}"
+                            );
+                            assert_eq!(
+                                at_new.spelling(),
+                                Shape::from_expr(want, new).spelling(),
+                                "{src} made at {made_at:?} on {host}/{target} after {edit:?}, cell {old:?}: the shape"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 20_000, "{checked} cases checked");
     }
 
     /// The shape counts its tree once (a node is `size_of::<Expr>()`), which the undo budget and

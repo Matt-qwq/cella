@@ -1,7 +1,7 @@
 //! Formulas tab: AutoSum, Insert Function, names, auditing, calculation.
 
 use gridcraft_core::{CellError, CellRef, RangeRef, Value};
-use gridcraft_model::{CalcMode, DefinedName, Formula};
+use gridcraft_model::{CalcMode, DefinedName};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -402,27 +402,10 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
         });
         hit.then_some(out)
     };
-    let mut shapes = gridcraft_formula::ShapeTable::default();
-    for i in 0..wb.sheets.len() {
-        if !applies(i) {
-            continue;
-        }
-        let Some(sh) = wb.sheet_mut(i) else { continue };
-        let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> = sh.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect();
-        for (c, f) in formulas {
-            let Some(e) = f.expr_at(c).and_then(rename) else { continue };
-            // A name rename does not move cells: the tree is interned at the cell it sits at, and
-            // the answer a save needs is this crate's to compute (the `_xlfn.` table is here).
-            let rewrite = gridcraft_xlsx::needs_file_rewrite(&e);
-            let mut nf = Formula::from_expr_at(e, c, &mut shapes, rewrite);
-            nf.array = f.array.clone();
-            nf.dynamic = f.dynamic;
-            if let Some(mut cell) = sh.cells.get(c) {
-                cell.formula = Some(std::sync::Arc::new(nf));
-                sh.cells.set(c, cell);
-            }
-        }
-    }
+    // One rewrite per shape (S5 of `plan/SHAPE-SHARING.md`): a rename maps a name and never a
+    // coordinate, so the shape's answer is every cell's answer. A sheet whose names are shadowed
+    // keeps its own.
+    super::edit::rewrite_shapes(wb, |sheet, e| if applies(sheet) { rename(e) } else { None });
     for n in wb.names.iter_mut() {
         if n.scope.is_none_or(applies)
             && let Some(e) = gridcraft_formula::parse_name(&n.formula).ok().and_then(rename)

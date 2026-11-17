@@ -26,15 +26,26 @@ fn on_sheet(v: i32) -> u32 {
     u32::try_from(v).map_or(0, |v| v)
 }
 
-fn push_anchor_a1(s: &mut String, a: &Anchor) {
+/// One coordinate of an A1 anchor: an absolute part is the coordinate it names, a relative one is
+/// `base` plus its offset — which is what a **canonical** (shape) tree stores (§5.1 of
+/// `plan/SHAPE-SHARING.md`). `base` is A1 for an absolute tree, so a relative part of one prints
+/// its own coordinate there.
+fn resolved(v: i32, abs: bool, base: u32) -> u32 {
+    if abs {
+        return on_sheet(v);
+    }
+    on_sheet(i32::try_from(i64::from(v) + i64::from(base)).unwrap_or(i32::MAX))
+}
+
+fn push_anchor_a1(s: &mut String, a: &Anchor, base: CellRef) {
     if a.col_abs {
         s.push('$');
     }
-    push_col(s, on_sheet(a.col));
+    push_col(s, resolved(a.col, a.col_abs, base.col));
     if a.row_abs {
         s.push('$');
     }
-    let _ = write!(s, "{}", u64::from(on_sheet(a.row)) + 1);
+    let _ = write!(s, "{}", u64::from(resolved(a.row, a.row_abs, base.row)) + 1);
 }
 
 /// Appends [`gridcraft_core::col_to_letters`]`(col)` without allocating.
@@ -61,12 +72,13 @@ pub fn reference_a1(r: &Reference) -> String {
 /// A1 text with `sep` between the two ends of a range (`:` or a trim operator).
 fn range_a1(r: &Reference, sep: &str) -> String {
     let mut s = String::new();
-    push_range_a1(&mut s, r, sep);
+    push_range_a1(&mut s, r, sep, CellRef::new(0, 0));
     s
 }
 
-/// Appends [`range_a1`]`(r, sep)` to `s`.
-fn push_range_a1(s: &mut String, r: &Reference, sep: &str) {
+/// Appends [`range_a1`]`(r, sep)` to `s`. `base` resolves a relative part (`None` for an absolute
+/// tree, whose relative parts are the coordinates they name).
+fn push_range_a1(s: &mut String, r: &Reference, sep: &str, base: CellRef) {
     match &r.sheet {
         SheetSel::Current => {}
         SheetSel::Named(n) => {
@@ -77,21 +89,22 @@ fn push_range_a1(s: &mut String, r: &Reference, sep: &str) {
     }
     let dollar = |abs: bool| if abs { "$" } else { "" };
     match &r.kind {
-        RefKind::Cell(a) => push_anchor_a1(s, a),
+        RefKind::Cell(a) => push_anchor_a1(s, a, base),
         RefKind::Range(a, b) => {
-            push_anchor_a1(s, a);
+            push_anchor_a1(s, a, base);
             s.push_str(sep);
-            push_anchor_a1(s, b);
+            push_anchor_a1(s, b, base);
         }
         RefKind::Rows(r0, a0, r1, a1) => {
-            let _ = write!(s, "{}{}{sep}{}{}", dollar(*a0), u64::from(on_sheet(*r0)) + 1, dollar(*a1), u64::from(on_sheet(*r1)) + 1);
+            let (x, y) = (resolved(*r0, *a0, base.row), resolved(*r1, *a1, base.row));
+            let _ = write!(s, "{}{}{sep}{}{}", dollar(*a0), u64::from(x) + 1, dollar(*a1), u64::from(y) + 1);
         }
         RefKind::Cols(c0, a0, c1, a1) => {
             s.push_str(dollar(*a0));
-            push_col(s, on_sheet(*c0));
+            push_col(s, resolved(*c0, *a0, base.col));
             s.push_str(sep);
             s.push_str(dollar(*a1));
-            push_col(s, on_sheet(*c1));
+            push_col(s, resolved(*c1, *a1, base.col));
         }
     }
 }
@@ -227,18 +240,50 @@ fn number(n: f64) -> String {
 /// Prints an expression in A1 notation.
 pub fn print(e: &Expr) -> String {
     let mut s = String::new();
-    write_expr(&mut s, e, None);
+    write_expr(&mut s, e, Mode::A1);
     s
 }
 
 /// Prints an expression in R1C1 notation relative to `at`.
 pub fn print_r1c1(e: &Expr, at: CellRef) -> String {
     let mut s = String::new();
-    write_expr(&mut s, e, Some(at));
+    write_expr(&mut s, e, Mode::R1c1(at));
     s
 }
 
-fn write_expr(s: &mut String, e: &Expr, r1c1: Option<CellRef>) {
+/// Prints a **canonical** (shape) tree as the A1 text the cell at `at` spells: a relative part is
+/// printed as `at` plus its offset, an absolute one as the coordinate it names. This is
+/// `print(resolve(tree, at))` in one walk and no tree, which is what a structural edit costs per
+/// cell it moves (S5 of `plan/SHAPE-SHARING.md`).
+///
+/// The caller checks that the shape fits at `at` ([crate::Shape::fits]): one that does not would
+/// clamp a reference to `#REF!`, and a clamp mid-print is not a text.
+pub fn print_at(tree: &Expr, at: CellRef) -> String {
+    let mut s = String::new();
+    write_expr(&mut s, tree, Mode::At(at));
+    s
+}
+
+/// How the printer reads a reference: as the absolute tree it is, as the R1C1 spelling a shape is
+/// keyed by, or as the A1 text a shape spells at a cell.
+#[derive(Clone, Copy)]
+enum Mode {
+    A1,
+    R1c1(CellRef),
+    At(CellRef),
+}
+
+impl Mode {
+    /// The cell whose position a relative part is read from (A1 for an absolute tree).
+    fn base(self) -> CellRef {
+        match self {
+            Mode::A1 => CellRef::new(0, 0),
+            Mode::R1c1(at) | Mode::At(at) => at,
+        }
+    }
+}
+
+fn write_expr(s: &mut String, e: &Expr, mode: Mode) {
     match e {
         Expr::Number(n) => s.push_str(&number(*n)),
         Expr::Text(t) => {
@@ -258,14 +303,14 @@ fn write_expr(s: &mut String, e: &Expr, r1c1: Option<CellRef>) {
                     if ci > 0 {
                         s.push(',');
                     }
-                    write_expr(s, el, r1c1);
+                    write_expr(s, el, mode);
                 }
             }
             s.push('}');
         }
-        Expr::Ref(r) => match r1c1 {
-            Some(at) => s.push_str(&reference_r1c1(r, at)),
-            None => push_range_a1(s, r, ":"),
+        Expr::Ref(r) => match mode {
+            Mode::R1c1(at) => s.push_str(&reference_r1c1(r, at)),
+            Mode::A1 | Mode::At(_) => push_range_a1(s, r, ":", mode.base()),
         },
         Expr::Name(n) => match sheet_split(n) {
             // A sheet-qualified name is stored with the bare sheet name (`My Sheet!Total`): quote it so it parses back.
@@ -280,44 +325,44 @@ fn write_expr(s: &mut String, e: &Expr, r1c1: Option<CellRef>) {
         Expr::Unary(op, x) => match op {
             UnOp::Neg => {
                 s.push('-');
-                write_expr(s, x, r1c1);
+                write_expr(s, x, mode);
             }
             UnOp::Plus => {
                 s.push('+');
-                write_expr(s, x, r1c1);
+                write_expr(s, x, mode);
             }
             UnOp::At => {
                 s.push('@');
-                write_expr(s, x, r1c1);
+                write_expr(s, x, mode);
             }
             UnOp::Percent => {
-                write_expr(s, x, r1c1);
+                write_expr(s, x, mode);
                 s.push('%');
             }
             UnOp::Spill => {
-                write_expr(s, x, r1c1);
+                write_expr(s, x, mode);
                 // A reference that became #REF! (its sheet or cell was deleted) stays `#REF!`.
                 if !matches!(**x, Expr::Error(_)) {
                     s.push('#');
                 }
             }
-            UnOp::Trim(mode) => match &**x {
-                Expr::Ref(r) if !matches!(r.kind, RefKind::Cell(_)) => match r1c1 {
-                    Some(at) => s.push_str(&range_r1c1(r, at, mode.symbol())),
-                    None => push_range_a1(s, r, mode.symbol()),
+            UnOp::Trim(trim) => match &**x {
+                Expr::Ref(r) if !matches!(r.kind, RefKind::Cell(_)) => match mode {
+                    Mode::R1c1(at) => s.push_str(&range_r1c1(r, at, trim.symbol())),
+                    Mode::A1 | Mode::At(_) => push_range_a1(s, r, trim.symbol(), mode.base()),
                 },
                 Expr::Binary(BinOp::Range, a, b) => {
-                    write_expr(s, a, r1c1);
-                    s.push_str(mode.symbol());
-                    write_expr(s, b, r1c1);
+                    write_expr(s, a, mode);
+                    s.push_str(trim.symbol());
+                    write_expr(s, b, mode);
                 }
                 // A reference that became #REF! stays `#REF!`.
-                Expr::Error(_) => write_expr(s, x, r1c1),
+                Expr::Error(_) => write_expr(s, x, mode),
                 // No operator form (e.g. a range shrunk to one cell): the equivalent call.
                 other => {
                     s.push_str("TRIMRANGE(");
-                    write_expr(s, other, r1c1);
-                    let _ = write!(s, ",{0},{0})", mode.code());
+                    write_expr(s, other, mode);
+                    let _ = write!(s, ",{0},{0})", trim.code());
                 }
             },
         },
@@ -330,10 +375,10 @@ fn write_expr(s: &mut String, e: &Expr, r1c1: Option<CellRef>) {
                 rest.push((op, b));
                 first = a;
             }
-            write_expr(s, first, r1c1);
+            write_expr(s, first, mode);
             for (op, right) in rest.into_iter().rev() {
                 s.push_str(op.symbol());
-                write_expr(s, right, r1c1);
+                write_expr(s, right, mode);
             }
         }
         Expr::Call(name, args) => {
@@ -343,25 +388,25 @@ fn write_expr(s: &mut String, e: &Expr, r1c1: Option<CellRef>) {
                 if i > 0 {
                     s.push(',');
                 }
-                write_expr(s, a, r1c1);
+                write_expr(s, a, mode);
             }
             s.push(')');
         }
         Expr::Invoke(c, args) => {
-            write_expr(s, c, r1c1);
+            write_expr(s, c, mode);
             s.push('(');
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
                     s.push(',');
                 }
-                write_expr(s, a, r1c1);
+                write_expr(s, a, mode);
             }
             s.push(')');
         }
         Expr::Missing => {}
         Expr::Paren(x) => {
             s.push('(');
-            write_expr(s, x, r1c1);
+            write_expr(s, x, mode);
             s.push(')');
         }
     }

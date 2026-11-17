@@ -745,6 +745,140 @@ fn rich_clipboard_omits_html_when_escaping_exceeds_byte_budget() {
     assert!(copied["text"].as_str().unwrap().ends_with("&\n"));
 }
 
+/// The tricky formulas a structural edit has to reprint, entered at a column of their own: a
+/// fill-shape arithmetic, a span with one `$` end, relative and absolute spans, whole lines, a
+/// reference on another sheet, a defined name, a `LET`, a bare range, a whole-column span and a
+/// `#REF!`. The shapes differ in what the edit moves; the texts are what a save writes.
+const REWRITE_CASES: &[&str] = &[
+    "=A1*B1+D1",
+    "=SUM($A$1:A2)",
+    "=SUM(A1:A40)",
+    "=SUM($A$1:$B$40)",
+    "=SUM(A:A)+SUM(3:5)",
+    "=Other!A3+A6",
+    "=Other!$B$3",
+    "=MyName*2",
+    "=LET(x,A9*2,x+1)",
+    "=A10:B11",
+    "=SUM($A$1:$A$1048576)",
+    "=#REF!+A12",
+    "=SUM($A$1:A13,Other!A1)",
+    "=COUNTIF($A$1:A1048576,A14)",
+];
+
+/// A workbook with the cases above in column F and a second sheet and a defined name to refer to.
+fn rewrite_case_workbook() -> Session {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2, 3, 4, 5]]})).unwrap();
+    s.execute("home.insertSheet", json!({"name": "Other"})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": 0})).unwrap();
+    s.execute("formulas.defineName", json!({"name": "MyName", "refersTo": "=$A$1"})).unwrap();
+    for (i, input) in REWRITE_CASES.iter().enumerate() {
+        s.execute("cell.set", json!({"cell": format!("F{}", i + 1), "input": input})).unwrap();
+    }
+    // A fill of one shape down a column, which is what the shape level exists for.
+    s.execute(
+        "range.setValues",
+        json!({"range": "H2", "values": (0..40).map(|r| vec![json!(format!("=A{}*2+B{}", r + 2, r + 2))]).collect::<Vec<_>>()}),
+    )
+    .unwrap();
+    s
+}
+
+/// **The equivalence S5 must not break**: a structural edit run through the shape level saves
+/// exactly the bytes it saved through the per-cell rewrite. The second run strips every
+/// `Formula::shape`, which sends the whole edit down the per-cell path — parse, adjust, intern —
+/// the code the shape level replaced; the two saved packages must not differ by a byte.
+#[test]
+fn a_structural_edit_saves_what_the_per_cell_rewrite_saves() {
+    let edits: &[(&str, serde_json::Value)] = &[
+        ("home.insertRows", json!({"rows": "2:2"})),
+        ("home.insertRows", json!({"rows": "8:9"})),
+        ("home.deleteRows", json!({"rows": "3:3"})),
+        ("home.deleteRows", json!({"rows": "10:11"})),
+        ("home.insertColumns", json!({"cols": "C:C"})),
+        ("home.deleteColumns", json!({"cols": "B:B"})),
+        ("home.insertCells", json!({"range": "A5:C6", "shift": "down"})),
+        ("home.deleteCells", json!({"range": "A5:C6", "shift": "up"})),
+        ("home.insertCells", json!({"range": "B3:D3", "shift": "right"})),
+        ("home.deleteCells", json!({"range": "B3:D3", "shift": "left"})),
+        ("data.sortAscending", json!({"range": "A1:J14", "column": "A"})),
+        ("data.sortDescending", json!({"range": "A1:J14", "column": "B"})),
+        ("sheet.rename", json!({"sheet": "Other", "name": "Elsewhere"})),
+        ("home.deleteSheet", json!({"sheet": "Other"})),
+    ];
+    for (id, params) in edits {
+        let mut by_shape = rewrite_case_workbook();
+        by_shape.execute(id, params.clone()).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let mut by_cell = rewrite_case_workbook();
+        strip_shapes(&mut by_cell);
+        by_cell.execute(id, params.clone()).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let want = gridcraft_xlsx::write_xlsx(&by_cell.doc().unwrap().wb).expect("the per-cell rewrite saves");
+        let got = gridcraft_xlsx::write_xlsx(&by_shape.doc().unwrap().wb).expect("the shape rewrite saves");
+        assert_eq!(got.len(), want.len(), "{id}: {} bytes vs {}", got.len(), want.len());
+        assert!(got == want, "{id}: the saved package differs from the per-cell rewrite's");
+    }
+}
+
+/// The shape level, observed: a fill of 200 rows shares **one** `Arc<Shape>`, and a row inserted
+/// above it reprints every text — the shape itself does not change, because a relative reference
+/// moves with its cell — while the cells go on sharing that one tree (S5 of
+/// `plan/SHAPE-SHARING.md`). Before it, every moved cell parsed its text, adjusted a tree and
+/// interned a shape of its own.
+#[test]
+fn a_row_insert_reprints_a_fill_and_keeps_its_one_shape() {
+    use std::sync::Arc;
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[2, 3, 4]]})).unwrap();
+    let rows: Vec<serde_json::Value> = (2..=201).map(|r| json!([format!("=A{r}*2+B{r}")])).collect();
+    s.execute("range.setValues", json!({"range": "H2", "values": rows})).unwrap();
+    // Every cell of the fill holds the same interned tree, and its text is that tree at its cell.
+    let shapes = |s: &Session| -> Vec<Arc<gridcraft_formula::Shape>> {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        sh.cells.formulas().filter_map(|(_, f, _)| f.shape.clone()).collect()
+    };
+    let before = shapes(&s);
+    assert_eq!(before.len(), 200);
+    assert!(before.iter().all(|x| Arc::ptr_eq(x, &before[0])), "a fill is one shape");
+    let text = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap()["formula"].clone();
+    assert_eq!(text(&mut s, "H2"), "=A2*2+B2");
+    s.execute("home.insertRows", json!({"rows": "1:1"})).unwrap();
+    // The fill moved one line down and every text names the row it sits on: same tree, new print.
+    assert_eq!(text(&mut s, "H3"), "=A3*2+B3");
+    assert_eq!(text(&mut s, "H202"), "=A202*2+B202");
+    let after = shapes(&s);
+    assert_eq!(after.len(), 200);
+    assert!(after.iter().all(|x| Arc::ptr_eq(x, &after[0])), "the one shape is still one shape");
+    assert!(Arc::ptr_eq(&after[0], &before[0]), "a row insert does not rewrite a relative shape");
+    // The master invariant, on every cell of the fill.
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    for (c, f, _) in sh.cells.formulas() {
+        assert_eq!(f.expr_at(c).map(|e| gridcraft_formula::print(&e)).as_deref(), Some(f.text.as_str()), "{c:?}");
+    }
+}
+
+/// Drops every formula's shape, so each one parses its own text again: the state a workbook read
+/// from a JSON document is in, and the path the shape level replaced.
+fn strip_shapes(s: &mut Session) {
+    let d = s.doc_mut().expect("a document");
+    let wb = std::sync::Arc::make_mut(&mut d.wb);
+    for si in 0..wb.sheets.len() {
+        let Some(sh) = wb.sheet_mut(si) else { continue };
+        let cells: Vec<(CellRef, std::sync::Arc<gridcraft_model::Formula>)> = sh.cells.formulas().map(|(c, f, _)| (c, f)).collect::<Vec<_>>();
+        for (c, f) in cells {
+            let mut cell = match sh.cells.get(c) {
+                Some(cell) => cell,
+                None => continue,
+            };
+            cell.formula =
+                Some(std::sync::Arc::new(gridcraft_model::Formula { text: f.text.clone(), shape: None, array: f.array.clone(), dynamic: f.dynamic }));
+            sh.cells.set(c, cell);
+        }
+    }
+}
+
 #[test]
 fn insert_delete_rows_adjust() {
     let mut s = s();
