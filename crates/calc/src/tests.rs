@@ -106,10 +106,12 @@ fn restore_rebuilds_when_a_name_moved_under_the_formulas() {
 }
 
 #[test]
-fn a_recalculation_hands_each_cell_the_shape_it_evaluated() {
-    // A formula read back from a serialized document carries its text alone (`Formula::shape` and
-    // `Formula::expr` are skipped), so the writer, a sort, a fill and a paste each parsed that text
-    // again. The pass that evaluates the formula now shares its shape with the cell.
+fn a_recalculation_reads_the_shape_of_a_text_only_cell() {
+    // A formula read back from a serialized document carries its **text alone** (`Formula::shape`
+    // is skipped), and S7 of `plan/SHAPE-SHARING.md` deleted the per-cell tree as well: the only
+    // way to a tree is `Formula::expr_at`, which parses the text. The rebuild walks that parse
+    // once, interns it, and the graph's nodes hold the shape — so the pass evaluates the same tree
+    // it walked the precedents of, and a million cells of one fill share one tree.
     let mut t = T::new();
     t.set("A1", "3");
     t.set("A2", "4");
@@ -119,28 +121,29 @@ fn a_recalculation_hands_each_cell_the_shape_it_evaluated() {
     for c in at {
         let sh = t.wb.sheet_mut(0).unwrap();
         let mut cell = sh.cells.get(c).unwrap();
-        let mut f = (*cell.formula.clone().unwrap()).clone();
-        f.expr = None;
-        f.shape = None;
-        f.expr_bytes = 0;
-        cell.formula = Some(std::sync::Arc::new(f));
+        let text = cell.formula.clone().unwrap().text.clone();
+        cell.formula = Some(std::sync::Arc::new(gridcraft_model::Formula::from_text(&text)));
         sh.cells.set(c, cell);
     }
-    assert!(t.wb.sheet(0).unwrap().cells.formulas().all(|(_, f, _)| f.expr.is_none() && f.shape.is_none()), "text only, as a file gives it");
+    assert!(t.wb.sheet(0).unwrap().cells.formulas().all(|(_, f, _)| f.shape.is_none()), "text only, as a file gives it");
+    // The fallback: a cell with text alone parses its text at the cell, and prints the same text.
+    for (c, f, _) in t.wb.sheet(0).unwrap().cells.formulas() {
+        let tree = f.expr_at(c).expect("the text parses");
+        assert_eq!(gridcraft_formula::print(&tree), f.text, "{c:?}");
+        assert!(f.shape.is_none(), "reading a tree does not intern one");
+    }
     t.calc.recalc_all(&mut t.wb);
-    let sh = t.wb.sheet(0).unwrap();
-    let formulas: Vec<_> = sh.cells.formulas().collect();
-    assert_eq!(formulas.len(), 2);
-    for (c, f, _) in &formulas {
-        assert!(f.shape.is_some(), "{c:?} got the shape the pass parsed");
-        // The shape prints the cell's own text at the cell's own position (the master invariant).
-        let printed = f.shape().and_then(|s| s.print_at(*c));
-        assert_eq!(printed.as_deref(), Some(f.text.as_str()), "{c:?}");
+    // The graph holds one shape for the column: both nodes point at it, and it prints each cell's
+    // own text at that cell (the master invariant).
+    let shapes: Vec<_> = [CellRef::new(0, 1), CellRef::new(1, 1)].iter().filter_map(|c| t.calc.node_shape((0, *c))).collect();
+    assert_eq!(shapes.len(), 2);
+    assert!(std::sync::Arc::ptr_eq(&shapes[0], &shapes[1]), "one shape for the column");
+    for (i, c) in [CellRef::new(0, 1), CellRef::new(1, 1)].iter().enumerate() {
+        let printed = shapes[i].print_at(*c);
+        let text = t.wb.sheet(0).unwrap().cells.get(*c).and_then(|x| x.formula).map(|f| f.text.clone());
+        assert_eq!(printed, text, "{c:?}");
     }
     assert_eq!((t.get("B1"), t.get("B2")), (Value::Number(6.0), Value::Number(8.0)));
-    // Two cells of one fill — `=A1*2` down a column — hold the *same* shape: one tree, not two.
-    let (b1, b2) = (formulas.first().unwrap().1.clone(), formulas.last().unwrap().1.clone());
-    assert!(std::sync::Arc::ptr_eq(&b1.shape.clone().unwrap(), &b2.shape.clone().unwrap()), "one shape for the column");
 }
 
 #[test]

@@ -304,7 +304,7 @@ fn this_row_references_are_written_in_long_form() {
 fn check_formula_metadata(mut wb: Workbook, sheet_index: usize, cases: &[(&str, bool)]) {
     for (i, (text, _)) in cases.iter().enumerate() {
         let f = Formula::new(text);
-        assert!(f.expr().is_some(), "test formula must parse: {text}");
+        assert!(f.text_tree().is_some(), "test formula must parse: {text}");
         wb.sheet_mut(sheet_index).unwrap().cells.set(CellRef::new(i as u32 + 100, 5), Cell::formula(f));
     }
     let bytes = write_xlsx(&wb).unwrap();

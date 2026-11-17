@@ -1326,7 +1326,7 @@ fn decode_cell(dc: &DecodeCtx<'_>, warn: &mut Vec<String>, st: &mut RowState, c:
     // Ctrl+Shift+Enter array or unwrapped from Google Sheets' export (both mark it dynamic).
     // "It parses" without asking the text again: a formula the reader could parse holds a shape
     // (or, from the legacy-array rewriter, a tree), and one it could not holds neither.
-    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && (f.shape.is_some() || f.expr.is_some())) {
+    if formula.as_ref().is_some_and(|f| !f.dynamic && f.array.is_none() && f.shape.is_some()) {
         st.legacy.push(pos);
     }
     let value = if formula.is_none() && st.derived.iter().any(|r| r.contains(pos) && r.start != pos) { Value::Empty } else { value };

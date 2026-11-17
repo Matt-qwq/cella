@@ -83,7 +83,10 @@ const MAX_CACHED_BLOCK_CELLS: usize = 4_000_000;
 /// All shared blocks together, at 24 bytes a value.
 const MAX_CACHED_BLOCK_CELLS_TOTAL: usize = 4_000_000;
 
-/// The formulas a pass evaluates, one slot each: a cell's slot, and the tree to evaluate there.
+/// The formula a pass evaluates in one slot: the shape it reads, and the cell its relative parts
+/// are offsets from. S7 of `plan/SHAPE-SHARING.md` deleted the variant that held a cell's own tree
+/// — a formula has no tree of its own any more, and the graph's node for a text-only cell holds the
+/// shape its parse was interned as — so this is 16 bytes instead of an enum of 24.
 ///
 /// One table for what used to be asked of three — an expression map for the tree, the result map
 /// for the value, and the result map again for "is it in flight" and for storing the value, five
@@ -91,11 +94,11 @@ const MAX_CACHED_BLOCK_CELLS_TOTAL: usize = 4_000_000;
 /// (row-major, which is also the order the write-back walks), so a value is a bounds-checked index
 /// and evaluating a formula is one lookup.
 #[derive(Clone, Debug)]
-enum Source {
-    /// The cell's own cached tree.
-    Tree(std::sync::Arc<Expr>),
-    /// The shape the cell shares with every cell of its fill, and the cell it resolves at.
-    Shape(std::sync::Arc<gridcraft_formula::Shape>, CellRef),
+struct Source {
+    /// The shape the cell shares with every cell of its fill.
+    shape: std::sync::Arc<gridcraft_formula::Shape>,
+    /// The cell its relative parts are offsets from.
+    at: CellRef,
 }
 
 #[derive(Debug, Default)]
@@ -124,18 +127,17 @@ impl Trees {
     /// resolved when the pass needs it ([`Trees::expr`]), so a million formulas of one fill hold
     /// one tree between them at rest.
     pub(super) fn push(&mut self, k: Key, node: &super::graph::Node) {
-        let source = match (&node.expr, &node.shape) {
-            (Some(tree), _) => Source::Tree(std::sync::Arc::clone(tree)),
-            (None, Some(shape)) => Source::Shape(std::sync::Arc::clone(shape), k.1),
-            (None, None) => return,
-        };
-        self.add(k, source);
+        let Some(shape) = &node.shape else { return };
+        self.add(k, Source { shape: std::sync::Arc::clone(shape), at: k.1 });
     }
 
-    /// [`Trees::push`] with the tree itself, for a pass a test builds without a graph.
+    /// [`Trees::push`] with an absolute tree, for a pass a test builds without a graph: the tree
+    /// becomes the one shape the cell reads there (`Shape::from_expr` at the cell resolves back to
+    /// it).
     #[cfg(test)]
     pub(super) fn push_tree(&mut self, k: Key, tree: &std::sync::Arc<Expr>) {
-        self.add(k, Source::Tree(std::sync::Arc::clone(tree)));
+        let shape = gridcraft_formula::Shape::from_expr((**tree).clone(), k.1);
+        self.add(k, Source { shape: std::sync::Arc::new(shape), at: k.1 });
     }
 
     fn add(&mut self, k: Key, source: Source) {
@@ -153,18 +155,15 @@ impl Trees {
         self.index.get(&k).copied()
     }
 
-    /// The tree to evaluate in `slot` and the cell its relative parts are offsets from (`None`
-    /// when the tree is absolute).
+    /// The tree to evaluate in `slot` and the cell its relative parts are offsets from.
     ///
-    /// A shape cell is read **in place**: the one tree of a million-cell fill is walked where it
-    /// is, and each reference adds the cell's position as it is read (`Evaluator::ref_range`),
-    /// instead of being resolved into a private tree per formula per pass (S4 of
+    /// A shape is read **in place**: the one tree of a million-cell fill is walked where it is,
+    /// and each reference adds the cell's position as it is read (`Evaluator::ref_range`), instead
+    /// of being resolved into a private tree per formula per pass (S4 of
     /// `plan/SHAPE-SHARING.md`).
     pub(super) fn source(&self, slot: u32) -> Option<(&Expr, Option<CellRef>)> {
-        match self.trees.get(slot as usize)? {
-            Source::Tree(tree) => Some((tree, None)),
-            Source::Shape(shape, at) => Some((shape.tree(), Some(*at))),
-        }
+        let source = self.trees.get(slot as usize)?;
+        Some((source.shape.tree(), Some(source.at)))
     }
 
     /// The cells, in the order their slots were added.

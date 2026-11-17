@@ -612,6 +612,7 @@ fn table_rename(s: &mut Session, p: &Json) -> Result<Json> {
             }
         }
         // Structured references follow the rename.
+        let mut shapes = gridcraft_formula::ShapeTable::default();
         for i in 0..cx.wb.sheets.len() {
             let keys: Vec<(CellRef, std::sync::Arc<Formula>)> =
                 cx.wb.sheets.get(i).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
@@ -628,8 +629,11 @@ fn table_rename(s: &mut Session, p: &Json) -> Result<Json> {
                     gridcraft_formula::Expr::Name(n) if !shadowed && n.eq_ignore_ascii_case(&old) => gridcraft_formula::Expr::Name(name.clone()),
                     o => o,
                 });
+                // Interned at the cell it sits at (a rename does not move cells), so a save
+                // never walks this tree to spell it.
+                let rewrite = gridcraft_xlsx::needs_file_rewrite(&ne);
                 if let Some(mut cell) = sh.cells.get(c) {
-                    cell.formula = Some(std::sync::Arc::new(Formula::from_expr(ne)));
+                    cell.formula = Some(std::sync::Arc::new(Formula::from_expr_at(ne, c, &mut shapes, rewrite)));
                     sh.cells.set(c, cell);
                 }
             }

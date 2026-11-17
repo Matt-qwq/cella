@@ -217,20 +217,17 @@ impl Ctx for FnCtx<'_, '_> {
         let at = area.range.start.offset(row as i64, col as i64).filter(|c| area.range.contains(*c))?;
         // The criteria formula is written for the first record, so each record reads it from one
         // row lower. A cell holding a shape reads its **canonical tree** with the base moved down
-        // — no tree is built per record; a cell with its own tree is shifted as before.
+        // — no tree is built per record.
         let formula = self.ev.host.workbook().sheet(area.sheet)?.cell(at)?.formula.clone()?;
         let shape = formula.shape();
         let shifted: Expr;
         let down = record as i64 - 1;
         // The record's row must be on the sheet for a shape's tree to be read there; past it, the
-        // tree is materialised and shifted instead.
+        // tree is materialised and shifted instead. A cell that holds text alone has no shape yet,
+        // so `expr_at` parses it (the same tree a shape would resolve to) and it is shifted.
         let record_at = at.offset(down, 0);
-        let (tree, base): (&Expr, Option<CellRef>) = match (&formula.expr, &shape, record_at) {
-            (_, Some(shape), Some(record_at)) => (shape.tree(), Some(record_at)),
-            (Some(tree), _, _) => {
-                shifted = gridcraft_formula::adjust::shift_relative((**tree).clone(), down, 0);
-                (&shifted, None)
-            }
+        let (tree, base): (&Expr, Option<CellRef>) = match (&shape, record_at) {
+            (Some(shape), Some(record_at)) => (shape.tree(), Some(record_at)),
             _ => {
                 shifted = gridcraft_formula::adjust::shift_relative(formula.expr_at(at)?, down, 0);
                 (&shifted, None)

@@ -1440,7 +1440,7 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
             // for: this rewrite runs after the store moved the cells the edit inserted, deleted or
             // moved, so the cell a shape resolves at is no longer the cell it was interned for
             // (SHAPE-SHARING.md §5.1 S5 makes this a rewrite of the shape itself, one per shape).
-            let Some(expr) = f.expr() else { continue };
+            let Some(expr) = f.text_tree() else { continue };
             let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
             let text = gridcraft_formula::print(&new);
             let array: Option<RangeRef> = match f.array.as_deref() {

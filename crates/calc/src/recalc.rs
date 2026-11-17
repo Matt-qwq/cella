@@ -484,28 +484,6 @@ fn write_values_ordered(wb: &mut Workbook, values: &[(Key, Value)]) {
     }
 }
 
-/// Gives each formula the shape the rebuild made for it, when its cell has none: parsing it again
-/// on every later use (the writer, a sort, a fill, a paste) is what this avoids, and the shape is
-/// shared through the `Arc` rather than copied — a document whose formulas are all one shape gets
-/// one `Arc` for the lot. A cell that already holds a shape or a tree is skipped, so the write
-/// costs nothing for a formula the user typed or a file reader parsed.
-pub(crate) fn share_shapes(wb: &mut Workbook, mut shared: Vec<(Key, std::sync::Arc<gridcraft_formula::Shape>)>) {
-    shared.sort_unstable_by_key(|(k, _)| (k.0, k.1.row, k.1.col));
-    for ((si, at), shape) in shared {
-        let Some(sheet) = wb.sheet_mut(si) else { continue };
-        let Some(mut cell) = sheet.cells.get(at) else { continue };
-        let Some(mut f) = cell.formula.clone() else { continue };
-        if f.expr.is_some() || f.shape.is_some() {
-            continue;
-        }
-        // The store still holds the `Arc`, so this copies the `Formula` (its text and the pointer
-        // to the shape), not the shape.
-        std::sync::Arc::make_mut(&mut f).shape = Some(shape);
-        cell.formula = Some(f);
-        sheet.cells.set(at, cell);
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 impl Calc {
     /// Evaluates the independent leaf formulas of `dirty` on the machine's threads and writes their
@@ -680,18 +658,28 @@ impl Calc {
         Self::default()
     }
 
+    /// The shape the graph evaluates at `k`, for the test that holds a column of one `=A1*2` fill
+    /// to one tree.
+    #[cfg(test)]
+    pub(crate) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<gridcraft_formula::Shape>> {
+        self.graph.node_shape(k)
+    }
+
     /// The live heap bytes this calculation state holds, by allocation class. Nothing here walks the
     /// graph's tables: the sizes come from capacities (see [`GraphMemory`]), so a UI can ask on a
-    /// million-formula workbook. The one exception is a tree this state alone holds in `unshared`,
-    /// which has to be walked node by node to be measured — it is empty or nearly empty at rest
+    /// million-formula workbook. The one exception is the shapes this state alone holds in
+    /// `unshared` — the trees a rebuild parsed for cells that arrived as text alone, which no cell
+    /// holds a pointer to — and they are charged once per pointer, not walked
     /// ([`CalcMemory::unshared`]).
     pub fn memory(&self) -> CalcMemory {
         use std::mem::size_of;
         let mut unshared_trees = 0usize;
+        let mut seen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         for (_, shape) in &self.unshared {
             // A shape counts its own tree (one `size_of::<Expr>()` a node, the figure the store
-            // charges), so there is nothing to walk.
-            if std::sync::Arc::strong_count(shape) == 1 {
+            // charges), so there is nothing to walk. The interner hands one `Arc` to a million
+            // cells of one shape, so the pointers are deduplicated: one tree, one charge.
+            if seen.insert(std::sync::Arc::as_ptr(shape) as usize) {
                 unshared_trees = unshared_trees.saturating_add(shape.bytes as usize);
             }
         }
@@ -722,8 +710,12 @@ impl Calc {
         self.graph = Graph::default();
         self.unshared.clear();
         // The shapes of the formulas that arrived as text alone are interned here, so a document
-        // of a million formulas of one shape ends with one.
+        // of a million formulas of one shape ends with one — and the nodes of those cells hold the
+        // one `Arc`, so a pass resolves nothing it did not resolve here.
         let mut shapes = gridcraft_formula::ShapeTable::default();
+        // The shapes this state, not a cell, holds: one entry per distinct `Arc`, for the memory
+        // report (a cell that holds a shape is charged by the store).
+        let mut kept: std::collections::HashSet<usize> = std::collections::HashSet::default();
         for (si, sheet) in wb.sheets.iter().enumerate() {
             // One pass to learn the size (moving, not cloning, what the store hands out): the
             // graph's tables then grow once instead of rehashing every entry a dozen times.
@@ -734,8 +726,11 @@ impl Calc {
                     let areas = std::mem::take(&mut self.scratch_areas);
                     self.graph.insert((si, c), &areas, f.array.as_deref().copied(), node);
                     self.scratch_areas = areas;
-                    // The shape is kept for the cell, so the next use needs no parse either.
-                    if let Some(shape) = keep {
+                    // The shape a text-only cell's parse made: the node holds it, so a later use
+                    // of that formula needs no parse either, and the report charges it here.
+                    if let Some(shape) = keep
+                        && kept.insert(std::sync::Arc::as_ptr(&shape) as usize)
+                    {
                         self.unshared.push(((si, c), shape));
                     }
                 }
@@ -759,17 +754,17 @@ impl Calc {
         f: &gridcraft_model::Formula,
         shapes: &mut gridcraft_formula::ShapeTable,
     ) -> Option<(Node, Option<std::sync::Arc<gridcraft_formula::Shape>>)> {
-        // The tree this formula reads, and the cell its relative parts are offsets from when it
-        // is a shape's canonical tree (None for a cell's own tree, which is absolute). Nothing is
-        // resolved here: a shape is walked once, in place, for a million cells (S4).
+        // The tree this formula reads, and the cell its relative parts are offsets from: a shape's
+        // canonical tree, read where it is. Nothing is resolved here: a shape is walked once, in
+        // place, for a million cells (S4). A formula that holds no shape arrived as text alone (a
+        // JSON document, or `Formula::new`), and `expr_at` is the fallback that parses it at the
+        // cell; interning that parse makes the million cells of one shape share one tree.
         let own = f.shape();
         let mut keep: Option<std::sync::Arc<gridcraft_formula::Shape>> = None;
-        let (tree, base): (&gridcraft_formula::Expr, Option<CellRef>) = match (&f.expr, &own) {
-            (Some(tree), _) => (tree, None),
-            (_, Some(shape)) => (shape.tree(), Some(at)),
-            (None, None) => {
-                let e = gridcraft_formula::parse(&f.text).ok()?;
-                keep = Some(shapes.intern(gridcraft_formula::Shape::from_expr(e, at)));
+        let (tree, base): (&gridcraft_formula::Expr, Option<CellRef>) = match &own {
+            Some(shape) => (shape.tree(), Some(at)),
+            None => {
+                keep = Some(shapes.intern(gridcraft_formula::Shape::from_expr(f.expr_at(at)?, at)));
                 (keep.as_ref()?.tree(), Some(at))
             }
         };
@@ -779,10 +774,7 @@ impl Calc {
             Some(shape) => Some(std::sync::Arc::clone(shape)),
             None => own,
         };
-        let node = Node::new(f.expr.clone(), reads.dynamic, may_spill, reads.trim)
-            .with_volatile(reads.volatile)
-            .with_visibility(reads.hidden_rows)
-            .with_shape(shape);
+        let node = Node::new(reads.dynamic, may_spill, reads.trim).with_volatile(reads.volatile).with_visibility(reads.hidden_rows).with_shape(shape);
         Some((node, keep))
     }
 
@@ -858,7 +850,6 @@ impl Calc {
     /// Recalculates every formula (F9 / Ctrl+Alt+F9, and after loading).
     pub fn recalc_all(&mut self, wb: &mut Workbook) {
         self.rebuild(wb);
-        share_shapes(wb, std::mem::take(&mut self.unshared));
         let prefer = spill_owners(wb);
         // Spills are laid out again from the formulas where they are now (a structural edit moves
         // or deletes the formulas, not the values they spilled).
@@ -886,7 +877,6 @@ impl Calc {
     pub fn recalc_on_open(&mut self, wb: &mut Workbook) {
         let tp = prof_now();
         self.rebuild(wb);
-        share_shapes(wb, std::mem::take(&mut self.unshared));
         let rebuild_ms = prof_now() - tp;
         let ts = prof_now();
         if wb.calc.full_calc_on_load {

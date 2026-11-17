@@ -29,8 +29,8 @@ pub struct Shape {
     /// The canonical tree: a relative part is an offset from the formula's own cell, an absolute
     /// (a `$` part) keeps the coordinate it names.
     tree: Expr,
-    /// Heap cost of the tree, counted once instead of once per cell (this is `Formula::expr_bytes`
-    /// moved onto the shape): `size_of::<Expr>()` a node, the figure the undo budget reads.
+    /// Heap cost of the tree, counted once instead of once per cell: `size_of::<Expr>()` a node,
+    /// the figure the store's accounting and the undo budget read.
     pub bytes: u32,
     /// Smallest and largest offset over the *relative* parts of each axis. A cell at `at` resolves
     /// without clamping iff `at + min >= 0` and `at + max < MAX` on both axes, which is what makes
@@ -87,8 +87,8 @@ impl Shape {
     }
 }
 
-/// Bytes a canonical tree holds, node by node — the same figure `Formula::expr_bytes` keeps today,
-/// so moving the count onto the shape (S7) does not move the undo budget.
+/// Bytes a canonical tree holds, node by node: the figure the undo budget charges, once per
+/// shape instead of once per cell (S6/S7 of `plan/SHAPE-SHARING.md`).
 fn tree_bytes(e: &Expr) -> u32 {
     let mut bytes = 0u32;
     e.walk(&mut |_| bytes = bytes.saturating_add(std::mem::size_of::<Expr>() as u32));
@@ -484,8 +484,8 @@ mod tests {
         assert_eq!((b.row - a.row, b.col - a.col), (2, 0));
     }
 
-    /// The shape counts its tree once: the same figure `Formula::expr_bytes` counts today (a node
-    /// is `size_of::<Expr>()`), which the undo budget and the store's accounting read.
+    /// The shape counts its tree once (a node is `size_of::<Expr>()`), which the undo budget and
+    /// the store's accounting read.
     #[test]
     fn a_shape_counts_its_tree_once() {
         let node = std::mem::size_of::<Expr>() as u32;

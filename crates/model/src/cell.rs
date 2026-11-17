@@ -10,24 +10,21 @@ use serde::{Deserialize, Serialize};
 use crate::style::StyleId;
 
 /// A parsed formula. `text` is the canonical formula text without the leading `=`.
+///
+/// The text is the formula, and the tree is a **cache of (text, position)**: a formula created at
+/// a cell (`new_at`, `from_expr_at`) keeps the [`Shape`] its cell shares with every cell of the
+/// same fill, and a formula that has no shape yet (one read back from a JSON document, one built
+/// by [`Formula::new`]) parses its text when something needs the tree (`expr_at`). There is no
+/// per-cell tree to keep: that was the second representation the shape work removed (S7 of
+/// `plan/SHAPE-SHARING.md`), and it cost a 96-byte-per-formula allocation class of its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Formula {
     pub text: String,
-    /// The cell's own cached tree: the absolute expression text parses to. A formula created at a
-    /// position (`new_at`, `from_expr_at`) keeps a **shape** instead — one tree shared by every
-    /// cell the formula was filled into — and this stays `None` for it. Both fields exist for the
-    /// length of the shape-sharing round (S2/S3 of `plan/SHAPE-SHARING.md`); S7 removes this one.
-    #[serde(skip)]
-    pub expr: Option<Arc<Expr>>,
     /// The interned shape of the formula: its tree with every relative reference stored as an
     /// offset from the cell, so it serves every cell the formula was filled into. Read it through
     /// [`Formula::expr_at`], which resolves it at the cell's position.
     #[serde(skip)]
     pub shape: Option<Arc<Shape>>,
-    /// Bytes the parsed expression tree holds, counted when it is parsed. The undo budget reads
-    /// this instead of walking the tree of every formula in every band an edit touched.
-    #[serde(skip)]
-    pub expr_bytes: u32,
     /// Legacy array formula (Ctrl+Shift+Enter) covering this range; the formula lives in the
     /// top-left cell.
     ///
@@ -44,24 +41,18 @@ pub struct Formula {
 }
 
 impl Formula {
-    /// Parses `text` (with or without `=`). Unparseable formulas keep their text and evaluate to
-    /// `#NAME?`.
+    /// Parses `text` (with or without `=`) and keeps its canonical spelling. Unparseable formulas
+    /// keep their text and evaluate to `#NAME?`.
     ///
-    /// This keeps the tree on the cell because it has no position to intern a shape from: a
-    /// consumer that knows the cell it is making should call [`Formula::new_at`], which shares one
-    /// tree with every cell of the same shape.
+    /// The cell gets no shape because it has no position to intern one from: a consumer that knows
+    /// the cell should call [`Formula::new_at`], which shares one tree with every cell of the same
+    /// shape. This form is **text alone**, the state S7 of `plan/SHAPE-SHARING.md` left as the
+    /// fallback — every `expr_at` parses the text until a recalculation interns a shape for it.
     pub fn new(text: &str) -> Formula {
         let body = text.strip_prefix('=').unwrap_or(text);
         match gridcraft_formula::parse(body) {
-            Ok(e) => Formula {
-                text: gridcraft_formula::print(&e),
-                expr_bytes: expr_bytes(&e),
-                expr: Some(Arc::new(e)),
-                shape: None,
-                array: None,
-                dynamic: false,
-            },
-            Err(_) => Formula::unparseable(body),
+            Ok(e) => Formula::from_text(&gridcraft_formula::print(&e)),
+            Err(_) => Formula::from_text(body),
         }
     }
     /// [`Formula::new`] for a formula entered at `at`: the tree becomes a **shape** interned in
@@ -73,14 +64,11 @@ impl Formula {
         let body = text.strip_prefix('=').unwrap_or(text);
         match gridcraft_formula::parse(body) {
             Ok(e) => Formula::from_expr_at(e, at, shapes, file_rewrite),
-            Err(_) => Formula::unparseable(body),
+            Err(_) => Formula::from_text(body),
         }
     }
-    pub fn from_expr(e: Expr) -> Formula {
-        Formula { text: gridcraft_formula::print(&e), expr_bytes: expr_bytes(&e), expr: Some(Arc::new(e)), shape: None, array: None, dynamic: false }
-    }
-    /// [`Formula::from_expr`] for a formula at `at`: the tree is canonicalised into a shape and
-    /// interned, and the cell keeps its own A1 text (what a save writes).
+    /// The formula a tree spells at `at`: the tree is canonicalised into a shape and interned,
+    /// and the cell keeps its own A1 text (what a save writes).
     ///
     /// `file_rewrite` is the half of "a file spells this formula differently" that this crate
     /// cannot compute: `gridcraft-formula` knows the syntax cases (`LET`/`LAMBDA`, `#`, `@`, a trim
@@ -92,15 +80,21 @@ impl Formula {
         let text = gridcraft_formula::print(&e);
         let mut shape = Shape::from_expr(e, at);
         shape.file_rewrite |= file_rewrite;
-        Formula { text, expr: None, shape: Some(shapes.intern(shape)), expr_bytes: 0, array: None, dynamic: false }
+        Formula { text, shape: Some(shapes.intern(shape)), array: None, dynamic: false }
     }
-    /// The formula of text that does not parse: the text is kept as it is and there is no tree.
-    fn unparseable(text: &str) -> Formula {
-        Formula { text: text.to_string(), expr: None, shape: None, expr_bytes: 0, array: None, dynamic: false }
+    /// A formula of `text` with no tree and no shape: the text exactly as it was read, kept whole
+    /// (it may not parse at all, and one that does not is shown and saved as it stands).
+    ///
+    /// This is what the parser-free paths build — a JSON document carries the text of every
+    /// formula and nothing else — and where the shape design's fallback begins (§5.3 of
+    /// `plan/SHAPE-SHARING.md`): [`Formula::expr_at`] parses it at the cell.
+    pub fn from_text(text: &str) -> Formula {
+        Formula { text: text.to_string(), shape: None, array: None, dynamic: false }
     }
-    /// The absolute tree this cell evaluates **at its position** — what `expr()` means for a cell
-    /// that knows where it is: the shape resolved (its relative parts are offsets), else the cell's
-    /// own cached tree, else the text parsed. `None` when the text does not parse.
+    /// The absolute tree this cell evaluates **at its position**, and the only way to a tree a
+    /// formula keeps: the shape resolved (its relative parts are offsets), else — a cell that holds
+    /// text alone, which is what a deserialised JSON workbook is — the text **parsed at the cell**,
+    /// bounded by the parser's own limits exactly as before. `None` when the text does not parse.
     ///
     /// A shape resolves at its own cell by construction; one that would clamp at `at` falls
     /// through to the text, which is the print of the clamped tree the cell already shows.
@@ -110,16 +104,17 @@ impl Formula {
         {
             return Some(e);
         }
-        self.expr.as_deref().cloned().or_else(|| gridcraft_formula::parse(&self.text).ok())
+        gridcraft_formula::parse(&self.text).ok()
     }
     /// The shape this cell's formula shares with every other cell of the same fill, when it has one.
     pub fn shape(&self) -> Option<Arc<Shape>> {
         self.shape.clone()
     }
     /// The formula this cell's content becomes when the formula at `from` is filled or copied to
-    /// `at`: the **same shape**, one `Arc` clone and a print, when it fits there; otherwise a tree
-    /// materialised at `at` exactly as a per-cell shift makes it (a relative part that leaves the
-    /// sheet clamps to `#REF!` and stays that way — Excel does not resurrect it, trap 9).
+    /// `at`: the **same shape**, one `Arc` clone and a print, when it fits there; otherwise the
+    /// tree a per-cell shift makes at `at`, held as a shape that belongs to this cell alone (a
+    /// relative part that leaves the sheet clamps to `#REF!` and stays that way — Excel does not
+    /// resurrect it, trap 9).
     ///
     /// `None` when the formula cannot be moved at all (its text does not parse), which the callers
     /// treat as "keep the source cell as it is", exactly as the copy-and-shift code did.
@@ -133,41 +128,38 @@ impl Formula {
             && shape.fits(at)
             && let Some(text) = shape.print_at(at)
         {
-            return Some(Formula { text, expr: None, shape: Some(Arc::clone(shape)), expr_bytes: 0, array: None, dynamic: false });
+            return Some(Formula { text, shape: Some(Arc::clone(shape)), array: None, dynamic: false });
         }
-        // A member the family's shape cannot serve (a reference of it leaves the sheet at this
-        // cell) gets its own tree, exactly as the per-cell shift gave it: a tree, not a shape,
-        // because a private shape would have to carry a file-spelling answer this crate cannot
-        // compute (see `from_expr_at`).
+        // A cell the shape cannot serve — a relative reference of it leaves the sheet here, so the
+        // destination text names `#REF!` — gets a tree of its own again, exactly as the per-cell
+        // shift gave it, held as a **private** shape (no interner in reach, and nothing to share:
+        // such a cell is rare and its text is unique). It still prints the text it was given
+        // (`Shape::print_at` at `at` is ``text``), so the master invariant holds for it too.
         let e = shape.map_or_else(|| gridcraft_formula::parse(text).ok(), |s| s.resolve(from))?;
         let shifted = shift_relative_copy(&e, i64::from(at.row) - i64::from(from.row), i64::from(at.col) - i64::from(from.col));
-        Some(Formula::from_expr(shifted))
+        // The text is the *resolved* tree's: the canonical one stores offsets, and printing those
+        // would spell a relative reference as the row and column it is an offset by.
+        let text = gridcraft_formula::print(&shifted);
+        let mut private = Shape::from_expr(shifted, at);
+        // A shift keeps the syntax that makes a file spell a formula differently (a `LET`, a `#`,
+        // an `@`, a trim reference, a structured reference) and clamping a reference to `#REF!`
+        // can only drop one. The source's answer is carried over because this crate cannot compute
+        // the part of it that lives in the writer: over-approximating costs one walk on a save,
+        // under-approximating would write a formula under the model's own spelling.
+        private.file_rewrite |= shape.is_some_and(|s| s.file_rewrite);
+        Some(Formula { text, shape: Some(Arc::new(private)), array: None, dynamic: false })
     }
     /// The absolute tree the cell's **text** spells, at the position it was written for: the tree a
     /// structural rewrite (`adjust`) must shift, where [`Formula::expr_at`] is the tree at the cell
-    /// the formula sits at now. Those differ only when a structural edit has just moved the cell
-    /// away from the cell its shape was interned for (a row inserted above it), and then the text
-    /// is the only witness of what the formula said.
+    /// the formula sits at now.
     ///
-    /// A shape cell parses its text here; every static use wants [`Formula::expr_at`] instead.
-    pub fn expr(&self) -> Option<Expr> {
-        self.expr.as_deref().cloned().or_else(|| gridcraft_formula::parse(&self.text).ok())
-    }
-    /// The parsed expression without copying it (re-parses after deserialization).
-    pub fn expr_arc(&self) -> Option<Arc<Expr>> {
-        self.expr.clone().or_else(|| gridcraft_formula::parse(&self.text).ok().map(Arc::new))
-    }
-    /// Keeps the tree something else parsed from this text, so the next consumer shares it instead
-    /// of parsing again: a formula deserialized into a document comes back as text alone
-    /// (`expr` is not written to a file). The tree already here is never replaced by a different
-    /// one — a cell that has one parsed its own text — and `text` is never regenerated from the
-    /// tree, so the two cannot drift apart.
-    pub fn share_expr(&mut self, e: &Arc<Expr>) {
-        if self.expr.is_some() || self.shape.is_some() {
-            return;
-        }
-        self.expr = Some(Arc::clone(e));
-        self.expr_bytes = expr_bytes(e);
+    /// Those differ only when a structural edit has just moved the cell away from the cell its
+    /// shape was interned for (a row inserted above it): the shape's base is stale by construction,
+    /// and the text is the only witness of what the formula said. That is what S5 of
+    /// `plan/SHAPE-SHARING.md` rewrites at shape level, one shape per edit; until then the one
+    /// caller (`rewrite_all_formulas`) reads the tree back out of the text.
+    pub fn text_tree(&self) -> Option<Expr> {
+        gridcraft_formula::parse(&self.text).ok()
     }
 }
 
@@ -181,13 +173,6 @@ impl PartialEq for Formula {
     fn eq(&self, other: &Self) -> bool {
         self.text == other.text && self.array == other.array && self.dynamic == other.dynamic
     }
-}
-
-/// Bytes an expression tree holds, node by node (the same figure [`Formula`] keeps).
-fn expr_bytes(e: &Expr) -> u32 {
-    let mut bytes = 0u32;
-    e.walk(&mut |_| bytes = bytes.saturating_add(std::mem::size_of::<Expr>() as u32));
-    bytes
 }
 
 /// A static picture stored as cell content, independent of floating drawing anchors.
@@ -247,13 +232,13 @@ impl Cell {
 /// 64-bit numbers: `Formula` holds a `String` and `Cell` a `Value`, so a 32-bit target (wasm32)
 /// has its own, smaller layout.
 ///
-/// `Formula` is **56** while the cell carries both representations (S2/S3): the shape pointer sits
-/// beside the tree pointer, 8 bytes that do not reach the allocator. S6 boxed `array`
-/// (`Option<Box<RangeRef>>`) and took the struct from 72 to 56, which drops `Arc<Formula>` from a
-/// 96-byte allocation to an 80-byte one; S7 deletes `expr` and `expr_bytes` and brings the struct
-/// back to 48. Pinned here because the undo budget and the store's accounting read it.
+/// `Formula` is **48**: a text, the shape pointer, the boxed legacy range and the dynamic-array
+/// mark. It was 72 before the shape work's two layout steps (S6 boxed `array`, 72 -> 56; S7
+/// deleted the per-cell tree and its byte count, 56 -> 48), which drops the `Arc<Formula>`
+/// allocation from a 96-byte chunk to an 80-byte one. Pinned here because the undo budget and the
+/// store's accounting read it.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Formula>() == 56);
+const _: () = assert!(std::mem::size_of::<Formula>() == 48);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Cell>() == 40);
 
@@ -287,6 +272,6 @@ mod size_pins {
     fn formula_sizes_are_pinned() {
         println!("size_of::<Formula>() = {}", std::mem::size_of::<Formula>());
         println!("size_of::<Cell>() = {}", std::mem::size_of::<Cell>());
-        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (56, 40));
+        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (48, 40));
     }
 }

@@ -234,6 +234,7 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
         return;
     }
     // Structured references follow the new names.
+    let mut shapes = gridcraft_formula::ShapeTable::default();
     for i in 0..cx.wb.sheets.len() {
         let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> =
             cx.wb.sheets.get(i).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
@@ -261,7 +262,8 @@ pub(crate) fn sync_headers(cx: &mut crate::cmd::Ctx) {
                 && let Some(sh) = cx.wb.sheet_mut(i)
                 && let Some(mut cell) = sh.cells.get(c)
             {
-                cell.formula = Some(std::sync::Arc::new(Formula::from_expr(ne)));
+                let rewrite = gridcraft_xlsx::needs_file_rewrite(&ne);
+                cell.formula = Some(std::sync::Arc::new(Formula::from_expr_at(ne, c, &mut shapes, rewrite)));
                 sh.cells.set(c, cell);
             }
         }
