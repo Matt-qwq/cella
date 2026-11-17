@@ -531,7 +531,7 @@ impl Calc {
                 handles.push(scope.spawn(move || {
                     let mut local: Vec<Key> = Vec::new();
                     for &k in part {
-                        let Some(node) = graph.nodes.get(&k) else { continue };
+                        let Some(node) = graph.node(k) else { continue };
                         let mut leaf = true;
                         for area in graph.areas_of(node) {
                             if area.range().count() > PARALLEL_LEAF_CELLS {
@@ -561,7 +561,7 @@ impl Calc {
                     let mut trees = Trees::with_capacity(local.len());
                     let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
                     for &k in &local {
-                        if let Some(node) = graph.nodes.get(&k) {
+                        if let Some(node) = graph.node(k) {
                             trees.push(k, node);
                             if let Some(r) = graph.legacy_of(k) {
                                 legacy.insert(k, r);
@@ -861,7 +861,7 @@ impl Calc {
                 sh.spill_ranges.clear();
             }
         }
-        let all: Vec<Key> = self.graph.nodes.keys().copied().collect();
+        let all: Vec<Key> = self.graph.node_keys().collect();
         self.run(wb, all, true, &prefer);
     }
 
@@ -951,8 +951,11 @@ impl Calc {
         // of values) skips it without counting anything.
         if changed.len() >= BULK_EDIT && self.graph.len() * 2 >= changed.len() {
             // At most as many as the graph holds: a fill adds formulas, it does not double a
-            // browser's worth of nodes on a sheet whose other cells are values.
-            self.graph.reserve_more(changed.len().min(self.graph.len()));
+            // browser's worth of nodes on a sheet whose other cells are values. The node table
+            // reserved is the sheet the edit writes to — a bulk edit is a rectangle of one sheet,
+            // and that is the table its `insert`s will fill.
+            let sheet = changed.first().map_or(0, |k| k.0);
+            self.graph.reserve_more(sheet, changed.len().min(self.graph.len()));
         }
         // Whether the edit put a formula anywhere: when it did not, and the workbook has none
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
@@ -996,7 +999,7 @@ impl Calc {
         // array spills anywhere and no used range moved. Scanning a million changed cells for
         // precedents of a data import used to cost more than writing them.
         if !formulas
-            && self.graph.nodes.is_empty()
+            && self.graph.is_empty()
             && self.graph.trim.is_empty()
             && cleared.is_empty()
             && used_changed.is_empty()
@@ -1007,7 +1010,7 @@ impl Calc {
         }
         if wb.calc.mode == CalcMode::Manual {
             // Only the edited formulas themselves are evaluated.
-            let own: Vec<Key> = changed.iter().copied().filter(|k| self.graph.nodes.contains_key(k)).collect();
+            let own: Vec<Key> = changed.iter().copied().filter(|k| self.graph.has_node(*k)).collect();
             self.run(wb, own, false, &HashSet::default());
             return;
         }
@@ -1128,7 +1131,7 @@ impl Calc {
             }
             // An emptied cell can unblock an anchor any distance above or to the left of it.
             for (si, end) in emptied {
-                for &(s, c) in self.graph.nodes.keys() {
+                for (s, c) in self.graph.node_keys() {
                     if s == si && c.row <= end.row && c.col <= end.col && wb.sheet(s).is_some_and(|sh| spilled_nothing(&sh.value(c))) {
                         seeds.push((s, c));
                     }
@@ -1158,7 +1161,7 @@ impl Calc {
         let mut seen: HashSet<Key> = HashSet::default();
         let mut queue: VecDeque<Key> = VecDeque::new();
         for k in seeds {
-            if self.graph.nodes.contains_key(k) && seen.insert(*k) {
+            if self.graph.has_node(*k) && seen.insert(*k) {
                 queue.push_back(*k);
             }
             let mut deps = Vec::new();
@@ -1229,7 +1232,7 @@ impl Calc {
             let mut trees = Trees::with_capacity(dirty.len());
             let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
             for k in &dirty {
-                if let Some(node) = self.graph.nodes.get(k) {
+                if let Some(node) = self.graph.node(*k) {
                     trees.push(*k, node);
                     if let Some(r) = self.graph.legacy_of(*k) {
                         legacy.insert(*k, r);
@@ -1436,7 +1439,7 @@ impl Calc {
             }
             // An area a formula no longer spills over may unblock another formula's array.
             for (si, o) in freed {
-                for &(s, c) in self.graph.nodes.keys() {
+                for (s, c) in self.graph.node_keys() {
                     if s == si
                         && c.row <= o.end.row
                         && c.col <= o.end.col

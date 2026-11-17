@@ -466,7 +466,7 @@ fn spill_hits_overlap(index: &SpillIndex, sheet: usize, hits: &[CellRef], range:
 /// else: `=TRANSPOSE(A1:B6)` in A2 spills over part of its own source. A range that only touches
 /// the anchor is the anchor reading itself, which the graph's cycle detection already refuses.
 fn reads_own_spill(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
-    let Some(node) = host.graph.nodes.get(&(sheet, anchor)) else { return false };
+    let Some(node) = host.graph.node((sheet, anchor)) else { return false };
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
@@ -486,7 +486,7 @@ const SPILL_LOOP_FORMULAS: usize = 4096;
 /// it `#SPILL!`, the reader firing it again — and stopped on whichever one the round limit met, so
 /// the value in memory depended on how many rounds the sequence took to get there.
 fn spill_feeds_its_source(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
-    let Some(node) = host.graph.nodes.get(&(sheet, anchor)) else { return false };
+    let Some(node) = host.graph.node((sheet, anchor)) else { return false };
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
@@ -504,7 +504,7 @@ fn spill_feeds_its_source(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) 
             if k == (sheet, anchor) || !seen.insert(k) {
                 continue;
             }
-            let Some(n) = host.graph.nodes.get(&k) else { continue };
+            let Some(n) = host.graph.node(k) else { continue };
             if host.graph.areas_of(n).iter().any(|x| x.sheet() == sheet && x.range().intersects(&range)) {
                 return true;
             }
