@@ -1,14 +1,11 @@
-# Cella app icon (PLACEHOLDER)
+# Cella app icon
 
-**This icon is temporary.** Every Crafting App's icon is an engraved creature portrait that the
-product owner makes (craftrules `standards/icon-design.md`); Cella's hasn't been made yet.
-Until it is, this placeholder stands in: a simple ledger page with a header row, a row-number
-column, a selected cell with its fill handle and a double rule under a total, on a full-bleed
-Cella-green tile. It is original geometry written by hand for this repository, deliberately
-not modelled on any vendor's spreadsheet logo (no letters, no "X", no overlapping panels).
+**The mark:** the letter **C**, with one **cell** in its opening. Cella is named for the Latin
+*cella* (a cell, a small chamber) — the word *cell* comes from it — so the mark is the name itself:
+a C holding one cell. No grid page, no folded corner, no vendor likeness.
 
-When the owner's art arrives, replace `cella.svg`, run `packaging/icons.sh`, update this
-README (provenance, creature) and the rows in `ATTRIBUTION.md`, and drop the word placeholder.
+Original geometry, hand-written for this repository by Cella contributors. No third-party material.
+Licensed like the rest of Cella (MIT OR Apache-2.0, see `LICENSE.txt`).
 
 ## Palette
 
@@ -16,19 +13,22 @@ Exactly three colours:
 
 | Colour | Hex | Used for |
 |---|---|---|
-| Ink | `#0b0b0c` | Line work and contour |
-| Paper | `#efe9dc` | The page |
-| Cella green (app colour, **proposed**) | `#1f9d55` | The full-bleed field and the header cells |
+| Tile | `#17181c` | The full-bleed rounded field |
+| Paper | `#efe9dc` | The C |
+| Cell (accent) | `#f7d98a` → `#e8a83a` | The one cell, a vertical gradient |
 
-The app colour is a proposal pending the owner's approval: Cella green `#1f9d55`, with ink
-(darker) variant `#147a40` for text and accents on light backgrounds. It differs from
-DesignCraft's `#7bb51c`.
+The accent is warm on purpose: green reads as Excel (and as the Craft suite this product left), and
+a warm cell on near-black keeps its edge on both light and dark desktops.
 
 ## Geometry
 
-A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. Windows and Linux use the full
-tile. The macOS icons (`.icns`, `cella-macos-512.png`) sit on Apple's grid: an 824/1024
-body with a transparent margin.
+A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. The C is one stroke from
+`(344,156)` round through the left side to `(344,356)`, width 52, rounded terminals; the cell is a
+64 px square with `rx=16` centred in the opening (`300,226`).
+
+Windows and Linux use the full tile. The macOS icons (`.icns`, `cella-macos-512.png`) sit on
+Apple's grid: an 824/1024 body with a transparent margin (`packaging/icons.sh` widens the viewBox to
+`-62.136 -62.136 636.272 636.272`).
 
 ## Files
 
@@ -37,16 +37,16 @@ body with a transparent margin.
 | `cella.svg` | Canonical artwork; also `hicolor/scalable` |
 | `cella-1024.png` | 1024 px render of the full tile |
 | `cella-macos-512.png` | Runtime Dock icon on macOS (for `apps/cella` to embed) |
-| `cella.icns` | macOS bundle icon (`CFBundleIconFile`) |
-| `cella.ico` | Windows exe icon, 16–256 px (embedded by `apps/cella/build.rs`) |
-| `hicolor/<size>/apps/io.github.matt-qwq.cella.png` | Linux icon theme, 16–512 px; the 256 px one is also the runtime window icon on Windows and Linux |
-| `hicolor/scalable/apps/io.github.matt-qwq.cella.svg` | Linux scalable icon |
-| `LICENSE.txt` | MIT OR Apache-2.0 |
+| `cella.icns` | macOS bundle icon (`CFBundleIconFile`), 11 sizes |
+| `cella.ico` | Windows executable/installer icon, 9 sizes |
+| `hicolor/<size>/apps/io.github.matt-qwq.cella.png` | Linux icon theme, 16–512 px |
 
-The app ID is `io.github.matt-qwq.cella`. It's used for the hicolor icon names, the Wayland app
-ID and `packaging/linux/io.github.matt-qwq.cella.desktop`.
+Regenerate everything with `packaging/icons.sh` (needs `resvg`; `iconutil` on macOS for the .icns —
+elsewhere the `.icns` is packed from the same PNGs and must be rebuilt on a Mac before a signed
+release). The outputs are committed, so builds and packaging never need these tools.
 
-## Regenerate
+## Provenance
 
-Edit `cella.svg`, then run `packaging/icons.sh`. It needs `resvg`, and `iconutil` for the
-`.icns` (macOS only). It packs the `.ico` with `cargo xtask ico`.
+First version authored 2026-11-18 (owner's pick from a rendered comparison sheet). Replacing the art
+means: edit `cella.svg`, run `packaging/icons.sh`, refresh the rows in [`ATTRIBUTION.md`](../../ATTRIBUTION.md),
+and update this page's palette and geometry sections.

@@ -13,6 +13,10 @@ this page is the local copy of the decision.
     username. **Generated** by `craftrules/scripts/contributors.py`; never hand-edit.
   - [`contributors/people.toml`](../contributors/people.toml): the names people chose for
     themselves. **Each contributor adds only their own entry**, in their own PR.
+- **Identity is the GitHub username** — that is the public credit, and it links to the profile.
+  A commit's author name and email are the record in git history; **addresses are not shown in the
+  app** (publishing them invites spam, and the upstream standard does not display them). A real
+  name is only ever shown when the person added it themselves; nobody is required to give one.
 - Each contributor gets one line: GitHub username (always), display name (opt-in, or their synced
   GitHub profile name), real name (only if they told us), merged PRs, commits, lines added, lines
   deleted, binary assets added, binary assets removed, first and last commit date.

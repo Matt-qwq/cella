@@ -41,8 +41,8 @@
   </keywords>
   <!-- Proposed app colour (Cella green #1f9d55 / ink #147a40); see assets/app-icon/README.md. -->
   <branding>
-    <color type="primary" scheme_preference="light">#a7e3bf</color>
-    <color type="primary" scheme_preference="dark">#147a40</color>
+    <color type="primary" scheme_preference="light">#17181c</color>
+    <color type="primary" scheme_preference="dark">#efe9dc</color>
   </branding>
   <requires>
     <display_length compare="ge">760</display_length>
