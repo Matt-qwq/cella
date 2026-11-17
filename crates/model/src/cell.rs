@@ -123,3 +123,19 @@ impl Cell {
         }
     }
 }
+
+/// The layout the undo budget and the store's byte accounting read (SHAPE-SHARING.md §1.1, S0).
+const _: () = assert!(std::mem::size_of::<Formula>() == 64);
+const _: () = assert!(std::mem::size_of::<Cell>() == 40);
+
+#[cfg(test)]
+mod size_pins {
+    use super::{Cell, Formula};
+
+    #[test]
+    fn formula_sizes_are_pinned() {
+        println!("size_of::<Formula>() = {}", std::mem::size_of::<Formula>());
+        println!("size_of::<Cell>() = {}", std::mem::size_of::<Cell>());
+        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (64, 40));
+    }
+}

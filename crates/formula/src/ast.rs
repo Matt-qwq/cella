@@ -14,6 +14,16 @@ pub struct Anchor {
     pub col_abs: bool,
 }
 
+/// The sizes formula byte accounting rests on (SHAPE-SHARING.md §1.1, pinned by S0). Every one of
+/// them is the whole point of the shape work — `Expr` is dominated by its `Struct` variant — so a
+/// layout change has to be re-measured there rather than silently absorbed here.
+const _: () = assert!(std::mem::size_of::<Anchor>() == 12);
+const _: () = assert!(std::mem::size_of::<RefKind>() == 24);
+const _: () = assert!(std::mem::size_of::<SheetSel>() == 48);
+const _: () = assert!(std::mem::size_of::<StructRef>() == 96);
+const _: () = assert!(std::mem::size_of::<Reference>() == 72);
+const _: () = assert!(std::mem::size_of::<Expr>() == 96);
+
 impl Anchor {
     pub fn cell(&self) -> CellRef {
         CellRef::new(self.row, self.col)
