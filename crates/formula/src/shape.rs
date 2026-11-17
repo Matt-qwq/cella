@@ -11,9 +11,11 @@
 //! bar. See `plan/SHAPE-SHARING.md` §3.4 for the design and §4 for the invariants this module
 //! exists to satisfy.
 //!
-//! **Nothing consumes a shape yet.** S1 of that design adds the type, the interner and their
-//! tests; `Formula`, the store, the readers, the writers and `Calc` still build and hold one
-//! absolute tree per cell, and S2 moves them over.
+//! **A cell no longer holds a tree.** `Formula` keeps its exact A1 text and an `Arc<Shape>`; the
+//! evaluator, the dependency walk, the readers, the writers, fill, copy, paste and sort all read the
+//! shape at the cell they are working on (`Reference::range_at`). A cell that only has text (a JSON
+//! workbook, an unparseable formula) is parsed at the cell by `Formula::expr_at`, and `Calc` interns
+//! that parse into one `Shape` per rebuild so a million such formulas share a tree again.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};

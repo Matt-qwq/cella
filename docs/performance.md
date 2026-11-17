@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted, the save build parallelised, and formula **shape sharing** — one interned tree per formula shape instead of one per cell. A 1M × 6 workbook went **2.90 → 1.27 GB** live (reopened 2.18 → 1.04 GB) and every scenario got faster (save 3.7 → 1.97 s, open 5.5 → 4.08 s, fill formulas 2.8 → 2.15 s, recalc 2.3 → 1.81 s, graph rebuild 1.7 → 1.25 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted, the save build parallelised, and formula **shape sharing** — one interned tree per formula shape instead of one per cell. A 1M × 6 workbook went **2.90 → 1.17 GB** live (reopened 2.18 → 0.95 GB) and every scenario got faster (save 3.7 → 1.97 s, open 5.5 → 4.08 s, fill formulas 2.8 → 2.15 s, recalc 2.3 → 1.81 s, graph rebuild 1.7 → 1.25 s); the last two steps deleted the old per-cell tree (`Formula` 48 B, `calc::Node` 16 B). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 GridCraft is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
@@ -222,7 +222,7 @@ One day, three waves, all measured on this machine in release and best of three 
 **byte accounting for a live session** (so "where does the memory go" stops being folklore), **the
 save build parallelised and the dependency graph compacted**, and **formula shape sharing** — one
 interned tree per formula *shape* instead of one per cell. The result: a 1,000,000-row × 6-column
-workbook holds **1.27 GB instead of 2.90 GB**, reopens at 1.04 GB instead of 2.18 GB, and **every
+workbook holds **1.17 GB instead of 2.90 GB**, reopens at 0.95 GB instead of 2.18 GB, and **every
 scenario is faster**:
 
 | scenario (1M rows × 6 columns) | before the round | after | |
@@ -242,6 +242,13 @@ scenario is faster**:
 At 100k rows the same direction and proportion: save 356 → 178 ms, open 473 → 341 ms, edit+recalc
 225 → 173 ms, sort 625 → 510 ms, rebuild 147 → 89 ms.
 
+The last two steps (boxing a formula's legacy array range, then deleting its per-cell tree) took
+the memory table below from 1.27 to **1.17 GB** and were within budget on every scenario in their
+own gate run (`open.xlsx` 3.68 s, `save.xlsx` 1.85 s, `rebuild.graph` 1.16 s in that pass). A
+gate run minutes later on the same box read 4.58 / 2.20 / 1.33 — this machine's ±10 % spread is
+exactly why `xtask/perf-budgets.txt` records twice the measurement and why the table above quotes
+the quietest run of each scenario rather than any single pass.
+
 ### Where the live heap goes
 
 `cargo run --release -p gridcraft-engine --example memory -- 1000000` builds the reference workbook
@@ -250,32 +257,33 @@ capacities and layouts — not a heap census — and `total == Σ parts` is a te
 
 | part (1M × 6, 2M formulas) | before the round | now | share |
 |---|---:|---:|---:|
-| **cells** | **1,267.7 MB** | **527.7 MB** | 41.4 % |
-| · formula trees (`Arc<Expr>`, 2M) | 768.0 MB | **12.0 MB** | 0.9 % |
-| · formula text + `Formula` | 165.4 MB | 181.4 MB | 14.2 % |
-| · row side tables (`RowExtras`) | 144.0 MB | 144.0 MB | 11.3 % |
-| · number tables / text dictionaries | 98.0 MB | 98.0 MB | 7.7 % |
-| · band headers, payloads, runs, bitmaps | 92.3 MB | 92.3 MB | 7.2 % |
-| **calc** | **851.4 MB** | **439.6 MB** | 34.5 % |
-| · graph nodes (2M) | 172.0 MB | 172.0 MB | 13.5 % |
-| · dependents map | 478.2 MB | 142.6 MB | 11.2 % |
-| · precedent-area arena | 201.3 MB | 125.0 MB | 9.8 % |
-| **history / undo** | **737.6 MB** | **265.6 MB** | 20.8 % |
-| journal (base64 of the saved file) | 42.1 MB | 42.1 MB | 3.3 % |
-| **total** | **2.90 GB** | **1.27 GB** | |
+| **cells** | **1,267.7 MB** | **479.7 MB** | 41.0 % |
+| · formula trees (`Arc<Expr>`, 2M) | 768.0 MB | **12.0 MB** | 1.0 % |
+| · formula text + `Formula` (48 B) | 165.4 MB | **133.4 MB** | 11.4 % |
+| · row side tables (`RowExtras`) | 144.0 MB | 144.0 MB | 12.3 % |
+| · number tables / text dictionaries | 98.0 MB | 98.0 MB | 8.4 % |
+| · band headers, payloads, runs, bitmaps | 92.3 MB | 92.3 MB | 7.9 % |
+| **calc** | **851.4 MB** | **406.0 MB** | 34.7 % |
+| · graph nodes (2M, 16 B) | 172.0 MB | **138.4 MB** | 11.8 % |
+| · dependents map | 478.2 MB | 142.6 MB | 12.2 % |
+| · precedent-area arena | 201.3 MB | 125.0 MB | 10.7 % |
+| **history / undo** | **737.6 MB** | **241.6 MB** | 20.7 % |
+| journal (base64 of the saved file) | 42.1 MB | 42.1 MB | 3.6 % |
+| **total** | **2.90 GB** | **1.17 GB** | |
 
-Reopened from the 70 MB xlsx: **1.04 GB** (was 2.18 GB). The workbook as built holds **3 shapes for
+Reopened from the 70 MB xlsx: **0.95 GB** (was 2.18 GB). The workbook as built holds **3 shapes for
 2,000,000 formulas**, and `edit.autoFill` over a million rows now costs **zero parses** (the whole
 reference workbook costs three: the typed source formulas). After a save and reopen it holds 181 —
 the writer still writes one plain `<f>` per cell by design (§ `plan/SHAPE-SHARING.md` 5.4), so a
 reopened file parses once per read chunk.
 
-Two numbers are worth reading carefully. **Undo's 265.6 MB is a charge, not wholly heap**: about
+Two numbers are worth reading carefully. **Undo's 241.6 MB is a charge, not wholly heap**: about
 480 MB of the original 737.6 MB was formula trees shared with the live bands and the graph, so the
 snapshot's own heap was ≈257 MB — the shape work cut the charge because the shared tree is now one
-`Arc<Shape>` charged once. And **formula text grew 16 MB** while everything else fell: `Formula`
-is 72 B in this design (the cell keeps its exact file spelling) against 64 B before, and the S7
-step (boxing `array`) takes it back.
+`Arc<Shape>` charged once, and the formula struct's shrink took another 24 MB. And **formula text
+is 133.4 MB against 165.4 MB at the start** even though it now holds the same 2M spellings: the
+cell's `Formula` is 48 B (the shape, not the tree, and a boxed legacy-array range), where it was
+64 B with a 56-byte `Arc<Expr>` per cell.
 
 What each wave did, in a paragraph each:
 
@@ -321,7 +329,7 @@ part is certainly one value without building anything.
 
 What is left, in the order the accounting ranks it:
 
-- **The undo stack, 265.6 MB charged** (the snapshot's own heap is a fraction of that). At 1M rows the
+- **The undo stack, 241.6 MB charged** (the snapshot's own heap is a fraction of that). At 1M rows the
   budget keeps exactly one entry — the newest — and compressing that one turns a 23 ms undo into
   4.99 s (measured), which the 54 ms gate forbids. A step the budget would *drop* is now kept as
   compressed pages when its encode projects under 60 ms (`CellStore::spill_retained_against`), which
@@ -329,13 +337,13 @@ What is left, in the order the accounting ranks it:
   restoring *into a paged store* — attach the page file and let the 64 MiB page cache decode bands on
   demand, so undo costs ~0 and the snapshot is ~72 MB immediately, with the decode paid by whoever
   next walks every band. Not attempted.
-- **Graph nodes 172.0 MB and the area arena 125.0 MB.** A node is 24 B while the shape sits beside
-  the cell's own pointer: the S7 step (deleting the old tree from the model and the node) takes it
-  back to 16 B, ≈34 MB. A per-sheet node table (25 B a slot) is a further ≈33 MB and changes 13 call
-  sites. The area arena is at 1.25× its live length by construction.
-- **Formula text 181.4 MB.** It is the file spelling, the JSON envelope, the formula bar and the
-  save's fast path — the shape design deliberately keeps it (§ 5.4). Boxing `array` (S6) gives 16 MB
-  of it back.
+- **Graph nodes 138.4 MB and the area arena 125.0 MB.** The node is back to 16 B (its flags live in
+  the run's length word, and the shape pointer replaced the tree). A per-sheet node table (25 B a
+  slot) is a further ≈33 MB and changes 13 call sites; the arena is at 1.25× its live length by
+  construction.
+- **Formula text 133.4 MB.** It is the file spelling, the JSON envelope, the formula bar and the
+  save's fast path — the shape design deliberately keeps it (§ 5.4), and 24 B of struct per formula
+  is what is left of the per-cell cost.
 - **The journal, 42–94 MB**, keeps the saved file as base64 in an open's params.
 - **A structural edit still prints every moved cell's text** (`rewrite_all_formulas` walks the shape
   trees in place now, but each moved cell with a relative reference has a different A1 spelling).
@@ -356,10 +364,13 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-17 (second wave):** formula **shape sharing** and the graph/save work around it. One
+- **2026-11-17 (second wave):** formula **shape sharing**, then the deletion of the old
+  representation (`Formula` 72 → 56 → 48 B, `calc::Node` 24 → 16 B, no per-cell tree at all), and the
+  graph/save work around it. One
   interned tree per formula shape (relative references as offsets from the cell), the cell keeping
   its exact A1 text: **2M formulas hold 3 shapes**, `edit.autoFill` over 1M rows costs 0 parses,
-  trees 768 → 12 MB, total **2.90 → 1.27 GB** (reopened 1.04 GB). The evaluator reads a shape in
+  trees 768 → 12 MB, and after the old per-cell tree was deleted (`Formula` 48 B, `Node` 16 B)
+  total **2.90 → 1.17 GB** (reopened 0.95 GB). The evaluator reads a shape in
   place (`range_at`), fill/copy/paste/sort/read share the `Arc`, and the save stopped analysing a
   resolved tree per formula. With the graph index/packing and the parallel sheet build: save 3.7 →
   **1.97 s**, open 5.4–5.6 → **4.08 s**, fill formulas 2.8 → 2.15 s, recalc 2.3 → 1.81 s, graph

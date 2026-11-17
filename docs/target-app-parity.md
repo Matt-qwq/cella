@@ -227,7 +227,7 @@ Excel recalculates on every core (multi-threaded recalculation), streams large f
 | Save, 200k formula cells | **12 % faster** (514 → 460 ms of a 7.0 MB save): a formula whose file spelling is its own text is written without rebuilding its tree; bytes unchanged | flat | measured 2026-11-13, release, A/B on one binary, `sha256` identical |
 | Save a 1M × 6 / 72 MB workbook | **1.97 s** at 8 threads (100k rows: **178 ms**); the row XML was 91 % of the save and is built in parallel windows with the shared string table resolved by a pre-pass, and a 1M-formula sheet no longer re-spells each formula; package bytes identical | 1–3 s | measured 2026-11-17, the gate harness best of three on an idle machine; 3.7 s before the round |
 | Open a 1M × 6 / 72 MB workbook | **4.08 s** (100k rows: 341 ms) — inflate/decode on eight threads, the graph build 1.25 s, and a formula whose every part is certainly one value skips the legacy-`@` analysis | 2–5 s | measured 2026-11-17, the gate harness best of three; 5.4–5.6 s before the round |
-| Live heap, 1M × 6 with 2M formulas | **1.27 GB** — cells 528 MB (formula text 181 MB, row side tables 144 MB, formula trees **12 MB** for 2,000,000 formulas, number tables 66, text dictionaries 32), graph 440 MB (dependents map 143, nodes 172, areas 125), undo 266 MB charged, journal 42 MB; **1.04 GB reopened** | not published | measured 2026-11-17, `crates/engine/examples/memory.rs`: arithmetic on lengths, capacities and layouts, not a heap census; `total == Σ parts` is a test per crate. One interned tree per formula *shape*: **3 shapes for 2M formulas**, and a 1M-row autofill costs 0 parses |
+| Live heap, 1M × 6 with 2M formulas | **1.17 GB** — cells 480 MB (formula text 133 MB at 48 B a formula, row side tables 144 MB, formula trees **12 MB** for 2,000,000 formulas, number tables 66, text dictionaries 32), graph 406 MB (dependents map 143, nodes 138, areas 125), undo 242 MB charged, journal 42 MB; **0.95 GB reopened** | not published | measured 2026-11-17, `crates/engine/examples/memory.rs`: arithmetic on lengths, capacities and layouts, not a heap census; `total == Σ parts` is a test per crate. One interned tree per formula *shape*: **3 shapes for 2M formulas**, and a 1M-row autofill costs 0 parses |
 | Fill 1M formulas / recalc 1M after one edit | **2.15 s / 1.81 s** (chained running sum 2.98 s); the graph rebuild of the same 2M formulas is 1.25 s | 1–3 s | measured 2026-11-17, the gate harness best of three on an idle machine; 2.8 / 2.3 / 4.0 / 1.7 s before shape sharing |
 | Save a large workbook | 31.7M cells: **3.48 s, 1,283.9 MiB peak**; 100M-cell export: **28.42 s, 1,814.3 MiB peak** | should stay flat | measured 2026-10-29, `session_breakdown` release with counting allocator; per-sheet deflate, bytes identical |
 | Whole-sheet operations | Bounded: Remove Duplicates on 1M×10 falls from 91 s to 12 s, Sort 3.2 s, Fill Down of 1M rows 1.45 s; sort/remove duplicates/setValues cap at 12M cells (1M×20 refused in 1.3 s) | fine | measured on `max_1048576.xlsx` / `wide_1m_x20.xlsx`, `gridcraft-cli` |
@@ -237,10 +237,9 @@ Parquet read half after beta. The 2026-11-17 rounds took the memory ranking down
 trees (768 → 12 MB, one interned tree per *shape*), the graph (851 → 440 MB: the precedent index
 478.2 → 142.6, nodes 172.0 → 138.4, areas 201.3 → 125.0), and the undo charge (737.6 → 265.6 MB;
 at 1M rows the budget keeps one newest entry, and the structural answer — restoring into a paged
-store instead of live bands — is not attempted). Left: formula text 181 MB (the file spelling, kept
-by design), the deletion of the dual representation (`Formula` 72 → 56 B, `Node` 24 → 16 B,
-≈50 MB), the journal's base64 copy (42–94 MB), and a structural edit still printing every moved
-cell's text. The 2026-11-13 round removed the per-frame work (used range, CF
+store instead of live bands — is not attempted). Left: formula text 133 MB (the file spelling, kept
+by design), a per-sheet node table (≈33 MB, 13 call sites), the journal's base64 copy (42–94 MB),
+and a structural edit still printing every moved cell's text (S5). The 2026-11-13 round removed the per-frame work (used range, CF
 statistics, chart/sparkline layouts), the per-evaluation name resolution, the per-commit store diff
 and the per-formula tree rebuild on save; the remaining cheap wins are `MODE`'s quadratic count,
 `VLOOKUP`/`MATCH` copying their key column, and `check_arrays` still walking the store on a sheet
