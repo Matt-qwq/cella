@@ -791,9 +791,12 @@ impl Calc {
     ///
     /// Returns whether it could do that; false means it fell back to [`rebuild`](Self::rebuild)
     /// because the two versions cannot be compared cell by cell — a different set or order of
-    /// sheets, rows or columns inserted or deleted, a paged store, or defined names, tables or
-    /// report definitions that moved under the formulas, since those decide what a reference means
-    /// and so what a formula's precedents are.
+    /// sheets, rows or columns inserted or deleted, or defined names, tables or report definitions
+    /// that moved under the formulas, since those decide what a reference means and so what a
+    /// formula's precedents are. A store that keeps its bands as compressed pages is compared a
+    /// band at a time, decoding the ones the walk reaches (see
+    /// [`CellStore::formula_changes_against`]); a caller that already knows the cells that differ
+    /// passes them to [`restore_cells`](Self::restore_cells) instead, and decodes none.
     pub fn restore(&mut self, from: &Workbook, to: &Workbook) -> bool {
         // Whatever happens below, this call evaluates nothing: the snapshot it restores was
         // calculated when it was made.
@@ -818,6 +821,40 @@ impl Calc {
                     self.scratch_areas = areas;
                 }
                 None => self.graph.remove((si, at)),
+            }
+        }
+        self.graph.settle();
+        true
+    }
+
+    /// [`restore`](Self::restore) for a caller that already knows which cells' formulas the two
+    /// versions disagree on: the undo history records them when a step is spilled to its pages,
+    /// while both versions are live and can be compared band by band, so the snapshot's formula for each of
+    /// them is all that has to be read here — a band at a time for a snapshot kept as compressed
+    /// pages, instead of the whole sheet decoded to find out.
+    ///
+    /// **Nothing is evaluated**, exactly as [`restore`](Self::restore): the snapshot holds the
+    /// values its own calculation produced. `cells` must be every cell whose formula differs
+    /// between the two versions, in the coordinates of `to`; a caller that cannot say that (a
+    /// structural edit, a defined name that moved under the formulas) restores through
+    /// [`restore`](Self::restore), which finds the differences itself or rebuilds.
+    pub fn restore_cells(&mut self, to: &Workbook, cells: &[(usize, CellRef)]) -> bool {
+        // Whatever happens below, this call evaluates nothing.
+        self.last_recalc_cells = 0;
+        self.last_restore_cells = Some(cells.len());
+        self.parallel_fallback = false;
+        let mut shapes = gridcraft_formula::ShapeTable::default();
+        for (si, at) in cells {
+            let formula = to.sheets.get(*si).and_then(|sheet| sheet.cells.formula(*at));
+            // A formula whose text does not parse has no node at all, as in `rebuild`.
+            match formula.as_ref().and_then(|f| self.node_for(to, *si, *at, f, &mut shapes)) {
+                Some((node, _keep)) => {
+                    let legacy = formula.as_ref().and_then(|f| f.array.as_deref().copied());
+                    let areas = std::mem::take(&mut self.scratch_areas);
+                    self.graph.insert((*si, *at), &areas, legacy, node);
+                    self.scratch_areas = areas;
+                }
+                None => self.graph.remove((*si, *at)),
             }
         }
         self.graph.settle();

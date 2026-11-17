@@ -301,6 +301,15 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
     };
     super::check_bulk(body.count())?;
     edit(s, |cx| {
+        // A store an undo handed back keeps its bands as pages and reads one at a time. A sort reads
+        // the whole range in an order that has nothing to do with the bands (a permutation), so on a
+        // paged store each line would decode the band it lands in and evict the one it just read:
+        // the sheet comes back into memory once, up front, and the move runs on live bands.
+        if let Some(paged) = cx.wb.sheet_mut(sheet)
+            && paged.cells.paged_band_count() > 0
+        {
+            paged.cells.expand_pages();
+        }
         let Some(sh) = cx.wb.sheet(sheet) else { return Ok(Json::Null) };
         if sh.merges.iter().any(|m| m.intersects(&body) && !m.is_single()) {
             return Err(EngineError::Other("To do this, all the merged cells need to be the same size.".into()));

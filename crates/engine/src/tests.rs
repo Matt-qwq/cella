@@ -425,7 +425,7 @@ fn bulk_formula_history_is_bounded_and_latest_edit_still_undoes() {
             sheet.cells.set(CellRef::new(row, 0), Cell::formula(Formula::new(&format!("=B{}+{}", row + 1, version))));
         }
         current = Arc::new(next);
-        crate::push_history_with_budget(&mut history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
+        crate::push_test_history(&mut history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
     }
     assert!(history.len() < 5, "bulk edits should evict old steps before reaching the count limit");
     assert_eq!(history.last().unwrap().label, "edit 4");
@@ -7154,7 +7154,16 @@ mod compressed_history {
         let live = s.doc().expect("a document").wb.clone();
         let d = s.doc_mut().expect("a document");
         let Some(entry) = d.undo.last_mut() else { return false };
-        crate::compress_history_entry(entry, &live)
+        crate::compress_history_entry(entry, &live, None)
+    }
+
+    /// Bands step `index` of the undo stack keeps as pages.
+    fn paged_bands(s: &Session, index: usize) -> usize {
+        let doc = s.doc().expect("a document");
+        match doc.undo.get(index) {
+            Some(entry) => entry.wb.sheets.iter().map(|sheet| sheet.cells.paged_band_count()).sum(),
+            None => 0,
+        }
     }
 
     fn latest_retained(s: &Session) -> usize {
@@ -7182,7 +7191,9 @@ mod compressed_history {
         assert!(before > 0, "the step holds the sheet the fill replaced");
         assert!(compress_latest(&mut s), "the step has bands of its own to spill");
         let after = latest_retained(&s);
-        assert!(after * 3 < before, "compressed to {after} from {before} bytes");
+        // Its pages, plus the delta of the thousand formulas the fill wrote (sixteen bytes a cell):
+        // both are memory the step keeps, and both are charged.
+        assert!(after * 2 < before, "compressed to {after} from {before} bytes");
         assert!(after * 4 < cells, "{after} bytes of step against {cells} of live cells");
         // The report charges the step what it now costs, not what it used to.
         let report = s.memory_report();
@@ -7313,8 +7324,12 @@ mod compressed_history {
         };
         assert!(paged, "a page file was created");
         fill(&mut s, 2001, 200);
-        // The step shares that file: compressing it would write a copy and free nothing.
-        assert!(!compress_latest(&mut s), "a paged store is left as it is");
+        // The step shares that file: compressing it would write a copy and free nothing, so it is
+        // already as cheap as it gets and nothing is spilled.
+        let step = s.doc().expect("a document").undo.len().saturating_sub(1);
+        let pages_before = paged_bands(&s, step);
+        assert!(compress_latest(&mut s), "a paged store has nothing left to spill");
+        assert_eq!(paged_bands(&s, step), pages_before, "and spilling it wrote nothing");
         s.execute("edit.undo", json!({})).unwrap();
         assert!(v(&s, "A2001").is_empty());
         assert_eq!(v(&s, "A2000"), Value::from("Item 2000"));
@@ -7337,7 +7352,7 @@ mod compressed_history {
             let live = s.doc().expect("a document").wb.clone();
             let d = s.doc_mut().expect("a document");
             match d.undo.get_mut(older) {
-                Some(entry) => crate::compress_history_entry(entry, &live),
+                Some(entry) => crate::compress_history_entry(entry, &live, None),
                 None => false,
             }
         };
@@ -7345,8 +7360,8 @@ mod compressed_history {
         assert_eq!(v(&s, "A2000"), Value::from("Item 2000"));
     }
 
-    /// The budget still drops what it cannot keep, and the newest step is never compressed — it is
-    /// the one the next undo restores.
+    /// The budget still drops what it cannot keep, and a newest step that fits the budget is left
+    /// live — it is the one the next undo restores, and an undo of a live step decodes nothing.
     #[test]
     fn the_budget_still_drops_the_steps_it_cannot_keep() {
         use std::sync::Arc;
@@ -7364,10 +7379,10 @@ mod compressed_history {
                 sheet.cells.set(CellRef::new(row, 0), Cell::formula(Formula::new(format!("=B{}+{version}", row + 1).as_str())));
             }
             current = Arc::new(next);
-            crate::push_history_with_budget(&mut history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
+            crate::push_test_history(&mut history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
         }
         assert_eq!(history.last().map(|entry| entry.label.as_str()), Some("edit 3"), "the latest step is kept");
-        assert!(!history.last().expect("a step").compressed, "the newest step is never compressed");
+        assert!(!history.last().expect("a step").compressed, "a newest step the budget can hold is left live");
         // Whatever stayed is charged what it costs, and the stack fits the budget (or is one step).
         let total: usize = history.iter().map(|entry| entry.retained_bytes).sum();
         assert!(total <= budget || history.len() == 1, "{total} bytes for {} steps", history.len());
@@ -7414,7 +7429,7 @@ mod compressed_history {
                     sheet.cells.set(CellRef::new(row, 0), cell);
                 }
                 current = Arc::new(next);
-                crate::push_history_with_budget(history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
+                crate::push_test_history(history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
             }
             current
         }
@@ -7428,10 +7443,10 @@ mod compressed_history {
         assert_eq!(small.len(), 3, "every step is kept: pages made the room");
         // The first step is the empty workbook the edits started from: it has no band to spill.
         assert!(small[1].compressed, "the step the budget would have dropped survived as pages");
-        assert!(small[1].retained_bytes * 4 < small[2].retained_bytes, "{} against {}", small[1].retained_bytes, small[2].retained_bytes);
+        assert!(small[1].retained_bytes * 2 < small[2].retained_bytes, "{} against {}", small[1].retained_bytes, small[2].retained_bytes);
         let total: usize = small.iter().map(|entry| entry.retained_bytes).sum();
         assert!(total < 300 * 1024, "the pages made it fit: {total} bytes");
-        assert!(!small.last().expect("a step").compressed, "the newest step is still never compressed");
+        assert!(!small.last().expect("a step").compressed, "the newest step still fits as it is");
 
         // 38,500 rows is just over six hundred bands, the encode gate. A budget that has room for
         // the pages (and no room for the step itself) is still refused: the step is dropped, and —
@@ -7447,5 +7462,107 @@ mod compressed_history {
         assert_eq!(big.len(), 1, "the step the budget could hold as pages was dropped instead");
         assert!(big.iter().all(|entry| !entry.compressed), "a step past the gate is never encoded");
         assert_eq!(big.last().map(|entry| entry.label.as_str()), Some("edit 2"), "the latest step is the one that stayed");
+    }
+
+    /// The newest-step rule itself: a step the budget can hold is left live, and only one that
+    /// costs more than the whole budget by itself is offered its spill — and only when the pages it
+    /// becomes still fit beside the older steps.
+    #[test]
+    fn only_a_newest_step_over_the_whole_budget_is_offered_its_spill() {
+        let budget = 128 << 20;
+        assert!(!crate::worth_spilling_newest(budget / 2, 0, 600, budget), "a step the budget holds is left live");
+        assert!(!crate::worth_spilling_newest(budget + 1, 0, 0, budget), "a step with no band has nothing to spill");
+        assert!(crate::worth_spilling_newest(budget + 1, 0, 15_625, budget), "a sheet the budget cannot hold is spilled whole");
+        assert!(!crate::worth_spilling_newest(budget + 1, budget / 2, 15_625, budget), "its pages have to fit beside the older steps");
+        assert!(!crate::worth_spilling_newest(budget + 1, 0, usize::MAX / (5 * 1024), budget), "saturating, never wrapping");
+    }
+
+    /// An undo of a spilled step hands the snapshot back **paged**: the edit was a value write, so
+    /// the step recorded no formula change, the restore decodes no page, and the workbook that
+    /// comes back reads its pages as cells in them are read. Nothing is recalculated, and the save
+    /// that follows writes the pre-edit file byte for byte through the uncached scan.
+    #[test]
+    fn an_undo_of_a_spilled_step_hands_back_a_paged_workbook() {
+        let mut s = fresh();
+        fill(&mut s, 1, 2_000);
+        formulas(&mut s, 1, 2_000);
+        let before = saved_sha(&mut s);
+        // A value write: it recalculates the sheet but rewrites no formula.
+        s.execute("cell.set", json!({"cell": "B1", "input": "5"})).unwrap();
+        assert!(compress_latest(&mut s), "the step is spilled");
+        assert!(paged_bands(&s, s.doc().expect("a document").undo.len() - 1) > 0);
+        s.execute("edit.undo", json!({})).unwrap();
+        {
+            let d = s.doc().expect("a document");
+            assert_eq!(d.calc.last_recalc_cells, 0, "an undo restores values; it never calculates");
+            assert_eq!(d.calc.last_restore_cells, Some(0), "the step recorded no formula change, so none had to be found");
+            let sheet = d.wb.active().expect("a sheet");
+            assert!(sheet.cells.paged_band_count() > 0, "the restored workbook keeps its pages instead of decoding them");
+            let stats = sheet.cells.page_cache_stats().expect("the restored store reads through a page cache");
+            assert_eq!(stats.misses, 0, "the undo decoded no page: {stats:?}");
+        }
+        // A cell in a band nobody has read yet is right, and reading it is what decodes it.
+        assert_eq!(v(&s, "B1"), Value::from(1.0), "the value the edit replaced");
+        assert_eq!(v(&s, "F2000"), Value::from(2000.0 * f64::from(2000 % 97) + f64::from(2000 % 13) * 1.5));
+        let stats = s.doc().expect("a document").wb.active().expect("a sheet").cells.page_cache_stats().expect("still paged");
+        assert!(stats.misses > 0, "reading a cell in a paged band decodes that band: {stats:?}");
+        assert_eq!(saved_sha(&mut s), before, "a save taken back is the same file byte for byte");
+        // And redo puts the edit back.
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "B1"), Value::from(5.0));
+    }
+
+    /// The other half: a step that *did* change a formula records which cells, so the undo of a
+    /// spilled sheet reads those cells' formulas from the pages and decodes nothing else — one band
+    /// for one edited formula, on a sheet of a few hundred bands.
+    #[test]
+    fn an_undo_of_a_formula_edit_decodes_only_the_band_it_reads() {
+        let mut s = fresh();
+        fill(&mut s, 1, 20_000);
+        formulas(&mut s, 1, 20_000);
+        let before = saved_sha(&mut s);
+        s.execute("cell.set", json!({"cell": "F1", "input": "=B1+C1"})).unwrap();
+        let edited = v(&s, "F1");
+        assert!(compress_latest(&mut s), "the step is spilled");
+        s.execute("edit.undo", json!({})).unwrap();
+        {
+            let d = s.doc().expect("a document");
+            assert_eq!(d.calc.last_recalc_cells, 0);
+            assert_eq!(d.calc.last_restore_cells, Some(1), "one cell's formula changed, and the step recorded it");
+            let sheet = d.wb.active().expect("a sheet");
+            assert!(sheet.cells.paged_band_count() > 0, "the restored workbook is paged");
+            let stats = sheet.cells.page_cache_stats().expect("a page cache");
+            assert_eq!(stats.misses, 1, "one band decoded for the one cell read: {stats:?}");
+        }
+        // Row 1 of the fixture: B=1, C=1, D=1.5, so =B1*C1+D1 is 2.5 — the value the edit replaced.
+        assert_eq!(v(&s, "F1"), Value::from(2.5), "the formula the edit replaced");
+        assert_eq!(saved_sha(&mut s), before, "and the file is the one the pre-edit save wrote");
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "F1"), edited);
+    }
+
+    /// An edit written into the workbook an undo restored — a paged one — is undone and redone like
+    /// any other: the materialized band comes back live, the step after it compares the two versions
+    /// band by band across the page, and the undo of that step needs no rebuild.
+    #[test]
+    fn an_edit_into_the_restored_paged_workbook_is_undone_and_redone() {
+        let mut s = fresh();
+        fill(&mut s, 1, 2_000);
+        formulas(&mut s, 1, 2_000);
+        s.execute("cell.set", json!({"cell": "B1", "input": "5"})).unwrap();
+        assert!(compress_latest(&mut s));
+        s.execute("edit.undo", json!({})).unwrap();
+        let live = s.doc().expect("a document").wb.active().expect("a sheet").cells.paged_band_count();
+        assert!(live > 0, "the live workbook is the paged snapshot");
+        // A write into a band that is still a page: it has to come back before it is written.
+        s.execute("cell.set", json!({"cell": "C1", "input": "99"})).unwrap();
+        assert_eq!(v(&s, "C1"), Value::from(99.0));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.doc().expect("a document").calc.last_recalc_cells, 0);
+        assert_eq!(v(&s, "C1"), Value::from(1.0), "the edit is taken back");
+        assert_eq!(v(&s, "B1"), Value::from(1.0));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "C1"), Value::from(99.0), "and comes back");
+        assert_eq!(v(&s, "B1"), Value::from(1.0));
     }
 }

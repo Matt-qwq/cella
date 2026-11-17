@@ -51,6 +51,18 @@ const PARALLEL_WRITE_MIN: usize = 16_384;
 #[cfg(not(target_arch = "wasm32"))]
 const PARALLEL_WRITE_MAX_CELLS: usize = 4_000_000;
 
+/// How many bands one chunk of a spill encodes before the pages are written and the bands dropped:
+/// the unit of work handed to the threads, and the bound on what a spill buffers at once (a
+/// thousand bands is about five megabytes of pages, however wide the sheet).
+const SPILL_CHUNK: usize = 1024;
+/// A spill of at least this many bands is spread over the cores; a step's handful of bands is
+/// encoded on the calling thread, where starting threads would cost more than it saves.
+const SPILL_PARALLEL_MIN: usize = 256;
+/// Threads a spill may use: the same ceiling the parallel value write takes, and the sort of fan-out
+/// a machine's cores can hold (see [`PARALLEL_WRITE_MIN`]). wasm has no threads to spread over.
+#[cfg(not(target_arch = "wasm32"))]
+const SPILL_MAX_THREADS: usize = 8;
+
 /// How many bytes of decoded bands the page cache keeps by default. Enough for a viewport and a
 /// scrolling burst at the export's density, without letting a full-sheet scan grow the working set
 /// back to the live model.
@@ -2609,6 +2621,33 @@ impl CellStore {
         self.load_page(key, page)
     }
 
+    /// The band at `key` as a comparison can read it: the live band, the decoded page, or `None`
+    /// when this store holds nothing there. The outer `Option` is "this store can answer": a page
+    /// that cannot be decoded makes the answer unknown, not empty, and the caller says so instead
+    /// of treating a band it could not read as a band with nothing in it.
+    ///
+    /// A page whose header says it holds no formula reads as no band at all: its rows would
+    /// contribute nothing to a formula comparison, so decoding it would only cost a read.
+    fn comparable_band(&self, key: u32) -> Option<Option<Arc<Band>>> {
+        if let Some(band) = self.bands.get(&key) {
+            return Some(Some(band.clone()));
+        }
+        let Some(page) = self.pages.get(&key) else { return Some(None) };
+        if !page.has_formulas() {
+            return Some(None);
+        }
+        self.band_arc(key).map(Some)
+    }
+
+    /// Whether the band at `key` holds a formula — answered from a page's header without decoding
+    /// it, so a snapshot that keeps its bands as pages can be asked cheaply.
+    fn band_has_formulas(&self, key: u32) -> bool {
+        if let Some(band) = self.bands.get(&key) {
+            return band.rows.iter().any(|row| !row.formulas().is_empty());
+        }
+        self.pages.get(&key).is_some_and(|page| page.has_formulas())
+    }
+
     /// The band at `key` for a scan: a live band as it is, or a paged band decoded straight from
     /// the page file. Nothing is installed in the cache and nothing is charged to its budget, so a
     /// full-sheet scan neither evicts the working set the viewport reads nor leaves the sheet's
@@ -2803,12 +2842,23 @@ impl CellStore {
     /// cannot be written) stays live; paging never loses cells.
     pub fn spill_pages(&mut self) {
         let keys: Vec<u32> = self.bands.keys().copied().collect();
-        for key in keys {
-            self.spill_band(key);
-        }
+        self.spill_bands(&keys);
     }
 
     fn spill_band(&mut self, key: u32) {
+        self.spill_bands(&[key]);
+    }
+
+    /// Encodes `keys` and moves them onto the page file, a chunk at a time. A band is independent of
+    /// every other — its numbers, texts and stripes are its own — so a chunk large enough to be
+    /// worth it is encoded on several threads, and the pages are written and the bands dropped on
+    /// this one once the workers are done. The chunk bounds what is buffered at once, so spilling a
+    /// million-row snapshot never holds the whole sheet encoded in memory, and each band leaves the
+    /// live map as its page is written.
+    ///
+    /// A band that cannot be encoded, a worker that panics and a file that refuses a write all leave
+    /// the band live: paging never loses cells.
+    fn spill_bands(&mut self, keys: &[u32]) {
         let Some(file) = self.page_file.clone() else { return };
         // A file that has already failed a write is not tried again: every later band would hit
         // the same failing syscall. The bands stay live and the pages already written stay
@@ -2816,17 +2866,62 @@ impl CellStore {
         if file.has_failed() {
             return;
         }
-        let Some(band) = self.bands.get(&key).cloned() else { return };
-        let Some(bytes) = page::encode_band(&band) else { return };
-        let Some(at) = file.write(&bytes) else { return };
-        // A page carries the band's bounds, so the cached used box is the same before and after:
-        // nothing has to be invalidated, and a store that opened a million rows through pages
-        // never walks them again for it.
-        let bounds = page::band_bounds(&band);
-        let formulas = band.rows.iter().any(|r| !r.formulas().is_empty());
-        let owned = band.rows.iter().any(|r| !r.formulas().is_empty() || !r.arrays().is_empty());
-        self.bands.remove(&key);
-        self.pages.insert(key, Arc::new(page::Page::new(at, bounds, formulas, owned)));
+        for chunk in keys.chunks(SPILL_CHUNK) {
+            let encoded = self.encode_chunk(chunk);
+            let parts: Vec<&[u8]> = encoded.iter().map(|(_, bytes, ..)| bytes.as_slice()).collect();
+            let at = match file.write_packed(&parts) {
+                Ok(at) => at,
+                Err(failure) => {
+                    file.note_failure(failure);
+                    return;
+                }
+            };
+            for ((key, _, bounds, formulas, owned), at) in encoded.into_iter().zip(at) {
+                self.bands.remove(&key);
+                self.pages.insert(key, Arc::new(page::Page::new(at, bounds, formulas, owned)));
+            }
+            if file.has_failed() {
+                return;
+            }
+        }
+    }
+
+    /// One chunk of [`spill_bands`](Self::spill_bands): the bands encoded, with the bounds and the
+    /// flags their page carries. A chunk that is large enough is spread over the cores; below that
+    /// the threads cost more than they save.
+    fn encode_chunk(&self, keys: &[u32]) -> Vec<page::Spilled> {
+        let bands = &self.bands;
+        if keys.len() < SPILL_PARALLEL_MIN {
+            return page::encode_spilled(bands, keys);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(SPILL_MAX_THREADS);
+            if threads > 1 {
+                let parts = keys.len().div_ceil(threads);
+                let encoded: Vec<std::thread::Result<Vec<page::Spilled>>> = std::thread::scope(|scope| {
+                    let mut handles = Vec::new();
+                    for part in keys.chunks(parts) {
+                        handles.push(scope.spawn(move || page::encode_spilled(bands, part)));
+                    }
+                    handles.into_iter().map(|h| h.join()).collect()
+                });
+                let mut out = Vec::with_capacity(keys.len());
+                let mut panicked = false;
+                for part in encoded {
+                    match part {
+                        Ok(part) => out.extend(part),
+                        // A worker panicked: nothing has been written for this chunk yet, so the
+                        // whole chunk is encoded again on this thread.
+                        Err(_) => panicked = true,
+                    }
+                }
+                if !panicked {
+                    return out;
+                }
+            }
+        }
+        page::encode_spilled(bands, keys)
     }
 
     /// Loads a paged band back into the live map, so a write can modify it. A corrupt page stays
@@ -2869,10 +2964,24 @@ impl CellStore {
     /// exactly as it was — nothing to spill, or no page file could be created. Paging never loses
     /// cells: a band that cannot be encoded stays live.
     ///
-    /// The snapshot's cache budget is zero: these pages are decoded once, when an undo restores
-    /// the snapshot ([`expand_pages`](Self::expand_pages)), so a cache would only keep alive the
-    /// bands the restore is about to take out of it.
+    /// The file keeps the default decoded-band cache ([PAGE_CACHE_BYTES]): an undo restores the
+    /// snapshot *as it is*, pages and all, so the workbook it hands back reads those pages the way
+    /// any paged store does — a band at a time, through the budget — and the bands it does not read
+    /// never come back.
     pub fn spill_retained_against(&mut self, newer: &CellStore) -> usize {
+        self.spill_retained_within(newer, usize::MAX)
+    }
+
+    /// [`spill_retained_against`](Self::spill_retained_against) with a target: spill only as many of
+    /// the bands `newer` does not share as it takes to bring what this store retains to `target`
+    /// bytes. The newest history step is the case this exists for — a snapshot that costs more than
+    /// the whole byte budget has to give some of its bands up, and giving all of them up is a
+    /// whole-sheet encode paid inside the edit that pushed it. The bands are taken in key order, so
+    /// a prefix of them is a prefix of the sheet.
+    ///
+    /// The target is a target, not a guarantee: bands are not all the same size and a band that
+    /// cannot be encoded stays live.
+    pub fn spill_retained_within(&mut self, newer: &CellStore, target: usize) -> usize {
         if self.page_file.is_some() {
             return 0;
         }
@@ -2882,11 +2991,31 @@ impl CellStore {
             return 0;
         }
         // The temp directory only: a snapshot's pages must not appear in the document's folder.
-        let Some(file) = page::PageFile::new(None, Some("undo"), 0) else { return 0 };
+        let Some(file) = page::PageFile::new(None, Some("undo"), page::default_cache_bytes()) else { return 0 };
         self.page_file = Some(Arc::new(file));
         let before = self.pages.len();
-        for key in keys {
-            self.spill_band(key);
+        if target == usize::MAX {
+            self.spill_bands(&keys);
+        } else {
+            // A chunk at a time, counting what each band actually gave up: what it cost the snapshot
+            // less what its page now costs. Counting only the band would overstate it by the page
+            // and stop well short of the target.
+            let needed = self.retained_bytes_against(newer).saturating_sub(target);
+            let mut freed = 0usize;
+            let mut taken = 0usize;
+            while taken < keys.len() && freed < needed {
+                let end = taken.saturating_add(SPILL_CHUNK).min(keys.len());
+                let Some(chunk) = keys.get(taken..end) else { break };
+                let costs: Vec<usize> =
+                    chunk.iter().map(|key| self.bands.get(key).map_or(0, |band| Self::unshared_band_bytes(band, newer.bands.get(key)))).collect();
+                self.spill_bands(chunk);
+                for (key, cost) in chunk.iter().zip(costs) {
+                    if let Some(page) = self.pages.get(key) {
+                        freed = freed.saturating_add(cost.saturating_sub(page.page_len()));
+                    }
+                }
+                taken = end;
+            }
         }
         let spilled = self.pages.len().saturating_sub(before);
         if spilled == 0 {
@@ -2894,6 +3023,30 @@ impl CellStore {
             self.page_file = None;
         }
         spilled
+    }
+
+    /// What one band costs a snapshot that keeps it: its stripes, its row headers, the side tables
+    /// `newer` does not share and its texts — the terms [`retained_bytes_against`](Self::retained_bytes_against)
+    /// sums, for one band.
+    fn unshared_band_bytes(band: &Band, next: Option<&Arc<Band>>) -> usize {
+        let mut bytes = band.stripe_bytes();
+        for row in &band.rows {
+            bytes = bytes.saturating_add(std::mem::size_of::<BandRow>());
+            // A value edit copies the band but shares each row's extras with the newer store; those
+            // formulas and arrays are live anyway, not storage the snapshot keeps.
+            let shared = next.and_then(|band| band.row(row.key)).is_some_and(|other| match (&row.extras, &other.extras) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            });
+            if !shared {
+                bytes = bytes.saturating_add(Band::extras_bytes(row));
+            }
+        }
+        for text in &band.texts {
+            bytes = bytes.saturating_add(Band::text_bytes(text));
+        }
+        bytes
     }
 
     /// Decodes every page of this store back into a live band and drops the page file. This is
@@ -2927,6 +3080,18 @@ impl CellStore {
         let row = band.row(physical % BAND)?;
         let i = row.index_of(&band, col)?;
         Some(band.cell_at(row, i, col))
+    }
+
+    /// The formula stored at `c`, without rebuilding the cell's value: what an undo reads for the
+    /// cells its step recorded as the ones whose formula differs (`formula_changes_against`). A
+    /// paged band is decoded for it, one band for a run of cells in the same band.
+    pub fn formula(&self, c: CellRef) -> Option<Arc<Formula>> {
+        let physical = self.physical_row(c.row)?;
+        let col = self.physical_col(c.col)?;
+        let band = self.band_arc(physical / BAND)?;
+        let row = band.row(physical % BAND)?;
+        let (_, formula) = row.formulas().iter().find(|(at, _)| *at == col)?;
+        Some(Arc::clone(formula))
     }
 
     /// The style of a stored cell, without reconstructing the `Cell` (and its value and formula).
@@ -3926,35 +4091,52 @@ impl CellStore {
     /// different one) there, `None` for a cell that held one there and holds none here.
     ///
     /// Only the bands and rows the two versions do not share are looked at — an undo snapshot
-    /// shares every band and row the edit did not touch — so a one-cell edit costs one band, not
-    /// one sheet. `None` when they cannot be compared that way: a row or column insert moved the
-    /// cells to other logical positions, or part of either store is paged out to disk. Then finding
-    /// the cells that differ costs a walk of the whole store, and the caller is better off
-    /// rebuilding what it wanted to update than paying for that.
+    /// shares every band and row the edit did not touch, and a spilled snapshot shares the pages
+    /// the edit left alone — so a one-cell edit costs one band, not one sheet. `None` when they
+    /// cannot be compared that way: a row or column insert moved the cells to other logical
+    /// positions, or a page that a band would have to come from cannot be decoded. Then finding the
+    /// cells that differ costs a walk of the whole store, and the caller is better off rebuilding
+    /// what it wanted to update than paying for that.
+    ///
+    /// A band one side keeps as a page is decoded **one band at a time, when the walk reaches it**
+    /// (through the page file's cache, see [`page_cache_stats`](Self::page_cache_stats)) — never
+    /// all of them up front. A page whose header says it holds no formula at all is not decoded:
+    /// its formula list is empty either way, and that is the whole of what this walk compares. So a
+    /// snapshot of a sheet of values, spilled to pages by the history, is compared for free.
     ///
     /// Two formulas are the same when their text is: the parsed tree is a cache of the text, so a
     /// formula copied and re-parsed is not a change.
     pub fn formula_changes_against(&self, older: &CellStore) -> Option<Vec<(CellRef, Option<Arc<Formula>>)>> {
-        if !self.pages.is_empty() || !older.pages.is_empty() {
-            return None;
-        }
         if !self.row_map.same_as(&older.row_map) || !self.col_map.same_as(&older.col_map) {
             return None;
         }
         let mut out: Vec<(CellRef, Option<Arc<Formula>>)> = Vec::new();
-        let mut keys: Vec<u32> = self.bands.keys().copied().chain(older.bands.keys().copied()).collect();
+        let mut keys: Vec<u32> = self.bands.keys().chain(self.pages.keys()).chain(older.bands.keys()).chain(older.pages.keys()).copied().collect();
         keys.sort_unstable();
         keys.dedup();
         for key in keys {
-            let (here, there) = (self.bands.get(&key), older.bands.get(&key));
-            if let (Some(a), Some(b)) = (here, there)
+            // A band both versions share is skipped whole, whether they share it as a live band or
+            // as a page: an edit copies the bands it writes, and a spilled snapshot keeps the rest.
+            if let (Some(a), Some(b)) = (self.bands.get(&key), older.bands.get(&key))
                 && Arc::ptr_eq(a, b)
             {
                 continue;
             }
+            if let (Some(a), Some(b)) = (self.pages.get(&key), older.pages.get(&key))
+                && Arc::ptr_eq(a, b)
+            {
+                continue;
+            }
+            // Only a band that holds a formula on one of the two sides can report a change, and a
+            // page answers that from its header before anything is read.
+            if !self.band_has_formulas(key) && !older.band_has_formulas(key) {
+                continue;
+            }
+            let here = self.comparable_band(key)?;
+            let there = older.comparable_band(key)?;
             let empty: &[BandRow] = &[];
-            let rows_here = here.map_or(empty, |b| b.rows.as_slice());
-            let rows_there = there.map_or(empty, |b| b.rows.as_slice());
+            let rows_here = here.as_deref().map_or(empty, |b| b.rows.as_slice());
+            let rows_there = there.as_deref().map_or(empty, |b| b.rows.as_slice());
             let (mut i, mut j) = (0usize, 0usize);
             loop {
                 let (a, b) = (rows_here.get(i), rows_there.get(j));
@@ -4177,24 +4359,7 @@ impl CellStore {
             if next.is_some_and(|b| Arc::ptr_eq(b, band)) {
                 continue;
             }
-            bytes += band.stripe_bytes();
-            for row in &band.rows {
-                bytes += std::mem::size_of::<BandRow>();
-                // A value edit copies the band but shares each row's extras with the newer store;
-                // those formulas and arrays are live anyway, not storage the snapshot keeps.
-                let shared = next.and_then(|b| b.row(row.key)).is_some_and(|n| match (&row.extras, &n.extras) {
-                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                    (None, None) => true,
-                    _ => false,
-                });
-                if shared {
-                    continue;
-                }
-                bytes += Band::extras_bytes(row);
-            }
-            for text in &band.texts {
-                bytes += Band::text_bytes(text);
-            }
+            bytes = bytes.saturating_add(Self::unshared_band_bytes(band, next));
         }
         bytes
     }
@@ -5271,12 +5436,18 @@ mod page {
             match self.append(bytes) {
                 Ok(at) => Some(at),
                 Err(failure) => {
-                    self.cache.spill_failure();
-                    if failure == SpillFailure::Io {
-                        self.spill_failed.store(true, Ordering::Relaxed);
-                    }
+                    self.note_failure(failure);
                     None
                 }
+            }
+        }
+
+        /// Counts a spill failure, and latches the file shut on the first I/O one: every band that
+        /// could not be written stays live.
+        pub(super) fn note_failure(&self, failure: SpillFailure) {
+            self.cache.spill_failure();
+            if failure == SpillFailure::Io {
+                self.spill_failed.store(true, Ordering::Relaxed);
             }
         }
 
@@ -5284,18 +5455,43 @@ mod page {
             if bytes.is_empty() || bytes.len() > MAX_PAGE {
                 return Err(SpillFailure::TooLarge);
             }
-            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
-            encoder.write_all(bytes).map_err(|_| SpillFailure::Io)?;
-            let packed = encoder.finish().map_err(|_| SpillFailure::Io)?;
-            let len = u32::try_from(packed.len()).map_err(|_| SpillFailure::TooLarge)?;
-            if packed.is_empty() || packed.len() > MAX_PAGE {
+            let packed = pack(bytes).ok_or(SpillFailure::TooLarge)?;
+            let mut at = self.write_packed(&[packed.as_slice()])?;
+            at.pop().ok_or(SpillFailure::Io)
+        }
+
+        /// Writes pages that a caller already deflated (see [`pack`]), laid end to end in one
+        /// append, and hands back where each landed. One syscall a chunk instead of one a page is
+        /// what makes a whole-sheet spill affordable: a million-row snapshot is fifteen thousand
+        /// pages, and a page-at-a-time append is most of a second of syscalls on its own.
+        ///
+        /// The parts must each be a valid page (deflated, non-empty, within the cap). A part that
+        /// is not refuses the whole batch, and every band it carried stays live.
+        pub(super) fn write_packed(&self, parts: &[&[u8]]) -> Result<Vec<PageRef>, SpillFailure> {
+            if self.has_failed() {
+                return Err(SpillFailure::Io);
+            }
+            let total: usize = parts.iter().map(|part| part.len()).sum();
+            if parts.iter().any(|part| part.is_empty() || part.len() > MAX_PAGE) {
                 return Err(SpillFailure::TooLarge);
+            }
+            let mut joined = Vec::with_capacity(total);
+            for part in parts {
+                joined.extend_from_slice(part);
             }
             let mut guard = self.file.lock().map_err(|_| SpillFailure::Io)?;
             let file = guard.as_mut().ok_or(SpillFailure::Io)?;
             let offset = file.seek(SeekFrom::End(0)).map_err(|_| SpillFailure::Io)?;
-            file.write_all(&packed).map_err(|_| SpillFailure::Io)?;
-            Ok(PageRef { offset, len })
+            file.write_all(&joined).map_err(|_| SpillFailure::Io)?;
+            drop(guard);
+            let mut at = Vec::with_capacity(parts.len());
+            let mut cursor = 0u64;
+            for part in parts {
+                let len = u32::try_from(part.len()).map_err(|_| SpillFailure::TooLarge)?;
+                at.push(PageRef { offset: offset.saturating_add(cursor), len });
+                cursor = cursor.saturating_add(part.len() as u64);
+            }
+            Ok(at)
         }
 
         fn read(&self, at: PageRef) -> Option<Vec<u8>> {
@@ -5330,10 +5526,20 @@ mod page {
         }
     }
 
+    /// A band's bytes as a page holds them: deflated with the fastest level the format uses, or
+    /// `None` when the result does not fit a page. Split out of [`PageFile::append`] so a spill can
+    /// deflate its pages on several threads and then write them together.
+    pub(super) fn pack(bytes: &[u8]) -> Option<Vec<u8>> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(bytes).ok()?;
+        let packed = encoder.finish().ok()?;
+        (!packed.is_empty() && packed.len() <= MAX_PAGE).then_some(packed)
+    }
+
     /// Why [`PageFile::append`] returned no `PageRef`. A page too large for the format stays live
     /// and the next band is still tried; an I/O failure latches the file shut.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum SpillFailure {
+    pub(super) enum SpillFailure {
         TooLarge,
         Io,
     }
@@ -5901,6 +6107,27 @@ mod page {
             runs.push((take_u16(input)?, take_u16(input)?));
         }
         Some(runs)
+    }
+
+    /// One band encoded for its page, with everything a [`Page`] carries: the bytes, the range its
+    /// rows cover (for `used_range` without a load) and the two flags a formula comparison and a
+    /// compaction read. Computed on the worker that encodes it, so the band can be dropped as soon
+    /// as its page is written.
+    pub(super) type Spilled = (u32, Vec<u8>, Option<(u32, u32, u32, u32)>, bool, bool);
+
+    /// Encodes and deflates the bands of `keys` this store holds, in key order: everything a page
+    /// needs, done where it can be done on a worker thread. A band that cannot be encoded is left
+    /// out: its page is never written and the band stays live.
+    pub(super) fn encode_spilled(bands: &std::collections::BTreeMap<u32, Arc<Band>>, keys: &[u32]) -> Vec<Spilled> {
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(band) = bands.get(key) else { continue };
+            let Some(bytes) = encode_band(band).and_then(|raw| pack(&raw)) else { continue };
+            let formulas = band.rows.iter().any(|row| !row.formulas().is_empty());
+            let owned = band.rows.iter().any(|row| !row.formulas().is_empty() || !row.arrays().is_empty());
+            out.push((*key, bytes, band_bounds(band), formulas, owned));
+        }
+        out
     }
 
     /// The range a band's rows cover, for `used_range` without a load.
