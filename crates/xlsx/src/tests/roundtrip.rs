@@ -727,6 +727,204 @@ fn precompressed_sheets_write_the_same_package() {
     }
 }
 
+/// The shared string table is filled in the file's first-use order: sheet by sheet, row by row,
+/// cell by cell, with a table header's override text where the cell that holds it comes and a
+/// formula's cached text going into the cell rather than the table. The writer fills it in a
+/// pre-pass over each sheet — the ids have to exist before a row is built — so this pins the order
+/// that pre-pass and the row builder must agree on: the list, the reference count and the unique
+/// count in the file.
+#[test]
+fn shared_strings_are_in_first_use_order() {
+    let mut wb = Workbook::new();
+    wb.sheets.clear();
+    let mut one = Sheet::new("One");
+    one.set_value(at("A1"), Value::text("common"));
+    one.set_value(at("B1"), Value::text("alpha"));
+    one.set_value(at("A2"), Value::text("beta"));
+    one.set_value(at("B2"), Value::text("common"));
+    one.set_value(at("C2"), Value::Number(7.0));
+    // A table's header overrides the cells under it, so those cells write the column names.
+    one.set_value(at("A4"), Value::text("not this"));
+    one.set_value(at("B4"), Value::text("not this either"));
+    let col = |n: &str| TableColumn { name: n.into(), totals: TotalsFn::None, totals_label: None, formula: None, unique_name: None, xml: None };
+    one.tables.push(Table {
+        id: 1,
+        name: "Table1".into(),
+        range: rr("A4:B5"),
+        header_row: true,
+        totals_row: false,
+        columns: vec![col("Header one"), col("Header two")],
+        style: String::new(),
+        banded_rows: false,
+        banded_cols: false,
+        first_col: false,
+        last_col: false,
+        filter_button: false,
+        filter: vec![],
+        table_type: None,
+        connection_id: None,
+    });
+    let mut two = Sheet::new("Two");
+    // Already in the table: no new entry, and the reference still counts.
+    two.set_value(at("A1"), Value::text("common"));
+    two.set_value(at("A2"), Value::text("gamma"));
+    two.set_cell(at("B2"), Cell { value: Value::text("xy"), formula: Some(Arc::new(Formula::new("CONCAT(\"x\",\"y\")"))), style: StyleId::DEFAULT });
+    let mut three = Sheet::new("Three");
+    three.set_value(at("A1"), Value::text("delta"));
+    three.set_value(at("A2"), Value::text("alpha"));
+    for s in [one, two, three] {
+        wb.sheets.push(Arc::new(s));
+    }
+
+    let bytes = write_xlsx(&wb).unwrap();
+    let mut pkg = Package::open(&bytes).unwrap();
+    let sst = pkg.read_xml("xl/sharedStrings.xml").unwrap().unwrap();
+    // Six text cells on the first sheet (the two table headers are overrides), two on the second
+    // (the formula's cached text is written inline) and two on the third.
+    assert_eq!(sst.attr("count"), Some("10"));
+    assert_eq!(sst.attr("uniqueCount"), Some("7"));
+    let list: Vec<String> = sst.kids("si").map(crate::xml::rich_text).collect();
+    let want = ["common", "alpha", "beta", "Header one", "Header two", "gamma", "delta"];
+    assert_eq!(list, want.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+    // And the cells read back to the text the file gave them, overrides included.
+    let (back, _) = read_xlsx(&bytes).unwrap();
+    let one = back.sheet(0).unwrap();
+    assert_eq!(one.value(at("A1")), Value::text("common"));
+    assert_eq!(one.value(at("A4")), Value::text("Header one"));
+    assert_eq!(one.value(at("B4")), Value::text("Header two"));
+    let two = back.sheet(1).unwrap();
+    assert_eq!(two.value(at("A1")), Value::text("common"));
+    assert_eq!(two.value(at("B2")), Value::text("xy"));
+}
+
+/// A workbook whose row shapes all sit near a window boundary: a text column, numbers, formulas (one
+/// whose cached result is text), a table with header overrides at row 4096, a dynamic-array spill, a
+/// note, a chart, a row the filter hides at 4095 and one at 8192, and custom row heights there. The
+/// second sheet is shorter than one window, so it is built on the calling thread.
+fn windowed_workbook() -> Workbook {
+    const ROWS: u32 = 12_000;
+    let mut wb = Workbook::new();
+    wb.sheets.clear();
+    let mut big = Sheet::new("Big");
+    for r in 0..ROWS {
+        let n = f64::from(r);
+        // Text that repeats, and the same strings again on the small sheet.
+        big.set_value(CellRef::new(r, 0), Value::text(format!("Item {}", r % 500)));
+        big.set_value(CellRef::new(r, 1), Value::Number(n));
+        let mut product = Cell::formula(Formula::new(&format!("B{}*2", r + 1)));
+        product.value = Value::Number(n * 2.0);
+        big.set_cell(CellRef::new(r, 2), product);
+        // A formula whose cached result is text: it is written into the cell, not the table.
+        let mut label = Cell::formula(Formula::new(&format!("\"row \"&B{}", r + 1)));
+        label.value = Value::text(format!("row {}", r + 1));
+        big.set_cell(CellRef::new(r, 3), label);
+    }
+    let mut spill = Cell::formula(Formula::new("SEQUENCE(3)"));
+    spill.value = Value::Number(1.0);
+    big.set_cell(at("F2"), spill);
+    big.spill_ranges.insert(at("F2"), rr("F2:F4"));
+    big.spill.insert(at("F3"), Value::Number(2.0));
+    big.spill.insert(at("F4"), Value::Number(3.0));
+    big.comments.insert(
+        at("B3"),
+        Comment {
+            author: "Ann".into(),
+            text: "a note in the first window".into(),
+            replies: vec![],
+            threaded: false,
+            resolved: false,
+            visible: false,
+            dates: vec![],
+            note_box: None,
+        },
+    );
+    big.charts.push(Chart {
+        kind: ChartKind::ColumnClustered,
+        anchor: Anchor { cell: at("H2"), dx: 0.0, dy: 0.0, width: 320.0, height: 200.0, ..Default::default() },
+        series: vec![Series {
+            name: Some("Big!$A$1".into()),
+            categories: Some("Big!$A$1:$A$3".into()),
+            values: "Big!$B$1:$B$3".into(),
+            ..Series::default()
+        }],
+        ..Chart::default()
+    });
+    // A table across the first window boundary: its header row overrides the cells under it.
+    let col = |n: &str| TableColumn { name: n.into(), totals: TotalsFn::None, totals_label: None, formula: None, unique_name: None, xml: None };
+    big.tables.push(Table {
+        id: 1,
+        name: "Table1".into(),
+        range: rr("A4097:B4099"),
+        header_row: true,
+        totals_row: false,
+        columns: vec![col("First column"), col("Second column")],
+        style: "TableStyleMedium2".into(),
+        banded_rows: true,
+        banded_cols: false,
+        first_col: false,
+        last_col: false,
+        filter_button: true,
+        filter: vec![],
+        table_type: None,
+        connection_id: None,
+    });
+    // The last row of the first window and the first row of the third are hidden, each with a
+    // height of its own, so a window edge falls on a row that carries line info and on one the
+    // filter hides.
+    big.filter_hidden = FilterHidden::build([4095u32, 8192], BTreeMap::new());
+    big.rows.insert(4095, LineInfo { size: Some(30.0), custom: true, ..Default::default() });
+    big.rows.insert(4096, LineInfo { size: Some(42.0), custom: true, ..Default::default() });
+    let mut small = Sheet::new("Small");
+    for r in 0..64u32 {
+        small.set_value(CellRef::new(r, 0), Value::text(format!("Item {}", r % 500)));
+        small.set_value(CellRef::new(r, 1), Value::Number(f64::from(r)));
+    }
+    wb.sheets.push(Arc::new(big));
+    wb.sheets.push(Arc::new(small));
+    wb
+}
+
+/// A sheet's rows are built in windows on worker threads. However many windows a sheet is split into
+/// the package must be the bytes one walk writes — the windows are concatenated in row order and the
+/// flags they report are combined in the same order — and the workbook must still open to the cells
+/// that were saved.
+#[test]
+fn row_windows_write_the_same_package() {
+    let wb = windowed_workbook();
+    let one = crate::write::write_xlsx_with_workers(&wb, crate::XlsxKind::Workbook, 1).unwrap();
+    let two = crate::write::write_xlsx_with_workers(&wb, crate::XlsxKind::Workbook, 2).unwrap();
+    let eight = crate::write::write_xlsx_with_workers(&wb, crate::XlsxKind::Workbook, 8).unwrap();
+    assert_eq!(one, two, "two row windows changed the package");
+    assert_eq!(one, eight, "eight row windows changed the package");
+    // A save picks the machine's own thread count; its bytes are the same too.
+    assert_eq!(one, write_xlsx(&wb).unwrap(), "a save's own thread count changed the package");
+
+    // The cells come back as they went in, the table's header text and the spill included.
+    let (back, report) = read_xlsx(&one).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let big = back.sheet(0).unwrap();
+    assert_eq!(big.value(at("A1")), Value::text("Item 0"));
+    assert_eq!(big.value(at("B12000")), Value::Number(11_999.0));
+    assert_eq!(big.value(at("C12000")), Value::Number(23_998.0));
+    assert_eq!(big.value(at("D2")), Value::text("row 2"));
+    assert_eq!(big.value(at("A4097")), Value::text("First column"));
+    assert_eq!(big.value(at("B4097")), Value::text("Second column"));
+    assert_eq!(big.value(at("A4098")), Value::text("Item 97"), "the table's data row is not overridden");
+    assert_eq!(big.value(at("F3")), Value::Number(2.0));
+    // A hidden row reads back as a hidden row (there is no filter range here to put the bit in the
+    // filter's bitmap), and the height it carries comes back with it.
+    let hidden = |row: u32| big.rows.get(&row).is_some_and(|r| r.hidden);
+    assert!(hidden(4095) && hidden(8192), "{:?}", big.rows.iter().filter(|(_, r)| r.hidden).map(|(r, _)| r).collect::<Vec<_>>());
+    assert_eq!(big.rows.get(&4095).map(|r| r.size), Some(Some(30.0)));
+    assert_eq!(big.rows.get(&4096).map(|r| r.size), Some(Some(42.0)));
+    assert_eq!(big.comments.len(), 1);
+    assert_eq!(big.charts.len(), 1);
+    let small = back.sheet(1).unwrap();
+    assert_eq!(small.value(at("A64")), Value::text("Item 63"));
+    assert_eq!(small.value(at("B64")), Value::Number(63.0));
+}
+
 #[test]
 fn iterative_calculation_settings_roundtrip() {
     let calc_pr = |wb: &Workbook| {
