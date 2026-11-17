@@ -18,6 +18,7 @@ pub mod io;
 pub mod json_format;
 pub mod links;
 pub mod macros;
+mod memory;
 pub mod outline;
 pub mod paper;
 pub mod pivot;
@@ -41,6 +42,7 @@ pub use gridcraft_core as core;
 pub use gridcraft_formula as formula;
 pub use gridcraft_model as model;
 pub use gridcraft_numfmt as numfmt;
+pub use memory::{MemoryReport, SheetMemory, WorkbookMemory};
 pub use selection::Selection;
 
 #[derive(Debug, thiserror::Error)]

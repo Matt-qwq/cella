@@ -136,6 +136,32 @@ impl NameCache {
         list.insert(0, CachedName { name: n.to_string(), scope, formula, target: target.clone() });
         target
     }
+
+    /// Heap bytes of the cache: the answers, the strings they keep and the trees a definition was
+    /// parsed into. A tree that is still the only reference this cache has is walked node by node
+    /// (a definition tree is a handful of nodes); one a formula also holds is charged its pointer.
+    pub(crate) fn memory(&self) -> usize {
+        use std::mem::size_of;
+        let mut bytes = gridcraft_model::hash_index_bytes(self.by_sheet.capacity(), size_of::<(usize, Vec<CachedName>)>());
+        for list in self.by_sheet.values() {
+            bytes = bytes.saturating_add(list.capacity().saturating_mul(size_of::<CachedName>()));
+            for c in list {
+                bytes = bytes.saturating_add(c.name.len()).saturating_add(c.formula.len());
+                for tree in [&c.target] {
+                    let tree = match tree {
+                        NameTarget::Definition(tree, _) | NameTarget::Relative(tree, _) => tree,
+                        NameTarget::Table { .. } | NameTarget::Unresolved => continue,
+                    };
+                    if std::sync::Arc::strong_count(tree) > 1 {
+                        bytes = bytes.saturating_add(size_of::<std::sync::Arc<Expr>>());
+                        continue;
+                    }
+                    tree.walk(&mut |_| bytes = bytes.saturating_add(size_of::<Expr>()));
+                }
+            }
+        }
+        bytes
+    }
 }
 
 /// The definition of `formula` (a name's `refersTo` text) as a target, its unqualified

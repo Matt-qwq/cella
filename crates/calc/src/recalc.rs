@@ -15,13 +15,14 @@ use std::collections::VecDeque;
 mod graph;
 mod pass_host;
 
-pub use graph::{FxHasher, Graph, Key};
+pub use graph::{FxHasher, Graph, GraphMemory, Key};
 use graph::{HashMap, HashSet, Node};
 use pass_host::{PassHost, Slot, Trees, holds_content, spilled_nothing, spills_as_before};
 
 use gridcraft_core::{CellError, CellRef, RangeRef, Value};
 use gridcraft_formula::{Expr, UnOp};
 use gridcraft_model::{CalcMode, Workbook};
+use serde::Serialize;
 
 use crate::eval::{Area, Evaluator, precedents_into};
 use crate::spill_index::{SpillIndex, indexing_pays};
@@ -107,6 +108,39 @@ impl Default for Calc {
     }
 }
 
+/// The live heap bytes of a [`Calc`], by allocation class: what [`Calc::memory`] returns.
+///
+/// Every figure is a `len`/`capacity`/*`size_of`* product (see [`GraphMemory`] for the graph's own).
+/// The one walk is the trees in [`CalcMemory::unshared`] that nothing else holds.
+///
+/// Not counted: the work a recalculation does while it runs — the pass's slots, dirty bits, spill
+/// index and block cache live in the pass (`PassHost`, `Trees`), which is dropped when it ends, so
+/// a [`Calc`] at rest holds none of them ([`CalcMemory::pass`] is that zero).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct CalcMemory {
+    /// The dependency graph.
+    pub graph: GraphMemory,
+    /// The cells whose formulas have cycle errors.
+    pub circular: usize,
+    /// The buffer `precedents_into` fills while a formula is linked into the graph.
+    pub scratch_areas: usize,
+    /// The formulas the last rebuild parsed whose text their cells still held alone, and the
+    /// trees it parsed: charged here only while nothing else holds the tree (a tree the cells share
+    /// is charged by the store's report).
+    pub unshared: usize,
+    /// The resolved-name cache.
+    pub names: usize,
+    /// Slots and dirty bits of a pass in progress: zero at rest, because the pass owns them.
+    pub pass: usize,
+}
+
+impl CalcMemory {
+    pub fn total(&self) -> usize {
+        [self.graph.total(), self.circular, self.scratch_areas, self.unshared, self.names, self.pass]
+            .iter()
+            .fold(0usize, |sum, part| sum.saturating_add(*part))
+    }
+}
 /// Arrays that own their cells when two spills want the same ones: everything already spilling.
 /// The reader rebuilds that state from the file (an anchor's `ref` names the range it spilled
 /// into, and the values inside it are cached), so F9 after a reload keeps the same owner. A
@@ -635,6 +669,31 @@ impl Calc {
 impl Calc {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The live heap bytes this calculation state holds, by allocation class. Nothing here walks the
+    /// graph's tables: the sizes come from capacities (see [`GraphMemory`]), so a UI can ask on a
+    /// million-formula workbook. The one exception is a tree this state alone holds in `unshared`,
+    /// which has to be walked node by node to be measured — it is empty or nearly empty at rest
+    /// ([`CalcMemory::unshared`]).
+    pub fn memory(&self) -> CalcMemory {
+        use std::mem::size_of;
+        let mut unshared_trees = 0usize;
+        for (_, tree) in &self.unshared {
+            if std::sync::Arc::strong_count(tree) == 1 {
+                let mut bytes = 0usize;
+                tree.walk(&mut |_| bytes = bytes.saturating_add(size_of::<Expr>()));
+                unshared_trees = unshared_trees.saturating_add(bytes);
+            }
+        }
+        CalcMemory {
+            graph: self.graph.memory(),
+            circular: self.circular.capacity().saturating_mul(size_of::<Key>()),
+            scratch_areas: self.scratch_areas.capacity().saturating_mul(size_of::<Area>()),
+            unshared: self.unshared.capacity().saturating_mul(size_of::<(Key, std::sync::Arc<Expr>)>()).saturating_add(unshared_trees),
+            names: self.names.memory(),
+            pass: 0,
+        }
     }
 
     fn now(&self) -> f64 {

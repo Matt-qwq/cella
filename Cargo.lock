@@ -1621,6 +1621,7 @@ dependencies = [
  "gridcraft-model",
  "gridcraft-numfmt",
  "log",
+ "serde",
 ]
 
 [[package]]

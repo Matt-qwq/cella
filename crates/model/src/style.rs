@@ -507,6 +507,37 @@ impl StyleTable {
     pub fn rebuild_index(&mut self) {
         self.index = self.styles.iter().enumerate().map(|(i, s)| (s.clone(), StyleId(i as u32))).collect();
     }
+
+    /// Heap bytes of the table: the style vector, the index that interns it (whose keys are clones,
+    /// so their font names and schemes are their own allocations) and the style text.
+    pub fn memory(&self) -> usize {
+        use std::mem::size_of;
+        let mut bytes = size_of::<StyleTable>()
+            .saturating_add(self.styles.capacity().saturating_mul(size_of::<Style>()))
+            .saturating_add(crate::store::hash_index_bytes(self.index.capacity(), size_of::<(Style, StyleId)>()));
+        for style in &self.styles {
+            bytes = bytes.saturating_add(style_text(style));
+        }
+        for style in self.index.keys() {
+            bytes = bytes.saturating_add(style_text(style));
+        }
+        bytes
+    }
+}
+
+/// Heap bytes of the text one style holds: its font name, its number format (shared through an
+/// `Arc` with every style that uses the same code, so a shared one is charged its control block)
+/// and the theme font scheme a differential format states.
+fn style_text(style: &Style) -> usize {
+    let mut bytes = style.font.name.capacity();
+    if let Some(scheme) = &style.dxf_stated.scheme {
+        bytes = bytes.saturating_add(scheme.capacity());
+    }
+    bytes.saturating_add(if std::sync::Arc::strong_count(&style.num_fmt.0) > 1 {
+        std::mem::size_of::<std::sync::Arc<str>>()
+    } else {
+        style.num_fmt.0.len()
+    })
 }
 
 static DEFAULT_STYLE: std::sync::LazyLock<Style> = std::sync::LazyLock::new(Style::default);
