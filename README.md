@@ -1,14 +1,27 @@
-# Cella
+<p align="center">
+  <img src="assets/app-icon/cella-1024.png" width="120" height="120" alt="Cella app icon">
+</p>
 
-**An independent, high-performance spreadsheet built in Rust** — for data sets, for agents, and for
-the files people actually send. It runs natively on macOS, Windows, Linux and BSD, and in the
-browser via WebAssembly.
+<h1 align="center">Cella</h1>
+
+<p align="center"><b>An independent, high-performance spreadsheet built in Rust.</b><br>
+For data sets, for agents, and for the files people actually send — native on macOS, Windows, Linux
+and BSD, and in the browser via WebAssembly.</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#look-around">Look around</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#docs">Docs</a> ·
+  <a href="#licence-and-credits">Licence</a>
+</p>
 
 > **This is an independent, modified version of GridCraft**, based on the work of the ArtCraft team
-> and the Cella contributors (MIT OR Apache-2.0 — see [`NOTICE`](NOTICE)). It is **not an
+> and the GridCraft contributors (MIT OR Apache-2.0 — see [`NOTICE`](NOTICE)). It is **not an
 > ArtCraft product** and carries **none of the ArtCraft marks**: upstream's brand licence requires a
-> modified version to remove them, and this tree did. The product name and every app identifier are
-> being replaced; the decision and the list are in
+> modified version to remove them, and this tree did. The product name, the app identifiers and the
+> icon are Cella's own — the decision and the list are in
 > [`docs/roadmap.md`](docs/roadmap.md) § Product position.
 
 ## What it does
