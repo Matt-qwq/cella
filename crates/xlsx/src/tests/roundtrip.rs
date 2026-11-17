@@ -98,7 +98,7 @@ fn sample() -> Workbook {
     s.cells.set(at("E4"), f);
     s.cells.set(at("F4"), Cell::formula(Formula::new("NOW()")));
     let mut arr = Formula::new("B2:B3*2");
-    arr.array = Some(rr("G2:G3"));
+    arr.array = Some(Box::new(rr("G2:G3")));
     let mut c = Cell::formula(arr);
     c.value = Value::Number(2469.0);
     s.cells.set(at("G2"), c);
@@ -534,7 +534,11 @@ fn full_roundtrip() {
     for (c, cell) in a.cells.iter() {
         let got = b.cell(c).unwrap_or_else(|| panic!("missing {c}"));
         assert_eq!(got.value, cell.value, "value at {c}");
-        assert_eq!(got.formula.as_ref().map(|f| (&f.text, f.array)), cell.formula.as_ref().map(|f| (&f.text, f.array)), "formula at {c}");
+        assert_eq!(
+            got.formula.as_ref().map(|f| (&f.text, f.array.as_deref())),
+            cell.formula.as_ref().map(|f| (&f.text, f.array.as_deref())),
+            "formula at {c}"
+        );
         assert_eq!(back.styles.get(got.style), wb.styles.get(cell.style), "style at {c}");
     }
     for (c, _) in b.cells.iter() {
@@ -1266,7 +1270,7 @@ fn implicit_intersection_is_written_as_single() {
     let (back, _) = read_xlsx(&bytes).unwrap();
     let sh = back.sheet(0).unwrap();
     assert_eq!(sh.cell(at("D3")).and_then(|c| c.formula).map(|f| f.text.clone()), Some("@A1:A3*2".to_string()));
-    assert_eq!(sh.cell(at("D3")).and_then(|c| c.formula).and_then(|f| f.array), None);
+    assert_eq!(sh.cell(at("D3")).and_then(|c| c.formula).and_then(|f| f.array.as_deref().copied()), None);
 }
 
 #[test]
@@ -1345,7 +1349,7 @@ fn let_lambda_parameters_drop_xlpm_on_read() {
     s.cells.set(at("A1"), Cell { value: Value::Number(2.0), ..Cell::formula(Formula::new("LET(x,1,x+1)")) });
     s.cells.set(at("A2"), Cell { value: Value::Number(6.0), ..Cell::formula(Formula::new("LAMBDA(a,a*2)(3)")) });
     let mut arr = Formula::new("MAP(B1:B2,LAMBDA(v,v+1))");
-    arr.array = Some(rr("C1:C2"));
+    arr.array = Some(Box::new(rr("C1:C2")));
     s.cells.set(at("C1"), Cell::formula(arr));
     let bytes = write_xlsx(&wb).unwrap();
     let (xml, _) = sheet1_xml(&bytes);

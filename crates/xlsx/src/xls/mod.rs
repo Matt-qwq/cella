@@ -539,7 +539,7 @@ impl SheetState<'_> {
                 }
                 let rewrite = crate::fmla::needs_file_rewrite(&e);
                 let mut f = Formula::from_expr_at(e, pos, &mut self.shapes, rewrite);
-                f.array = array.filter(|r| !r.is_single());
+                f.array = array.filter(|r| !r.is_single()).map(Box::new);
                 if let Some(mut cell) = self.sheet.cells.get(pos) {
                     cell.formula = Some(Arc::new(f));
                     self.sheet.cells.set(pos, cell);
@@ -682,7 +682,7 @@ fn worksheet(
     // .xlsx is read, so that the formula fills its range on recalculation. If the formula itself
     // couldn't be imported, they keep their values.
     for p in &pending {
-        let filled = st.sheet.cell(p.anchor).and_then(|c| c.formula).and_then(|f| f.array).is_some_and(|r| r.contains(p.pos));
+        let filled = st.sheet.cell(p.anchor).and_then(|c| c.formula).and_then(|f| f.array.as_deref().copied()).is_some_and(|r| r.contains(p.pos));
         if p.pos != p.anchor && filled {
             let style = st.sheet.style_id(p.pos);
             st.sheet.cells.set(p.pos, Cell { value: Value::Empty, formula: None, style });

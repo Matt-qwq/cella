@@ -2249,7 +2249,7 @@ fn row_and_column_inserts_move_legacy_array_ranges() {
     s.execute("home.insertRows", json!({"rows": "1:1"})).unwrap();
     let d = s.doc().unwrap();
     let f = d.wb.sheet(0).unwrap().cell(CellRef::new(3, 3)).and_then(|x| x.formula.clone()).unwrap();
-    assert_eq!(f.array, Some(gridcraft_core::RangeRef::parse("D4:E4").unwrap()));
+    assert_eq!(f.array.as_deref().copied(), gridcraft_core::RangeRef::parse("D4:E4"));
     assert_eq!(v(&s, "E4"), Value::Number(14.0));
     reopen(&mut s);
     assert_eq!(v(&s, "E4"), Value::Number(14.0));

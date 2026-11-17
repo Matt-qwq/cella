@@ -437,7 +437,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         let spilled = sh.spill.keys().any(|c| body.contains(*c)) || sh.spill_ranges.values().any(|r| r.intersects(&body));
         let arrays = body_arrays
             || (sh.cells.has_array_anchors()
-                && sh.cells.formulas().any(|(c, f, _)| f.array.is_some_and(|r| r.start == c && !r.is_single() && r.intersects(&body))));
+                && sh.cells.formulas().any(|(c, f, _)| f.array.as_deref().is_some_and(|r| r.start == c && !r.is_single() && r.intersects(&body))));
         // Row heights travel with rows.
         let heights: Vec<Option<LineInfo>> =
             if by_cols { vec![] } else { order.iter().map(|&i| sh.rows.get(&(body.start.row + i)).copied()).collect() };
@@ -1171,7 +1171,7 @@ fn remove_duplicates(s: &mut Session, p: &Json) -> Result<Json> {
                 let Some(f) = cell.formula.as_mut() else { continue };
                 let old = CellRef::new(keep[i], r.start.col + j as u32);
                 if let Some(new) = moved_arrays.get(&old) {
-                    Arc::make_mut(f).array = Some(*new);
+                    Arc::make_mut(f).array = Some(Box::new(*new));
                 }
             }
         }
@@ -1225,8 +1225,8 @@ fn arrays_moved_by_row_compaction(sh: &Sheet, area: RangeRef, start: u32, keep: 
     let refuse = || EngineError::Other("You can't change part of an array.".into());
     let mut out = std::collections::HashMap::new();
     for (c, f, _) in sh.cells.formulas() {
-        let Some(a) = f.array.filter(|a| a.start == c && a.intersects(&area)) else { continue };
-        if !area.contains_range(&a) {
+        let Some(a) = f.array.as_deref().filter(|a| a.start == c && a.intersects(&area)) else { continue };
+        if !area.contains_range(a) {
             return Err(refuse());
         }
         let first = dest.get(&a.start.row).copied().ok_or_else(refuse)?;

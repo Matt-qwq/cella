@@ -732,7 +732,7 @@ impl Calc {
             for (c, f, _) in formulas {
                 if let Some((node, keep)) = self.node_for(wb, si, c, &f, &mut shapes) {
                     let areas = std::mem::take(&mut self.scratch_areas);
-                    self.graph.insert((si, c), &areas, f.array, node);
+                    self.graph.insert((si, c), &areas, f.array.as_deref().copied(), node);
                     self.scratch_areas = areas;
                     // The shape is kept for the cell, so the next use needs no parse either.
                     if let Some(shape) = keep {
@@ -820,7 +820,7 @@ impl Calc {
             // at, not a workbook to write to (a rebuild is the one that keeps it).
             match formula.as_ref().and_then(|f| self.node_for(to, si, at, f, &mut shapes)) {
                 Some((node, _keep)) => {
-                    let legacy = formula.as_ref().and_then(|f| f.array);
+                    let legacy = formula.as_ref().and_then(|f| f.array.as_deref().copied());
                     let areas = std::mem::take(&mut self.scratch_areas);
                     self.graph.insert((si, at), &areas, legacy, node);
                     self.scratch_areas = areas;
@@ -974,7 +974,7 @@ impl Calc {
             let parsed = formula.as_ref().and_then(|f| self.node_for(wb, k.0, k.1, f, &mut shapes));
             match parsed {
                 Some((node, _keep)) => {
-                    let legacy = formula.as_ref().and_then(|f| f.array);
+                    let legacy = formula.as_ref().and_then(|f| f.array.as_deref().copied());
                     let areas = std::mem::take(&mut self.scratch_areas);
                     self.graph.insert(k, &areas, legacy, node);
                     self.scratch_areas = areas;
@@ -1960,7 +1960,7 @@ pub(crate) mod tests {
         // read as an array anchor that wrote the cells below it.
         let mut wb = Workbook::new();
         let mut array = Formula::new("=1");
-        array.array = RangeRef::parse("A1:A2");
+        array.array = RangeRef::parse("A1:A2").map(Box::new);
         wb.sheet_mut(0).unwrap().cells.set(CellRef::new(0, 0), Cell::formula(array));
         let mut calc = Calc::new();
         calc.rebuild(&wb);

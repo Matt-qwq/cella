@@ -665,7 +665,7 @@ impl Band {
 
     /// Whether any formula of this band owns a legacy array covering more than one cell.
     fn has_array_anchor(&self) -> bool {
-        self.rows.iter().any(|row| row.formulas().iter().any(|(_, f)| f.array.is_some_and(|r| !r.is_single())))
+        self.rows.iter().any(|row| row.formulas().iter().any(|(_, f)| f.array.as_deref().is_some_and(|r| !r.is_single())))
     }
 
     /// What one row's formulas and array values cost beyond the row header: the side table's run
@@ -2230,7 +2230,7 @@ impl Clone for CellStore {
 /// the other cells it covers has to be refused. The store index of that fact; keep the two in
 /// step (a store only ever raises it).
 fn cell_has_array(cell: &Cell) -> bool {
-    cell.formula.as_ref().and_then(|f| f.array).is_some_and(|r| !r.is_single())
+    cell.formula.as_ref().and_then(|f| f.array.as_deref()).is_some_and(|r| !r.is_single())
 }
 
 impl PartialEq for CellStore {
@@ -5655,7 +5655,7 @@ mod page {
             return None;
         }
         put_bytes(out, f.text.as_bytes());
-        match f.array {
+        match f.array.as_deref() {
             Some(a) => {
                 put_u8(out, 1);
                 put_u32(out, a.start.row);
@@ -5674,7 +5674,7 @@ mod page {
         let text = String::from_utf8(bytes).ok()?;
         let array = match take_u8(input)? {
             0 => None,
-            1 => Some(RangeRef::new(CellRef::new(take_u32(input)?, take_u32(input)?), CellRef::new(take_u32(input)?, take_u32(input)?))),
+            1 => Some(Box::new(RangeRef::new(CellRef::new(take_u32(input)?, take_u32(input)?), CellRef::new(take_u32(input)?, take_u32(input)?)))),
             _ => return None,
         };
         let dynamic = take_u8(input)? != 0;
@@ -7456,7 +7456,7 @@ mod tests {
         }
         s.set(c(2, 1), Cell { value: Value::Text(Arc::from("kept")), formula: Some(Arc::new(Formula::new("=A3"))), style: StyleId(4) });
         let mut dynamic = Formula::new("=A1:A2*2");
-        dynamic.array = Some(RangeRef::parse("C4:D5").expect("range"));
+        dynamic.array = Some(Box::new(RangeRef::parse("C4:D5").expect("range")));
         dynamic.dynamic = true;
         let array = Value::Array(Arc::new(gridcraft_core::Array::row(vec![Value::Number(1.0), Value::Number(2.0)])));
         s.set(c(3, 2), Cell { value: array, formula: Some(Arc::new(dynamic)), style: StyleId(9) });
@@ -8178,7 +8178,7 @@ mod array_anchor_tests {
 
     fn anchored(text: &str, range: &str) -> Cell {
         let mut f = Formula::new(text);
-        f.array = RangeRef::parse(range);
+        f.array = RangeRef::parse(range).map(Box::new);
         Cell::formula(f)
     }
 

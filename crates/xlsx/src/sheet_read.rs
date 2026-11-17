@@ -1398,7 +1398,7 @@ fn read_formula_text(
             if !range.is_single() {
                 st.derived.push(range);
             }
-            fm.array = Some(range);
+            fm.array = Some(Box::new(range));
             Some((fm, None))
         }
         "dataTable" => {

@@ -1070,7 +1070,7 @@ fn legacy_array_formulas_fill_their_range() {
     t.set("A2", "2");
     let cse = |t: &mut T, at: &str, formula: &str, range: &str| {
         let mut f = Formula::new(formula);
-        f.array = gridcraft_core::RangeRef::parse(range);
+        f.array = gridcraft_core::RangeRef::parse(range).map(Box::new);
         t.wb.sheet_mut(0).unwrap().cells.set(c(at), Cell::formula(f));
         t.calc.cells_changed(&mut t.wb, &[(0, c(at))]);
     };

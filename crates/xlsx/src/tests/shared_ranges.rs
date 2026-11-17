@@ -92,7 +92,7 @@ fn array_ranges_keep_only_the_anchor() {
     let d20 = sheet.cell(at("D20")).expect("D20");
     let f = d20.formula.as_ref().expect("formula");
     assert_eq!(f.text, "A20:A21+1");
-    assert_eq!(f.array.map(|r| (r.start, r.end)), Some((at("D20"), at("E21"))));
+    assert_eq!(f.array.as_deref().map(|r| (r.start, r.end)), Some((at("D20"), at("E21"))));
     assert_eq!(d20.value, Value::Number(2.5));
     // Cached values inside a legacy array range are not kept: the formula fills them again.
     assert!(sheet.cell(at("E20")).is_none(), "spill cell E20");
@@ -123,7 +123,7 @@ fn shared_and_array_formulas_round_trip() {
     for (at_, cell) in a.cells.iter() {
         let got = b.cell(at_).unwrap_or_else(|| panic!("missing {at_}"));
         assert_eq!(got.value, cell.value, "value at {at_}");
-        let f = |c: &gridcraft_model::Cell| c.formula.as_ref().map(|f| (f.text.clone(), f.array, f.dynamic));
+        let f = |c: &gridcraft_model::Cell| c.formula.as_ref().map(|f| (f.text.clone(), f.array.as_deref().copied(), f.dynamic));
         assert_eq!(f(&got), f(&cell), "formula at {at_}");
     }
 }

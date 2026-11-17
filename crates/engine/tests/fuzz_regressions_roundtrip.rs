@@ -51,7 +51,7 @@ fn value(wb: &Workbook, address: &str) -> String {
 
 /// The legacy array ranges on a sheet, as `anchor → covered range`.
 fn legacy_arrays(sheet: &Sheet) -> Vec<(String, String)> {
-    sheet.cells.iter().filter_map(|(c, cell)| cell.formula.as_ref().and_then(|f| f.array).map(|r| (c.a1(), r.a1()))).collect()
+    sheet.cells.iter().filter_map(|(c, cell)| cell.formula.as_ref().and_then(|f| f.array.as_deref()).map(|r| (c.a1(), r.a1()))).collect()
 }
 
 /// The column properties a save and reload must give back, styles by content (the file renumbers

@@ -30,7 +30,11 @@ pub struct Formula {
     pub expr_bytes: u32,
     /// Legacy array formula (Ctrl+Shift+Enter) covering this range; the formula lives in the
     /// top-left cell.
-    pub array: Option<RangeRef>,
+    ///
+    /// Boxed: a legacy array is a fact about a handful of cells, and the 20-byte range inline cost
+    /// every formula a size class of its own. `Option<Box<_>>` is transparent to serde, so the
+    /// JSON and XLSX spellings are unchanged.
+    pub array: Option<Box<RangeRef>>,
     /// Read from a file that marks this formula as a dynamic-array formula (cell metadata `cm`).
     /// The writer keeps the mark, so a formula Excel evaluates as an array is never saved as a
     /// legacy formula (which Excel evaluates with implicit intersection). Formulas entered or
@@ -243,14 +247,37 @@ impl Cell {
 /// 64-bit numbers: `Formula` holds a `String` and `Cell` a `Value`, so a 32-bit target (wasm32)
 /// has its own, smaller layout.
 ///
-/// `Formula` is **72** while the cell carries both representations (S2/S3): the shape pointer sits
-/// beside the tree pointer, 8 bytes that do not reach the allocator, which rounds
-/// `Arc<Formula>` to the same 96-byte chunk either way. S7 deletes `expr` and brings it back to
-/// 64, S6 boxes `array` for another 8.
+/// `Formula` is **56** while the cell carries both representations (S2/S3): the shape pointer sits
+/// beside the tree pointer, 8 bytes that do not reach the allocator. S6 boxed `array`
+/// (`Option<Box<RangeRef>>`) and took the struct from 72 to 56, which drops `Arc<Formula>` from a
+/// 96-byte allocation to an 80-byte one; S7 deletes `expr` and `expr_bytes` and brings the struct
+/// back to 48. Pinned here because the undo budget and the store's accounting read it.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Formula>() == 72);
+const _: () = assert!(std::mem::size_of::<Formula>() == 56);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Cell>() == 40);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The range of a legacy array is boxed, and `Option<Box<_>>` is transparent to serde: the
+    /// JSON a workbook is written as must be byte-identical to the one the inline range wrote
+    /// (S6 of `plan/SHAPE-SHARING.md`), so no `formatVersion` bump and old files still load.
+    #[test]
+    fn an_array_range_is_boxed_without_changing_the_json() {
+        let mut f = Formula::new("=A1:A2*2");
+        f.array = gridcraft_core::RangeRef::parse("C1:D2").map(Box::new);
+        let json = serde_json::to_string(&f).expect("a formula serialises");
+        assert_eq!(json, r#"{"text":"A1:A2*2","array":{"start":{"row":0,"col":2},"end":{"row":1,"col":3}}}"#);
+        let back: Formula = serde_json::from_str(&json).expect("a formula deserialises");
+        assert_eq!(back, f, "the text, the range and the dynamic mark survive");
+        assert_eq!(back.array.as_deref().copied(), gridcraft_core::RangeRef::parse("C1:D2"));
+        // A formula with no array keeps the field as `null`: the shape the field always had.
+        let plain = Formula::new("=A1+1");
+        assert_eq!(serde_json::to_string(&plain).expect("serialises"), r#"{"text":"A1+1","array":null}"#);
+    }
+}
 
 #[cfg(all(test, target_pointer_width = "64"))]
 mod size_pins {
@@ -260,6 +287,6 @@ mod size_pins {
     fn formula_sizes_are_pinned() {
         println!("size_of::<Formula>() = {}", std::mem::size_of::<Formula>());
         println!("size_of::<Cell>() = {}", std::mem::size_of::<Cell>());
-        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (72, 40));
+        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (56, 40));
     }
 }

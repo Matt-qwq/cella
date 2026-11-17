@@ -322,7 +322,7 @@ fn insert_table(s: &mut Session, p: &Json) -> Result<Json> {
         }
     }
     let arrays = |sh: &gridcraft_model::Sheet| {
-        sh.cells.iter().any(|(_, x)| x.formula.as_ref().and_then(|f| f.array).is_some_and(|a| !a.is_single() && a.intersects(&r)))
+        sh.cells.iter().any(|(_, x)| x.formula.as_ref().and_then(|f| f.array.as_deref().copied()).is_some_and(|a| !a.is_single() && a.intersects(&r)))
     };
     if d.wb.sheet(sheet).is_some_and(arrays) {
         return Err(EngineError::Other("Multi-cell array formulas aren't allowed in tables.".into()));

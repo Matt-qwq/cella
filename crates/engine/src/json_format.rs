@@ -255,6 +255,36 @@ mod tests {
         assert!(err.contains("has no \"workbook\""), "{err}");
     }
 
+    /// A legacy (Ctrl+Shift+Enter) array formula keeps its range through the envelope, and the
+    /// version the writer stamps does not move (S6 of `plan/SHAPE-SHARING.md`: the range is
+    /// boxed for its size, which serde does not see).
+    #[test]
+    fn an_array_formula_round_trips_without_a_version_bump() {
+        use gridcraft_core::{CellRef, RangeRef};
+        use gridcraft_model::{Cell, Formula};
+        let mut wb = Workbook::new();
+        let mut f = Formula::new("=A1:A2*2");
+        f.array = RangeRef::parse("C1:C2").map(Box::new);
+        f.dynamic = true;
+        wb.sheet_mut(0).expect("sheet").cells.set(CellRef::new(0, 2), Cell::formula(f));
+        let bytes = write(&wb).expect("writes");
+        let doc: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(doc.get(VERSION_KEY), Some(&Value::from(FORMAT_VERSION)), "no formatVersion bump");
+        // The boxed range is written as the object the inline range always was.
+        assert!(
+            doc["workbook"]["sheets"][0].to_string().contains(r#""array":{"end":{"col":2,"row":1},"start":{"col":2,"row":0}}"#),
+            "the array range keeps its spelling: {}",
+            doc["workbook"]["sheets"][0]
+        );
+        let (back, warnings) = read(&bytes).expect("reads");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let cell = back.sheet(0).and_then(|s| s.cell(CellRef::new(0, 2))).expect("the cell is back");
+        let f = cell.formula.as_ref().expect("the formula is back");
+        assert_eq!(f.text, "A1:A2*2");
+        assert_eq!(f.array.as_deref().copied(), RangeRef::parse("C1:C2"));
+        assert!(f.dynamic);
+    }
+
     #[test]
     fn a_newer_version_is_read_with_a_warning() {
         let book = serde_json::to_string(&Workbook::new()).unwrap();

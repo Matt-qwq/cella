@@ -333,7 +333,7 @@ fn reads_values_formulas_formats_and_layout() {
         // Array formula: the anchor holds it; the other cell's cached result is dropped so that
         // the formula fills the range on recalculation (as when an .xlsx is read, #156).
         let c5 = wb.sheets[0].cell(CellRef::parse("C5").unwrap()).unwrap().formula.clone().unwrap();
-        assert_eq!((c5.text.as_str(), c5.array), ("A5:A6*2", Some(RangeRef::parse("C5:C6").unwrap())));
+        assert_eq!((c5.text.as_str(), c5.array.as_deref().copied()), ("A5:A6*2", RangeRef::parse("C5:C6")));
         assert_eq!(ftext(&wb, "C6"), None);
         assert_eq!(v(&wb, 0, "C6"), Value::Empty);
         // Number formats, merges, sizes, names, print area; embedded chart records ignored.
