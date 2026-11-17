@@ -401,7 +401,7 @@ pub(super) fn home(app: &mut SheetApp, ui: &mut Ui) {
                 ],
             );
         });
-        let del = small_button(ui, Icon::Delete, "Delete", "Delete", true);
+        let del = small_button(ui, Icon::Delete, "Delete", "Delete Cells", true);
         for sequence in keytip_table::group_extension(
             app.keytips.prefix().unwrap_or_default(),
             &["dialog:deleteCells", "home.deleteRows", "home.deleteColumns", "home.deleteSheet"],

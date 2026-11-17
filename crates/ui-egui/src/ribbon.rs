@@ -248,8 +248,11 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
         .exact_size(h)
         .frame(egui::Frame::NONE.fill(t.window).inner_margin(egui::Margin { left: 10, right: 10, top: 0, bottom: 6 }))
         .show(ui, |ui| {
-            // Tabs row.
-            let tabs_rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 32.0));
+            // Tabs row. Both rows are clamped to what is actually visible: at the minimum window
+            // size the app's content must not lay itself out wider than the window.
+            let clip = ui.clip_rect();
+            let row_w = ui.available_width().min(clip.right() - ui.cursor().min.x).max(120.0);
+            let tabs_rect = Rect::from_min_size(ui.cursor().min, vec2(row_w, 32.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
@@ -305,33 +308,64 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                 return;
             }
             // Ribbon card.
-            let card = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 88.0));
+            let card = Rect::from_min_size(ui.cursor().min, vec2(row_w, 88.0));
             ui.painter().rect_filled(card, 10.0, t.ribbon);
             ui.painter().rect_stroke(card, 10.0, Stroke::new(1.0, t.ribbon_border), StrokeKind::Inside);
             let inner = card.shrink2(vec2(10.0, 6.0));
+            // One row while it fits. When the window is too narrow for the tab, the last groups
+            // stay reachable through the » button: the same tab, wrapped, in a popup — a narrow
+            // window must never hide a command behind a scroll bar nobody can see.
+            let mut overflowed = false;
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-                egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                let out = egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
-                        match app.ui.ribbon_tab.as_str() {
-                            "Home" => home(app, ui),
-                            "Insert" => insert(app, ui),
-                            "Draw" => draw(app, ui),
-                            "Page Layout" => page_layout(app, ui),
-                            "Formulas" => formulas(app, ui),
-                            "Data" => data(app, ui),
-                            "Review" => review(app, ui),
-                            "View" => view(app, ui),
-                            "Automate" => automate(app, ui),
-                            "Table Design" => table_design(app, ui),
-                            "Chart Design" => chart_design(app, ui),
-                            crate::paper_view::TAB => crate::paper_view::ribbon_tab(app, ui),
-                            _ => home(app, ui),
-                        }
+                        tab_content(app, ui);
                     });
                 });
+                overflowed = out.content_size.x > out.inner_rect.width() + 1.0;
             });
+            if overflowed {
+                let t = Tokens::get(ui.ctx());
+                let r = Rect::from_min_size(pos2(card.right() - 30.0, card.top() + 12.0), vec2(24.0, 64.0));
+                // A backing strip so the last group's labels do not run under the button.
+                ui.painter().rect_filled(Rect::from_min_size(pos2(r.left() - 8.0, card.top() + 1.0), vec2(38.0, card.height() - 2.0)), 9.0, t.ribbon);
+                let more = ui.put(r, egui::Button::new(egui::RichText::new("»").size(17.0)).fill(t.ribbon).stroke(Stroke::new(1.0, t.ribbon_border)));
+                more.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.ui.language.tr("More commands on this tab")));
+                let tip = app.ui.language.tr("More commands on this tab");
+                let more = more.on_hover_text(tip);
+
+                egui::Popup::menu(&more).show(|ui| {
+                    ui.set_max_width((card.width() - 48.0).max(360.0));
+                    ui.label(egui::RichText::new(app.ui.language.tr("All commands on this tab")).small().weak());
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(2.0, 6.0);
+                            tab_content(app, ui);
+                        });
+                    });
+                });
+            }
         });
+}
+
+/// The active tab's commands, in one row (or wrapped, in the » popup).
+fn tab_content(app: &mut SheetApp, ui: &mut Ui) {
+    match app.ui.ribbon_tab.as_str() {
+        "Home" => home(app, ui),
+        "Insert" => insert(app, ui),
+        "Draw" => draw(app, ui),
+        "Page Layout" => page_layout(app, ui),
+        "Formulas" => formulas(app, ui),
+        "Data" => data(app, ui),
+        "Review" => review(app, ui),
+        "View" => view(app, ui),
+        "Automate" => automate(app, ui),
+        "Table Design" => table_design(app, ui),
+        "Chart Design" => chart_design(app, ui),
+        crate::paper_view::TAB => crate::paper_view::ribbon_tab(app, ui),
+        _ => home(app, ui),
+    }
 }
 
 /// The File tab opens the Backstage view (New, Open, Info, Save As, Print, Export, Options…), like
