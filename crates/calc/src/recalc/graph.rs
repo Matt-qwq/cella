@@ -291,9 +291,10 @@ impl CellDeps {
 /// beside the length, which padded the node out to a fourth word — 24 bytes for a field with six
 /// bits set, in a table entry of the key's 16 bytes and hashbrown's control byte: 41 bytes of
 /// table a slot, which the reference workbook's two million nodes paid 172 MB for. Packed, the
-/// entry is 33 bytes a slot and the same nodes cost 138. S7 of
-/// `plan/SHAPE-SHARING.md` then deleted the node's own tree pointer, so a node is **16** bytes
-/// (33 bytes of table a slot) — 138 MB instead of 172.
+/// entry was 33 bytes a slot and the same nodes cost 138. S7 of `plan/SHAPE-SHARING.md` then
+/// deleted the node's own tree pointer, so a node is **16** bytes — and the table holds it beside
+/// an 8-byte cell instead of a 16-byte `(sheet, cell)` key ([`NodeTable`]): 25 bytes of table a
+/// slot, 105 MB for those two million nodes.
 #[derive(Clone, Debug)]
 pub(super) struct Node {
     /// Where the node's run of [`Graph::areas`] starts.
@@ -429,6 +430,111 @@ impl Node {
     /// Whether the formula calls a volatile function.
     pub(super) fn is_volatile(&self) -> bool {
         self.run.flags() & VOLATILE != 0
+    }
+}
+
+/// The formula nodes, one `CellRef → Node` table a sheet.
+///
+/// A formula normally sits on the sheet the graph is reporting on, so the table that holds them
+/// drops the sheet from its key — the same split, and for the same reason, as [`CellDeps`]: an
+/// 8-byte key, a 16-byte node and hashbrown's control byte, **25 bytes a slot**, against the 33 of
+/// the single `(sheet, cell) → Node` table this replaced (a 16-byte key padded to two words). The
+/// reference workbook's two million formulas paid 138 MB for that table and pay 105 for this one.
+///
+/// The outer map costs one entry a sheet that holds formulas: a sheet of values takes no table,
+/// and a sheet whose last formula leaves gives its table back ([`NodeTable::remove`]), so the
+/// shape follows the workbook rather than the sheets it once had.
+#[derive(Clone, Debug, Default)]
+pub(super) struct NodeTable {
+    /// sheet → its formulas, by cell.
+    sheets: HashMap<usize, HashMap<CellRef, Node>>,
+}
+
+impl NodeTable {
+    /// The node of the formula at `k`.
+    fn get(&self, k: Key) -> Option<&Node> {
+        self.sheets.get(&k.0)?.get(&k.1)
+    }
+
+    /// Whether a formula is stored at `k`.
+    fn contains_key(&self, k: Key) -> bool {
+        self.sheets.get(&k.0).is_some_and(|m| m.contains_key(&k.1))
+    }
+
+    /// Stores `node` at `k`, answering the node it replaced.
+    fn insert(&mut self, k: Key, node: Node) -> Option<Node> {
+        self.sheets.entry(k.0).or_default().insert(k.1, node)
+    }
+
+    /// Drops the formula at `k`, answering its node; the sheet's table leaves with its last
+    /// formula, so a workbook edited down to values holds no node table at all.
+    fn remove(&mut self, k: Key) -> Option<Node> {
+        let sheet = self.sheets.get_mut(&k.0)?;
+        let old = sheet.remove(&k.1);
+        if sheet.is_empty() {
+            self.sheets.remove(&k.0);
+        }
+        old
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sheets.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.sheets.values().map(|m| m.len()).sum()
+    }
+
+    /// Reserves room in the table of `sheet` for `formulas` more formulas (see
+    /// [`Graph::reserve`]): a bulk build would otherwise grow it a dozen times, and each growth
+    /// rehashes every entry already in it. A sheet with nothing to reserve takes no table.
+    fn reserve(&mut self, sheet: usize, formulas: usize) {
+        if formulas == 0 {
+            return;
+        }
+        self.sheets.entry(sheet).or_default().reserve(formulas);
+    }
+
+    /// Every formula the table holds, as its `(sheet, cell)` key.
+    fn keys(&self) -> impl Iterator<Item = Key> + '_ {
+        self.sheets.iter().flat_map(|(sheet, m)| m.keys().map(move |c| (*sheet, *c)))
+    }
+
+    /// Every node, for the one pass that rewrites what they point at in the arena
+    /// ([`Graph::compact_areas`]).
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Node> + '_ {
+        self.sheets.values_mut().flat_map(|m| m.values_mut())
+    }
+
+    /// Drops the tables of sheets that hold no formula ([`Graph::settle`]): a reserve for formulas
+    /// that never arrived — a sheet whose text does not parse, say — leaves one behind.
+    fn drop_empty(&mut self) {
+        self.sheets.retain(|_, m| !m.is_empty());
+        if self.sheets.is_empty() {
+            // The outer map is a sheet's entry and nothing else: a graph of values holds no
+            // allocation here at all, not a map waiting for the next formula.
+            self.sheets.shrink_to(0);
+        }
+    }
+
+    /// Heap bytes of the outer map and of every sheet's table (see [`GraphMemory`]).
+    fn memory(&self) -> usize {
+        use std::mem::size_of;
+        let mut bytes = gridcraft_model::hash_index_bytes(self.sheets.capacity(), size_of::<(usize, HashMap<CellRef, Node>)>());
+        for m in self.sheets.values() {
+            bytes = bytes.saturating_add(gridcraft_model::hash_index_bytes(m.capacity(), size_of::<(CellRef, Node)>()));
+        }
+        bytes
+    }
+
+    /// The slot counts of the outer map and of every sheet's table (see [`Graph::node_slots`]).
+    #[cfg(test)]
+    fn slots(&self) -> usize {
+        let mut slots = gridcraft_model::hash_index_bytes(self.sheets.capacity(), 0);
+        for m in self.sheets.values() {
+            slots = slots.saturating_add(gridcraft_model::hash_index_bytes(m.capacity(), 0));
+        }
+        slots
     }
 }
 
@@ -603,7 +709,8 @@ impl<T: Copy + Ord> Intervals<T> {
 /// count one allocation twice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct GraphMemory {
-    /// The `Key → Node` table: its slots and control bytes.
+    /// The node table: the per-sheet outer map, and each sheet's `CellRef → Node` slots and
+    /// control bytes.
     pub nodes: usize,
     /// The precedent-area arena, including the garbage [`Graph::settle`] has not packed away.
     pub areas: usize,
@@ -685,7 +792,7 @@ impl PackedArea {
 /// a tail that was 81 MB of the reference workbook.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
-    pub(super) nodes: HashMap<Key, Node>,
+    nodes: NodeTable,
     /// Every node's precedent areas, packed: a node owns `areas[start..start + len]`, its `run`.
     areas: Vec<PackedArea>,
     /// Areas no node points at any more.
@@ -730,6 +837,29 @@ impl Graph {
         self.nodes.is_empty()
     }
 
+    /// The node of the formula at `k` — the sheet's table, its cell's entry.
+    pub(super) fn node(&self, k: Key) -> Option<&Node> {
+        self.nodes.get(k)
+    }
+
+    /// Whether the graph holds a formula at `k`.
+    pub(super) fn has_node(&self, k: Key) -> bool {
+        self.nodes.contains_key(k)
+    }
+
+    /// Every formula the graph holds, as its `(sheet, cell)` key (a rebuild's or a full
+    /// recalculation's work list).
+    pub(super) fn node_keys(&self) -> impl Iterator<Item = Key> + '_ {
+        self.nodes.keys()
+    }
+
+    /// The slot counts of the node table (see [`NodeTable::slots`]): the test that ratchets the
+    /// table's size divides its bytes by them.
+    #[cfg(test)]
+    pub(super) fn node_slots(&self) -> usize {
+        self.nodes.slots()
+    }
+
     /// The precedent areas of a node, as the arena keeps them (see [`PackedArea`]).
     pub(super) fn areas_of(&self, node: &Node) -> &[PackedArea] {
         let start = node.start as usize;
@@ -766,25 +896,25 @@ impl Graph {
     /// recorded when it visited its last node, so opening a workbook never walks a formula tree to
     /// find out. A cell without a node (no formula, or one that does not parse) is not volatile.
     pub(super) fn is_volatile(&self, k: Key) -> bool {
-        self.nodes.get(&k).is_some_and(Node::is_volatile)
+        self.nodes.get(k).is_some_and(Node::is_volatile)
     }
 
     /// Reserves room for `formulas` formulas of `sheet`, so a bulk build does not grow its tables
-    /// a dozen times (each growth rehashes every entry already in it). The precedent table reserved
-    /// is the sheet's own, where its formulas' same-sheet references land; a formula reading another
-    /// sheet's cells goes to the cross table, which grows as it fills.
+    /// a dozen times (each growth rehashes every entry already in it). The node and precedent tables
+    /// reserved are the sheet's own — where its formulas and their same-sheet references land; a
+    /// formula reading another sheet's cells goes to the cross table, which grows as it fills.
     pub(super) fn reserve(&mut self, sheet: usize, formulas: usize) {
-        self.reserve_more(formulas);
+        self.reserve_more(sheet, formulas);
         let precedent_cells = formulas.saturating_mul(3).saturating_div(2);
         self.cell_deps.reserve(sheet, precedent_cells);
     }
 
-    /// Reserves room for `formulas` more formulas and their precedents, before a bulk insert
-    /// (a fill, a paste of a column of formulas) — the part of [`Graph::reserve`] that does not
-    /// belong to one sheet. The nodes and the arena would otherwise grow a dozen times during the
-    /// fill, each growth rehashing or copying everything already in them.
-    pub(super) fn reserve_more(&mut self, formulas: usize) {
-        self.nodes.reserve(formulas);
+    /// Reserves room for `formulas` more formulas of `sheet` and their precedents, before a bulk
+    /// insert (a fill, a paste of a column of formulas) — the part of [`Graph::reserve`] that is
+    /// not one sheet's precedent table. The node table and the arena would otherwise grow a dozen
+    /// times during the fill, each growth rehashing or copying everything already in them.
+    pub(super) fn reserve_more(&mut self, sheet: usize, formulas: usize) {
+        self.nodes.reserve(sheet, formulas);
         self.areas.reserve(formulas.saturating_mul(2));
     }
 
@@ -886,7 +1016,7 @@ impl Graph {
     }
 
     pub(super) fn remove(&mut self, k: Key) {
-        if let Some(old) = self.nodes.remove(&k) {
+        if let Some(old) = self.nodes.remove(k) {
             self.unlink(k, &old);
         }
     }
@@ -961,13 +1091,16 @@ impl Graph {
     /// nothing in the product asks the graph for one.
     #[cfg(test)]
     pub(super) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<gridcraft_formula::Shape>> {
-        self.nodes.get(&k).and_then(|n| n.shape.clone())
+        self.nodes.get(k).and_then(|n| n.shape.clone())
     }
 
     /// Every command ends here (a rebuild, a restore, an edit's commit), which is the one point
     /// the graph is quiescent: a fill through `insert` alone must not have the arena reallocated
     /// under it, so nothing below runs while one is in progress.
     pub(super) fn settle(&mut self) {
+        // A reserve that no formula followed up on leaves a table nothing is in (the sheet a
+        // rebuild reserved for, whose text did not parse): it gives it back here, once.
+        self.nodes.drop_empty();
         for key in std::mem::take(&mut self.unsettled_cols) {
             if let Some(v) = self.col_deps.get_mut(&key) {
                 v.settle();
@@ -1089,7 +1222,7 @@ impl Graph {
 
     /// Precedent areas of a formula cell (for Trace Precedents).
     pub fn precedents_of(&self, k: Key) -> Vec<Area> {
-        self.nodes.get(&k).map(|n| self.areas_of(n).iter().map(|a| a.to_area()).collect()).unwrap_or_default()
+        self.nodes.get(k).map(|n| self.areas_of(n).iter().map(|a| a.to_area()).collect()).unwrap_or_default()
     }
 
     /// The live heap bytes of this graph, by allocation class: the numbers a memory report shows,
@@ -1100,7 +1233,7 @@ impl Graph {
         use std::mem::size_of;
         let (cell_deps, many_lists) = self.cell_deps.memory();
         GraphMemory {
-            nodes: gridcraft_model::hash_index_bytes(self.nodes.capacity(), size_of::<(Key, Node)>()),
+            nodes: self.nodes.memory(),
             areas: self.areas.capacity().saturating_mul(size_of::<PackedArea>()),
             cell_deps,
             many_lists,
@@ -1313,16 +1446,80 @@ mod tests {
         assert_eq!(out.len(), 2, "the long list stopped checking");
     }
 
-    /// The three allocations the memory rounds shrank, in the arithmetic the memory report makes: a
-    /// node's flags moved into its run's word, an area's sheet packs into a `u32` (24 to 20), and
-    /// S7 deleted the node's own tree pointer (24 to 16 — the reference workbook's two million
-    /// nodes, 172 MB to 138).
+    /// The allocations the memory rounds shrank, in the arithmetic the memory report makes: a
+    /// node's flags moved into its run's word, an area's sheet packs into a `u32` (24 to 20), S7
+    /// deleted the node's own tree pointer (24 to 16 — the reference workbook's two million nodes,
+    /// 172 MB to 138), and GR3 dropped the sheet from the table's key (33 to 25 bytes a slot —
+    /// 138 MB to 105).
     #[test]
     fn a_node_is_two_words_and_a_packed_area_five() {
         assert_eq!(std::mem::size_of::<Node>(), 16, "a `u32` start, the run/flag word, the shape");
-        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 33, "the node table's bytes a slot");
+        assert_eq!(std::mem::size_of::<(CellRef, Node)>() + 1, 25, "the node table's bytes a slot");
+        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 33, "the key the per-sheet table dropped");
         assert_eq!(std::mem::size_of::<PackedArea>(), 20, "a `u32` sheet and a 16-byte range");
         assert_eq!(std::mem::size_of::<Area>(), 24, "the evaluator's form, which the arena does not pay for");
+    }
+
+    /// The node table is the per-sheet `CellRef → Node` one, and a formula costs it 25 bytes a
+    /// slot — the ratchet, so a later change cannot quietly re-widen the key back to a `Key` and
+    /// buy the 8 bytes a formula back: 10,000 formulas over 16,384 slots (the doubling's tail) come
+    /// out at 25 bytes a slot, not 33.
+    ///
+    /// The table doubles, so a slot count and a formula count are not the same number: 10,000
+    /// formulas fill 16,384 slots, and the report charges what is allocated (41 bytes a formula
+    /// here, 52 at the reference workbook's two million). The 26 is the entry's own arithmetic —
+    /// 8 + 16 + 1 — with a byte of slack.
+    #[test]
+    fn the_node_table_costs_at_most_twenty_six_bytes_a_slot() {
+        let mut g = Graph::default();
+        for row in 0..10_000u32 {
+            g.insert(key(0, row, 6), &[single(0, row, 1)], None, Node::new(false, false, false));
+        }
+        let m = g.memory();
+        let slots = g.node_slots();
+        assert_eq!(slots, 16_392, "16,384 slots for 10,000 formulas, 8 for the sheet that holds them");
+        assert!(m.nodes <= slots * 26, "the node table costs {} bytes for {slots} slots", m.nodes);
+        assert!(m.nodes >= slots * 25, "…and no less than the entry: {} bytes for {slots} slots", m.nodes);
+        // The table this replaced: the same slots, a 16-byte key padded around the 16-byte node.
+        let replaced = slots.saturating_mul(33);
+        assert!(m.nodes < replaced, "the shape it replaced cost {replaced} bytes here, this one {}", m.nodes);
+    }
+
+    /// A sheet's table is the sheet's: a formula on one sheet does not put a table on another, a
+    /// sheet that loses its last formula gives its table back, and a sheet that holds none is never
+    /// charged for one — the outer map is one entry a sheet that has formulas, not one a sheet.
+    #[test]
+    fn a_sheet_of_values_takes_no_node_table() {
+        let mut g = Graph::default();
+        g.insert(key(0, 0, 6), &[single(0, 0, 1)], None, Node::new(false, false, false));
+        g.insert(key(1, 0, 6), &[single(1, 0, 1)], None, Node::new(false, false, false));
+        assert_eq!(g.nodes.sheets.len(), 2, "one table a sheet with a formula");
+        assert_eq!(g.len(), 2);
+        assert!(g.has_node(key(1, 0, 6)));
+        assert!(!g.has_node(key(2, 0, 6)), "a sheet the graph never saw");
+        assert_eq!(g.node_keys().count(), 2);
+        let two = g.memory().nodes;
+        g.remove(key(1, 0, 6));
+        assert_eq!(g.nodes.sheets.len(), 1, "the sheet's table left with its last formula");
+        assert!(g.memory().nodes < two, "and so did its bytes");
+        assert_eq!(g.node_keys().collect::<Vec<_>>(), vec![key(0, 0, 6)]);
+        g.remove(key(0, 0, 6));
+        assert!(g.is_empty());
+        assert_eq!(g.nodes.sheets.len(), 0, "the last table leaves too");
+    }
+
+    /// A reserve is a reservation, not a table: a sheet reserved for formulas that never arrive —
+    /// a rebuild of a sheet whose text does not parse — holds none once the graph settles.
+    #[test]
+    fn a_reserve_with_no_formulas_leaves_no_table() {
+        let mut g = Graph::default();
+        g.reserve(0, 5_000);
+        assert!(g.memory().nodes > 0, "the room is taken");
+        g.settle();
+        assert_eq!(g.nodes.sheets.len(), 0, "and given back");
+        assert_eq!(g.memory().nodes, 0);
+        g.reserve(0, 0);
+        assert_eq!(g.nodes.sheets.len(), 0, "reserving nothing takes no table");
     }
 
     /// A run's length shares a word with the flags, so the only constructor that takes one has to
@@ -1360,7 +1557,7 @@ mod tests {
             let mut g = Graph::default();
             let node = Node::new(dynamic, may_spill, trim).with_volatile(volatile).with_visibility(hidden);
             g.insert(k, &areas, is_legacy.then_some(legacy), node);
-            let stored = g.nodes.get(&k);
+            let stored = g.node(k);
             assert!(stored.is_some(), "bits {bits:06b}: the node is stored");
             let Some(stored) = stored else { continue };
             assert_eq!(stored.flags(), bits, "bits {bits:06b}: the flags read back");
@@ -1398,7 +1595,7 @@ mod tests {
         g.settle();
         assert!(g.areas_len() < before, "the replaced runs are packed away: {} of {before}", g.areas_len());
         for row in 0..8_000u32 {
-            let Some(node) = g.nodes.get(&key(0, row, 6)) else { continue };
+            let Some(node) = g.node(key(0, row, 6)) else { continue };
             let replaced = row % 3 == 0;
             assert_eq!(node.run_len(), if replaced { 3 } else { 2 }, "row {row}'s run");
             assert!(node.flags() & TRIM != 0, "row {row} keeps TRIM");
