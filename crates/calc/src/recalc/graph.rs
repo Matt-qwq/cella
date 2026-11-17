@@ -44,6 +44,11 @@ pub type Key = (usize, CellRef);
 /// it is already in the list.
 const LONG_LIST: usize = 8;
 
+/// The cells one edit changes past which it is a bulk edit — a fill, a paste of a column of
+/// formulas — where growing the tables ahead of it ([`Graph::reserve_more`]) pays for itself. A
+/// keystroke is not a bulk edit, and a workbook that holds no formulas is not one either.
+pub(super) const BULK_EDIT: usize = 1024;
+
 /// The dependents of a set of precedent cells: `K` is a precedent key, `V` the key of one formula
 /// that reads it.
 ///
@@ -281,16 +286,70 @@ impl CellDeps {
 }
 
 /// One formula of the graph.
+///
+/// Three words: where its run of [`Graph::areas`] starts, the run's length together with the
+/// flags (`RunLen`), and the formula. The flags used to be a byte of their own beside the length,
+/// which padded the node out to a fourth word — 24 bytes for a field with six bits set, in a table
+/// entry of the key's 16 bytes and hashbrown's control byte: 41 bytes of table a slot, which the
+/// reference workbook's two million nodes paid 172 MB for. Packed, the entry is 33 bytes a slot
+/// and the same nodes cost 138.
 #[derive(Clone, Debug)]
 pub(super) struct Node {
-    /// The node's precedent areas, as a run of [`Graph::areas`]: `areas[start..start + len]`.
+    /// Where the node's run of [`Graph::areas`] starts.
     start: u32,
-    len: u32,
+    /// The run's length and the `DYNAMIC`..`VISIBILITY` flags below.
+    run: RunLen,
     /// The parsed formula, shared with the cell: a pass reads it from here instead of rebuilding
     /// the cell (which copies its value and both side tables) once per formula.
     pub(super) expr: Option<std::sync::Arc<Expr>>,
-    /// The `DYNAMIC`..`VISIBILITY` bits below.
-    flags: u8,
+}
+
+/// A node's run length and its flags in one word: the length in the low `RUN_BITS`, the flags in
+/// the byte above them.
+///
+/// The length counts areas in the graph's arena, so the only constructor that takes one
+/// (`RunLen::new`) answers `None` past `MAX_RUN`: a run that would reach into the flags cannot be
+/// built at all, and so no node can hold one. The flags are a byte, so the low eight bits of the
+/// word above the run are theirs to use (`VISIBILITY` is the sixth; two are free).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RunLen(u32);
+
+/// The bits of `RunLen` that hold a run's length.
+const RUN_BITS: u32 = 24;
+/// The mask of those bits.
+const RUN_MASK: u32 = (1 << RUN_BITS) - 1;
+/// The longest run a node can hold: 16,777,215 areas — a third of a gigabyte of the arena, and
+/// millions of times the longest precedent list a formula has.
+const MAX_RUN: usize = RUN_MASK as usize;
+
+impl RunLen {
+    /// A run of `len` areas with `flags`, or `None` when the length does not fit under them.
+    fn new(len: usize, flags: u8) -> Option<Self> {
+        let len = u32::try_from(len).ok().filter(|n| (*n as usize) <= MAX_RUN)?;
+        Some(RunLen(len | (u32::from(flags) << RUN_BITS)))
+    }
+
+    /// A node that has no areas yet, carrying `flags` (`Graph::insert` gives it its run).
+    fn no_run(flags: u8) -> Self {
+        RunLen(u32::from(flags) << RUN_BITS)
+    }
+
+    /// The number of areas in the run.
+    fn len(self) -> usize {
+        (self.0 & RUN_MASK) as usize
+    }
+
+    /// The `DYNAMIC`..`VISIBILITY` bits.
+    fn flags(self) -> u8 {
+        // There is nothing above the run but the flags: `new` and `no_run` are the only
+        // constructors, and both shift a byte into place.
+        (self.0 >> RUN_BITS) as u8
+    }
+
+    /// The same run with `flag` set.
+    fn with_flag(self, flag: u8) -> Self {
+        RunLen(self.0 | (u32::from(flag) << RUN_BITS))
+    }
 }
 
 /// The formula is evaluated every time (INDIRECT/OFFSET, a volatile function, a moving name).
@@ -321,13 +380,23 @@ impl Node {
         if trim {
             flags |= TRIM;
         }
-        Node { start: 0, len: 0, expr, flags }
+        Node { start: 0, run: RunLen::no_run(flags), expr }
+    }
+
+    /// The `DYNAMIC`..`VISIBILITY` bits (see `RunLen`).
+    fn flags(&self) -> u8 {
+        self.run.flags()
+    }
+
+    /// How many areas of the arena the node owns.
+    fn run_len(&self) -> usize {
+        self.run.len()
     }
 
     /// The same node, marked as reading which rows are hidden (see [`VISIBILITY`]).
     pub(super) fn with_visibility(mut self, hidden_rows: bool) -> Self {
         if hidden_rows {
-            self.flags |= VISIBILITY;
+            self.run = self.run.with_flag(VISIBILITY);
         }
         self
     }
@@ -335,14 +404,14 @@ impl Node {
     /// The same node, marked volatile (see [`VOLATILE`]).
     pub(super) fn with_volatile(mut self, volatile: bool) -> Self {
         if volatile {
-            self.flags |= VOLATILE;
+            self.run = self.run.with_flag(VOLATILE);
         }
         self
     }
 
     /// Whether the formula calls a volatile function.
     pub(super) fn is_volatile(&self) -> bool {
-        self.flags & VOLATILE != 0
+        self.run.flags() & VOLATILE != 0
     }
 }
 
@@ -355,6 +424,20 @@ const PENDING: usize = 32;
 /// Freed areas an arena keeps before [`Graph::settle`] compacts it (and the live share it has to
 /// reach: a fifth of the arena).
 const AREA_GARBAGE: usize = 4096;
+
+/// The share of its length the arena keeps spare after [`Graph::trim_areas`]: a quarter, so the
+/// next edit's areas fit without a reallocation and the one after that is only paid once another
+/// quarter has been filled.
+const ARENA_SPARE: usize = 4;
+
+/// Spare slots below which an arena's tail is not worth the copy giving it back makes (a few tens
+/// of a kilobyte).
+const ARENA_TRIM_MIN: usize = 4096;
+
+/// The share of its capacity a trim has to free to be worth the copy: an eighth. Without it a
+/// command that deletes one formula would give a slot back and the next one the slot beside it —
+/// a copy of the whole arena per keystroke.
+const ARENA_TRIM_SHARE: usize = 8;
 
 /// Row intervals `[r0, r1]`, each with a payload, answering "which intervals overlap rows
 /// `a..=b`?" in O(log n + k).
@@ -537,17 +620,57 @@ impl GraphMemory {
 fn set_bytes<T>(set: &HashSet<T>) -> usize {
     gridcraft_model::hash_index_bytes(set.capacity(), std::mem::size_of::<T>())
 }
+/// A precedent area as the arena keeps it: an [`Area`] with the sheet as a `u32` instead of a
+/// `usize`. A workbook cannot hold four billion sheets (the index is an offset into a
+/// `Vec<Sheet>`), and the packed form is 20 bytes against the evaluator's 24 — 20 MB on the five
+/// million areas of the reference workbook, 34 MB on the 8.4 million slots the arena's doubling
+/// left. The evaluator keeps the `usize` it resolves references with: the narrowing happens here,
+/// once per area inserted, and is checked (`PackedArea::fits`), never truncated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PackedArea {
+    sheet: u32,
+    range: RangeRef,
+}
+
+impl PackedArea {
+    /// Whether the area's sheet fits the packed form.
+    fn fits(a: &Area) -> bool {
+        u32::try_from(a.sheet).is_ok()
+    }
+
+    /// The packed form of `a`, or `None` when its sheet does not fit (see [`PackedArea::fits`]).
+    fn new(a: &Area) -> Option<Self> {
+        Some(PackedArea { sheet: u32::try_from(a.sheet).ok()?, range: a.range })
+    }
+
+    /// The sheet, as the workbook's sheet index.
+    pub(super) fn sheet(self) -> usize {
+        self.sheet as usize
+    }
+
+    /// The cell range on that sheet.
+    pub(super) fn range(self) -> RangeRef {
+        self.range
+    }
+
+    /// The same area in the evaluator's form.
+    pub(super) fn to_area(self) -> Area {
+        Area { sheet: self.sheet(), range: self.range }
+    }
+}
+
 /// The formulas that read which cells.
 ///
 /// Precedent areas live in one arena instead of a `Vec` per node: a rebuild of a million formulas
 /// then fills one vector rather than allocating a million, and a node is eight bytes smaller. A
 /// replaced node's run becomes garbage that [`Graph::settle`] drops once it is a large enough share
-/// of the arena.
+/// of the arena, and the spare capacity the vector's doubling leaves behind goes back with it —
+/// a tail that was 81 MB of the reference workbook.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
     pub(super) nodes: HashMap<Key, Node>,
-    /// Every node's precedent areas, packed: a node owns `areas[start..start + len]`.
-    areas: Vec<Area>,
+    /// Every node's precedent areas, packed: a node owns `areas[start..start + len]`, its `run`.
+    areas: Vec<PackedArea>,
     /// Areas no node points at any more.
     area_garbage: usize,
     /// precedent cell → the formulas that read it
@@ -590,10 +713,10 @@ impl Graph {
         self.nodes.is_empty()
     }
 
-    /// The precedent areas of a node.
-    pub(super) fn areas_of(&self, node: &Node) -> &[Area] {
+    /// The precedent areas of a node, as the arena keeps them (see [`PackedArea`]).
+    pub(super) fn areas_of(&self, node: &Node) -> &[PackedArea] {
         let start = node.start as usize;
-        self.areas.get(start..start.saturating_add(node.len as usize)).unwrap_or(&[])
+        self.areas.get(start..start.saturating_add(node.run_len())).unwrap_or(&[])
     }
 
     /// The slot counts of the single-cell precedent index (see [`CellDeps::slots`]): the test
@@ -608,6 +731,13 @@ impl Graph {
     #[cfg(test)]
     pub(super) fn areas_len(&self) -> usize {
         self.areas.len()
+    }
+
+    /// The arena's capacity, in areas — the test that checks a fill leaves no doubling tail. A
+    /// `Vec`'s capacity is the only thing that says whether an insert will copy it.
+    #[cfg(test)]
+    pub(super) fn areas_capacity(&self) -> usize {
+        self.areas.capacity()
     }
 
     /// The range of the legacy array anchored at `k`, if it is one.
@@ -627,26 +757,35 @@ impl Graph {
     /// is the sheet's own, where its formulas' same-sheet references land; a formula reading another
     /// sheet's cells goes to the cross table, which grows as it fills.
     pub(super) fn reserve(&mut self, sheet: usize, formulas: usize) {
-        self.nodes.reserve(formulas);
+        self.reserve_more(formulas);
         let precedent_cells = formulas.saturating_mul(3).saturating_div(2);
         self.cell_deps.reserve(sheet, precedent_cells);
+    }
+
+    /// Reserves room for `formulas` more formulas and their precedents, before a bulk insert
+    /// (a fill, a paste of a column of formulas) — the part of [`Graph::reserve`] that does not
+    /// belong to one sheet. The nodes and the arena would otherwise grow a dozen times during the
+    /// fill, each growth rehashing or copying everything already in them.
+    pub(super) fn reserve_more(&mut self, formulas: usize) {
+        self.nodes.reserve(formulas);
         self.areas.reserve(formulas.saturating_mul(2));
     }
 
     /// Index entries of a formula's precedents, without duplicates: single cells, column
     /// intervals and wide ranges. The buffers are reused between calls, so this allocates nothing.
-    fn entries(areas: &[Area], cells: &mut Vec<Key>, cols: &mut Vec<(usize, u32, u32, u32)>, wide: &mut Vec<(usize, RangeRef)>) {
+    fn entries(areas: &[PackedArea], cells: &mut Vec<Key>, cols: &mut Vec<(usize, u32, u32, u32)>, wide: &mut Vec<(usize, RangeRef)>) {
         cells.clear();
         cols.clear();
         wide.clear();
         for a in areas {
+            let sheet = a.sheet();
             if a.range.is_single() {
-                cells.push((a.sheet, a.range.start));
+                cells.push((sheet, a.range.start));
             } else if a.range.width() > WIDE {
-                wide.push((a.sheet, a.range));
+                wide.push((sheet, a.range));
             } else {
                 for c in a.range.start.col..=a.range.end.col {
-                    cols.push((a.sheet, c, a.range.start.row, a.range.end.row));
+                    cols.push((sheet, c, a.range.start.row, a.range.end.row));
                 }
             }
         }
@@ -674,23 +813,29 @@ impl Graph {
     ///
     /// `areas` are the formula's precedents, `legacy` the range of a legacy array it anchors.
     pub(super) fn insert(&mut self, k: Key, areas: &[Area], legacy: Option<RangeRef>, node: Node) {
-        // The arena cannot hold more than `u32::MAX` areas (96 GB of them); a run that large is
-        // not a workbook, and capping keeps the arithmetic below total.
-        let start = u32::try_from(self.areas.len()).unwrap_or(u32::MAX);
-        let len = u32::try_from(areas.len()).unwrap_or(u32::MAX);
-        self.areas.extend_from_slice(areas);
-        let mut node = Node { start, len, ..node };
-
+        let mut flags = node.flags();
         if legacy.is_some() {
-            node.flags |= LEGACY;
+            flags |= LEGACY;
         }
-        let flags = node.flags;
+        // A node records its precedents as a run of the arena whose length shares a word with the
+        // flags, and an area packs its sheet into a `u32`: past those limits (16,777,215
+        // precedents, four billion sheets) a formula cannot be recorded, and `Graph::place`
+        // refuses it rather than truncating it. What it gets instead is what the precedent walk
+        // gives a formula that runs past its own budget — no precedents, and `DYNAMIC`, so every
+        // pass evaluates it and an unlinked precedent cannot leave a stale value behind.
+        let placed = self.place(areas, flags);
+        let (node, flags) = match placed {
+            Some((start, run)) => (Node { start, run, expr: node.expr }, flags),
+            None => (Node { start: 0, run: RunLen::no_run(flags | DYNAMIC), expr: node.expr }, flags | DYNAMIC),
+        };
         // One table probe: the node this replaces (if any) is unlinked after the new one has taken
         // its place, which is what a bulk build — a fill of a million formulas — pays per formula.
         if let Some(old) = self.nodes.insert(k, node) {
             self.unlink(k, &old);
         }
-        self.link_precedents(k, areas);
+        if let Some((start, run)) = placed {
+            self.link_run(k, start, run.len());
+        }
         if flags & DYNAMIC != 0 {
             self.dynamic.insert(k);
         }
@@ -709,6 +854,20 @@ impl Graph {
         }
     }
 
+    /// Appends `areas` to the arena and answers the run they became — `None`, having appended
+    /// nothing, when they do not fit a node (see [`Graph::insert`]).
+    fn place(&mut self, areas: &[Area], flags: u8) -> Option<(u32, RunLen)> {
+        // Everything is checked before anything is appended: half a run in the arena and half a
+        // node would leave precedents recorded and out of the index.
+        if !areas.iter().all(PackedArea::fits) {
+            return None;
+        }
+        let start = u32::try_from(self.areas.len()).ok()?;
+        let run = RunLen::new(areas.len(), flags)?;
+        self.areas.extend(areas.iter().filter_map(PackedArea::new));
+        Some((start, run))
+    }
+
     pub(super) fn remove(&mut self, k: Key) {
         if let Some(old) = self.nodes.remove(&k) {
             self.unlink(k, &old);
@@ -719,7 +878,7 @@ impl Graph {
     fn unlink(&mut self, k: Key, old: &Node) {
         let (mut cells, mut cols, mut wide) = self.take_scratch();
         let start = old.start as usize;
-        let old_areas = self.areas.get(start..start.saturating_add(old.len as usize)).unwrap_or(&[]);
+        let old_areas = self.areas.get(start..start.saturating_add(old.run_len())).unwrap_or(&[]);
         Self::entries(old_areas, &mut cells, &mut cols, &mut wide);
         for &c in &cells {
             self.cell_deps.unlink(c, k);
@@ -737,28 +896,29 @@ impl Graph {
             }
         }
         self.put_scratch(cells, cols, wide);
-        if old.flags & DYNAMIC != 0 {
+        if old.flags() & DYNAMIC != 0 {
             self.dynamic.remove(&k);
         }
-        if old.flags & MAY_SPILL != 0 {
+        if old.flags() & MAY_SPILL != 0 {
             self.may_spill.remove(&k);
         }
-        if old.flags & TRIM != 0 {
+        if old.flags() & TRIM != 0 {
             self.trim.remove(&k);
         }
-        if old.flags & VISIBILITY != 0 {
+        if old.flags() & VISIBILITY != 0 {
             self.visibility.remove(&k);
         }
-        if old.flags & LEGACY != 0 {
+        if old.flags() & LEGACY != 0 {
             self.legacy.remove(&k);
             self.legacy_range.remove(&k);
         }
-        self.area_garbage = self.area_garbage.saturating_add(old.len as usize);
+        self.area_garbage = self.area_garbage.saturating_add(old.run_len());
     }
 
-    /// Adds a formula to the index of everything it reads.
-    fn link_precedents(&mut self, k: Key, areas: &[Area]) {
+    /// Adds the run at `areas[start..start + len]` to the index of everything it reads.
+    fn link_run(&mut self, k: Key, start: u32, len: usize) {
         let (mut cells, mut cols, mut wide) = self.take_scratch();
+        let areas = self.areas.get(start as usize..(start as usize).saturating_add(len)).unwrap_or(&[]);
         Self::entries(areas, &mut cells, &mut cols, &mut wide);
         for &c in &cells {
             self.cell_deps.link(c, k);
@@ -775,7 +935,12 @@ impl Graph {
     }
 
     /// Tidies the range indexes changed by `insert`/`remove` (queries stay correct without it,
-    /// just slower), and gives the arena's garbage back once it is a large enough share of it.
+    /// just slower), and gives the arena's garbage and spare capacity back once they are a large
+    /// enough share of it.
+    ///
+    /// Every command ends here (a rebuild, a restore, an edit's commit), which is the one point
+    /// the graph is quiescent: a fill through `insert` alone must not have the arena reallocated
+    /// under it, so nothing below runs while one is in progress.
     pub(super) fn settle(&mut self) {
         for key in std::mem::take(&mut self.unsettled_cols) {
             if let Some(v) = self.col_deps.get_mut(&key) {
@@ -796,6 +961,32 @@ impl Graph {
         if self.area_garbage > AREA_GARBAGE && self.area_garbage > self.areas.len() / 5 {
             self.compact_areas();
         }
+        self.trim_areas();
+    }
+
+    /// Gives back the spare capacity a fill's doubling left behind: the reference workbook's five
+    /// million areas sat in an arena grown to 8,388,608 slots, of which 3.39 million — 81 MB —
+    /// were never used. A `Vec` doubles, so a fill ends somewhere between half full and full.
+    ///
+    /// Called from [`Graph::settle`], which every command ends with, so it runs when the graph is
+    /// quiescent and never inside a fill. The quarter it keeps spare ([`ARENA_SPARE`]) is what
+    /// makes that safe: the next formula's areas fit without a reallocation, and the one after
+    /// that is only paid once another quarter of the arena has been filled — so a trim costs one
+    /// copy per quarter of growth, not one per insert.
+    fn trim_areas(&mut self) {
+        let (len, cap) = (self.areas.len(), self.areas.capacity());
+        if len == 0 {
+            self.areas.shrink_to(0);
+            return;
+        }
+        let target = len.saturating_add((len / ARENA_SPARE).max(ARENA_TRIM_MIN));
+        // Only when the copy buys an eighth of the capacity: an arena that has grown into its tail
+        // and one a delete left a few slots too big are both cheaper to leave alone than to copy,
+        // and this is the difference between trimming after a fill and thrashing on every edit.
+        if cap < target.saturating_add(target / ARENA_TRIM_SHARE) {
+            return;
+        }
+        self.areas.shrink_to(target);
     }
 
     /// Packes the live areas together, in one pass over the nodes. Runs once the garbage a
@@ -804,10 +995,13 @@ impl Graph {
     fn compact_areas(&mut self) {
         let old = std::mem::take(&mut self.areas);
         let live = old.len().saturating_sub(self.area_garbage);
-        let mut areas: Vec<Area> = Vec::with_capacity(live);
+        // A quarter spare, so the edit that follows does not reallocate what this has just copied
+        // (see `trim_areas`) — a compaction that came back to an exactly-sized arena made the
+        // next single formula copy the whole thing.
+        let mut areas: Vec<PackedArea> = Vec::with_capacity(live.saturating_add(live / ARENA_SPARE));
         for node in self.nodes.values_mut() {
             let start = node.start as usize;
-            let run = old.get(start..start.saturating_add(node.len as usize)).unwrap_or(&[]);
+            let run = old.get(start..start.saturating_add(node.run_len())).unwrap_or(&[]);
             node.start = u32::try_from(areas.len()).unwrap_or(u32::MAX);
             areas.extend_from_slice(run);
         }
@@ -869,7 +1063,7 @@ impl Graph {
 
     /// Precedent areas of a formula cell (for Trace Precedents).
     pub fn precedents_of(&self, k: Key) -> Vec<Area> {
-        self.nodes.get(&k).map(|n| self.areas_of(n).to_vec()).unwrap_or_default()
+        self.nodes.get(&k).map(|n| self.areas_of(n).iter().map(|a| a.to_area()).collect()).unwrap_or_default()
     }
 
     /// The live heap bytes of this graph, by allocation class: the numbers a memory report shows,
@@ -881,7 +1075,7 @@ impl Graph {
         let (cell_deps, many_lists) = self.cell_deps.memory();
         GraphMemory {
             nodes: gridcraft_model::hash_index_bytes(self.nodes.capacity(), size_of::<(Key, Node)>()),
-            areas: self.areas.capacity().saturating_mul(size_of::<Area>()),
+            areas: self.areas.capacity().saturating_mul(size_of::<PackedArea>()),
             cell_deps,
             many_lists,
             cols: gridcraft_model::hash_index_bytes(self.col_deps.capacity(), size_of::<((usize, u32), Intervals<Key>)>())
@@ -1091,5 +1285,138 @@ mod tests {
         assert_eq!(out.len(), LONG_LIST + 2, "a long list takes the repeat: {out:?}");
         out.retain(|k| *k == key(0, 0, 7));
         assert_eq!(out.len(), 2, "the long list stopped checking");
+    }
+
+    /// The two allocations this round shrank, in the arithmetic the memory report makes: a node's
+    /// flags moved into its run's word (24 bytes to 16), and an area's sheet packs into a `u32`
+    /// (24 to 20). Eight bytes a node slot of the table they sit in, four an area slot of the
+    /// arena — 34 MB and 34 MB on the reference workbook, and another 80 off the arena's tail.
+    #[test]
+    fn a_node_is_two_words_and_a_packed_area_five() {
+        assert_eq!(std::mem::size_of::<Node>(), 16, "a `u32` start, the run/flag word, the tree");
+        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 33, "the node table's bytes a slot");
+        assert_eq!(std::mem::size_of::<PackedArea>(), 20, "a `u32` sheet and a 16-byte range");
+        assert_eq!(std::mem::size_of::<Area>(), 24, "the evaluator's form, which the arena does not pay for");
+    }
+
+    /// A run's length shares a word with the flags, so the only constructor that takes one has to
+    /// refuse a length that would reach into them: there is no other way to build a `RunLen`, and
+    /// so no way for a node to hold an over-long run (see `Node`).
+    #[test]
+    fn a_run_length_cannot_reach_into_the_flags() {
+        assert_eq!(MAX_RUN, 16_777_215, "the 24 bits under the flags");
+        let longest = RunLen::new(MAX_RUN, u8::MAX);
+        assert!(longest.is_some(), "the longest run fits, with every flag set");
+        let Some(longest) = longest else { return };
+        assert_eq!(longest.len(), MAX_RUN, "it is stored exactly");
+        assert_eq!(longest.flags(), u8::MAX, "and every flags bit is still there");
+        assert!(RunLen::new(MAX_RUN + 1, 0).is_none(), "one area more is refused");
+        assert!(RunLen::new(usize::MAX, 0).is_none(), "and a length that is not a `u32` at all");
+        for flag in [DYNAMIC, MAY_SPILL, TRIM, LEGACY, VOLATILE, VISIBILITY] {
+            let Some(run) = RunLen::new(MAX_RUN, flag) else { continue };
+            assert_eq!(run.flags(), flag, "flag {flag} survives the longest run");
+            assert_eq!(run.len(), MAX_RUN);
+            assert_eq!(run.with_flag(flag).flags(), flag, "setting a bit twice is setting it once");
+        }
+    }
+
+    /// Every combination of the six bits a node can carry, stored and read back: the flags, the
+    /// run beside them, the sets each bit feeds, and the node's last effect on the graph when it
+    /// leaves. The two spare bits of the flag byte are in `a_run_length_cannot_reach_into_the_flags`.
+    #[test]
+    fn every_combination_of_node_flags_survives_the_packed_word() {
+        let areas = [single(0, 3, 0), single(0, 3, 1), whole_column(0, 2)];
+        let legacy = RangeRef::new(CellRef::new(0, 0), CellRef::new(1, 0));
+        for bits in 0u8..64 {
+            let (dynamic, may_spill, trim) = (bits & DYNAMIC != 0, bits & MAY_SPILL != 0, bits & TRIM != 0);
+            let (is_legacy, volatile, hidden) = (bits & LEGACY != 0, bits & VOLATILE != 0, bits & VISIBILITY != 0);
+            let k = key(0, 7, 6);
+            let mut g = Graph::default();
+            let node = Node::new(None, dynamic, may_spill, trim).with_volatile(volatile).with_visibility(hidden);
+            g.insert(k, &areas, is_legacy.then_some(legacy), node);
+            let stored = g.nodes.get(&k);
+            assert!(stored.is_some(), "bits {bits:06b}: the node is stored");
+            let Some(stored) = stored else { continue };
+            assert_eq!(stored.flags(), bits, "bits {bits:06b}: the flags read back");
+            assert_eq!(stored.run_len(), areas.len(), "bits {bits:06b}: the run keeps its length");
+            assert_eq!(g.areas_of(stored).len(), areas.len(), "bits {bits:06b}: and the arena its areas");
+            assert_eq!(g.areas_of(stored)[2].range(), areas[2].range);
+            assert_eq!(g.is_volatile(k), volatile, "bits {bits:06b}: volatile");
+            assert_eq!(g.dynamic.contains(&k), dynamic, "bits {bits:06b}: dynamic");
+            assert_eq!(g.may_spill.contains(&k), may_spill, "bits {bits:06b}: may spilling");
+            assert_eq!(g.trim.contains(&k), trim, "bits {bits:06b}: trim");
+            assert_eq!(g.visibility.contains(&k), hidden, "bits {bits:06b}: visibility");
+            assert_eq!(g.legacy_range.get(&k).copied(), is_legacy.then_some(legacy), "bits {bits:06b}: legacy");
+            g.remove(k);
+            assert!(g.dynamic.is_empty() && g.may_spill.is_empty() && g.trim.is_empty(), "bits {bits:06b}: the sets are empty again");
+            assert!(g.visibility.is_empty() && g.legacy_range.is_empty(), "bits {bits:06b}: every set is empty again");
+        }
+    }
+
+    /// A compaction rewrites every node's run: the length it keeps, the flags beside it and the
+    /// areas it points at all have to come through unchanged.
+    #[test]
+    fn compacting_the_arena_keeps_each_run_and_its_flags() {
+        let mut g = Graph::default();
+        for row in 0..8_000u32 {
+            let node = Node::new(None, false, false, true).with_volatile(row % 2 == 0);
+            g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1)], None, node);
+        }
+        // Replace every third formula with a wider run: a fifth of the arena is garbage now, which
+        // is what `settle` compacts.
+        for row in (0..8_000u32).step_by(3) {
+            let node = Node::new(None, false, false, true);
+            g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1), single(0, row, 2)], None, node);
+        }
+        let before = g.areas_len();
+        g.settle();
+        assert!(g.areas_len() < before, "the replaced runs are packed away: {} of {before}", g.areas_len());
+        for row in 0..8_000u32 {
+            let Some(node) = g.nodes.get(&key(0, row, 6)) else { continue };
+            let replaced = row % 3 == 0;
+            assert_eq!(node.run_len(), if replaced { 3 } else { 2 }, "row {row}'s run");
+            assert!(node.flags() & TRIM != 0, "row {row} keeps TRIM");
+            assert_eq!(node.is_volatile(), !replaced && row % 2 == 0, "row {row}'s VOLATILE");
+            assert_eq!(g.areas_of(node)[0].range(), single(0, row, 0).range, "row {row} reads its own row");
+        }
+    }
+
+    /// `Vec` doubles, so a fill ends with somewhere between a quarter and a half of the arena's
+    /// capacity unused — 3.39 million slots, 81 MB, on the reference workbook's five million
+    /// areas. `settle` (which every command ends with) gives that tail back and keeps a quarter,
+    /// so the edit that follows does not reallocate what the trim has just copied.
+    #[test]
+    fn a_fill_leaves_the_arena_a_quarter_spare_and_no_more() {
+        let mut g = Graph::default();
+        let fill = |g: &mut Graph, rows: std::ops::Range<u32>| {
+            for row in rows {
+                g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1), single(0, row, 2)], None, Node::new(None, false, false, false));
+            }
+        };
+        fill(&mut g, 0..10_000);
+        g.settle();
+        let live = g.areas_len();
+        assert_eq!(live, 30_000, "three areas a formula");
+        assert!(g.areas_capacity() * 4 <= live * 5, "{} slots for {live} areas", g.areas_capacity());
+
+        // Two thousand more rows cross the capacity the first ten thousand grew the arena to, so
+        // the tail is the doubling's (65,536 slots for 36,000 areas) and the trim has to undo it.
+        fill(&mut g, 10_000..12_000);
+        g.settle();
+        let live = g.areas_len();
+        assert_eq!(live, 36_000, "three areas a formula");
+        assert!(g.areas_capacity() * 4 <= live * 5, "{} slots for {live} areas", g.areas_capacity());
+        assert!(g.areas_capacity() < 65_536, "the doubling's tail is gone, not kept: {} slots", g.areas_capacity());
+
+        // The quarter kept spare is what makes trimming safe on every command: the next edits fit
+        // without a reallocation (a trim that left the arena exactly sized would copy it per
+        // formula, which is the thrash this avoids).
+        let cap = g.areas_capacity();
+        fill(&mut g, 12_000..12_200);
+        for row in 12_000..12_200u32 {
+            g.remove(key(0, row, 6));
+            g.settle();
+            assert_eq!(g.areas_capacity(), cap, "row {row}'s edit reallocated the arena");
+        }
     }
 }
