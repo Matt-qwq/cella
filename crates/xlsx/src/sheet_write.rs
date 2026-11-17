@@ -1500,6 +1500,22 @@ mod tests {
         // More workers than the cap are clamped.
         assert_eq!(row_windows(999_999, 8_000_000, 64).len(), MAX_WORKERS);
     }
+
+    /// A worker that panics fails the save with an error: the panic is caught by the join and
+    /// reported, so it neither unwinds through the save nor leaves a window missing from the part.
+    #[test]
+    fn a_panicking_window_is_an_error() {
+        let windows = [(0u32, 9u32), (10, 19)];
+        let results = in_windows(&windows, "row builder", |rows| {
+            assert_eq!(rows.0 % 10, 0);
+            if rows.0 == 10 {
+                panic!("the second window panics");
+            }
+            Ok(rows.0)
+        });
+        assert!(matches!(&results[0], Ok(0)), "the window that finished keeps its result");
+        assert!(matches!(&results[1], Err(IoError::Zip(_))), "a panicked worker is an error");
+    }
 }
 
 #[cfg(test)]
