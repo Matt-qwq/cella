@@ -7,7 +7,6 @@ use std::hash::{BuildHasherDefault, Hash, Hasher};
 use serde::Serialize;
 
 use gridcraft_core::{CellRef, RangeRef};
-use gridcraft_formula::Expr;
 
 use crate::eval::Area;
 
@@ -287,26 +286,24 @@ impl CellDeps {
 
 /// One formula of the graph.
 ///
-/// Three words: where its run of [`Graph::areas`] starts, the run's length together with the
-/// flags (`RunLen`), and the formula. The flags used to be a byte of their own beside the length,
-/// which padded the node out to a fourth word — 24 bytes for a field with six bits set, in a table
-/// entry of the key's 16 bytes and hashbrown's control byte: 41 bytes of table a slot, which the
-/// reference workbook's two million nodes paid 172 MB for. Packed, the entry is 33 bytes a slot
-/// and the same nodes cost 138.
+/// Two words: where its run of [`Graph::areas`] starts, and the run's length together with the
+/// flags (`RunLen`), plus the shape the formula reads. The flags used to be a byte of their own
+/// beside the length, which padded the node out to a fourth word — 24 bytes for a field with six
+/// bits set, in a table entry of the key's 16 bytes and hashbrown's control byte: 41 bytes of
+/// table a slot, which the reference workbook's two million nodes paid 172 MB for. Packed, the
+/// entry is 33 bytes a slot and the same nodes cost 138. S7 of
+/// `plan/SHAPE-SHARING.md` then deleted the node's own tree pointer, so a node is **16** bytes
+/// (33 bytes of table a slot) — 138 MB instead of 172.
 #[derive(Clone, Debug)]
 pub(super) struct Node {
     /// Where the node's run of [`Graph::areas`] starts.
     start: u32,
     /// The run's length and the `DYNAMIC`..`VISIBILITY` flags below.
     run: RunLen,
-    /// The parsed formula, shared with the cell: a pass reads it from here instead of rebuilding
-    /// the cell (which copies its value and both side tables) once per formula. `None` for a cell
-    /// that holds a shape instead.
-    pub(super) expr: Option<std::sync::Arc<Expr>>,
-    /// The shape the cell shares with every cell of its fill. The pass resolves it at the node's own
-    /// cell (the graph's key), so eight bytes stand where a tree per formula stood: the reference
-    /// workbook's two million formulas are a handful of trees, not 768 MB of them
-    /// (`plan/SHAPE-SHARING.md` §3.4).
+    /// The shape the formula reads. A formula has no tree of its own to keep: the pass reads this
+    /// one in place, resolving its relative references at the node's own cell (the graph's key), so
+    /// eight bytes stand where a tree per formula stood — the reference workbook's two million
+    /// formulas are a handful of trees, not 768 MB of them (`plan/SHAPE-SHARING.md` §3.4).
     pub(super) shape: Option<std::sync::Arc<gridcraft_formula::Shape>>,
 }
 
@@ -375,7 +372,7 @@ const VOLATILE: u8 = 16;
 const VISIBILITY: u8 = 32;
 
 impl Node {
-    pub(super) fn new(expr: Option<std::sync::Arc<Expr>>, dynamic: bool, may_spill: bool, trim: bool) -> Self {
+    pub(super) fn new(dynamic: bool, may_spill: bool, trim: bool) -> Self {
         let mut flags = 0;
         if dynamic {
             flags |= DYNAMIC;
@@ -386,7 +383,7 @@ impl Node {
         if trim {
             flags |= TRIM;
         }
-        Node { start: 0, run: RunLen::no_run(flags), expr, shape: None }
+        Node { start: 0, run: RunLen::no_run(flags), shape: None }
     }
 
     /// The `DYNAMIC`..`VISIBILITY` bits (see `RunLen`).
@@ -413,11 +410,12 @@ impl Node {
         self
     }
 
-    /// Whether the node has a formula to evaluate at all: a tree of its own, or a shape. Read by
-    /// the parallel pass, which builds no threads on wasm.
+    /// Whether the node has a formula to evaluate at all: the shape it reads. (A formula whose text
+    /// does not parse has no shape and so no node — `Calc::rebuild` skips it.) Read by the
+    /// parallel pass, which builds no threads on wasm.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn has_formula(&self) -> bool {
-        self.expr.is_some() || self.shape.is_some()
+        self.shape.is_some()
     }
 
     /// The same node, marked volatile (see [`VOLATILE`]).
@@ -844,8 +842,8 @@ impl Graph {
         // pass evaluates it and an unlinked precedent cannot leave a stale value behind.
         let placed = self.place(areas, flags);
         let (node, flags) = match placed {
-            Some((start, run)) => (Node { start, run, expr: node.expr, shape: node.shape }, flags),
-            None => (Node { start: 0, run: RunLen::no_run(flags | DYNAMIC), expr: node.expr, shape: node.shape }, flags | DYNAMIC),
+            Some((start, run)) => (Node { start, run, shape: node.shape }, flags),
+            None => (Node { start: 0, run: RunLen::no_run(flags | DYNAMIC), shape: node.shape }, flags | DYNAMIC),
         };
         // One table probe: the node this replaces (if any) is unlinked after the new one has taken
         // its place, which is what a bulk build — a fill of a million formulas — pays per formula.
@@ -957,6 +955,15 @@ impl Graph {
     /// just slower), and gives the arena's garbage and spare capacity back once they are a large
     /// enough share of it.
     ///
+    /// The shape the node at `k` evaluates, for the test that holds a fill to one tree.
+    ///
+    /// `cfg(test)`: the pass reads a node's shape through [`crate::recalc::pass_host::Trees`], and
+    /// nothing in the product asks the graph for one.
+    #[cfg(test)]
+    pub(super) fn node_shape(&self, k: Key) -> Option<std::sync::Arc<gridcraft_formula::Shape>> {
+        self.nodes.get(&k).and_then(|n| n.shape.clone())
+    }
+
     /// Every command ends here (a rebuild, a restore, an edit's commit), which is the one point
     /// the graph is quiescent: a fill through `insert` alone must not have the arena reallocated
     /// under it, so nothing below runs while one is in progress.
@@ -1142,7 +1149,7 @@ mod tests {
     fn graph_memory_total_is_the_sum_of_its_parts() {
         let mut g = Graph::default();
         for row in 0..500u32 {
-            g.insert(key(0, row, 6), &[single(0, row, 0), whole_column(0, 2)], None, Node::new(None, false, false, false));
+            g.insert(key(0, row, 6), &[single(0, row, 0), whole_column(0, 2)], None, Node::new(false, false, false));
         }
         g.settle();
         let m = g.memory();
@@ -1160,11 +1167,11 @@ mod tests {
     #[test]
     fn one_precedent_read_by_a_thousand_formulas_grows_the_dependents_map() {
         let mut g = Graph::default();
-        g.insert(key(0, 0, 6), &[single(0, 5, 0)], None, Node::new(None, false, false, false));
+        g.insert(key(0, 0, 6), &[single(0, 5, 0)], None, Node::new(false, false, false));
         let first = g.memory();
         assert_eq!(first.many_lists, 0, "one dependent is a one-to-one entry");
         for row in 1..1000u32 {
-            g.insert(key(0, row, 6), &[single(0, 5, 0)], None, Node::new(None, false, false, false));
+            g.insert(key(0, row, 6), &[single(0, 5, 0)], None, Node::new(false, false, false));
         }
         let many = g.memory();
         assert_eq!(many.many_lists, 1, "one precedent holds the list");
@@ -1182,7 +1189,7 @@ mod tests {
     fn the_precedent_index_is_narrower_than_the_shape_it_replaced() {
         let mut g = Graph::default();
         for row in 0..5_000u32 {
-            g.insert(key(0, row, 6), &[single(0, row, 1), single(0, row, 2), single(0, row, 3)], None, Node::new(None, false, false, false));
+            g.insert(key(0, row, 6), &[single(0, row, 1), single(0, row, 2), single(0, row, 3)], None, Node::new(false, false, false));
         }
         let m = g.memory();
         assert_eq!(m.many_lists, 0, "every entry is a single dependent");
@@ -1208,7 +1215,7 @@ mod tests {
         let mut out = Vec::new();
         for n in [1u32, 2, 3, 10_000] {
             for row in 0..n {
-                g.insert(key(0, row, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+                g.insert(key(0, row, 6), &[single(0, 0, 0)], None, Node::new(false, false, false));
             }
             out.clear();
             g.dependents(0, CellRef::new(0, 0), &mut out);
@@ -1226,7 +1233,7 @@ mod tests {
         // the compact shape.
         let mut small = Graph::default();
         for row in 0..3u32 {
-            small.insert(key(0, row, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+            small.insert(key(0, row, 6), &[single(0, 0, 0)], None, Node::new(false, false, false));
         }
         assert_eq!(small.memory().many_lists, 1, "three dependents are a list");
         small.remove(key(0, 2, 6));
@@ -1246,8 +1253,8 @@ mod tests {
     #[test]
     fn a_precedent_read_from_two_sheets_answers_both() {
         let mut g = Graph::default();
-        g.insert(key(0, 1, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
-        g.insert(key(1, 1, 6), &[single(0, 0, 0)], None, Node::new(None, false, false, false));
+        g.insert(key(0, 1, 6), &[single(0, 0, 0)], None, Node::new(false, false, false));
+        g.insert(key(1, 1, 6), &[single(0, 0, 0)], None, Node::new(false, false, false));
         let both = vec![key(0, 1, 6), key(1, 1, 6)];
         let mut out = Vec::new();
         g.dependents(0, CellRef::new(0, 0), &mut out);
@@ -1306,16 +1313,14 @@ mod tests {
         assert_eq!(out.len(), 2, "the long list stopped checking");
     }
 
-    /// The two allocations an earlier round shrank, in the arithmetic the memory report makes: a
-    /// node's flags moved into its run's word, and an area's sheet packs into a `u32` (24 to 20).
-    ///
-    /// The node is **24** while it can hold a tree *or* a shape: the shape pointer is 8 bytes a
-    /// node the reference workbook's two million formulas pay 16 MB for, against the 768 MB of
-    /// trees the shape lets the cells drop. S7 deletes the tree field and the node goes back to 16.
+    /// The three allocations the memory rounds shrank, in the arithmetic the memory report makes: a
+    /// node's flags moved into its run's word, an area's sheet packs into a `u32` (24 to 20), and
+    /// S7 deleted the node's own tree pointer (24 to 16 — the reference workbook's two million
+    /// nodes, 172 MB to 138).
     #[test]
     fn a_node_is_two_words_and_a_packed_area_five() {
-        assert_eq!(std::mem::size_of::<Node>(), 24, "a `u32` start, the run/flag word, the tree, the shape");
-        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 41, "the node table's bytes a slot");
+        assert_eq!(std::mem::size_of::<Node>(), 16, "a `u32` start, the run/flag word, the shape");
+        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 33, "the node table's bytes a slot");
         assert_eq!(std::mem::size_of::<PackedArea>(), 20, "a `u32` sheet and a 16-byte range");
         assert_eq!(std::mem::size_of::<Area>(), 24, "the evaluator's form, which the arena does not pay for");
     }
@@ -1353,7 +1358,7 @@ mod tests {
             let (is_legacy, volatile, hidden) = (bits & LEGACY != 0, bits & VOLATILE != 0, bits & VISIBILITY != 0);
             let k = key(0, 7, 6);
             let mut g = Graph::default();
-            let node = Node::new(None, dynamic, may_spill, trim).with_volatile(volatile).with_visibility(hidden);
+            let node = Node::new(dynamic, may_spill, trim).with_volatile(volatile).with_visibility(hidden);
             g.insert(k, &areas, is_legacy.then_some(legacy), node);
             let stored = g.nodes.get(&k);
             assert!(stored.is_some(), "bits {bits:06b}: the node is stored");
@@ -1380,13 +1385,13 @@ mod tests {
     fn compacting_the_arena_keeps_each_run_and_its_flags() {
         let mut g = Graph::default();
         for row in 0..8_000u32 {
-            let node = Node::new(None, false, false, true).with_volatile(row % 2 == 0);
+            let node = Node::new(false, false, true).with_volatile(row % 2 == 0);
             g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1)], None, node);
         }
         // Replace every third formula with a wider run: a fifth of the arena is garbage now, which
         // is what `settle` compacts.
         for row in (0..8_000u32).step_by(3) {
-            let node = Node::new(None, false, false, true);
+            let node = Node::new(false, false, true);
             g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1), single(0, row, 2)], None, node);
         }
         let before = g.areas_len();
@@ -1411,7 +1416,7 @@ mod tests {
         let mut g = Graph::default();
         let fill = |g: &mut Graph, rows: std::ops::Range<u32>| {
             for row in rows {
-                g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1), single(0, row, 2)], None, Node::new(None, false, false, false));
+                g.insert(key(0, row, 6), &[single(0, row, 0), single(0, row, 1), single(0, row, 2)], None, Node::new(false, false, false));
             }
         };
         fill(&mut g, 0..10_000);

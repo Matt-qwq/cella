@@ -2249,7 +2249,7 @@ fn row_and_column_inserts_move_legacy_array_ranges() {
     s.execute("home.insertRows", json!({"rows": "1:1"})).unwrap();
     let d = s.doc().unwrap();
     let f = d.wb.sheet(0).unwrap().cell(CellRef::new(3, 3)).and_then(|x| x.formula.clone()).unwrap();
-    assert_eq!(f.array, Some(gridcraft_core::RangeRef::parse("D4:E4").unwrap()));
+    assert_eq!(f.array.as_deref().copied(), gridcraft_core::RangeRef::parse("D4:E4"));
     assert_eq!(v(&s, "E4"), Value::Number(14.0));
     reopen(&mut s);
     assert_eq!(v(&s, "E4"), Value::Number(14.0));
@@ -7419,11 +7419,12 @@ mod compressed_history {
             current
         }
 
-        // 400 rows is seven bands: cheap to encode. Three of these steps do not fit that budget as
-        // they are, so the older two are kept as their pages — an eighth of their live size — and
-        // no step is dropped for want of room.
+        // 400 rows is seven bands, and a step of them is about 52 kB: cheap to encode (the gate
+        // projects 5 kB a band, so 35 kB of pages) and bigger than its pages by a wide margin.
+        // Two such steps are 107 kB, which a 100 kB budget cannot hold as they are — so the older
+        // one is kept as its pages and no step is dropped for want of room.
         let mut small = Vec::new();
-        push(&mut small, 3, 400, 300 * 1024);
+        push(&mut small, 3, 400, 100 * 1024);
         assert_eq!(small.len(), 3, "every step is kept: pages made the room");
         // The first step is the empty workbook the edits started from: it has no band to spill.
         assert!(small[1].compressed, "the step the budget would have dropped survived as pages");

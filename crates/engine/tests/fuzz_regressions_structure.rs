@@ -18,7 +18,7 @@ fn arrays(s: &Session) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for sh in &d.wb.sheets {
         for (c, cell) in sh.cells.iter() {
-            if let Some(a) = cell.formula.as_ref().and_then(|f| f.array) {
+            if let Some(a) = cell.formula.as_ref().and_then(|f| f.array.as_deref()) {
                 out.push((format!("{}!{c}", sh.name), a.a1()));
             }
         }
@@ -31,7 +31,7 @@ fn arrays(s: &Session) -> Vec<(String, String)> {
 fn array_problem(s: &Session) -> Option<String> {
     for sh in &s.doc().expect("document").wb.sheets {
         for (c, cell) in sh.cells.iter() {
-            if let Some(a) = cell.formula.as_ref().and_then(|f| f.array) {
+            if let Some(a) = cell.formula.as_ref().and_then(|f| f.array.as_deref()) {
                 let on_sheet = a.start.is_valid() && a.end.is_valid() && a.start.row <= a.end.row && a.start.col <= a.end.col;
                 if a.start != c || !on_sheet {
                     return Some(format!("{}!{c}: array formula covers {a}", sh.name));

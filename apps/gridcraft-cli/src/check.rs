@@ -475,7 +475,7 @@ pub fn oracle(cached: &Workbook, fresh: &Workbook, calc: &Calc, trust_cache: boo
         for (c, cell) in sh.cells.iter() {
             if let Some(f) = &cell.formula {
                 r.formula_cells += 1;
-                if f.expr_arc().is_some_and(|e| is_volatile(&e, &vnames)) {
+                if f.expr_at(c).is_some_and(|e| is_volatile(&e, &vnames)) {
                     volatile.insert((si, c));
                 }
             }
@@ -511,7 +511,7 @@ pub fn oracle(cached: &Workbook, fresh: &Workbook, calc: &Calc, trust_cache: boo
             }
             r.checked += 1;
             let actual = fresh.sheet(si).and_then(|s| s.cell(c)).map(|x| x.value.scalar()).unwrap_or_default();
-            let funcs = match f.expr_arc() {
+            let funcs = match f.expr_at(c) {
                 Some(e) => {
                     let names = functions_of(&e);
                     if names.is_empty() { vec!["(no function)".to_string()] } else { names }

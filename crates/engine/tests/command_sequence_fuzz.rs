@@ -698,8 +698,8 @@ fn structure_problem(wb: &Workbook, sel: &gridcraft_engine::Selection) -> Option
         }
         // A legacy array formula lives in the top-left cell of its range.
         for (c, cell) in sh.cells.iter() {
-            if let Some(a) = cell.formula.as_ref().and_then(|f| f.array)
-                && (a.start != c || !on_sheet(&a))
+            if let Some(a) = cell.formula.as_ref().and_then(|f| f.array.as_deref())
+                && (a.start != c || !on_sheet(a))
             {
                 return Some(format!("{}!{c}: array formula covers {a}", sh.name));
             }

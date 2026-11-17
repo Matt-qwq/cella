@@ -8,7 +8,7 @@ use crate::fmla::{self, to_file};
 /// The rewrite as it stood when every formula cell went through it. Kept as the oracle: the
 /// fast path is an assertion that this function is not needed.
 fn rewritten(f: &Formula) -> String {
-    match f.expr() {
+    match f.text_tree() {
         Some(e) => crate::fmla::expr_to_file_for_test(e),
         None => f.text.clone(),
     }
@@ -51,7 +51,7 @@ const FORMULAS: &[&str] = &[
 fn the_fast_path_writes_what_the_rewrite_writes() {
     for text in FORMULAS {
         let f = Formula::new(text);
-        assert!(f.expr_arc().is_some(), "{text} must parse for this test to mean anything");
+        assert!(f.text_tree().is_some(), "{text} must parse for this test to mean anything");
         assert_eq!(to_file(&f), rewritten(&f), "{text}");
     }
 }
@@ -63,10 +63,10 @@ fn the_fast_path_writes_what_the_rewrite_writes() {
 fn the_rewrite_is_skipped_exactly_when_it_changes_nothing() {
     for text in FORMULAS {
         let f = Formula::new(text);
-        let Some(e) = f.expr_arc() else { continue };
+        let Some(e) = f.text_tree() else { continue };
         // A file spells a formula differently exactly when the rewrite's text differs from the
         // canonical text.
-        let changes = fmla::expr_to_file_for_test((*e).clone()) != gridcraft_formula::print(&e);
+        let changes = fmla::expr_to_file_for_test(e.clone()) != gridcraft_formula::print(&e);
         assert_eq!(fmla::needs_file_rewrite_for_test(&e), changes, "{text}: the scan and the rewrite disagree (the file text would be wrong)");
     }
 }
@@ -75,7 +75,7 @@ fn the_rewrite_is_skipped_exactly_when_it_changes_nothing() {
 #[test]
 fn text_that_does_not_parse_is_kept() {
     let f = Formula::new("=SUM(A1:A3");
-    assert!(f.expr_arc().is_none());
+    assert!(f.text_tree().is_none());
     assert_eq!(to_file(&f), f.text);
     assert_eq!(to_file(&f), rewritten(&f));
 }

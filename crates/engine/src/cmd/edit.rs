@@ -287,7 +287,7 @@ fn cell_set(s: &mut Session, p: &Json) -> Result<Json> {
             let mut shapes = gridcraft_formula::ShapeTable::default();
             let mut cell = input_to_cell(&input, sheet, range.start, &mut cx.wb, &mut shapes)?.unwrap_or_default();
             if let Some(f) = cell.formula.as_mut() {
-                std::sync::Arc::make_mut(f).array = Some(range);
+                std::sync::Arc::make_mut(f).array = Some(Box::new(range));
             }
             let sh = cx.sheet_mut(sheet)?;
             // The array takes the whole range: other cells in it lose their contents. Every cell
@@ -1214,7 +1214,8 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 let mut moved = Formula::from_expr_at(e, dest, &mut shapes, rewrite);
                                 // The array range moves with its formula.
                                 let (dr, dc) = (dest.row as i64 - sc.row as i64, dest.col as i64 - sc.col as i64);
-                                moved.array = f.array.and_then(|a| Some(RangeRef::new(a.start.offset(dr, dc)?, a.end.offset(dr, dc)?)));
+                                moved.array =
+                                    f.array.as_deref().and_then(|a| Some(Box::new(RangeRef::new(a.start.offset(dr, dc)?, a.end.offset(dr, dc)?))));
                                 moved.dynamic = f.dynamic;
                                 return Some(std::sync::Arc::new(moved));
                             }
@@ -1439,20 +1440,20 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
             // for: this rewrite runs after the store moved the cells the edit inserted, deleted or
             // moved, so the cell a shape resolves at is no longer the cell it was interned for
             // (SHAPE-SHARING.md §5.1 S5 makes this a rewrite of the shape itself, one per shape).
-            let Some(expr) = f.expr() else { continue };
+            let Some(expr) = f.text_tree() else { continue };
             let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
             let text = gridcraft_formula::print(&new);
-            let array = match f.array {
-                Some(a) if on_target => super::sheet::map_range(a, e),
-                a => a,
+            let array: Option<RangeRef> = match f.array.as_deref() {
+                Some(a) if on_target => super::sheet::map_range(*a, e),
+                a => a.copied(),
             };
-            if (text != f.text || array != f.array || (moves_cells && f.shape.is_some()))
+            if (text != f.text || array != f.array.as_deref().copied() || (moves_cells && f.shape.is_some()))
                 && let Some(mut cell) = sheet.cells.get(c)
             {
                 // Interned at the cell it sits at now, so `expr_at` is this tree again.
                 let rewrite = gridcraft_xlsx::needs_file_rewrite(&new);
                 let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
-                nf.array = array;
+                nf.array = array.map(Box::new);
                 nf.dynamic = f.dynamic;
                 cell.formula = Some(std::sync::Arc::new(nf));
                 sheet.cells.set(c, cell);
@@ -2023,7 +2024,7 @@ mod tests {
         s.execute("cell.set", json!({"cell": "H5", "input": "=1+1", "array": true})).unwrap();
         let sh = s.doc().unwrap().wb.active().unwrap();
         let f = sh.cell(CellRef::parse("H5").unwrap()).and_then(|c| c.formula.clone()).unwrap();
-        assert_eq!(f.array, Some(RangeRef::parse("H5").unwrap()));
+        assert_eq!(f.array.as_deref().copied(), RangeRef::parse("H5"));
         assert_eq!(sh.value(CellRef::parse("K20").unwrap()), Value::text("keep"));
     }
 

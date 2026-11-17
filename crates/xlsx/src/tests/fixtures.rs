@@ -34,7 +34,7 @@ fn shared_formulas_and_value_types() {
     assert_eq!(s.value(at("C4")), Value::text("ab"));
     assert_eq!(s.value(at("D4")), Value::Number(45292.5));
     let a5 = s.cell(at("A5")).unwrap().formula.clone().unwrap();
-    assert_eq!(a5.array, Some(RangeRef::parse("A5:B6").unwrap()));
+    assert_eq!(a5.array.as_deref().copied(), RangeRef::parse("A5:B6"));
     assert!(s.cell(at("B5")).is_none() && s.cell(at("A6")).is_none(), "a legacy array's cached values are dropped too");
     let c5 = s.cell(at("C5")).unwrap().formula.clone().unwrap();
     assert_eq!(c5.array, None, "dynamic arrays are not legacy CSE arrays");

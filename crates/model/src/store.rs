@@ -665,17 +665,17 @@ impl Band {
 
     /// Whether any formula of this band owns a legacy array covering more than one cell.
     fn has_array_anchor(&self) -> bool {
-        self.rows.iter().any(|row| row.formulas().iter().any(|(_, f)| f.array.is_some_and(|r| !r.is_single())))
+        self.rows.iter().any(|row| row.formulas().iter().any(|(_, f)| f.array.as_deref().is_some_and(|r| !r.is_single())))
     }
 
     /// What one row's formulas and array values cost beyond the row header: the side table's run
-    /// of entries, the parsed tree each formula keeps, and the shape it keeps **when nothing else
-    /// holds it**.
+    /// of entries, the text each formula spells, and the shape it keeps **when nothing else holds
+    /// it**.
     ///
-    /// A shape is charged once, by whoever holds the last reference — the `Arc::strong_count` rule
-    /// the band's report already uses for texts. Charging it per cell would make a million-row
-    /// fill's undo entry look like a gigabyte (one shape, a million holders) and drop the whole
-    /// history for a snapshot that keeps almost nothing alive.
+    /// A formula's tree is its shape's, charged once by whoever holds the last reference — the
+    /// `Arc::strong_count` rule the band's report already uses for texts. Charging it per cell
+    /// would make a million-row fill's undo entry look like a gigabyte (one shape, a million
+    /// holders) and drop the whole history for a snapshot that keeps almost nothing alive.
     fn extras_bytes(row: &BandRow) -> usize {
         row.formulas().len() * (4 + std::mem::size_of::<Formula>())
             + row.arrays().len() * 8
@@ -684,7 +684,7 @@ impl Band {
                 .iter()
                 .map(|(_, f)| {
                     let shape = f.shape.as_ref().filter(|s| Arc::strong_count(s) == 1).map_or(0, |s| s.bytes as usize);
-                    f.text.len().saturating_add(f.expr_bytes as usize).saturating_add(shape)
+                    f.text.len().saturating_add(shape)
                 })
                 .sum::<usize>()
     }
@@ -722,10 +722,10 @@ impl Band {
             m.texts = m.texts.saturating_add(if Arc::strong_count(text) > 1 { size_of::<Arc<str>>() } else { Self::text_bytes(text) });
         }
         // Formulas and arrays are collected first and charged once per pointer: a paste, or a cell
-        // written twice, can put the same `Arc<Formula>` (or the same tree) behind several rows.
+        // written twice, can put the same `Arc<Formula>` (or the same shape) behind several rows.
         // Sorted by pointer rather than scanned, so a band holding a million formula cells cannot
         // go quadratic. The keys are addresses: compared, never dereferenced.
-        let mut formulas: Vec<(usize, usize, usize, usize)> = Vec::new();
+        let mut formulas: Vec<(usize, usize)> = Vec::new();
         let mut shapes: Vec<(usize, u32)> = Vec::new();
         let mut arrays: Vec<usize> = Vec::new();
         for row in &self.rows {
@@ -742,8 +742,7 @@ impl Band {
                 .saturating_add(extras.arrays.capacity() * size_of::<(u32, Arc<gridcraft_core::Array>)>());
             m.wide = m.wide.saturating_add(extras.wide.capacity() * size_of::<u64>());
             for (_, f) in &extras.formulas {
-                let tree = f.expr.as_ref().map_or(0, |e| Arc::as_ptr(e) as usize);
-                formulas.push((Arc::as_ptr(f) as usize, tree, f.text.len(), f.expr_bytes as usize));
+                formulas.push((Arc::as_ptr(f) as usize, f.text.len()));
                 if let Some(s) = &f.shape {
                     shapes.push((Arc::as_ptr(s) as usize, s.bytes));
                 }
@@ -754,18 +753,14 @@ impl Band {
         }
         formulas.sort_unstable();
         formulas.dedup();
-        let mut trees: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-        for (_, tree, text, expr_bytes) in formulas {
+        for (_, text) in formulas {
             m.formula_text = m.formula_text.saturating_add(size_of::<Formula>()).saturating_add(text);
-            // The tree is also held by the graph's node, which charges its pointer only: the tree
-            // itself is charged here, once, however many cells of the band share it.
-            if tree != 0 && trees.insert(tree) {
-                m.formula_exprs = m.formula_exprs.saturating_add(expr_bytes);
-            }
         }
         // A shape is one tree for every cell of a fill, so it is charged once per pointer: the
-        // cells that share it pay the pointer, not the tree. Sorted by pointer and deduplicated
-        // like the trees above, so a band of a million filled cells stays O(n log n).
+        // cells that share it pay the pointer, not the tree. Sorted by pointer and deduplicated,
+        // so a band of a million filled cells stays O(n log n). (A cell that holds text alone and
+        // no shape keeps no tree at all; the graph's node for it parses on demand — see
+        // `CalcMemory::unshared`.)
         shapes.sort_unstable();
         shapes.dedup();
         for (_, bytes) in shapes {
@@ -2230,7 +2225,7 @@ impl Clone for CellStore {
 /// the other cells it covers has to be refused. The store index of that fact; keep the two in
 /// step (a store only ever raises it).
 fn cell_has_array(cell: &Cell) -> bool {
-    cell.formula.as_ref().and_then(|f| f.array).is_some_and(|r| !r.is_single())
+    cell.formula.as_ref().and_then(|f| f.array.as_deref()).is_some_and(|r| !r.is_single())
 }
 
 impl PartialEq for CellStore {
@@ -5655,7 +5650,7 @@ mod page {
             return None;
         }
         put_bytes(out, f.text.as_bytes());
-        match f.array {
+        match f.array.as_deref() {
             Some(a) => {
                 put_u8(out, 1);
                 put_u32(out, a.start.row);
@@ -5674,7 +5669,7 @@ mod page {
         let text = String::from_utf8(bytes).ok()?;
         let array = match take_u8(input)? {
             0 => None,
-            1 => Some(RangeRef::new(CellRef::new(take_u32(input)?, take_u32(input)?), CellRef::new(take_u32(input)?, take_u32(input)?))),
+            1 => Some(Box::new(RangeRef::new(CellRef::new(take_u32(input)?, take_u32(input)?), CellRef::new(take_u32(input)?, take_u32(input)?)))),
             _ => return None,
         };
         let dynamic = take_u8(input)? != 0;
@@ -5926,6 +5921,7 @@ mod page {
 mod tests {
     use super::*;
     use gridcraft_core::Value;
+    use gridcraft_formula::{Shape, ShapeTable};
 
     fn c(r: u32, col: u32) -> CellRef {
         CellRef::new(r, col)
@@ -5933,6 +5929,12 @@ mod tests {
 
     fn plain(n: u32) -> Cell {
         Cell::value(Value::Number(f64::from(n)))
+    }
+
+    /// A formula of `text` entered at `at`, sharing `shapes` with every cell of the same fill.
+    fn shaped(shapes: &mut ShapeTable, text: &str, at: CellRef) -> Formula {
+        let tree = gridcraft_formula::parse(text).expect("the test formula parses");
+        Formula::from_expr_at(tree, at, shapes, false)
     }
 
     #[test]
@@ -7456,7 +7458,7 @@ mod tests {
         }
         s.set(c(2, 1), Cell { value: Value::Text(Arc::from("kept")), formula: Some(Arc::new(Formula::new("=A3"))), style: StyleId(4) });
         let mut dynamic = Formula::new("=A1:A2*2");
-        dynamic.array = Some(RangeRef::parse("C4:D5").expect("range"));
+        dynamic.array = Some(Box::new(RangeRef::parse("C4:D5").expect("range")));
         dynamic.dynamic = true;
         let array = Value::Array(Arc::new(gridcraft_core::Array::row(vec![Value::Number(1.0), Value::Number(2.0)])));
         s.set(c(3, 2), Cell { value: array, formula: Some(Arc::new(dynamic)), style: StyleId(9) });
@@ -8037,10 +8039,11 @@ mod tests {
     #[test]
     fn store_memory_total_is_the_sum_of_its_parts() {
         let mut s = CellStore::new();
+        let mut shapes = ShapeTable::default();
         for row in 0..200u32 {
             s.set(c(row, 0), Cell::value(Value::Number(f64::from(row))));
             s.set(c(row, 1), Cell::value(Value::Text(Arc::from(format!("row {row}").as_str()))));
-            s.set(c(row, 2), Cell { value: Value::Number(1.0), formula: Some(Arc::new(Formula::new("=A1+B1"))), style: StyleId(1) });
+            s.set(c(row, 2), Cell { value: Value::Number(1.0), formula: Some(Arc::new(shaped(&mut shapes, "A1+B1", c(row, 2)))), style: StyleId(1) });
         }
         let m = s.memory();
         let sum = m.band_index
@@ -8076,33 +8079,37 @@ mod tests {
         assert!(m.total() > 600 * 8, "the packing is charged");
     }
 
-    /// A thousand formulas cost a formula's text, its parsed tree and its side-table entry — three
-    /// figures that move together. The bound is the factor the shape implies: each formula's text
-    /// is the same four characters here, so the text grows by about
-    /// `1000 * (size_of::<Formula>() + 4)` and the trees by `1000 * size_of::<Expr>()` a node.
+    /// A thousand formulas cost a formula's text, its shape and its side-table entry. Each
+    /// formula's text is the same six characters here (`$A$1+1`, one shape at every position),
+    /// so the text grows by about `1000 * (size_of::<Formula>() + 6)` while the **one** shape
+    /// they share is charged once: the tree per formula is what the shape work removed (S7 of
+    /// `plan/SHAPE-SHARING.md`).
     #[test]
     fn a_thousand_formulas_raise_the_formula_lines() {
         let mut s = CellStore::new();
-        for row in 0..1000u32 {
-            s.set(c(row, 0), Cell::value(Value::Number(f64::from(row))));
-        }
+        s.set(c(0, 0), Cell::value(Value::Number(1.0)));
         let before = s.memory();
-        for row in 0..1000u32 {
-            let mut cell = plain(row);
-            cell.formula = Some(Arc::new(Formula::new("=A1+1")));
-            s.set(c(row, 1), cell);
+        let mut shapes = ShapeTable::default();
+        for col in 1..=1000u32 {
+            let at = c(0, col);
+            let text = gridcraft_formula::parse("$A$1+1").expect("parses");
+            s.set(
+                at,
+                Cell { value: Value::Empty, formula: Some(Arc::new(Formula::from_expr_at(text, at, &mut shapes, false))), style: StyleId::DEFAULT },
+            );
         }
         let after = s.memory();
+        assert_eq!(shapes.len(), 1, "one shape, however many cells hold it");
         let text = after.formula_text.saturating_sub(before.formula_text);
         let trees = after.formula_exprs.saturating_sub(before.formula_exprs);
         let extras = after.row_extras.saturating_sub(before.row_extras);
         let formula = std::mem::size_of::<Formula>();
         assert!(text >= 1000 * formula, "{text} bytes of formula text for 1000 formulas");
         assert!(text <= 2 * 1000 * (formula + 8), "{text} bytes is not more than the struct and its text");
-        let one_tree = Formula::new("=A1+1").expr_bytes as usize;
-        assert!(one_tree > 0, "the formula parses into a tree");
-        assert_eq!(trees, 1000 * one_tree, "each formula's tree is charged");
-        assert!(extras > 0, "each row gained a side table");
+        let one_shape = Shape::from_expr(gridcraft_formula::parse("$A$1+1").expect("parses"), c(0, 1)).bytes as usize;
+        assert!(one_shape > 0, "the formula parses into a tree");
+        assert_eq!(trees, one_shape, "the one shape a thousand formulas share is charged once");
+        assert!(extras > 0, "the row gained a side table");
     }
 
     /// Two cells that hold the same `Arc<str>` share one copy: the band's text dictionary keeps one
@@ -8119,26 +8126,23 @@ mod tests {
         assert_eq!(two.memory().texts, alone, "the shared string is charged once");
     }
 
-    /// Two formulas can share one parsed tree (`Formula::share_expr` after a rebuild): the tree is
-    /// charged once, while both formula texts are.
+    /// Two cells of one fill share one shape: its tree is charged once, while both formula texts
+    /// are. This is the accounting the undo budget reads (SHAPE-SHARING.md trap 6) — charged per
+    /// cell, a million-row fill would look like a gigabyte and drop the whole history.
     #[test]
-    fn an_expression_tree_two_cells_share_is_charged_once() {
-        let first = Formula::new("=A1+1");
-        let tree = first.expr.clone().expect("the formula parses");
-        let mut second = Formula::new("=A1*2");
-        // A formula read back from a file carries its text alone; `share_expr` hands it the tree
-        // that was parsed for another cell instead of parsing the same text again.
-        second.expr = None;
-        second.expr_bytes = 0;
-        second.share_expr(&tree);
-        assert!(second.expr.as_ref().is_some_and(|e| Arc::ptr_eq(e, &tree)), "the tree is shared");
+    fn a_shape_two_cells_share_is_charged_once() {
+        let mut shapes = ShapeTable::default();
+        let tree = gridcraft_formula::parse("A1+1").expect("parses");
+        let one = Formula::from_expr_at(tree, c(0, 0), &mut shapes, false);
+        let two = one.copied_to(c(0, 0), c(1, 0)).expect("the shape fits one row down");
+        assert!(two.shape().is_some_and(|s| Arc::ptr_eq(&s, &one.shape().expect("a shape"))), "the shape is shared");
         let mut s = CellStore::new();
-        s.set(c(0, 0), Cell { value: Value::Number(1.0), formula: Some(Arc::new(first.clone())), style: StyleId::DEFAULT });
-        let one = s.memory();
-        s.set(c(1, 0), Cell { value: Value::Number(1.0), formula: Some(Arc::new(second)), style: StyleId::DEFAULT });
-        let two = s.memory();
-        assert_eq!(two.formula_exprs, one.formula_exprs, "the shared tree is charged once");
-        assert!(two.formula_text > one.formula_text, "both formula texts are charged");
+        s.set(c(0, 0), Cell { value: Value::Number(1.0), formula: Some(Arc::new(one)), style: StyleId::DEFAULT });
+        let alone = s.memory();
+        s.set(c(1, 0), Cell { value: Value::Number(1.0), formula: Some(Arc::new(two)), style: StyleId::DEFAULT });
+        let both = s.memory();
+        assert_eq!(both.formula_exprs, alone.formula_exprs, "the shared shape is charged once");
+        assert!(both.formula_text > alone.formula_text, "both formula texts are charged");
     }
 
     /// An empty store reports almost nothing — the index and its two maps — and never panics.
@@ -8178,7 +8182,7 @@ mod array_anchor_tests {
 
     fn anchored(text: &str, range: &str) -> Cell {
         let mut f = Formula::new(text);
-        f.array = RangeRef::parse(range);
+        f.array = RangeRef::parse(range).map(Box::new);
         Cell::formula(f)
     }
 

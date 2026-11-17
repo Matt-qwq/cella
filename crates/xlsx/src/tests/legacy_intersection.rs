@@ -14,9 +14,9 @@ fn at(s: &str) -> CellRef {
 }
 
 /// A cell's formula text and array range.
-fn formula(wb: &Workbook, a: &str) -> (String, Option<RangeRef>) {
+fn formula(wb: &Workbook, a: &str) -> (String, Option<Box<RangeRef>>) {
     let f = wb.sheet(0).unwrap().cell(at(a)).unwrap().formula.unwrap();
-    (f.text.clone(), f.array)
+    (f.text.clone(), f.array.clone())
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn legacy_formulas_read_with_implicit_intersection() {
     }
     // A dynamic-array formula with `cm` is read as written; so is a Ctrl+Shift+Enter array.
     assert_eq!(formula(&wb, "C2"), ("TANH(A1:A3)".to_string(), None));
-    assert_eq!(formula(&wb, "D2"), ("TANH(A1:A3)".to_string(), RangeRef::parse("D2:D4")));
+    assert_eq!(formula(&wb, "D2"), ("TANH(A1:A3)".to_string(), RangeRef::parse("D2:D4").map(Box::new)));
 }
 
 /// Legacy IF does not evaluate its condition as an array inside SUMPRODUCT, nor IFERROR and IFNA

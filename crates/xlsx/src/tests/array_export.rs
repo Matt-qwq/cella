@@ -101,7 +101,7 @@ fn dynamic_spills_and_legacy_cse_keep_distinct_ranges() {
     let mut wb = Workbook::new();
     let sh = wb.sheet_mut(0).unwrap();
     let mut legacy = Formula::new("ROW(A1:A2)");
-    legacy.array = Some(range("A1:A2"));
+    legacy.array = Some(Box::new(range("A1:A2")));
     sh.cells.set(at("A1"), Cell::formula(legacy));
     sh.cells.set(at("A2"), Cell::value(Value::Number(2.0)));
     sh.cells.set(at("B1"), formula("SEQUENCE(3)", 1.0));
@@ -123,7 +123,7 @@ fn dynamic_spills_and_legacy_cse_keep_distinct_ranges() {
 
     let (back, _) = read_xlsx(&bytes).unwrap();
     let sh = back.sheet(0).unwrap();
-    assert_eq!(sh.cell(at("A1")).unwrap().formula.as_ref().unwrap().array, Some(range("A1:A2")));
+    assert_eq!(sh.cell(at("A1")).unwrap().formula.as_ref().unwrap().array.as_deref().copied(), Some(range("A1:A2")));
     // A legacy array's cached values are dropped on read: the formula fills its range on recalc (#156).
     assert!(sh.cell(at("A2")).is_none());
     assert_eq!(sh.cell(at("B1")).unwrap().formula.as_ref().unwrap().array, None);
@@ -148,7 +148,7 @@ fn scalar_formulas_constants_and_legacy_cse_do_not_require_dynamic_metadata() {
     for legacy in [false, true] {
         if legacy {
             let mut f = Formula::new("SUM(A1:A2)");
-            f.array = Some(range("B1"));
+            f.array = Some(Box::new(range("B1")));
             wb.sheet_mut(0).unwrap().cells.set(at("B1"), Cell::formula(f));
         }
         let bytes = write_xlsx(&wb).unwrap();
@@ -304,7 +304,7 @@ fn this_row_references_are_written_in_long_form() {
 fn check_formula_metadata(mut wb: Workbook, sheet_index: usize, cases: &[(&str, bool)]) {
     for (i, (text, _)) in cases.iter().enumerate() {
         let f = Formula::new(text);
-        assert!(f.expr().is_some(), "test formula must parse: {text}");
+        assert!(f.text_tree().is_some(), "test formula must parse: {text}");
         wb.sheet_mut(sheet_index).unwrap().cells.set(CellRef::new(i as u32 + 100, 5), Cell::formula(f));
     }
     let bytes = write_xlsx(&wb).unwrap();

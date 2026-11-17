@@ -435,7 +435,8 @@ impl Workbook {
                     // A rename to another spelling of the same call answers the file question the
                     // same way: only `LET`/`LAMBDA` and a LAMBDA name's `_xlpm.` prefix are affected.
                     let rewrite = f.shape().is_some_and(|s| s.file_rewrite);
-                    (ne != e).then(|| (c, Formula { array: f.array, dynamic: f.dynamic, ..Formula::from_expr_at(ne, c, &mut shapes, rewrite) }))
+                    (ne != e)
+                        .then(|| (c, Formula { array: f.array.clone(), dynamic: f.dynamic, ..Formula::from_expr_at(ne, c, &mut shapes, rewrite) }))
                 })
                 .collect();
             if fixed.is_empty() {

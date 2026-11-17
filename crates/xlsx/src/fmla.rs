@@ -25,8 +25,12 @@ pub fn file_text(f: &Formula, at: CellRef) -> std::borrow::Cow<'_, str> {
             None => std::borrow::Cow::Borrowed(f.text.as_str()),
         };
     }
-    match f.expr_arc() {
-        Some(e) if needs_file_rewrite(&e) => std::borrow::Cow::Owned(expr_to_file((*e).clone())),
+    // Text alone (a JSON document, or a formula nothing has parsed yet): `expr_at` parses it at
+    // the cell, and this walk decides the spelling. It is the fallback the shape design kept
+    // (SHAPE-SHARING.md §5.3): an `_xlfn.` formula read back from such a document is spelled
+    // right, at the price of one parse a save.
+    match f.expr_at(at) {
+        Some(e) if needs_file_rewrite(&e) => std::borrow::Cow::Owned(expr_to_file(e)),
         _ => std::borrow::Cow::Borrowed(f.text.as_str()),
     }
 }
@@ -197,7 +201,7 @@ pub fn formula_from_file_at(text: &str, at: CellRef, shapes: &mut ShapeTable) ->
             let file_rewrite = needs_file_rewrite(&e);
             Formula::from_expr_at(e, at, shapes, file_rewrite)
         }
-        Err(_) => Formula { text: body.to_string(), expr: None, shape: None, expr_bytes: 0, array: None, dynamic: false },
+        Err(_) => Formula::from_text(body),
     }
 }
 
@@ -358,7 +362,7 @@ mod tests {
         assert_eq!(from_file("SUM(_xlfn.ANCHORARRAY(Sheet1!$D$1))+_xlfn.ANCHORARRAY(B2)"), "SUM(Sheet1!$D$1#)+B2#");
         // Found by the command-sequence fuzzer: deleting the anchor of `H5#` left `=#REF!` in
         // the workbook but `ANCHORARRAY(#REF!)` in the file, which read back differently.
-        let deleted = Formula::from_expr(Expr::Unary(gridcraft_formula::UnOp::Spill, Box::new(Expr::Error(gridcraft_core::CellError::Ref))));
+        let deleted = Formula::from_text("#REF!");
         assert_eq!(deleted.text, "#REF!");
         assert_eq!(to_file(&deleted), "#REF!");
     }

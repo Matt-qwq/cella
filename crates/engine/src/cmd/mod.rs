@@ -698,7 +698,7 @@ fn check_arrays(old: &Workbook, new: &Workbook) -> Result<()> {
             .cells
             .formulas()
             .take_while(|(c, _, _)| c.row <= max_row)
-            .filter_map(|(c, f, _)| f.array.filter(|r| !r.is_single() && r.start == c).map(|_| c))
+            .filter_map(|(c, f, _)| f.array.as_deref().filter(|r| !r.is_single() && r.start == c).map(|_| c))
             .collect();
         if anchors.is_empty() {
             continue;
@@ -706,9 +706,9 @@ fn check_arrays(old: &Workbook, new: &Workbook) -> Result<()> {
         for c in changed {
             // The anchor still holds its array (replacing the whole array, anchor included, is
             // fine) and the edited cell is inside the range it occupies now.
-            let in_array = anchors
-                .iter()
-                .any(|anchor| *anchor != c && after.cell(*anchor).and_then(|x| x.formula).and_then(|f| f.array).is_some_and(|a| a.contains(c)));
+            let in_array = anchors.iter().any(|anchor| {
+                *anchor != c && after.cell(*anchor).and_then(|x| x.formula).and_then(|f| f.array.as_deref().copied()).is_some_and(|a| a.contains(c))
+            });
             if in_array {
                 return Err(EngineError::Other("You can't change part of an array.".into()));
             }

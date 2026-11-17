@@ -402,6 +402,7 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
         });
         hit.then_some(out)
     };
+    let mut shapes = gridcraft_formula::ShapeTable::default();
     for i in 0..wb.sheets.len() {
         if !applies(i) {
             continue;
@@ -410,8 +411,11 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
         let formulas: Vec<(CellRef, std::sync::Arc<Formula>)> = sh.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect();
         for (c, f) in formulas {
             let Some(e) = f.expr_at(c).and_then(rename) else { continue };
-            let mut nf = Formula::from_expr(e);
-            nf.array = f.array;
+            // A name rename does not move cells: the tree is interned at the cell it sits at, and
+            // the answer a save needs is this crate's to compute (the `_xlfn.` table is here).
+            let rewrite = gridcraft_xlsx::needs_file_rewrite(&e);
+            let mut nf = Formula::from_expr_at(e, c, &mut shapes, rewrite);
+            nf.array = f.array.clone();
             nf.dynamic = f.dynamic;
             if let Some(mut cell) = sh.cells.get(c) {
                 cell.formula = Some(std::sync::Arc::new(nf));

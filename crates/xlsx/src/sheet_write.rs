@@ -1401,7 +1401,7 @@ fn write_cell(
         };
         s.push_str(t);
         s.push('>');
-        match (f.array, dynamic) {
+        match (f.array.as_deref(), dynamic) {
             // An array formula names the range its result occupies.
             (Some(r), _) => {
                 s.push_str("<f t=\"array\" ref=\"");

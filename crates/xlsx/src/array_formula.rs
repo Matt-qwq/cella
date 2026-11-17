@@ -43,20 +43,19 @@ impl Shape {
 }
 
 pub(crate) fn needs_array(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula) -> bool {
-    // The canonical tree of the cell's shape, read where the cell is, or the cell's own tree (which
-    // is absolute). Neither is resolved: this runs for every formula of every save, and the
-    // analysis asks only for *sizes*, which translation preserves (SHAPE-SHARING.md §4.12).
+    // The canonical tree of the cell's shape, read where the cell is. It is not resolved: this
+    // runs for every formula of every save, and the analysis asks only for *sizes*, which
+    // translation preserves (SHAPE-SHARING.md §4.12).
     let shape = formula.shape();
-    let (expr, base): (&Expr, Option<CellRef>) = match (&formula.expr, &shape) {
-        (Some(tree), _) => (tree, None),
-        (_, Some(shape)) => (shape.tree(), Some(at)),
-        // Text alone (a document read back from JSON): parse it, which is what the reader did.
-        (None, None) => match formula.expr_at(at) {
-            Some(tree) => return needs_array_of(wb, sheet, at, &tree, None),
-            None => return false,
-        },
+    let Some(shape) = shape else {
+        // Text alone (a document read back from JSON, a formula no rebuild has interned): the
+        // fallback parses it at the cell, which is what the reader would have done.
+        return match formula.expr_at(at) {
+            Some(tree) => needs_array_of(wb, sheet, at, &tree, None),
+            None => false,
+        };
     };
-    needs_array_of(wb, sheet, at, expr, base)
+    needs_array_of(wb, sheet, at, shape.tree(), Some(at))
 }
 
 /// [`needs_array`] for a tree whose relative parts are offsets from `base` (`None`: an absolute
@@ -403,13 +402,11 @@ pub(crate) fn apply_legacy(wb: &mut Workbook, cells: Vec<(usize, Vec<CellRef>)>)
 /// an `@` inside. The rule here is only about what can be multi-valued, and it is decided from the
 /// cell's **shape** without resolving it — one tree per fill, not one per cell.
 fn may_need_reading(formula: &Formula, at: CellRef) -> bool {
-    let shape = formula.shape();
-    match (&formula.expr, &shape) {
-        (Some(tree), _) => !is_certainly_scalar(tree, None),
-        (_, Some(shape)) => !is_certainly_scalar(shape.tree(), Some(at)),
+    match formula.shape() {
+        Some(shape) => !is_certainly_scalar(shape.tree(), Some(at)),
         // Text alone (a document that never went through the reader): the reading may change it,
         // and the caller resolves it anyway.
-        (None, None) => true,
+        None => true,
     }
 }
 
