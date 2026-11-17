@@ -7372,4 +7372,79 @@ mod compressed_history {
         let total: usize = history.iter().map(|entry| entry.retained_bytes).sum();
         assert!(total <= budget || history.len() == 1, "{total} bytes for {} steps", history.len());
     }
+
+    /// The encode gate itself: a step is offered its compressed chance only when its own bands are
+    /// few enough to encode in the 60 ms an edit may spend, and when the projected pages leave room
+    /// for it beside the newer steps. Either half failing costs nothing — the step is dropped.
+    #[test]
+    fn the_encode_gate_refuses_a_step_too_big_to_compress_cheaply() {
+        let budget = 128 << 20;
+        assert!(crate::can_compress(1, 0, budget), "a small step is offered the chance");
+        assert!(crate::can_compress(crate::COMPRESS_MAX_BANDS, 0, budget), "six hundred bands is the limit");
+        assert!(!crate::can_compress(0, 0, budget), "a step with no band of its own has nothing to spill");
+        assert!(
+            !crate::can_compress(crate::COMPRESS_MAX_BANDS + 1, 0, budget),
+            "a whole sheet of bands is over the gate: an encode that costs a second is not offered"
+        );
+        assert!(!crate::can_compress(15_625, 0, budget), "the million-row sheet is refused outright");
+        // 600 bands project 3 MB of pages: they fit a 4 MB budget beside nothing, and not beside 2 MB.
+        assert!(crate::can_compress(600, 0, 4 << 20));
+        assert!(!crate::can_compress(600, 2 << 20, 4 << 20), "the newer steps leave no room for it");
+        assert!(!crate::can_compress(600, u32::MAX as usize, budget), "saturating, never wrapping");
+    }
+
+    /// With the gate, a step small enough to encode quickly is compressed and kept where it would
+    /// have been dropped, and a step whose bands are too many to encode is dropped without an
+    /// encode — both through the same push path the budget uses.
+    #[test]
+    fn a_small_step_is_kept_compressed_where_a_big_one_is_dropped() {
+        use std::sync::Arc;
+
+        use gridcraft_model::{Cell, Formula, Workbook};
+
+        /// Pushes `versions` steps, each rewriting `rows` rows of one column, into `history`.
+        fn push(history: &mut Vec<crate::HistoryEntry>, versions: u32, rows: u32, budget: usize) -> Arc<Workbook> {
+            let mut current = Arc::new(Workbook::new());
+            for version in 0..versions {
+                let previous = current.clone();
+                let mut next = (*previous).clone();
+                let sheet = next.sheet_mut(0).expect("a sheet");
+                for row in 0..rows {
+                    let cell = Cell::formula(Formula::new(format!("=B{}+{version}", row + 1).as_str()));
+                    sheet.cells.set(CellRef::new(row, 0), cell);
+                }
+                current = Arc::new(next);
+                crate::push_history_with_budget(history, format!("edit {version}"), previous, &current, crate::Selection::default(), budget);
+            }
+            current
+        }
+
+        // 400 rows is seven bands: cheap to encode. Three of these steps do not fit that budget as
+        // they are, so the older two are kept as their pages — an eighth of their live size — and
+        // no step is dropped for want of room.
+        let mut small = Vec::new();
+        push(&mut small, 3, 400, 300 * 1024);
+        assert_eq!(small.len(), 3, "every step is kept: pages made the room");
+        // The first step is the empty workbook the edits started from: it has no band to spill.
+        assert!(small[1].compressed, "the step the budget would have dropped survived as pages");
+        assert!(small[1].retained_bytes * 4 < small[2].retained_bytes, "{} against {}", small[1].retained_bytes, small[2].retained_bytes);
+        let total: usize = small.iter().map(|entry| entry.retained_bytes).sum();
+        assert!(total < 300 * 1024, "the pages made it fit: {total} bytes");
+        assert!(!small.last().expect("a step").compressed, "the newest step is still never compressed");
+
+        // 38,500 rows is just over six hundred bands, the encode gate. A budget that has room for
+        // the pages (and no room for the step itself) is still refused: the step is dropped, and —
+        // which is what the gate is for — nothing is encoded to find that out.
+        let mut probe = Vec::new();
+        push(&mut probe, 2, 38_500, usize::MAX);
+        let step = probe.last().expect("a step").retained_bytes;
+        assert!(step > 0, "the step keeps its bands");
+        let mut big = Vec::new();
+        // Room for the step's pages beside the newer step (3 MB of 22 MB), and no room for the
+        // step itself: the encode gate is the only thing that can refuse it.
+        push(&mut big, 3, 38_500, step.saturating_mul(3) / 2);
+        assert_eq!(big.len(), 1, "the step the budget could hold as pages was dropped instead");
+        assert!(big.iter().all(|entry| !entry.compressed), "a step past the gate is never encoded");
+        assert_eq!(big.last().map(|entry| entry.label.as_str()), Some("edit 2"), "the latest step is the one that stayed");
+    }
 }

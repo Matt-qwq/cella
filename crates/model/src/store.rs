@@ -2829,6 +2829,14 @@ impl CellStore {
         self.pages.values().map(|p| p.page_len()).sum()
     }
 
+    /// How many bands this store keeps that `newer` no longer shares: the unit a compressed history
+    /// step is priced in before it is encoded (see [`spill_retained_against`](Self::spill_retained_against)),
+    /// so a caller can refuse an encode it cannot afford instead of paying for it and dropping the
+    /// step anyway.
+    pub fn retained_band_count(&self, newer: &CellStore) -> usize {
+        self.bands.iter().filter(|(key, band)| newer.bands.get(key).is_none_or(|next| !Arc::ptr_eq(next, band))).count()
+    }
+
     /// Moves the bands this store keeps that `newer` no longer shares into a page file of its own,
     /// so a history snapshot costs its compressed pages instead of the decoded bands the edit
     /// replaced.

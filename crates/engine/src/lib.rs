@@ -219,6 +219,16 @@ const JOURNAL_MAX_ENTRIES: usize = 10_000;
 /// few opens of a large workbook keep tens of MB alive.
 pub(crate) const JOURNAL_MAX_BYTES: usize = 64 * 1024 * 1024;
 const UNDO_BYTES_LIMIT: usize = 128 * 1024 * 1024;
+/// The most bands a history step may spill to be offered its compressed chance. A band encodes in
+/// about 100 µs (the 15,625 bands of a million-row sheet took 1.2–1.6 s; the 1,563 of a hundred
+/// thousand took 70 ms), so six hundred is the 60 ms an edit may spend keeping a step it would
+/// otherwise drop. A bigger step is dropped exactly as before: paying a second to keep bytes the
+/// budget will not hold is the one thing worse than dropping the step.
+const COMPRESS_MAX_BANDS: usize = 600;
+/// The compressed bytes a spilled band costs, for deciding whether a compressed step would fit
+/// before paying to encode it: measured 4.6 kB a band (7.2 MB for 1,563 bands, 72 MB for 15,625),
+/// rounded up to 5 kB so the projection errs towards dropping.
+const COMPRESS_BYTES_PER_BAND: usize = 5 * 1024;
 
 fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
     let mut bytes = std::mem::size_of::<Workbook>();
@@ -270,14 +280,32 @@ fn push_history_with_budget(
         if total <= byte_budget {
             break;
         }
-        // Over budget: the oldest step is the next to go, and dropping it is the last resort.
-        // Give it one chance as compressed pages first — a compressed snapshot costs its deflated
-        // bands, a fraction of the sheet it replaced — so the same budget keeps more steps. Only
-        // the oldest entry is offered: the newest is the step the next Ctrl+Z restores, and that
-        // one must never be a decode. Nothing is compressed when the steps newer than the oldest
-        // already fill the budget: that step could not be kept whatever it cost.
-        let newer = total.saturating_sub(history[0].retained_bytes);
-        if !history[0].compressed && newer <= byte_budget && compress_history_entry(&mut history[0], next) {
+        // Over budget: nothing is dropped while a step can still be kept cheaply. Offer the oldest
+        // step that the encode gate accepts and that has room — a compressed snapshot costs its
+        // deflated bands, a fraction of the sheet it replaced — and look again; dropping the oldest
+        // step is the last resort, as it always was. The newest entry is never a candidate: it is
+        // the step the next Ctrl+Z restores, and that one must never be a decode. The gate is what
+        // keeps this from stalling an edit: an encode the edit cannot afford, or one whose pages
+        // the budget still cannot hold, is refused before a byte is written.
+        let mut candidate = None;
+        for (index, entry) in history.iter().enumerate().take(history.len().saturating_sub(1)) {
+            if entry.compressed {
+                continue;
+            }
+            // The cheap half of the rule first: room beside the steps newer than this one. The band
+            // count walks the step's bands, so it is only asked for once that has passed.
+            let newer = total.saturating_sub(entry.retained_bytes);
+            if newer > byte_budget {
+                continue;
+            }
+            if can_compress(history_compressible_bands(entry, next), newer, byte_budget) {
+                candidate = Some(index);
+                break;
+            }
+        }
+        if let Some(index) = candidate
+            && compress_history_entry(&mut history[index], next)
+        {
             total = history.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
             continue;
         }
@@ -285,6 +313,29 @@ fn push_history_with_budget(
         dropped += 1;
     }
     dropped
+}
+
+/// Whether a step that keeps `bands` of its own is worth its compressed chance: the encode must
+/// be cheap ([COMPRESS_MAX_BANDS]) and the compressed form must leave room for the step beside the
+/// `newer` steps, which already spend `newer_retained` of `byte_budget`. Both halves matter: a
+/// step too big to encode quickly turns an edit into a stall, and a step whose pages the budget
+/// would still not hold is encoded only to be dropped. `false` costs nothing — the caller drops
+/// the step as it always did.
+pub(crate) fn can_compress(bands: usize, newer_retained: usize, byte_budget: usize) -> bool {
+    bands > 0 && bands <= COMPRESS_MAX_BANDS && newer_retained.saturating_add(bands.saturating_mul(COMPRESS_BYTES_PER_BAND)) <= byte_budget
+}
+
+/// The bands a history step would have to spill: its own, on the sheets the next version no longer
+/// shares with it. The same walk [`compress_history_entry`] makes, counted instead of encoded.
+fn history_compressible_bands(entry: &HistoryEntry, next: &Workbook) -> usize {
+    let empty = gridcraft_model::CellStore::new();
+    entry.wb.sheets.iter().enumerate().fold(0usize, |sum, (index, sheet)| {
+        if next.sheets.iter().any(|other| Arc::ptr_eq(other, sheet)) {
+            return sum;
+        }
+        let next_cells = next.sheets.get(index).map_or(&empty, |next_sheet| &next_sheet.cells);
+        sum.saturating_add(sheet.cells.retained_band_count(next_cells))
+    })
 }
 
 /// Compresses one history snapshot's own bands into a page file of its own (see

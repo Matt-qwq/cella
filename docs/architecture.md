@@ -42,7 +42,10 @@ including tests, 2026-10-10.
    exceeds 128 MiB. A step the budget would otherwise drop is first compressed: the bands it does
    not share with the next version are spilled into a page file of its own (the `GPB1` form the
    reader already pages with) and the step is charged its deflated bytes, so the same budget keeps
-   more history. The undo that restores a compressed step decodes it back into live bands before it
+   more history. That chance is **gated on its own cost**: a step may spill at most 600 bands
+   (about 60 ms to encode, projected at 5 kB a band for the pages it will take), and only when the
+   newer steps leave room for those pages. A step past the gate is dropped exactly as before,
+   without an encode — so no edit pays a second to keep a step the budget will not hold. The undo that restores a compressed step decodes it back into live bands before it
    becomes the workbook, which keeps the band-by-band formula diff of `Calc::restore` (no graph
    rebuild, nothing recalculated). The **newest** step is never compressed — it is what the next
    Ctrl+Z restores, so the first undo is never a decode — and it remains undoable even if that step
