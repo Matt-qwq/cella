@@ -25,3 +25,12 @@ list (author, source, license) is in ATTRIBUTION.md.
 
 None: every bundled asset is original to Cella. Builds made with craft-fonts
 (CRAFT_FONTS_DIR) embed the fonts listed in ATTRIBUTION.md under the SIL Open Font License 1.1.
+
+Vendored code
+
+vendor/craft-libs/print (package craft-print) and vendor/craft-libs/ui (package craft-ui) are copied
+from https://github.com/storytold/craft-libs at revision d27646a5f7c8b4fc85d9dd3213b8c88b58e0088d,
+Copyright (c) 2026 ArtCraft Team and the craft-libs contributors, licensed under the MIT License or
+the Apache License, Version 2.0. Their licence texts and NOTICE are in vendor/craft-libs/. The source
+files are unmodified; only the Cargo manifest fields were made standalone (see
+vendor/craft-libs/README.md).

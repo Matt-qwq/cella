@@ -45,7 +45,13 @@ pub const TABLE: &[(&str, Class)] = &[
     ("dax", Class::Layer(2)),
     ("chart", Class::Layer(3)),
     ("engine", Class::Layer(5)),
+    // Vendored from craft-libs (`vendor/craft-libs/print`, MIT OR Apache-2.0): the system print
+    // spooler. It depends on nothing of ours, so it sits at the bottom and the app reads it.
+    ("craft-print", Class::Layer(1)),
     ("ui-egui", Class::Layer(6)),
+    // Vendored from craft-libs (`vendor/craft-libs/ui`): reusable egui widgets. It is a UI crate,
+    // so it cannot sit below L6; `ui-egui` reads only its `printing` types today.
+    ("craft-ui", Class::Layer(6)),
     ("mcp", Class::Layer(6)),
     // L7 apps (exempt) and tooling (unchecked)
     ("cella", Class::Layer(7)),
@@ -66,6 +72,8 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     // The measure language reads the model and nothing else, and calculation is its only user in
     // this direction: `calc` evaluates a MEASURE() formula through it.
     &["model", "dax", "calc"],
+    // The vendored widget library sits under our own UI layer.
+    &["craft-ui", "ui-egui"],
 ];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
