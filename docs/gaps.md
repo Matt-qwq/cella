@@ -227,7 +227,9 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   logical rows, and a row insert or delete moved the line map but not the bitmap (the rows below an
   insert stayed hidden one row early); AutoFit wrote a height for a row the filter is hiding, so the
   row ended up in the line map and the bitmap at once, and the file wrote `hidden` with a height the
-  reader cannot turn back into a filtered row; and a delete could leave a filtered row on a table's
+  reader then could not turn back into a filtered row (fixed on 2026-11-17: `heal_filter_hidden` moves
+  only the hidden bit into the bitmap and leaves the height where it is, so the file bytes are
+  unchanged); and a delete could leave a filtered row on a table's
   totals row, which no filter covers. Fixed by `FilterHidden::insert_rows`/`delete_rows`/`retain`,
   an autofit guard, and `Sheet::filter_row_ranges` (now also what the reader's
   `heal_filter_hidden` uses), each with a save/reload regression test. `cargo test --workspace`
