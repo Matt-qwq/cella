@@ -576,10 +576,11 @@ struct Band {
 }
 
 /// Whether two versions of one formula are the same formula: its text, its array range and the
-/// file's dynamic-array mark. The parsed tree is a cache of the text (parsing is deterministic),
-/// so a copy that was re-parsed is the same formula and comparing the trees is not needed.
+/// file's dynamic-array mark, which is [`Formula`]'s `PartialEq` rule. The tree and the shape are
+/// caches of (text, position), so a copy that was re-parsed or re-interned is the same formula.
+/// Kept as the pointer fast path of that rule.
 fn same_formula(a: &Arc<Formula>, b: &Arc<Formula>) -> bool {
-    Arc::ptr_eq(a, b) || (a.text == b.text && a.array == b.array && a.dynamic == b.dynamic)
+    Arc::ptr_eq(a, b) || a == b
 }
 
 /// Mixes the bits of a double into a slot index.
@@ -668,11 +669,24 @@ impl Band {
     }
 
     /// What one row's formulas and array values cost beyond the row header: the side table's run
-    /// of entries, and the parsed tree each formula keeps.
+    /// of entries, the parsed tree each formula keeps, and the shape it keeps **when nothing else
+    /// holds it**.
+    ///
+    /// A shape is charged once, by whoever holds the last reference — the `Arc::strong_count` rule
+    /// the band's report already uses for texts. Charging it per cell would make a million-row
+    /// fill's undo entry look like a gigabyte (one shape, a million holders) and drop the whole
+    /// history for a snapshot that keeps almost nothing alive.
     fn extras_bytes(row: &BandRow) -> usize {
         row.formulas().len() * (4 + std::mem::size_of::<Formula>())
             + row.arrays().len() * 8
-            + row.formulas().iter().map(|(_, f)| f.text.len().saturating_add(f.expr_bytes as usize)).sum::<usize>()
+            + row
+                .formulas()
+                .iter()
+                .map(|(_, f)| {
+                    let shape = f.shape.as_ref().filter(|s| Arc::strong_count(s) == 1).map_or(0, |s| s.bytes as usize);
+                    f.text.len().saturating_add(f.expr_bytes as usize).saturating_add(shape)
+                })
+                .sum::<usize>()
     }
 
     /// Heap bytes of one text: its characters plus the pointer that names them.
@@ -712,6 +726,7 @@ impl Band {
         // Sorted by pointer rather than scanned, so a band holding a million formula cells cannot
         // go quadratic. The keys are addresses: compared, never dereferenced.
         let mut formulas: Vec<(usize, usize, usize, usize)> = Vec::new();
+        let mut shapes: Vec<(usize, u32)> = Vec::new();
         let mut arrays: Vec<usize> = Vec::new();
         for row in &self.rows {
             let Some(extras) = &row.extras else { continue };
@@ -729,6 +744,9 @@ impl Band {
             for (_, f) in &extras.formulas {
                 let tree = f.expr.as_ref().map_or(0, |e| Arc::as_ptr(e) as usize);
                 formulas.push((Arc::as_ptr(f) as usize, tree, f.text.len(), f.expr_bytes as usize));
+                if let Some(s) = &f.shape {
+                    shapes.push((Arc::as_ptr(s) as usize, s.bytes));
+                }
             }
             for (_, a) in &extras.arrays {
                 arrays.push(Arc::as_ptr(a) as usize);
@@ -744,6 +762,14 @@ impl Band {
             if tree != 0 && trees.insert(tree) {
                 m.formula_exprs = m.formula_exprs.saturating_add(expr_bytes);
             }
+        }
+        // A shape is one tree for every cell of a fill, so it is charged once per pointer: the
+        // cells that share it pay the pointer, not the tree. Sorted by pointer and deduplicated
+        // like the trees above, so a band of a million filled cells stays O(n log n).
+        shapes.sort_unstable();
+        shapes.dedup();
+        for (_, bytes) in shapes {
+            m.formula_exprs = m.formula_exprs.saturating_add(bytes as usize);
         }
         // An array's values are not walked: the same array is reachable from the sheet's spill map
         // and from the pass that produced it, and counting its values one by one would turn a

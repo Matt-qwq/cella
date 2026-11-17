@@ -429,7 +429,7 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
                 };
                 let mut cell = base.unwrap_or_default();
                 if let Some(f) = &cell.formula
-                    && let Some(e) = f.expr()
+                    && let Some(e) = f.expr_at(origin)
                 {
                     let shifted = gridcraft_formula::adjust::shift_relative(e, at.row as i64 - origin.row as i64, at.col as i64 - origin.col as i64);
                     cell.formula = Some(std::sync::Arc::new(Formula::from_expr(shifted)));
@@ -1161,7 +1161,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         let mut new = old.clone();
                         let shift = |cell: &Cell| -> Option<std::sync::Arc<Formula>> {
                             let f = cell.formula.as_ref()?;
-                            let e = f.expr()?;
+                            let e = f.expr_at(sc)?;
                             if cut_move {
                                 // A moved formula still reads cells on its original sheet. Qualify
                                 // those references before the workbook-wide move adjustment below.
@@ -1380,6 +1380,10 @@ pub(crate) fn rewrite_all_formulas(wb: &mut gridcraft_model::Workbook, target: &
         let on_target = moves_arrays && host.eq_ignore_ascii_case(target);
         let Some(sheet) = wb.sheet_mut(si) else { continue };
         for (c, f) in keys {
+            // The cell's *text* spells the tree the formula holds, at the position it was written
+            // for: this rewrite runs after the store moved the cells the edit inserted, deleted or
+            // moved, so the cell a shape resolves at is no longer the cell it was interned for
+            // (SHAPE-SHARING.md §5.1 S5 makes this a rewrite of the shape itself, one per shape).
             let Some(expr) = f.expr() else { continue };
             let new = gridcraft_formula::adjust::adjust(expr, &host, target, e);
             let text = gridcraft_formula::print(&new);

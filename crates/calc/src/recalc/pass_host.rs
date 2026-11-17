@@ -90,11 +90,19 @@ const MAX_CACHED_BLOCK_CELLS_TOTAL: usize = 4_000_000;
 /// hash lookups on the common path. The slots are dense and in the order the caller lists the cells
 /// (row-major, which is also the order the write-back walks), so a value is a bounds-checked index
 /// and evaluating a formula is one lookup.
+#[derive(Clone, Debug)]
+enum Source {
+    /// The cell's own cached tree.
+    Tree(std::sync::Arc<Expr>),
+    /// The shape the cell shares with every cell of its fill, and the cell it resolves at.
+    Shape(std::sync::Arc<gridcraft_formula::Shape>, CellRef),
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Trees {
     index: HashMap<Key, u32>,
     keys: Vec<Key>,
-    trees: Vec<std::sync::Arc<Expr>>,
+    trees: Vec<Source>,
 }
 
 impl Trees {
@@ -107,18 +115,37 @@ impl Trees {
         }
     }
 
-    /// Adds the tree to evaluate at `k`, unless the cell already has a slot. A pass of more than
+    /// Adds the formula at `k` to evaluate, unless the cell already has a slot. A pass of more than
     /// four billion formulas cannot be listed (a sheet holds 17 billion cells, but a workbook that
     /// large cannot be held in memory); cells past that limit would be left to the stored values
     /// rather than clobber the slots before them.
-    pub(super) fn push(&mut self, k: Key, tree: &std::sync::Arc<Expr>) {
+    ///
+    /// A shape node is listed by its shape and its cell, not by a tree: the tree it reads is
+    /// resolved when the pass needs it ([`Trees::expr`]), so a million formulas of one fill hold
+    /// one tree between them at rest.
+    pub(super) fn push(&mut self, k: Key, node: &super::graph::Node) {
+        let source = match (&node.expr, &node.shape) {
+            (Some(tree), _) => Source::Tree(std::sync::Arc::clone(tree)),
+            (None, Some(shape)) => Source::Shape(std::sync::Arc::clone(shape), k.1),
+            (None, None) => return,
+        };
+        self.add(k, source);
+    }
+
+    /// [`Trees::push`] with the tree itself, for a pass a test builds without a graph.
+    #[cfg(test)]
+    pub(super) fn push_tree(&mut self, k: Key, tree: &std::sync::Arc<Expr>) {
+        self.add(k, Source::Tree(std::sync::Arc::clone(tree)));
+    }
+
+    fn add(&mut self, k: Key, source: Source) {
         if self.index.contains_key(&k) {
             return;
         }
         let Ok(slot) = u32::try_from(self.trees.len()) else { return };
         self.index.insert(k, slot);
         self.keys.push(k);
-        self.trees.push(std::sync::Arc::clone(tree));
+        self.trees.push(source);
     }
 
     /// The slot of the formula at `k`, when this pass evaluates it.
@@ -126,9 +153,17 @@ impl Trees {
         self.index.get(&k).copied()
     }
 
-    /// The tree to evaluate in `slot`.
-    pub(super) fn tree(&self, slot: u32) -> Option<&std::sync::Arc<Expr>> {
-        self.trees.get(slot as usize)
+    /// The absolute tree to evaluate in `slot`: the cell's own, or its shape resolved at the cell.
+    ///
+    /// A shape cell's tree is built here and dropped when the evaluation ends, never kept: the
+    /// whole point of the shape is that a million cells of one fill do not hold a million trees,
+    /// and what is left is one hot tree walked a million times. (S4 of `plan/SHAPE-SHARING.md`
+    /// removes even this by resolving references in the evaluator, at the cell it knows.)
+    pub(super) fn expr(&self, slot: u32) -> Option<std::sync::Arc<Expr>> {
+        match self.trees.get(slot as usize)? {
+            Source::Tree(tree) => Some(std::sync::Arc::clone(tree)),
+            Source::Shape(shape, at) => shape.resolve(*at).map(std::sync::Arc::new),
+        }
     }
 
     /// The cells, in the order their slots were added.
@@ -616,7 +651,7 @@ impl PassHost<'_> {
         }
         // A slot marked in flight is a formula being evaluated: reading it is a circular reference.
         let running = self.in_flight > 0 && current.in_flight;
-        let Some(expr) = trees.tree(slot) else {
+        let Some(expr) = trees.expr(slot) else {
             return self.wb.sheet(k.0).map(|s| s.value(k.1)).unwrap_or_default();
         };
         if self.suspend.is_some() {
@@ -652,7 +687,6 @@ impl PassHost<'_> {
         if self.iterate {
             self.stack.push(k);
         }
-        let expr = std::sync::Arc::clone(expr);
         let outer_out_of_stack = std::mem::replace(&mut self.out_of_stack, false);
         let v = {
             let mut ev = Evaluator::new(self, k.0, k.1);

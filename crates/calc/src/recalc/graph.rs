@@ -300,8 +300,14 @@ pub(super) struct Node {
     /// The run's length and the `DYNAMIC`..`VISIBILITY` flags below.
     run: RunLen,
     /// The parsed formula, shared with the cell: a pass reads it from here instead of rebuilding
-    /// the cell (which copies its value and both side tables) once per formula.
+    /// the cell (which copies its value and both side tables) once per formula. `None` for a cell
+    /// that holds a shape instead.
     pub(super) expr: Option<std::sync::Arc<Expr>>,
+    /// The shape the cell shares with every cell of its fill. The pass resolves it at the node's own
+    /// cell (the graph's key), so eight bytes stand where a tree per formula stood: the reference
+    /// workbook's two million formulas are a handful of trees, not 768 MB of them
+    /// (`plan/SHAPE-SHARING.md` §3.4).
+    pub(super) shape: Option<std::sync::Arc<gridcraft_formula::Shape>>,
 }
 
 /// A node's run length and its flags in one word: the length in the low `RUN_BITS`, the flags in
@@ -380,7 +386,7 @@ impl Node {
         if trim {
             flags |= TRIM;
         }
-        Node { start: 0, run: RunLen::no_run(flags), expr }
+        Node { start: 0, run: RunLen::no_run(flags), expr, shape: None }
     }
 
     /// The `DYNAMIC`..`VISIBILITY` bits (see `RunLen`).
@@ -399,6 +405,19 @@ impl Node {
             self.run = self.run.with_flag(VISIBILITY);
         }
         self
+    }
+
+    /// The same node, holding the shape its cell shares instead of a tree of its own.
+    pub(super) fn with_shape(mut self, shape: Option<std::sync::Arc<gridcraft_formula::Shape>>) -> Self {
+        self.shape = shape;
+        self
+    }
+
+    /// Whether the node has a formula to evaluate at all: a tree of its own, or a shape. Read by
+    /// the parallel pass, which builds no threads on wasm.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn has_formula(&self) -> bool {
+        self.expr.is_some() || self.shape.is_some()
     }
 
     /// The same node, marked volatile (see [`VOLATILE`]).
@@ -825,8 +844,8 @@ impl Graph {
         // pass evaluates it and an unlinked precedent cannot leave a stale value behind.
         let placed = self.place(areas, flags);
         let (node, flags) = match placed {
-            Some((start, run)) => (Node { start, run, expr: node.expr }, flags),
-            None => (Node { start: 0, run: RunLen::no_run(flags | DYNAMIC), expr: node.expr }, flags | DYNAMIC),
+            Some((start, run)) => (Node { start, run, expr: node.expr, shape: node.shape }, flags),
+            None => (Node { start: 0, run: RunLen::no_run(flags | DYNAMIC), expr: node.expr, shape: node.shape }, flags | DYNAMIC),
         };
         // One table probe: the node this replaces (if any) is unlinked after the new one has taken
         // its place, which is what a bulk build — a fill of a million formulas — pays per formula.
@@ -1287,14 +1306,16 @@ mod tests {
         assert_eq!(out.len(), 2, "the long list stopped checking");
     }
 
-    /// The two allocations this round shrank, in the arithmetic the memory report makes: a node's
-    /// flags moved into its run's word (24 bytes to 16), and an area's sheet packs into a `u32`
-    /// (24 to 20). Eight bytes a node slot of the table they sit in, four an area slot of the
-    /// arena — 34 MB and 34 MB on the reference workbook, and another 80 off the arena's tail.
+    /// The two allocations an earlier round shrank, in the arithmetic the memory report makes: a
+    /// node's flags moved into its run's word, and an area's sheet packs into a `u32` (24 to 20).
+    ///
+    /// The node is **24** while it can hold a tree *or* a shape: the shape pointer is 8 bytes a
+    /// node the reference workbook's two million formulas pay 16 MB for, against the 768 MB of
+    /// trees the shape lets the cells drop. S7 deletes the tree field and the node goes back to 16.
     #[test]
     fn a_node_is_two_words_and_a_packed_area_five() {
-        assert_eq!(std::mem::size_of::<Node>(), 16, "a `u32` start, the run/flag word, the tree");
-        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 33, "the node table's bytes a slot");
+        assert_eq!(std::mem::size_of::<Node>(), 24, "a `u32` start, the run/flag word, the tree, the shape");
+        assert_eq!(std::mem::size_of::<(Key, Node)>() + 1, 41, "the node table's bytes a slot");
         assert_eq!(std::mem::size_of::<PackedArea>(), 20, "a `u32` sheet and a 16-byte range");
         assert_eq!(std::mem::size_of::<Area>(), 24, "the evaluator's form, which the arena does not pay for");
     }

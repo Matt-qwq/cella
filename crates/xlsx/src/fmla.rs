@@ -1,22 +1,32 @@
 //! Formula text conversion between the model (canonical text, no `=`) and files (`_xlfn.`
 //! prefixes for newer functions).
 
-use gridcraft_formula::Expr;
+use gridcraft_core::CellRef;
+use gridcraft_formula::{Expr, ShapeTable};
 use gridcraft_model::Formula;
 
-/// Formula text for a file.
+/// Formula text for a file, for the formula of the cell at `at`.
 ///
 /// The rewrite below is only about what a file spells differently from the model's canonical
 /// text, and a formula that uses none of it — most of them — is written as its own text. That
-/// check is one allocation-free walk; the rewrite after it clones and rebuilds the tree twice,
-/// which on a million-row sheet is the difference between a save that is half tree-building and
-/// one that is not.
-pub fn file_text(f: &Formula) -> std::borrow::Cow<'_, str> {
+/// answer is kept **on the shape** when the cell has one (`Shape::file_rewrite`, ORed with this
+/// module's `_xlfn.` table by the reader), so a save of a million shape cells resolves no tree at
+/// all; a cell that carries its own tree asks it, one allocation-free walk.
+pub fn file_text(f: &Formula, at: CellRef) -> std::borrow::Cow<'_, str> {
+    // The model's text is the canonical print of the tree (both constructors print), so it is
+    // exactly what printing it again would produce — and borrowing it saves the copy and the
+    // allocation a save of a million-formula sheet made a million times.
+    if let Some(shape) = f.shape() {
+        if !shape.file_rewrite {
+            return std::borrow::Cow::Borrowed(f.text.as_str());
+        }
+        return match f.expr_at(at) {
+            Some(e) => std::borrow::Cow::Owned(expr_to_file(e)),
+            None => std::borrow::Cow::Borrowed(f.text.as_str()),
+        };
+    }
     match f.expr_arc() {
         Some(e) if needs_file_rewrite(&e) => std::borrow::Cow::Owned(expr_to_file((*e).clone())),
-        // The model's text is the canonical print of the tree (both constructors print), so it is
-        // exactly what printing it again would produce — and borrowing it saves the copy and the
-        // allocation a save of a million-formula sheet made a million times.
         _ => std::borrow::Cow::Borrowed(f.text.as_str()),
     }
 }
@@ -24,7 +34,7 @@ pub fn file_text(f: &Formula) -> std::borrow::Cow<'_, str> {
 /// [`file_text`] as a `String`, for the callers that need one.
 #[cfg(test)]
 pub(crate) fn to_file(f: &Formula) -> String {
-    file_text(f).into_owned()
+    file_text(f, CellRef::new(0, 0)).into_owned()
 }
 
 /// The rewrite itself, for the test that holds the fast path to it.
@@ -164,18 +174,25 @@ fn strip_param_prefix(n: String) -> String {
     }
 }
 
-/// The model formula for text read from a file: the model's spelling of it, parsed once.
+/// The model formula for text read from a file at `at`: the model's spelling of it, parsed once,
+/// as a shape interned in `shapes`.
 ///
 /// [`from_file`] and [`Formula::new`] each parse and print the text, so converting a cell this way
 /// used to parse every formula twice — on a sheet with a million formulas that was most of the
-/// read. This builds the same `Formula` (the same text, the same tree already parsed) from one
-/// parse: `print` is stable, so printing the stripped tree is the text `Formula::new` would have
-/// parsed again.
-pub fn formula_from_file(text: &str) -> Formula {
+/// read. This builds the same `Formula` (the same text, the shape already parsed) from one parse:
+/// `print` is stable, so printing the stripped tree is the text `Formula::new` would have parsed
+/// again.
+pub fn formula_from_file_at(text: &str, at: CellRef, shapes: &mut ShapeTable) -> Formula {
     let body = text.strip_prefix('=').unwrap_or(text);
     match gridcraft_formula::parse(body) {
-        Ok(e) => Formula::from_expr(strip_param_prefixes(e)),
-        Err(_) => Formula { text: body.to_string(), expr: None, expr_bytes: 0, array: None, dynamic: false },
+        Ok(e) => {
+            let e = strip_param_prefixes(e);
+            // A save must not resolve a tree to find this out: the `_xlfn.` table is this crate's,
+            // so the reader ORs its answer into the shape before interning it.
+            let file_rewrite = needs_file_rewrite(&e);
+            Formula::from_expr_at_file(e, at, shapes, file_rewrite)
+        }
+        Err(_) => Formula { text: body.to_string(), expr: None, shape: None, expr_bytes: 0, array: None, dynamic: false },
     }
 }
 
@@ -341,10 +358,14 @@ mod tests {
         assert_eq!(to_file(&deleted), "#REF!");
     }
 
-    /// `formula_from_file` builds what `from_file` → `Formula::new` built, from one parse: the
-    /// same text, the tree already there (the read path relies on both).
+    /// `formula_from_file_at` builds what `from_file` → `Formula::new_at` built, from one parse:
+    /// the same text, the shape already interned at the cell (the read path relies on both), and
+    /// that shape prints the cell's own text — the master invariant of the shape work
+    /// (SHAPE-SHARING.md §4.3).
     #[test]
     fn formula_from_file_matches_the_two_step_conversion() {
+        let at = CellRef::new(4, 5);
+        let mut shapes = ShapeTable::default();
         for text in [
             "B1*C1+D1",
             "SUM(A1:A9)",
@@ -356,12 +377,30 @@ mod tests {
             "NOT A FORMULA(",
             "",
         ] {
-            let one = formula_from_file(text);
-            let two = Formula::new(&from_file(text));
+            let one = formula_from_file_at(text, at, &mut shapes);
+            let two = Formula::new_at(&from_file(text), at, &mut shapes);
             assert_eq!(one.text, two.text, "{text:?}");
-            assert_eq!(one.expr.is_some(), two.expr.is_some(), "{text:?}");
+            assert_eq!(one.shape.is_some(), two.shape.is_some(), "{text:?}");
             // The model's text is what a save writes, so it must not have changed either.
-            assert_eq!(file_text(&one).as_ref(), file_text(&two).as_ref(), "{text:?}");
+            assert_eq!(file_text(&one, at).as_ref(), file_text(&two, at).as_ref(), "{text:?}");
+            if let Some(shape) = one.shape() {
+                assert_eq!(shape.print_at(at).as_deref(), Some(one.text.as_str()), "{text:?}");
+            }
+        }
+    }
+
+    /// The answers the shape needs from this crate are on it, not computed per save: a formula the
+    /// file spells differently (`_xlfn.`, `_xlpm.`, `#`, `@`) is marked by the reader, and a
+    /// formula the file writes as it is borrows its own text.
+    #[test]
+    fn a_shape_learns_the_file_spelling_where_it_is_interned() {
+        let at = CellRef::new(1, 1);
+        let mut shapes = ShapeTable::default();
+        for (text, rewrite) in [("XLOOKUP(1,A:A,B:B)", true), ("B1*C1+D1", false), ("LET(x,1,x+1)", true)] {
+            let f = formula_from_file_at(text, at, &mut shapes);
+            let shape = f.shape().expect("a parsed formula has a shape");
+            assert_eq!(shape.file_rewrite, rewrite, "{text}");
+            assert_eq!(file_text(&f, at).as_ref(), to_file(&Formula::new(text)).as_str(), "{text}");
         }
     }
 

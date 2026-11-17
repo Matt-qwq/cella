@@ -746,7 +746,7 @@ pub(crate) fn drop_sheet(cx: &mut Ctx, i: usize) {
             cx.wb.sheets.get(si).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
         let Some(sh) = cx.wb.sheet_mut(si) else { continue };
         for (c, f) in keys {
-            if let Some(e) = f.expr() {
+            if let Some(e) = f.expr_at(c) {
                 let ne = gridcraft_formula::adjust::delete_sheet(e, &name, &order);
                 if let Some(mut cell) = sh.cells.get(c) {
                     cell.formula = Some(Arc::new(gridcraft_model::Formula::from_expr(ne)));
@@ -845,7 +845,7 @@ fn rename_sheet(s: &mut Session, p: &Json) -> Result<Json> {
                 cx.wb.sheets.get(si).map(|s| s.cells.iter().filter_map(|(c, x)| x.formula.clone().map(|f| (c, f))).collect()).unwrap_or_default();
             let Some(sh) = cx.wb.sheet_mut(si) else { continue };
             for (c, f) in keys {
-                if let Some(e) = f.expr() {
+                if let Some(e) = f.expr_at(c) {
                     let ne = gridcraft_formula::adjust::rename_sheet(e, &old, &name);
                     let text = gridcraft_formula::print(&ne);
                     if text != f.text

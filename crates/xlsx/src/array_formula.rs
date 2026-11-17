@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gridcraft_core::CellRef;
-use gridcraft_formula::{BinOp, Expr, RefKind, SheetSel, StructItem, UnOp};
+use gridcraft_formula::{BinOp, Expr, RefKind, ShapeTable, SheetSel, StructItem, UnOp};
 use gridcraft_model::{Formula, Workbook};
 
 #[derive(Clone, Copy, Default)]
@@ -335,6 +335,8 @@ enum Param {
 pub(crate) fn apply_legacy(wb: &mut Workbook, cells: Vec<(usize, Vec<CellRef>)>) {
     // Defined names do not change during the pass: each is analysed once for all the cells.
     let mut names = NameCache::default();
+    // The formulas this pass rewrites intern their shapes here; the cells keep them alive.
+    let mut shapes = ShapeTable::default();
     for (si, positions) in cells {
         let Some(sheet) = wb.sheet(si) else { continue };
         let mut changed = Vec::new();
@@ -343,7 +345,7 @@ pub(crate) fn apply_legacy(wb: &mut Workbook, cells: Vec<(usize, Vec<CellRef>)>)
             if formula.dynamic {
                 continue;
             }
-            if let Some(f) = legacy(wb, si, at, &formula, &mut names) {
+            if let Some(f) = legacy(wb, si, at, &formula, &mut names, &mut shapes) {
                 changed.push((at, f));
             }
         }
@@ -361,20 +363,20 @@ pub(crate) fn apply_legacy(wb: &mut Workbook, cells: Vec<(usize, Vec<CellRef>)>)
 }
 
 /// The dynamic-array reading of a legacy formula, when it differs.
-fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &mut NameCache) -> Option<Formula> {
+fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &mut NameCache, shapes: &mut ShapeTable) -> Option<Formula> {
     if formula.array.is_some() {
         return None;
     }
-    let expr = formula.expr_arc()?;
+    let expr = formula.expr_at(at)?;
     let mut legacy = Legacy::new(wb, at, names);
-    let out = legacy.formula(expr.as_ref().clone(), sheet);
+    let out = legacy.formula(expr.clone(), sheet);
     if legacy.certain && legacy.complete {
         if legacy.inserted == 0 {
             return None;
         }
         // Text round trip: the stored expression is exactly what the text parses to.
         if let Some(out) = reads_back(out) {
-            return Some(Formula::new(&gridcraft_formula::print(&out)));
+            return Some(Formula::new_at(&gridcraft_formula::print(&out), at, shapes));
         }
         // The reading's `` take it past the parser's nesting limit: handled as unfinished.
     }
@@ -383,9 +385,9 @@ fn legacy(wb: &Workbook, sheet: usize, at: CellRef, formula: &Formula, names: &m
     // the whole-formula `` when the result may be several values: legacy Excel shows one value,
     // so the formula must not spill. When that text does not parse either, the formula stays as
     // it was read.
-    let whole = matches!(expr.as_ref(), Expr::Unary(UnOp::At, _));
+    let whole = matches!(&expr, Expr::Unary(UnOp::At, _));
     let multi = legacy.top != Kind::Scalar || (legacy.certain && legacy.complete);
-    (multi && !whole).then(|| self::at(expr.as_ref().clone())).and_then(reads_back).map(|e| Formula::new(&gridcraft_formula::print(&e)))
+    (multi && !whole).then(|| self::at(expr.clone())).and_then(reads_back).map(|e| Formula::new_at(&gridcraft_formula::print(&e), at, shapes))
 }
 
 /// `e` when its text (the printer writes only the parentheses the expression has) reads back as

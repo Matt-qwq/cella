@@ -133,7 +133,7 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
                 FillMode::ValuesOnly | FillMode::Series | FillMode::Alternate | FillMode::Copy | FillMode::Extend => {
                     let style = if mode == FillMode::ValuesOnly { sh.cell(*t).map(|c| c.style).unwrap_or_default() } else { cell.style };
                     if let Some(f) = &cell.formula {
-                        if let Some(e) = f.expr_arc() {
+                        if let Some(e) = f.expr_at(sc) {
                             // The source tree stays where it is: shift_relative_copy walks it once,
                             // where reading it out and shifting the copy walked it twice.
                             let dr = t.row as i64 - sc.row as i64;

@@ -795,7 +795,7 @@ fn advanced_filter(s: &mut Session, p: &Json) -> Result<Json> {
                 let head = crate::display::cell_text(wb, csh, CellRef::new(crit.start.row, cc)).trim().to_lowercase();
                 match headers.iter().position(|h| !head.is_empty() && *h == head) {
                     Some(off) => conds.push(Cond::Compare(off as u32, v)),
-                    None => match formula.and_then(|f| f.expr()) {
+                    None => match formula.and_then(|f| f.expr_at(at)) {
                         Some(e) => conds.push(Cond::Computed(e, at)),
                         None => return Err(EngineError::Other(format!("The criteria label `{head}` doesn't match a column of the list."))),
                     },

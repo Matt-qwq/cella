@@ -1415,7 +1415,7 @@ fn write_cell(
             }
             _ => s.push_str("<f>"),
         }
-        crate::xml::push_esc(s, &crate::fmla::file_text(f));
+        crate::xml::push_esc(s, &crate::fmla::file_text(f, c));
         s.push_str("</f>");
         match &value {
             Value::Number(n) => {
