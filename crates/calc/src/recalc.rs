@@ -75,17 +75,6 @@ pub struct Calc {
     /// covers.
     #[cfg(test)]
     read_probes: u64,
-    /// Runs of chain formulas the passes so far accumulated (tests check that the fast path is
-    /// taken, and that a shape it does not cover stays out of it).
-    #[cfg(test)]
-    pub(crate) chains: u64,
-    /// The formulas those runs covered.
-    #[cfg(test)]
-    pub(crate) chain_formulas: u64,
-    /// Whether the pass may accumulate a run of chain formulas. Tests turn it off to calculate the
-    /// same workbook through the general evaluator and hold the two to the same values.
-    #[cfg(test)]
-    pub(crate) chain_fast: bool,
     /// Stored spill ranges the pass examined deciding whether an array spills over another
     /// formula's spill: once each to index them, plus the index entries lookups examined (tests
     /// check that M blocked arrays over N stored spills cost N + M, not N × M).
@@ -114,12 +103,6 @@ impl Default for Calc {
             read_probes: 0,
             #[cfg(test)]
             block_probes: 0,
-            #[cfg(test)]
-            chains: 0,
-            #[cfg(test)]
-            chain_formulas: 0,
-            #[cfg(test)]
-            chain_fast: true,
         }
     }
 }
@@ -1497,26 +1480,11 @@ impl Calc {
             let now = self.now();
             let mut rng = self.rng;
             let tp = prof_now();
-            #[cfg(test)]
-            let chain_fast = self.chain_fast;
             let (mut slots, mut spills, cycles) = {
                 let mut host = PassHost::new(wb, &self.graph, &trees, &legacy, &mut self.names, &mut rng, now);
                 host.iterate = wb.calc.iterative;
-                #[cfg(test)]
-                {
-                    host.chain_fast = chain_fast;
-                }
                 for (slot, k) in trees.iter() {
-                    // A run of chain formulas — a column of running totals, which is most of the
-                    // dirty set of an edit at the top of a large sheet — is accumulated in one
-                    // loop; anything else goes through the general evaluator, cell by cell.
-                    if host.chain_run(k, slot) {
-                        continue;
-                    }
                     host.calculate_at(k, slot);
-                }
-                if std::env::var_os("CELLA_PROFILE").is_some() {
-                    eprintln!("  chain: {} runs, {} formulas", host.chains, host.chain_formulas);
                 }
                 if host.iterate && !host.members.is_empty() {
                     let passes = host.iterate_loops(&dirty, wb.calc.max_iterations, wb.calc.max_change);
@@ -1528,8 +1496,6 @@ impl Calc {
                 {
                     self.read_probes += host.spill_index.probes();
                     self.block_probes += host.block_probes();
-                    self.chains = self.chains.saturating_add(host.chains);
-                    self.chain_formulas = self.chain_formulas.saturating_add(host.chain_formulas);
                 }
                 (host.slots, host.spills, host.cycles)
             };
