@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Cella — a high-performance spreadsheet built in Rust">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8a7bff"/>
+      <stop offset=".52" stop-color="#3fd8ff"/>
+      <stop offset="1" stop-color="#4df0a6"/>
+    </linearGradient>
+    <radialGradient id="m1" gradientUnits="userSpaceOnUse" cx="60" cy="40" r="900">
+      <stop offset="0" stop-color="#7c6cff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#7c6cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="m2" gradientUnits="userSpaceOnUse" cx="1160" cy="60" r="820">
+      <stop offset="0" stop-color="#3fd8ff" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#3fd8ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="m3" gradientUnits="userSpaceOnUse" cx="640" cy="640" r="760">
+      <stop offset="0" stop-color="#4df0a6" stop-opacity="0.17"/>
+      <stop offset="1" stop-color="#4df0a6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#07070f"/>
+  <rect fill="url(#m1)" x="0" y="0" width="1200" height="630"/>
+  <rect fill="url(#m2)" x="0" y="0" width="1200" height="630"/>
+  <rect fill="url(#m3)" x="0" y="0" width="1200" height="630"/>
+  <g stroke="rgba(255,255,255,0.05)" stroke-width="1">
+    <path d="M0 110h1200M0 190h1200M0 270h1200M0 350h1200M0 430h1200M0 510h1200"/>
+    <path d="M110 0v630M220 0v630M330 0v630M440 0v630M550 0v630M660 0v630M770 0v630M880 0v630M990 0v630M1100 0v630"/>
+  </g>
+  <g transform="translate(88 96)">
+    <rect x="0" y="0" width="72" height="72" rx="16" fill="#0d0f1e"/>
+    <path d="M36 11v50M11 36h50" stroke="rgba(255,255,255,0.22)" stroke-width="3"/>
+    <rect x="41" y="41" width="26" height="26" rx="6" fill="url(#g)"/>
+  </g>
+  <text x="188" y="152" font-family="system-ui, 'Segoe UI', sans-serif" font-size="64" font-weight="800" fill="#eef0ff" letter-spacing="-1">Cella</text>
+  <text x="88" y="300" font-family="system-ui, 'Segoe UI', sans-serif" font-size="58" font-weight="800" fill="#eef0ff" letter-spacing="-1">An independent,</text>
+  <text x="88" y="368" font-family="system-ui, 'Segoe UI', sans-serif" font-size="58" font-weight="800" fill="url(#g)" letter-spacing="-1">high-performance</text>
+  <text x="88" y="436" font-family="system-ui, 'Segoe UI', sans-serif" font-size="58" font-weight="800" fill="#eef0ff" letter-spacing="-1">spreadsheet built in Rust.</text>
+  <text x="88" y="498" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="26" fill="#9298c0">For data sets, for agents, and for the files people actually send.</text>
+  <g font-family="ui-monospace, Menlo, Consolas, monospace" font-size="21" fill="#c0c5e6">
+    <rect x="88" y="530" width="132" height="40" rx="20" fill="none" stroke="rgba(138,123,255,0.5)"/>
+    <text x="112" y="557">v0.13.0</text>
+    <rect x="238" y="530" width="102" height="40" rx="20" fill="none" stroke="rgba(255,255,255,0.2)"/>
+    <text x="266" y="557">alpha</text>
+    <rect x="358" y="530" width="290" height="40" rx="20" fill="none" stroke="rgba(255,255,255,0.2)"/>
+    <text x="382" y="557">macOS · Windows · Linux · BSD</text>
+    <rect x="666" y="530" width="140" height="40" rx="20" fill="none" stroke="rgba(255,255,255,0.2)"/>
+    <text x="690" y="557">WebAssembly</text>
+  </g>
+  <text x="1112" y="600" text-anchor="end" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="20" fill="#9298c0">MIT OR Apache-2.0</text>
+</svg>

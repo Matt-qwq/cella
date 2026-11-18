@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Cella — an independent, high-performance spreadsheet built in Rust</title>
+<meta name="description" content="Cella is a clean-room, open-source spreadsheet built in Rust: native on macOS, Windows, Linux and BSD, in the browser via WebAssembly. For data sets, for agents, and for the files people actually send. MIT OR Apache-2.0.">
+<meta name="theme-color" content="#07070f">
+<meta property="og:title" content="Cella — a high-performance spreadsheet built in Rust">
+<meta property="og:description" content="For data sets, for agents, and for the files people actually send. Native on macOS, Windows, Linux and BSD, in the browser via WebAssembly. Clean-room, open source, MIT OR Apache-2.0.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://matt-qwq.github.io/cella/">
+<meta property="og:image" content="assets/og.svg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%238a7bff'/%3E%3Cstop%20offset='.52'%20stop-color='%233fd8ff'/%3E%3Cstop%20offset='1'%20stop-color='%234df0a6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x='4'%20y='4'%20width='56'%20height='56'%20rx='13'%20fill='%230d0f1e'/%3E%3Cpath%20d='M32%209v46M9%2032h46'%20stroke='rgba(255,255,255,.22)'%20stroke-width='3'/%3E%3Crect%20x='36'%20y='36'%20width='20'%20height='20'%20rx='5'%20fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg class="svg-defs" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="ig" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8a7bff"></stop>
+      <stop offset=".52" stop-color="#3fd8ff"></stop>
+      <stop offset="1" stop-color="#4df0a6"></stop>
+    </linearGradient>
+  </defs>
+</svg>
+
+<header class="site-head" id="top">
+  <div class="wrap head-in">
+    <a class="brand" href="#top" aria-label="Cella — back to top">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="4" y="4" width="56" height="56" rx="13" fill="#0d0f1e"></rect><path d="M32 9v46M9 32h46" stroke="rgba(255,255,255,.22)" stroke-width="3"></path><rect x="36" y="36" width="20" height="20" rx="5" fill="url(#ig)"></rect></svg>
+      <span>Cella</span>
+    </a>
+    <nav class="head-nav" aria-label="Sections">
+      <a href="#why">Why</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="#performance">Performance</a>
+      <a href="#agents">Agents</a>
+      <a href="#reliability">Reliability</a>
+      <a href="#start">Start</a>
+    </nav>
+    <a class="btn btn-git" href="https://github.com/Matt-qwq/cella" rel="noopener">GitHub</a>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero" aria-labelledby="hero-h">
+    <div class="mesh" aria-hidden="true"></div>
+    <div class="hero-grid" aria-hidden="true"></div>
+    <div class="wrap hero-inner">
+      <p class="hero-eyebrow" data-reveal>
+        <span class="pill pill-grad">v0.13.0</span>
+        <span class="pill">alpha</span>
+        <span class="pill">clean-room · open source</span>
+      </p>
+      <h1 id="hero-h" data-reveal style="--rv:.07s">An independent,<br><span class="grad-text">high-performance</span><br>spreadsheet built in Rust.</h1>
+      <p class="hero-sub" data-reveal style="--rv:.14s">For data sets, for agents, and for the files people actually send — native on macOS,
+        Windows, Linux and BSD, in the browser via WebAssembly. Measured against Excel,
+        aiming for parity — and superiority in speed, openness and agent control.</p>
+      <div class="hero-cta" data-reveal style="--rv:.21s">
+        <a class="btn btn-primary" href="#start">Quick start</a>
+        <a class="btn btn-ghost" href="https://github.com/Matt-qwq/cella" rel="noopener">Source on GitHub</a>
+        <a class="btn btn-text" href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md" rel="noopener">Read the docs <span aria-hidden="true">→</span></a>
+      </div>
+      <ul class="platforms" data-reveal style="--rv:.28s">
+        <li>macOS</li>
+        <li>Windows</li>
+        <li>Linux</li>
+        <li>BSD</li>
+        <li>WebAssembly</li>
+      </ul>
+      <p class="hero-meta mono" data-reveal style="--rv:.35s">MIT OR Apache-2.0 · en / 简体中文 · no dialogs on the programmatic path</p>
+    </div>
+  </section>
+
+  <!-- ============ MARQUEE ============ -->
+  <div class="marquee" role="region" aria-label="Capability highlights">
+    <div class="mq-track">
+      <ul>
+        <li>500+ Excel functions</li>
+        <li>Dynamic arrays &amp; spills</li>
+        <li>LET / LAMBDA</li>
+        <li>PivotTables &amp; PivotCharts</li>
+        <li>The DAX data model</li>
+        <li>Parquet</li>
+        <li>Query pipeline — a database file or a URL</li>
+        <li>.xlsx read &amp; write</li>
+        <li>.xls charts &amp; shapes</li>
+        <li>Password-protected packages</li>
+        <li>Conditional formatting</li>
+        <li>Data validation</li>
+        <li>Comments</li>
+        <li>Slicers &amp; timelines</li>
+        <li>Multi-threaded recalculation</li>
+        <li>Iterative calculation</li>
+        <li>Structured references</li>
+        <li>CSV · TSV</li>
+        <li>PDF export &amp; printing</li>
+        <li>MCP server</li>
+        <li>Control channel</li>
+        <li>English + 简体中文</li>
+      </ul>
+      <ul aria-hidden="true">
+        <li>500+ Excel functions</li>
+        <li>Dynamic arrays &amp; spills</li>
+        <li>LET / LAMBDA</li>
+        <li>PivotTables &amp; PivotCharts</li>
+        <li>The DAX data model</li>
+        <li>Parquet</li>
+        <li>Query pipeline — a database file or a URL</li>
+        <li>.xlsx read &amp; write</li>
+        <li>.xls charts &amp; shapes</li>
+        <li>Password-protected packages</li>
+        <li>Conditional formatting</li>
+        <li>Data validation</li>
+        <li>Comments</li>
+        <li>Slicers &amp; timelines</li>
+        <li>Multi-threaded recalculation</li>
+        <li>Iterative calculation</li>
+        <li>Structured references</li>
+        <li>CSV · TSV</li>
+        <li>PDF export &amp; printing</li>
+        <li>MCP server</li>
+        <li>Control channel</li>
+        <li>English + 简体中文</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ WHY ============ -->
+  <section class="section" id="why" aria-labelledby="why-h">
+    <div class="wrap">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Why Cella</p>
+        <h2 id="why-h">Built for the work that actually lands in your inbox.</h2>
+        <p class="lede">Most spreadsheets assume you made the file. Cella assumes someone sent it — with a pivot
+          table inside. It is a clean-room spreadsheet written in Rust, native on four platforms plus the
+          browser, and every performance number it claims was measured and published.</p>
+      </header>
+      <div class="cards three">
+        <article class="card" data-reveal>
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2.5"></rect><path d="M12 4v16M4 12h16"></path><rect x="13" y="13" width="7" height="7" rx="1.5" fill="url(#ig)" stroke="none"></rect></svg>
+          </div>
+          <h3>For data sets</h3>
+          <p>A spreadsheet that keeps up when the sheet keeps growing. The reference workbook —
+            1,000,000 rows × 6 columns, two million formulas — lives in <b>0.971 GB</b> of heap, and one edit
+            that recalculates a million chained formulas takes <b>~400 ms</b>. The query pipeline pulls from a
+            database file or a URL; Parquet, the DAX data model, PivotTables and PivotCharts are built in.</p>
+        </article>
+        <article class="card" data-reveal style="--rv:.09s">
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="3"></rect><path d="M7.5 9.5l3 2.5-3 2.5"></path><path d="M13 14.5h4"></path></svg>
+          </div>
+          <h3>For agents</h3>
+          <p>Every user-visible action is a command — bold a range, sort a table, insert a chart, protect
+            a sheet. The MCP server, the CLI and the control channel all reach the same command set, and a
+            programmatic call never opens a dialog: with empty parameters it runs with defaults, or tells you
+            why not.</p>
+        </article>
+        <article class="card" data-reveal style="--rv:.18s">
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3.5h7.5L18.5 7.5V20.5H7Z"></path><path d="M14.5 3.5V7.5H18.5"></path><path d="M10.5 12h6M10.5 15.5h4"></path></svg>
+          </div>
+          <h3>For the files people actually send</h3>
+          <p>The formats that actually arrive. Reads and writes <code>.xlsx</code> — styles, tables, charts,
+            PivotTables, conditional formats, validation, comments, slicers and timelines — and passes through
+            what it does not model. Reads <code>.xls</code> including its charts and shapes, opens
+            password-protected packages, and speaks CSV/TSV, its own JSON workbook and PDF.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CAPABILITIES ============ -->
+  <section class="section" id="capabilities" aria-labelledby="cap-h">
+    <div class="wrap">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Capabilities</p>
+        <h2 id="cap-h">What it does</h2>
+        <p class="lede">Four areas, one clean-room engine — everything below is in the repository today,
+          not on a wishlist.</p>
+      </header>
+      <div class="cards four">
+        <article class="card" data-reveal>
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3.5h7.5L18.5 7.5V20.5H7Z"></path><path d="M14.5 3.5V7.5H18.5"></path><path d="M10.5 12h6M10.5 15.5h4"></path></svg>
+          </div>
+          <h3>Files</h3>
+          <ul>
+            <li>Reads and writes <code>.xlsx</code>: styles, tables, charts, PivotTables, conditional formats, validation, comments, slicers and timelines</li>
+            <li>Passes through the parts it does not model</li>
+            <li>Reads <code>.xls</code> including its charts and shapes</li>
+            <li>Reads and writes password-protected packages</li>
+            <li>CSV/TSV, Cella's own JSON workbook</li>
+            <li>PDF export and printing</li>
+          </ul>
+        </article>
+        <article class="card" data-reveal style="--rv:.08s">
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5.5h8l-5 6.5 5 6.5H9"></path><path d="M9 18.5v2M9 3.5v2"></path></svg>
+          </div>
+          <h3>Calculation</h3>
+          <ul>
+            <li>500+ Excel functions</li>
+            <li>Dynamic arrays and spills</li>
+            <li><code>LET</code> / <code>LAMBDA</code></li>
+            <li>Tables and structured references</li>
+            <li>Iterative calculation</li>
+            <li>Multi-threaded recalculation</li>
+          </ul>
+        </article>
+        <article class="card" data-reveal style="--rv:.16s">
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="2.8"></ellipse><path d="M5 6v12c0 1.55 3.13 2.8 7 2.8s7-1.25 7-2.8V6"></path><path d="M5 12c0 1.55 3.13 2.8 7 2.8s7-1.25 7-2.8" opacity=".55"></path></svg>
+          </div>
+          <h3>Data</h3>
+          <ul>
+            <li>The query pipeline — a database file or a URL as a source</li>
+            <li>Parquet</li>
+            <li>The DAX data model</li>
+            <li>PivotTables and PivotCharts</li>
+            <li>Slicers and timelines</li>
+          </ul>
+        </article>
+        <article class="card" data-reveal style="--rv:.24s">
+          <div class="tile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ig)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="3"></rect><path d="M7.5 9.5l3 2.5-3 2.5"></path><path d="M13 14.5h4"></path></svg>
+          </div>
+          <h3>Agents</h3>
+          <ul>
+            <li>Every user-visible action is a command</li>
+            <li>The MCP server, the CLI and the control channel reach the same set</li>
+            <li>A replayable journal of every command run</li>
+            <li><code>document.inspect</code> reports sheets, ranges, tables and charts</li>
+          </ul>
+          <p class="card-link"><a href="#agents">See the command story <span aria-hidden="true">→</span></a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PERFORMANCE ============ -->
+  <section class="section tint-v" id="performance" aria-labelledby="perf-h">
+    <div class="wrap">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Measured performance</p>
+        <h2 id="perf-h">Performance is a feature, not an afterthought.</h2>
+        <p class="lede">Every number on this page was measured on the development machine against
+          <b>Excel 16.0.20527</b> and <b>WPS 12.1.0.25222</b>, and ships with a harness and a release gate in the
+          repository. The reference workbook is 1,000,000 rows × 6 columns holding 2,000,000 formulas.</p>
+      </header>
+
+      <figure class="stage" data-reveal>
+        <div class="win" id="demo-win">
+          <div class="win-bar">
+            <p class="win-title">
+              <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="4" y="4" width="56" height="56" rx="13" fill="#0d0f1e"></rect><path d="M32 9v46M9 32h46" stroke="rgba(255,255,255,.22)" stroke-width="3"></path><rect x="36" y="36" width="20" height="20" rx="5" fill="url(#ig)"></rect></svg>
+              <span>Q4-revenue.xlsx</span>
+            </p>
+            <p class="rec-chip on" id="rec-chip">recalculated</p>
+          </div>
+          <div class="fx-bar">
+            <span class="fx-addr" id="fx-addr">D4</span>
+            <span class="fx-label" aria-hidden="true">fx</span>
+            <code class="fx-text" id="fx-text">=B4*C4</code>
+          </div>
+          <div class="win-main">
+            <div class="sheet-scroller">
+              <table class="sheet" id="ripple-grid">
+                <caption class="sr-only">A mock worksheet: quarterly units, price, revenue and share of total. With JavaScript enabled, an edit to Q3 units ripples through its dependent formulas in order; without it, the recalculated result is shown.</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Quarter</th>
+                    <th scope="col">Units</th>
+                    <th scope="col">Price</th>
+                    <th scope="col">Revenue</th>
+                    <th scope="col">Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">Q1</th>
+                    <td>120</td>
+                    <td>9.00</td>
+                    <td data-c="D2">1,080</td>
+                    <td data-c="E2">15.3%</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Q2</th>
+                    <td>145</td>
+                    <td>9.00</td>
+                    <td data-c="D3">1,305</td>
+                    <td data-c="E3">18.5%</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Q3</th>
+                    <td data-c="B4">310</td>
+                    <td>9.00</td>
+                    <td data-c="D4">2,790</td>
+                    <td data-c="E4">39.5%</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Q4</th>
+                    <td>210</td>
+                    <td>9.00</td>
+                    <td data-c="D5">1,890</td>
+                    <td data-c="E5">26.7%</td>
+                  </tr>
+                  <tr class="total">
+                    <th scope="row">Total</th>
+                    <td data-c="B6">785</td>
+                    <td>—</td>
+                    <td data-c="D6">7,065</td>
+                    <td data-c="E6">100%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="chart-panel">
+              <p class="chart-title">Revenue by quarter</p>
+              <svg class="chart" id="revenue-chart" viewBox="0 0 320 208" role="img" aria-labelledby="chart-t chart-d">
+                <title id="chart-t">Revenue by quarter</title>
+                <desc id="chart-d">Line chart of quarterly revenue after the Q3 edit: Q1 1,080; Q2 1,305; Q3 2,790; Q4 1,890. The Q3 point is highlighted.</desc>
+                <defs>
+                  <linearGradient id="line-g" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stop-color="#8a7bff"></stop>
+                    <stop offset=".52" stop-color="#3fd8ff"></stop>
+                    <stop offset="1" stop-color="#4df0a6"></stop>
+                  </linearGradient>
+                  <linearGradient id="area-g" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#3fd8ff" stop-opacity=".22"></stop>
+                    <stop offset="1" stop-color="#3fd8ff" stop-opacity="0"></stop>
+                  </linearGradient>
+                </defs>
+                <path class="chart-gridlines" d="M10 36h308M10 86h308M10 136h308M10 186h308" fill="none"></path>
+                <g class="chart-labels">
+                  <text x="8" y="39">$3k</text>
+                  <text x="8" y="89">$2k</text>
+                  <text x="8" y="139">$1k</text>
+                  <text x="44" y="204">Q1</text>
+                  <text x="124" y="204">Q2</text>
+                  <text x="204" y="204">Q3</text>
+                  <text x="284" y="204">Q4</text>
+                </g>
+                <path class="chart-area" d="M44 132L124 120.8L204 46.5L284 91.5L284 186L44 186Z" fill="url(#area-g)"></path>
+                <path class="chart-line" d="M44 132L124 120.8L204 46.5L284 91.5" fill="none" stroke="url(#line-g)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+                <circle class="dot-ring" cx="204" cy="46.5" r="9" fill="none" stroke="#4df0a6" stroke-opacity=".35"></circle>
+                <g class="chart-dots">
+                  <circle cx="44" cy="132" r="4"></circle>
+                  <circle cx="124" cy="120.8" r="4"></circle>
+                  <circle class="hot" cx="204" cy="46.5" r="5"></circle>
+                  <circle cx="284" cy="91.5" r="4"></circle>
+                </g>
+                <text class="chart-note" x="216" y="44">+$1,350</text>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <figcaption>
+          A dependency chain in miniature. One edit to <code>B4</code> ripples through its dependents — the row's
+          revenue, the units and revenue totals, every share — in the same single pass a real recalculation makes.
+          The edit itself is one command,
+          <code>{"command":"cell.set","params":{"cell":"B4","input":"310"}}</code> — the same command the
+          MCP server, the CLI and the control channel run.
+        </figcaption>
+      </figure>
+
+      <dl class="stats">
+        <div class="stat" data-reveal>
+          <dt>Live heap · 1M × 6 · 2M formulas</dt>
+          <dd class="stat-line"><span class="stat-num"><span data-count="0.971" data-decimals="3">0.971</span><span class="stat-unit">GB</span></span></dd>
+          <dd class="stat-note">down from 2.90 GB the same morning · 0.77 GB reopened</dd>
+        </div>
+        <div class="stat" data-reveal style="--rv:.07s">
+          <dt>Chained-formula recalculation</dt>
+          <dd class="stat-line"><span class="stat-num"><span class="stat-sign">−</span><span data-count="56">56</span><span class="stat-unit">%</span></span></dd>
+          <dd class="stat-note">one edit, a million dependents: ~400 ms vs 893 ms</dd>
+        </div>
+        <div class="stat" data-reveal style="--rv:.14s">
+          <dt>Open a 70 MB workbook</dt>
+          <dd class="stat-line"><span class="stat-num"><span data-count="3.3" data-decimals="1">3.3</span><span class="stat-unit">s</span></span></dd>
+          <dd class="stat-note">vs 7.9–8.2 s (Excel 16) · 10.7 s (WPS)</dd>
+        </div>
+        <div class="stat" data-reveal style="--rv:.21s">
+          <dt>Idle memory</dt>
+          <dd class="stat-line"><span class="stat-num"><span data-count="246">246</span><span class="stat-unit">MB</span></span></dd>
+          <dd class="stat-note">the desktop app at rest</dd>
+        </div>
+        <div class="stat" data-reveal style="--rv:.28s">
+          <dt>Windows default renderer</dt>
+          <dd class="stat-line"><span class="stat-num"><span class="stat-sign">−</span><span data-count="183">183</span><span class="stat-unit">MB</span></span></dd>
+          <dd class="stat-note">OpenGL is the default — lighter at the same 144 Hz</dd>
+        </div>
+      </dl>
+
+      <p class="attr" data-reveal>Measured on the development machine against Excel 16.0.20527 and
+        WPS 12.1.0.25222. The scenarios, the harness and the budget gate — <code>cargo xtask perf</code>,
+        checked before every release — are in
+        <a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md" rel="noopener">docs/performance.md</a>.</p>
+    </div>
+  </section>
+
+  <!-- ============ AGENTS ============ -->
+  <section class="section tint-c" id="agents" aria-labelledby="agents-h">
+    <div class="wrap">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Agents &amp; commands</p>
+        <h2 id="agents-h">Everything is a command.</h2>
+        <p class="lede">The ribbon, the CLI, the MCP server and the control channel are four doors into one
+          engine. A programmatic call never opens a dialog — with empty parameters it runs with defaults, or
+          returns an error. The journal records every command run, replayable, and
+          <code>document.inspect</code> reports sheets, used ranges, tables, charts and names.</p>
+      </header>
+
+      <figure class="term" id="term" data-reveal>
+        <div class="term-bar"><span class="dot-live" aria-hidden="true"></span><span>control channel · 127.0.0.1:7979</span><span class="term-side">newline-delimited JSON</span></div>
+        <div class="term-body">
+          <pre><code><span class="t-line t-cmd"><span class="p">$ </span>cella --control 7979</span><span class="t-line t-in">→ {"id":1,"method":"engine.execute","params":{"command":"cell.set","params":{"cell":"B2","input":"=SUM(A1:A9)"}}}</span><span class="t-line t-out">← {"id":1,"ok":true,"result":{"cell":"B2","value":"45"}}</span><span class="t-line t-cmd dim"><span class="p">$ </span>every reply is one line · passwords never echo<span class="t-caret" aria-hidden="true"></span></span></code></pre>
+        </div>
+        <figcaption class="sr-only">A control-channel session: start the app with a port, send engine.execute with a cell.set command, and the reply carries the recalculated value.</figcaption>
+      </figure>
+
+      <div class="cards three">
+        <article class="card" data-reveal>
+          <h3>MCP server</h3>
+          <p><code>cella-cli mcp</code> speaks Model Context Protocol on stdio — headless by default, or
+            <code>--connect 7979</code> to drive the app that is already open. Tools include
+            <code>read_range</code>, <code>write_range</code>, <code>format_range</code>,
+            <code>sort_range</code>, <code>insert_chart</code> and <code>evaluate_formula</code>.</p>
+        </article>
+        <article class="card" data-reveal style="--rv:.09s">
+          <h3>CLI</h3>
+          <p><code>cella-cli eval '=SUM(1,2,3)'</code> evaluates headless;
+            <code>cella-cli run --in book.xlsx --cmd 'home.bold={"range":"A1:C1"}' --out styled.xlsx</code>
+            applies commands and saves; <code>cella-cli commands</code> lists every command with its
+            parameter docs.</p>
+        </article>
+        <article class="card" data-reveal style="--rv:.18s">
+          <h3>Control channel</h3>
+          <p><code>cella --control 7979</code> answers newline-delimited JSON on 127.0.0.1:
+            <code>engine.execute</code> runs any command, <code>sheet.read</code> reads ranges,
+            <code>ui.screenshot</code> returns a PNG. The full protocol lives in
+            <a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md" rel="noopener">docs/control-protocol.md</a>.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ RELIABILITY ============ -->
+  <section class="section" id="reliability" aria-labelledby="rel-h">
+    <div class="wrap narrow">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Never crash</p>
+        <h2 id="rel-h" class="quote">“People trust Cella with their numbers; <span class="grad-text">a crash loses
+          their work</span>.”</h2>
+        <p class="lede">This outranks feature work. It is written into the crate lints, not just the docs —
+          and every crash fix lands with a regression test.</p>
+      </header>
+      <ul class="checks">
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#4df0a6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2"></circle><path d="M8 12.4l2.7 2.7 5.3-5.6"></path></svg>
+          <div><b>No panics in non-test code.</b>
+            <p>No <code>unwrap</code>, no <code>expect</code>, no <code>todo!</code> — and <code>unsafe</code> is
+              forbidden outright, crate by crate.</p></div>
+        </li>
+        <li data-reveal style="--rv:.07s">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#4df0a6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2"></circle><path d="M8 12.4l2.7 2.7 5.3-5.6"></path></svg>
+          <div><b>Errors are <code>Result&lt;T, E&gt;</code> throughout.</b>
+            <p>Every layer that touches a file, a formula or a command returns errors; input-derived numbers are
+              treated as hostile — huge ranges and hostile formulas get an error value, never an abort.</p></div>
+        </li>
+        <li data-reveal style="--rv:.14s">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#4df0a6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2"></circle><path d="M8 12.4l2.7 2.7 5.3-5.6"></path></svg>
+          <div><b>2,136 tests, plus fuzzing.</b>
+            <p>Random command sequences run against undo/redo, XLSX round-trip and full-recalc invariants, and a
+              dedicated pass makes sure every command survives empty parameters.</p></div>
+        </li>
+        <li data-reveal style="--rv:.21s">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#4df0a6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2"></circle><path d="M8 12.4l2.7 2.7 5.3-5.6"></path></svg>
+          <div><b>A last-resort guard.</b>
+            <p>If a panic ever escapes, <code>Session::execute</code> catches it and restores the workbook.
+              A safety net, not a licence.</p></div>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ START ============ -->
+  <section class="section tint-g" id="start" aria-labelledby="start-h">
+    <div class="wrap">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Quick start</p>
+        <h2 id="start-h">Run it from a checkout.</h2>
+        <p class="lede">Everything runs from source with a Rust toolchain — the desktop app, the headless CLI,
+          the MCP server and the offscreen renderer. The same code builds for the browser via WebAssembly
+          (<code>cargo xtask wasm</code>).</p>
+      </header>
+      <pre class="code" data-reveal><code>cargo run --release -p cella -- --sample sales                          <span class="c"># the desktop app</span>
+cargo run --release -p cella -- --sample sales --control 7979         <span class="c"># + control channel</span>
+cargo run -p cella-cli -- eval '=SUM(1,2,3)'                          <span class="c"># headless evaluation</span>
+cargo run -p cella-cli -- mcp                                        <span class="c"># the MCP server on stdio</span>
+cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png <span class="c"># offscreen render</span></code></pre>
+      <ul class="platforms left" data-reveal>
+        <li>macOS</li>
+        <li>Windows</li>
+        <li>Linux</li>
+        <li>BSD</li>
+        <li>WebAssembly</li>
+        <li>en / 简体中文</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ STATUS ============ -->
+  <section class="section" id="status" aria-labelledby="status-h">
+    <div class="wrap">
+      <header class="sec-head" data-reveal>
+        <p class="eyebrow">Status &amp; roadmap</p>
+        <h2 id="status-h">Alpha — with the large-workbook beta gate met.</h2>
+        <p class="lede">Version 0.13.0 was the measured-performance round: sixteen changes in one day, each
+          measured before and after on the same machine and gated. 100 million cells open at
+          <b>16.7 MiB live / 183 MiB peak</b>. A real-world corpus run opened <b>3,084 workbooks</b> with no
+          reader failure and <b>635 save/reopen cycles</b> with zero mismatches. What is left for beta is the
+          release run and pinning that corpus for CI — every remaining gap is ranked in public.</p>
+      </header>
+      <div class="chips" data-reveal>
+        <span class="pill pill-grad">v0.13.0</span>
+        <span class="pill">alpha</span>
+        <span class="pill">438 commands</span>
+        <span class="pill">large-workbook gate met</span>
+        <span class="pill">en + 简体中文</span>
+      </div>
+      <ul class="doc-links" data-reveal>
+        <li><a href="https://github.com/Matt-qwq/cella/blob/main/ROADMAP.md" rel="noopener">ROADMAP.md <span aria-hidden="true">→</span></a> the one-page summary and progress log</li>
+        <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md" rel="noopener">docs/roadmap.md <span aria-hidden="true">→</span></a> position, milestones, what is next</li>
+        <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/gaps.md" rel="noopener">docs/gaps.md <span aria-hidden="true">→</span></a> every known shortfall, ranked</li>
+        <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/target-app-parity.md" rel="noopener">docs/target-app-parity.md <span aria-hidden="true">→</span></a> the parity assessment and method</li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <p class="win-title">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="4" y="4" width="56" height="56" rx="13" fill="#0d0f1e"></rect><path d="M32 9v46M9 32h46" stroke="rgba(255,255,255,.22)" stroke-width="3"></path><rect x="36" y="36" width="20" height="20" rx="5" fill="url(#ig)"></rect></svg>
+          <span>Cella</span>
+        </p>
+        <p class="foot-tag">An independent, high-performance spreadsheet built in Rust. Clean-room, open
+          source, measured.</p>
+        <p class="licence-pills"><a class="pill" href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-MIT" rel="noopener">MIT</a>
+          <span aria-hidden="true">/</span>
+          <a class="pill" href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a></p>
+      </div>
+      <nav aria-label="Docs">
+        <p class="foot-h">Docs</p>
+        <ul class="foot-links">
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md" rel="noopener">Roadmap</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md" rel="noopener">Performance</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md" rel="noopener">Control protocol</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/gaps.md" rel="noopener">Known gaps</a></li>
+        </ul>
+      </nav>
+      <nav aria-label="Project">
+        <p class="foot-h">Project</p>
+        <ul class="foot-links">
+          <li><a href="https://github.com/Matt-qwq/cella" rel="noopener">GitHub</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/README.md" rel="noopener">README (English)</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/README.zh-CN.md" rel="noopener">README (简体中文)</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE" rel="noopener">NOTICE</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/ATTRIBUTION.md" rel="noopener">ATTRIBUTION.md</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="credit">
+      <p>Cella is an independent, modified version of <a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE" rel="noopener">GridCraft</a>,
+        based on the work of the ArtCraft Team and the GridCraft contributors, distributed under the
+        MIT OR Apache-2.0 licence. It is <b>not</b> an ArtCraft product and carries none of the ArtCraft
+        marks — upstream's brand licence requires a modified version to remove them, and this tree did.
+        Original work Copyright © 2026 the ArtCraft Team and the GridCraft contributors; modifications
+        Copyright © 2026 the Cella contributors.</p>
+      <p class="credit-note">Everything on this page — the logomark, icons, mockup and charts — is original
+        inline SVG and CSS, drawn for this site. No third-party fonts, images or scripts.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/app.js" defer></script>
+</body>
+</html>
