@@ -1183,13 +1183,34 @@ fn remove_duplicates(s: &mut Session, p: &Json) -> Result<Json> {
         let moved_arrays = arrays_moved_by_row_compaction(sh, area, start, &keep)?;
         let mut rows: Vec<Vec<Option<Cell>>> =
             keep.iter().map(|row| (r.start.col..=r.end.col).map(|c| sh.cell(CellRef::new(*row, c))).collect()).collect();
+        let mut shapes = cella_formula::ShapeTable::default();
         for (i, cells) in rows.iter_mut().enumerate() {
+            let to_row = start + i as u32;
             for (j, cell) in cells.iter_mut().enumerate() {
                 let Some(cell) = cell else { continue };
                 let Some(f) = cell.formula.as_mut() else { continue };
                 let old = CellRef::new(keep[i], r.start.col + j as u32);
+                let at = CellRef::new(to_row, r.start.col + j as u32);
                 if let Some(new) = moved_arrays.get(&old) {
                     Arc::make_mut(f).array = Some(Box::new(*new));
+                }
+                // A formula's shape holds its relative references as offsets from the cell the
+                // formula was written at, so a compaction that moves the cell must give it a shape
+                // of its own: left as it was, the cell resolved at its new row and read a
+                // different reference than the text it saves (the fuzzer found an XLOOKUP showing
+                // #REF! in memory and 0 after a reload, the same file both times).
+                if old != at {
+                    let rewrite = f.shape.as_ref().is_some_and(|s| s.file_rewrite);
+                    let (array, dynamic) = (f.array.clone(), f.dynamic);
+                    *f = Arc::new(match f.expr_at(old) {
+                        Some(e) => {
+                            let mut g = Formula::from_expr_at(e, at, &mut shapes, rewrite);
+                            g.array = array;
+                            g.dynamic = dynamic;
+                            g
+                        }
+                        None => Formula::from_text(&f.text),
+                    });
                 }
             }
         }

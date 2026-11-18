@@ -7824,17 +7824,13 @@ fn journal_params_keep_short_strings_and_drop_only_the_huge_ones() {
     let p = crate::cmd::journal_params(&json!({"password": "hunter2", "name": "a"}));
     assert!(p.get("password").is_none());
 }
-/// The soak's four-step repro (CELLA_FUZZ_SEEDS=8 CELLA_FUZZ_STEPS=150, seed 2, shrunk): a formula
-/// outside a Remove Duplicates range reads a row the compaction removes, and the value the cell
-/// shows in memory must survive a save and a reload.
-///
-/// Today it does not: in memory the reference resolves to nothing and the cell is #REF!, but the
-/// file is written with the reference still spelled D15, so a reload recalculates it to 0 - the row
-/// the name now points at. The same class of bug produced the original seed's XLOOKUP(M24,...) and
-/// XLOOKUP(M27,...) text disagreement after edit.fillRight.
+/// The soak's four-step repro (CELLA_FUZZ_SEEDS=8 CELLA_FUZZ_STEPS=150, seed 2, shrunk): Remove
+/// Duplicates compacts the rows of its range, which moves the formulas that sit inside it. A moved
+/// formula must keep the references its own text names - its shape holds relative references as
+/// offsets from the cell it was interned at, so a stale one resolved somewhere else and the cell
+/// showed #REF! in memory while the file, which only ever holds the text, calculated 0 on reload.
 #[test]
-#[ignore = "bug: a reference into a row Remove Duplicates removed is not rewritten, and it re-points after a save"]
-fn a_row_removed_by_remove_duplicates_does_not_re_point_after_a_save() {
+fn a_row_compacted_by_remove_duplicates_keeps_the_references_its_text_names() {
     let mut s = Session::new();
     let run = |s: &mut Session, id: &str, p: serde_json::Value| -> serde_json::Value { s.execute(id, p).unwrap_or_else(|e| panic!("{id}: {e}")) };
     run(&mut s, "file.new", json!({"sample": "grades"}));
@@ -7846,11 +7842,15 @@ fn a_row_removed_by_remove_duplicates_does_not_re_point_after_a_save() {
         json!({"range": "K8", "values": [[128, null, ""], ["=SEQUENCE(4,3)", "22%", "=SUM(my_list)"], ["134", "TRUE", "=SORT(I19:J19)"], ["='Sheet1'!E9*2", "64.56", "=INDIRECT(\"C22\")"]]}),
     );
     run(&mut s, "data.removeDuplicates", json!({"header": false, "range": "G7:J14"}));
+    // The XLOOKUP was written at J11 and the compaction moved it up to J10.
     let at = cella_core::CellRef::new(9, 9);
-    let read = |wb: &cella_model::Workbook| wb.sheets.iter().find(|x| x.name == "Data").and_then(|x| x.cells.get(at)).map(|c| c.value);
-    let before = read(&(*s.doc().expect("a document").wb));
-    let bytes = crate::io::save_bytes(&(*s.doc().expect("a document").wb), "dupes.xlsx").expect("save");
+    let read = |wb: &cella_model::Workbook| {
+        wb.sheets.iter().find(|x| x.name == "Data").and_then(|x| x.cells.get(at)).map(|c| (c.formula.as_ref().map(|f| f.text.clone()), c.value))
+    };
+    let before = read(&s.doc().expect("a document").wb);
+    assert_eq!(before.as_ref().map(|(f, _)| f.as_deref()), Some(Some("XLOOKUP(D15,G1:G20,G1:G20)")));
+    let bytes = crate::io::save_bytes(&s.doc().expect("a document").wb, "dupes.xlsx").expect("save");
     let (mut back, _) = crate::io::open_bytes("dupes.xlsx", &bytes).expect("open");
     cella_calc::recalc::Calc::new().recalc_all(&mut back);
-    assert_eq!(before, read(&back), "the cell changed value across a save and a reload");
+    assert_eq!(before, read(&back), "the cell changed across a save and a reload");
 }
