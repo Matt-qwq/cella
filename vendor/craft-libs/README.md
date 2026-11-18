@@ -22,6 +22,10 @@ The licence texts and the upstream NOTICE are in this directory (`LICENSE-MIT`, 
 - `Cargo.toml`: the fields that were `*.workspace = true` in craft-libs became literals
   (`version = "0.1.0"`, `edition = "2024"`, `license`, `repository`, `rust-version = "1.90"`), and
   `egui = { workspace = true }` became `egui = "0.36"`. The source files are byte-identical.
+- `ui/src/printing/tests.rs`, two call sites (2026-11-18): epaint 0.36 asserts in `Drop` that a
+  frame's `TexturesDelta` was applied, and a headless test has no renderer to apply it to, so the
+  two tests that render text clear the deltas before dropping the output. Without this the crate's
+  tests panic under `cargo test --workspace`; nothing outside tests changed.
 
 **Updating:** copy the two directories from a newer `craft-libs` revision, re-apply those manifest
 edits, and run `cargo check --workspace` plus `cargo xtask layers`. If a newer revision adds crates
