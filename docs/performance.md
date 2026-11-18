@@ -367,8 +367,30 @@ about sizes, which a shape does not change. The legacy `@` analysis got the same
 read path (`open.xlsx` 5.01 → 4.05 s in the same-binary A/B), and it now skips a formula whose every
 part is certainly one value without building anything.
 
+### The graph's three structures, audited 2026-11-18
+
+The calc part is 372.4 MB at 1M × 6: nodes 104.9, dependents 142.6, the area arena 125.0. Audited
+against the structures themselves, not guessed at:
+
+| part | size | what it is |
+|---|---:|---|
+| graph nodes | 104.9 MB | 2,000,000 nodes in a per-sheet `HashMap<CellRef, Node>`. A node is 16 B and an entry is its 8-byte key, the node and hashbrown's control byte — but hashbrown rounds its bucket count up to a power of two, so 2M entries take **4,194,304 buckets**: the table is ~2× the entries, 25 B a slot at a 0.87 load |
+| dependents | 142.6 MB | ~7.3M slots for the ~2M precedent cells of 2M formulas (each names two or three), the same power-of-two rounding on `(CellRef, CellRef)` tables |
+| area arena | 125.0 MB | 6.25M slots of 20 B for 5M live areas — already packed (20 B, where the evaluator's own `Area` is 24) with a small tail |
+
+None of it is capacity slack. `shrink_to_fit` after a build was written, measured and **reverted**:
+the bucket count a 2M-entry table picks is already the smallest hashbrown can, and the same is true of
+the dependents table and the arena. The only way down is a different structure — a sorted
+`Vec<(CellRef, Node)>` per sheet (24 B an entry, ~48 MB) or a CSR dependents table (an offset array
+plus a flat list, ~12 B a reference, ~24 MB) — and both pay for it in the edit: a single-cell edit
+into a sorted vector is an O(n) insert or a delta layer to reconcile at `settle`, and the recalc
+hot path is what would carry the risk. At two million formulas 372 MB is not where the product stops
+working; recorded here so the next reader does not re-run the audit.
+
 What is left, in the order the accounting ranks it:
 
+- **The calc graph, 372.4 MB** — audited 2026-11-18 (above): structure, not slack. A CSR table is
+  the only route down and it trades the edit path.
 - **The undo stack, 241.6 MB charged** (the snapshot's own heap is a fraction of that). At 1M rows the
   budget keeps exactly one entry — the newest — and compressing that one turns a 23 ms undo into
   4.99 s (measured), which the 54 ms gate forbids. A step the budget would *drop* is now kept as
@@ -423,6 +445,10 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (third):** the calc graph audited. Nodes 104.9 MB, dependents 142.6 MB and the arena
+  125.0 MB are power-of-two hash tables at their smallest bucket count — a `shrink_to_fit` after
+  a build was written, measured and reverted because it changes nothing. A sorted vector per sheet
+  or a CSR dependents table is the only route down (~250 MB) and it pays in the edit path.
 - **2026-11-18 (second):** the band's number index. Bands built by a fill or a paste never called
   `Band::finish`, so each kept its 1,024-byte number index and a quarter of its number table as
   slack: number tables **66.0 → 33.0 MB**, live heap 1.06 → **0.998 GB** (reopened unchanged at
