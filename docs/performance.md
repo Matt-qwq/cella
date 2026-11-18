@@ -602,6 +602,11 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (ninth):** a dense single-precedent dependents table for the closure (84 % of the
+  phase was one hash probe a cell) was built, tested and **reverted on measurement**: at 100k rows
+  `fill.formulas` went 164 ms -> 37.96 s, a box grown by copying all entries per new precedent.
+  The audit stands (the probes cost the 158 ms); the growth strategy does not. Next attempts on the
+  closure must grow geometrically and are accepted against a 100k fill, not just the unit tests.
 - **2026-11-18 (eighth):** the recalculated chain, two steps. A **dense slot index** (a pass's cells
   looked up by arithmetic, hash fallback when they do not fill their box) takes `edit.recalc` at 1M
   **893 -> 665-692 ms**; a **chain run** (a column of running totals accumulated in one loop through

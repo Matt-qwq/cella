@@ -288,6 +288,16 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   (a shortcut that removes work release already removed only shows its real size in release) is in
   `performance.md`. What is left of this edit: closure ~190 ms (1M dependents probes), write-back
   ~70 ms, eval ~179 ms.
+- **Measured and reverted (11-18): dense single-precedent dependents.** The audit put 84 % of the
+  closure on one hash probe a cell (1,000,002 probes, ~182 ns each on a cold 34 MB table) and
+  recommended a per-sheet box table for `Deps::one`. It was built with maintenance on link/unlink,
+  a sparse fallback and a trim in `settle`, and it is correct on small workbooks — but the graph
+  *build* collapses: at 100k rows `fill.formulas` goes **164 ms -> 37.96 s**, because growing the
+  box copies every entry once per new precedent (`DenseOne::grown`), so linking n precedents is
+  O(n²). Reverted. The lesson is in the acceptance, not the idea: **any graph structure change
+  carries a 100k `fill.formulas` budget as part of its own proof** (the perf harness does it in
+  ~10 s), because the unit tests' workbooks never build the shape that shows it. A retry must grow
+  the box geometrically — copy once per doubling, never per entry.
 - **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
   tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
   the calc graph's three tables and of the one undo step found structure, not slack, and changed
