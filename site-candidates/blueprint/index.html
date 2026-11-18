@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cella — an independent, high-performance spreadsheet built in Rust</title>
+  <meta name="description" content="Cella is an open-source spreadsheet built in Rust: 500+ worksheet functions, .xlsx/.xls/CSV fidelity, PivotTables and a DAX data model, and every action drivable by agents over MCP, a CLI and a JSON control channel. Native on macOS, Windows, Linux and BSD; in the browser via WebAssembly. MIT OR Apache-2.0.">
+  <meta name="theme-color" content="#0A0F16">
+  <meta name="color-scheme" content="dark">
+  <meta property="og:title" content="Cella — an independent, high-performance spreadsheet built in Rust">
+  <meta property="og:description" content="For data sets, for agents, and for the files people actually send. Native on macOS, Windows, Linux and BSD; in the browser via WebAssembly. Measured performance, never-crash engineering, every action a command.">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Cella">
+  <meta property="og:url" content="https://matt-qwq.github.io/cella/">
+  <meta property="og:image" content="https://raw.githubusercontent.com/Matt-qwq/cella/main/assets/app-icon/cella-1024.png">
+  <meta property="og:image:width" content="1024">
+  <meta property="og:image:height" content="1024">
+  <meta property="og:image:alt" content="The Cella app icon: a dark cell grid with one active cell.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Crect%20x='1.5'%20y='1.5'%20width='21'%20height='21'%20fill='%230A0F16'%20stroke='%234FD5F2'%20stroke-opacity='0.6'/%3E%3Cpath%20d='M12%201.5v21M1.5%2012h21'%20stroke='%2392A6BB'%20stroke-opacity='0.5'/%3E%3Crect%20x='12.5'%20y='12.5'%20width='9.5'%20height='9.5'%20fill='%234FD5F2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/app.js" defer></script>
+</head>
+<body id="top">
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- fixed drawing chrome: frame, coordinate rulers, active-cell crosshair -->
+  <div class="chrome" aria-hidden="true">
+    <div class="frame"><i class="corner c-tl"></i><i class="corner c-tr"></i><i class="corner c-bl"></i><i class="corner c-br"></i></div>
+    <div class="ruler-x"><div class="ruler-x-in" id="rulerX"><span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span><span>G</span><span>H</span><span>I</span><span>J</span><span>K</span><span>L</span><span>M</span><span>N</span><span>O</span><span>P</span><span>Q</span><span>R</span><span>S</span><span>T</span><span>U</span><span>V</span><span>W</span><span>X</span></div></div>
+    <div class="ruler-y"><div class="ruler-y-in" id="rulerY"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span><span>19</span><span>20</span></div></div>
+    <div class="ch-v" id="chV"></div>
+    <div class="ch-h" id="chH"></div>
+    <div class="ch-mark" id="chM"></div>
+  </div>
+
+  <header class="site-nav">
+    <div class="nav-in">
+      <a class="brand" href="#top" aria-label="Cella — back to top">
+        <svg class="glyph" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" fill="none" stroke="currentColor" stroke-opacity=".5"/><path d="M12 1.5v21M1.5 12h21" stroke="currentColor" stroke-opacity=".35"/><rect x="12.5" y="12.5" width="9.5" height="9.5" fill="#4FD5F2"/></svg>
+        CELLA
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#why">WHY</a>
+        <a href="#capabilities">SPEC</a>
+        <a href="#performance">MEASURED</a>
+        <a href="#agents">AGENTS</a>
+        <a href="#stability">STABILITY</a>
+        <a href="#start">START</a>
+        <a href="#status">STATUS</a>
+      </nav>
+      <div class="nav-cell" aria-hidden="true" title="Active cell under the crosshair">CELL <span class="ref" id="navRef">A1</span></div>
+      <a class="nav-src" href="https://github.com/Matt-qwq/cella">
+        SOURCE
+        <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 8.5 8.5 1.5M3 1.5h5.5V7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- ================================================== FIG/TB: HERO -->
+    <section class="hero wrap" aria-labelledby="hero-h">
+      <div class="tb" role="group" aria-label="Title block">
+        <div class="tb-field">
+          <svg class="glyph" width="34" height="34" viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" fill="none" stroke="currentColor" stroke-opacity=".5"/><path d="M12 1.5v21M1.5 12h21" stroke="currentColor" stroke-opacity=".35"/><rect x="12.5" y="12.5" width="9.5" height="9.5" fill="#4FD5F2"/></svg>
+          <div class="tb-name">
+            <span class="tb-value">CELLA</span>
+            <span class="tb-label">INDEPENDENT SPREADSHEET</span>
+          </div>
+        </div>
+        <div class="tb-field"><span class="tb-label">REV</span><span class="tb-value">0.13.0</span></div>
+        <div class="tb-field"><span class="tb-label">STAGE</span><span class="tb-value">ALPHA</span></div>
+        <div class="tb-field"><span class="tb-label">MATERIAL</span><span class="tb-value">RUST</span></div>
+        <div class="tb-field"><span class="tb-label">SHEET</span><span class="tb-value">1 / 1</span></div>
+        <div class="tb-field"><span class="tb-label">LICENCE</span><span class="tb-value">MIT OR APACHE-2.0</span></div>
+      </div>
+
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="hero-kicker">AN INDEPENDENT, HIGH-PERFORMANCE SPREADSHEET · BUILT IN RUST</p>
+          <h1 class="hero-title" id="hero-h">
+            <span class="hero-name">CELLA</span>
+            <span class="hero-line">For data sets, for agents, and for the files people actually send.</span>
+          </h1>
+          <p class="hero-sub">A clean-room spreadsheet that runs natively on macOS, Windows, Linux and BSD — and in the browser via WebAssembly. The goal is Microsoft Excel parity, and superiority where it counts: speed, openness, and control for the programs that drive it.</p>
+          <div class="hero-ctas">
+            <a class="btn btn-primary" href="https://github.com/Matt-qwq/cella">VIEW THE SOURCE
+              <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 8.5 8.5 1.5M3 1.5h5.5V7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            </a>
+            <a class="btn" href="#start">QUICK START</a>
+          </div>
+          <p class="hero-links">
+            <a href="https://github.com/Matt-qwq/cella/blob/main/README.md">README</a>
+            <a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md">CONTROL PROTOCOL</a>
+            <a href="#performance">MEASURED PERFORMANCE</a>
+            <a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE">NOTICE</a>
+          </p>
+          <ul class="badges" aria-label="Platforms and release">
+            <li class="chip">MACOS</li>
+            <li class="chip">WINDOWS</li>
+            <li class="chip">LINUX</li>
+            <li class="chip">BSD</li>
+            <li class="chip">WASM</li>
+            <li class="chip chip-a">REV 0.13.0</li>
+            <li class="chip chip-a">STAGE ALPHA</li>
+          </ul>
+        </div>
+
+        <figure class="hero-fig">
+          <div class="sheet" role="img" aria-label="Illustrative sample sheet: quarterly revenue by region with a totals row; the active cell F6 contains the formula =SUM(F2:F5) and shows 173,790.">
+            <div class="sheet-bar" aria-hidden="true">
+              <span class="sheet-ref">F6</span>
+              <span class="sheet-fx-label">FX</span>
+              <span class="sheet-fx">=SUM(F2:F5)</span>
+            </div>
+            <div class="sheet-grid" aria-hidden="true">
+              <div class="sc sc-r"></div><div class="sc sc-c">A</div><div class="sc sc-c">B</div><div class="sc sc-c">C</div><div class="sc sc-c">D</div><div class="sc sc-c">E</div><div class="sc sc-c">F</div>
+              <div class="sc sc-r">1</div><div class="sc sc-h anim" style="--i:0">REGION</div><div class="sc sc-h anim" style="--i:1">Q1</div><div class="sc sc-h anim" style="--i:2">Q2</div><div class="sc sc-h anim" style="--i:3">Q3</div><div class="sc sc-h anim" style="--i:4">Q4</div><div class="sc sc-h anim" style="--i:5">TOTAL</div>
+              <div class="sc sc-r">2</div><div class="sc sc-t anim" style="--i:1">North</div><div class="sc sc-v anim" style="--i:2">12,480</div><div class="sc sc-v anim" style="--i:3">13,100</div><div class="sc sc-v anim" style="--i:4">12,890</div><div class="sc sc-v anim" style="--i:5">14,020</div><div class="sc sc-v anim" style="--i:6">52,490</div>
+              <div class="sc sc-r">3</div><div class="sc sc-t anim" style="--i:2">South</div><div class="sc sc-v anim" style="--i:3">9,840</div><div class="sc sc-v anim" style="--i:4">10,210</div><div class="sc sc-v anim" style="--i:5">9,980</div><div class="sc sc-v anim" style="--i:6">11,260</div><div class="sc sc-v anim" style="--i:7">41,290</div>
+              <div class="sc sc-r">4</div><div class="sc sc-t anim" style="--i:3">East</div><div class="sc sc-v anim" style="--i:4">8,110</div><div class="sc sc-v anim" style="--i:5">8,430</div><div class="sc sc-v anim" style="--i:6">8,290</div><div class="sc sc-v anim" style="--i:7">9,010</div><div class="sc sc-v anim" style="--i:8">33,840</div>
+              <div class="sc sc-r">5</div><div class="sc sc-t anim" style="--i:4">West</div><div class="sc sc-v anim" style="--i:5">10,930</div><div class="sc sc-v anim" style="--i:6">11,480</div><div class="sc sc-v anim" style="--i:7">11,220</div><div class="sc sc-v anim" style="--i:8">12,540</div><div class="sc sc-v anim" style="--i:9">46,170</div>
+              <div class="sc sc-r">6</div><div class="sc sc-h sc-tot anim" style="--i:5">TOTAL</div><div class="sc sc-v sc-tot anim" style="--i:6">41,360</div><div class="sc sc-v sc-tot anim" style="--i:7">43,220</div><div class="sc sc-v sc-tot anim" style="--i:8">42,380</div><div class="sc sc-v sc-tot anim" style="--i:9">46,830</div><div class="sc sc-v sc-tot sc-a" style="--i:10">173,790</div>
+            </div>
+          </div>
+          <figcaption class="fig-cap">
+            <span>FIG. 00 — SAMPLE EXCERPT (ILLUSTRATIVE)</span>
+            <span>ROW + COLUMN TOTALS, RECALCULATED ON EVERY EDIT</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ================================================== SECTION A: WHY -->
+    <section class="sec wrap" id="why" aria-labelledby="why-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION A</span>
+        <h2 id="why-h">WHY CELLA</h2>
+        <span class="sec-idx">A / G</span>
+      </div>
+      <p class="sec-sub">Four commitments, each one verifiable in the repository. The drawing references the machine; nothing on this page is marketing.</p>
+      <div class="gridlines g-2 reveal">
+        <div class="panel">
+          <div class="panel-idx">A1</div>
+          <h3>THE FILES PEOPLE ACTUALLY SEND</h3>
+          <p>Real workbooks arrive as .xlsx with styles, tables, charts and PivotTables; as legacy .xls; sometimes encrypted. Cella reads and writes all of them — and the parts it does not model yet pass through untouched, instead of vanishing on save.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">A2</div>
+          <h3>PERFORMANCE IS MEASURED, NOT CLAIMED</h3>
+          <p>Every number on this page comes out of a harness: a 1,000,000-row reference workbook, best-of-three passes, and a budget gate that fails a release on regression. The results are in <a href="#performance">SECTION C</a>; the method is in <a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md">docs/performance.md</a>.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">A3</div>
+          <h3>EVERY ACTION IS A COMMAND</h3>
+          <p>There is no scraping layer between a program and the app: 438 commands cover the ribbon, and the MCP server, the CLI and a JSON control channel drive the identical set. An agent calls <span class="v">home.bold</span> the same way you click it.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">A4</div>
+          <h3>CLEAN-ROOM, OPEN, RUST-NATIVE</h3>
+          <p>MIT OR Apache-2.0, at your option. No code borrowed from other suites — behaviour comes from public documentation and black-box observation. A layered Rust core with a swappable UI, and a WebAssembly build that is gated, not aspirational.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================== SECTION B: CAPABILITIES (SPEC) -->
+    <section class="sec wrap" id="capabilities" aria-labelledby="cap-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION B</span>
+        <h2 id="cap-h">CAPABILITIES · REV 0.13.0</h2>
+        <span class="sec-idx">B / G</span>
+      </div>
+      <p class="sec-sub">The current build, stated as a specification. Each line is a capability that exists and is tested today — not a roadmap.</p>
+      <div class="gridlines g-2 reveal">
+        <div class="panel">
+          <div class="panel-idx">B1</div>
+          <h3>FILES</h3>
+          <ul class="spec">
+            <li>.xlsx read and write — styles, tables, charts, PivotTables, conditional formats, validation, comments, slicers and timelines</li>
+            <li>Pass-through of unmodelled package parts</li>
+            <li>.xls read, including its charts and shapes</li>
+            <li>Password-protected packages — read and write</li>
+            <li>CSV / TSV</li>
+            <li>Cella's own JSON workbook format</li>
+            <li>PDF export and printing</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">B2</div>
+          <h3>CALCULATION</h3>
+          <ul class="spec">
+            <li>500+ Excel functions</li>
+            <li>Dynamic arrays and spills</li>
+            <li>LET and LAMBDA</li>
+            <li>Tables and structured references</li>
+            <li>Iterative calculation</li>
+            <li>Multi-threaded recalculation</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">B3</div>
+          <h3>DATA</h3>
+          <ul class="spec">
+            <li>The query pipeline — a database file or a URL as a source</li>
+            <li>Parquet</li>
+            <li>The DAX data model</li>
+            <li>PivotTables and PivotCharts</li>
+            <li>Slicers and timelines</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">B4</div>
+          <h3>INTERFACE</h3>
+          <ul class="spec">
+            <li>English and Simplified Chinese</li>
+            <li>Key tips and keyboard context menus</li>
+            <li>An accessibility tree</li>
+            <li>Dark mode; real multiple windows</li>
+            <li>An offscreen snapshot renderer for tests</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================ SECTION C: PERFORMANCE -->
+    <section class="sec wrap" id="performance" aria-labelledby="perf-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION C</span>
+        <h2 id="perf-h">MEASURED PERFORMANCE</h2>
+        <span class="sec-idx">C / G</span>
+      </div>
+      <p class="sec-sub">Release build, the development machine, 2026-11-18 — measured against Excel 16.0.20527 and WPS 12.1.0.25222 on the same files. Recorded as measured, including the rows where Excel wins.</p>
+
+      <div class="gridlines g-4 reveal">
+        <div class="stat">
+          <div class="stat-idx">C-01</div>
+          <div class="stat-value"><span class="n" data-count="0.971" data-dec="3">0.971</span><span class="u">GB</span></div>
+          <div class="dim"><span class="dim-t">LIVE HEAP</span></div>
+          <p class="stat-note">The reference workbook: 1,000,000 rows × 6 columns, 2M formulas. <b>0.77 GB</b> reopened — down from <b>2.90 / 2.18 GB</b> measured earlier the same day.</p>
+        </div>
+        <div class="stat">
+          <div class="stat-idx">C-02</div>
+          <div class="stat-value">~<span class="n" data-count="400">400</span><span class="u">MS</span></div>
+          <div class="dim"><span class="dim-t">ONE EDIT → 1M RECALC</span></div>
+          <p class="stat-note">A single edit re-sparks a million chained formulas: <b>893 ms → ~400 ms (−56%)</b> in the 0.13.0 recalculation rounds.</p>
+        </div>
+        <div class="stat">
+          <div class="stat-idx">C-03</div>
+          <div class="stat-value"><span class="n" data-count="3.3" data-dec="1">3.3</span><span class="u">S</span></div>
+          <div class="dim"><span class="dim-t">OPEN A 70 MB WORKBOOK</span></div>
+          <p class="stat-note">Excel 16.0.20527: <b>7.9–8.2 s</b> · WPS 12.1.0.25222: <b>10.7 s</b> — same file, same machine.</p>
+        </div>
+        <div class="stat">
+          <div class="stat-idx">C-04</div>
+          <div class="stat-value"><span class="n" data-count="246">246</span><span class="u">MB</span></div>
+          <div class="dim"><span class="dim-t">IDLE WORKING SET</span></div>
+          <p class="stat-note">With <b>OpenGL as the Windows default</b>: the window is <b>183 MB lighter</b> at the same 144 Hz.</p>
+        </div>
+      </div>
+
+      <div class="duo reveal">
+        <figure class="chart-fig">
+          <svg viewBox="0 0 680 236" role="img" aria-label="Bar chart — open time for one 70 MB workbook: Cella 3.3 seconds, Excel 7.9 to 8.2 seconds, WPS 10.7 seconds. Lower is better.">
+            <defs>
+              <pattern id="hatchB" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(148,182,221,.38)" stroke-width="1.4"/>
+              </pattern>
+            </defs>
+            <text x="680" y="12" text-anchor="end" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" letter-spacing="2" fill="#92A6BB">LOWER IS BETTER</text>
+            <line x1="236" y1="22" x2="236" y2="192" stroke="rgba(148,182,221,.08)"/>
+            <line x1="317" y1="22" x2="317" y2="192" stroke="rgba(148,182,221,.08)"/>
+            <line x1="397" y1="22" x2="397" y2="192" stroke="rgba(148,182,221,.08)"/>
+            <line x1="478" y1="22" x2="478" y2="192" stroke="rgba(148,182,221,.08)"/>
+            <line x1="558" y1="22" x2="558" y2="192" stroke="rgba(148,182,221,.08)"/>
+            <line x1="156" y1="30" x2="156" y2="20" stroke="rgba(79,213,242,.5)"/>
+            <line x1="289" y1="30" x2="289" y2="20" stroke="rgba(79,213,242,.5)"/>
+            <line x1="160" y1="16" x2="285" y2="16" stroke="#4FD5F2" stroke-opacity=".7"/>
+            <path d="M156 16l5-3.2v6.4zM289 16l-5-3.2v6.4z" fill="#4FD5F2" stroke="none" fill-opacity=".9"/>
+            <text x="222" y="12" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10" fill="#4FD5F2">3.3 s</text>
+            <rect x="156" y="30" width="133" height="34" fill="#4FD5F2"/>
+            <rect x="156" y="86" width="322" height="34" fill="url(#hatchB)" stroke="rgba(148,182,221,.35)"/>
+            <rect x="156" y="142" width="430" height="34" fill="url(#hatchB)" stroke="rgba(148,182,221,.35)"/>
+            <line x1="156" y1="192" x2="586" y2="192" stroke="rgba(148,182,221,.32)"/>
+            <line x1="156" y1="192" x2="156" y2="198" stroke="rgba(148,182,221,.32)"/>
+            <line x1="236" y1="192" x2="236" y2="198" stroke="rgba(148,182,221,.32)"/>
+            <line x1="317" y1="192" x2="317" y2="198" stroke="rgba(148,182,221,.32)"/>
+            <line x1="397" y1="192" x2="397" y2="198" stroke="rgba(148,182,221,.32)"/>
+            <line x1="478" y1="192" x2="478" y2="198" stroke="rgba(148,182,221,.32)"/>
+            <line x1="558" y1="192" x2="558" y2="198" stroke="rgba(148,182,221,.32)"/>
+            <text x="156" y="212" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" fill="#92A6BB">0</text>
+            <text x="236" y="212" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" fill="#92A6BB">2</text>
+            <text x="317" y="212" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" fill="#92A6BB">4</text>
+            <text x="397" y="212" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" fill="#92A6BB">6</text>
+            <text x="478" y="212" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" fill="#92A6BB">8</text>
+            <text x="558" y="212" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9" fill="#92A6BB">10 s</text>
+            <text x="148" y="51" text-anchor="end" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#4FD5F2">CELLA 0.13.0</text>
+            <text x="148" y="107" text-anchor="end" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#C2CEDC">EXCEL 16.0.20527</text>
+            <text x="148" y="163" text-anchor="end" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#C2CEDC">WPS 12.1.0.25222</text>
+            <text x="299" y="51" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#4FD5F2">3.3 s</text>
+            <text x="488" y="107" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#C2CEDC">7.9–8.2 s</text>
+            <text x="596" y="163" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="10.5" fill="#C2CEDC">10.7 s</text>
+          </svg>
+          <div class="chart-legend">
+            <span><i class="sw-c"></i>CELLA — MEASURED</span>
+            <span><i class="sw-h"></i>REFERENCE APPLICATIONS</span>
+          </div>
+          <figcaption class="fig-cap">
+            <span>FIG. 01 — OPEN TIME, SECONDS</span>
+            <span>ONE 70 MB WORKBOOK, SAME MACHINE</span>
+          </figcaption>
+        </figure>
+
+        <figure>
+          <div class="tablewrap" tabindex="0" role="region" aria-label="Measured comparison table, scrollable">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">MEASURE · 70 MB</th>
+                  <th scope="col" class="num">CELLA</th>
+                  <th scope="col" class="num">EXCEL 16</th>
+                  <th scope="col" class="num">WPS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>OPEN</td><td class="num hl">3.3 s</td><td class="num">7.9–8.2 s</td><td class="num">10.7 s</td></tr>
+                <tr><td>FULL RECALCULATION</td><td class="num hl">0.75 s</td><td class="num">0.31 s</td><td class="num">15.3 s</td></tr>
+                <tr><td>IDLE WORKING SET</td><td class="num hl">246 MB</td><td class="num">~35 MB</td><td class="num">288 MB</td></tr>
+                <tr><td>WORKING SET, OPEN</td><td class="num hl">1,054 MB</td><td class="num">588 MB</td><td class="num">987 MB</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tbl-note">Recorded as measured: <b>Excel 16 holds the lighter idle footprint and the faster single recalculation</b> on this file. Cella opens it in well under half the time, and a save of the 72 MB reference workbook takes ~2 s.</p>
+          <figcaption class="fig-cap">
+            <span>TABLE T-01 — RECORDED AS MEASURED</span>
+            <span>DEV MACHINE · RELEASE BUILD</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="gridlines g-2 reveal" style="margin-top: 32px">
+        <div class="panel">
+          <div class="panel-idx">C-05</div>
+          <h3>THE HARNESS AND THE GATE</h3>
+          <p>One command reproduces every number above, best of three passes — and a budget gate turns the table into a release requirement: <span class="v">cargo xtask perf</span> compares each scenario against <span class="v">xtask/perf-budgets.txt</span> and exits non-zero on a regression. It runs before every release and after any hot-path change, deliberately outside per-commit CI.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">RUN IT YOURSELF</div>
+          <div class="codeblock" style="margin-bottom: 12px">
+            <button class="copy-btn" type="button" data-copy="perf-cmd">COPY</button>
+            <pre id="perf-cmd"><span class="c"># reference workbook, machine-readable, best of three</span>
+cargo run --release -p cella-engine --example perf -- 1000000 --json --repeat=3</pre>
+          </div>
+          <p class="stat-note"><span class="v">--release</span> is not decoration: a debug build is 10–30× slower, and the harness says so.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= SECTION D: AGENTS -->
+    <section class="sec wrap" id="agents" aria-labelledby="agents-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION D</span>
+        <h2 id="agents-h">EVERY ACTION IS A COMMAND</h2>
+        <span class="sec-idx">D / G</span>
+      </div>
+      <p class="sec-sub">438 commands cover the ribbon at 0.13.0 — each with an id, a label, a ribbon path, a shortcut, a params doc and an enabled state. Three transports drive the identical catalog, and programmatic calls never open dialogs: empty params run with defaults, or return an error.</p>
+
+      <div class="gridlines g-auto reveal">
+        <div class="panel">
+          <div class="panel-idx">D1 · MCP SERVER</div>
+          <h3>FOR AGENT FRAMEWORKS</h3>
+          <p>stdio, the standard MCP transport — the same command set an agent sees in its tool list.</p>
+          <div class="codeblock"><pre><span class="c"># the MCP server on stdio</span>
+cargo run -p cella-cli -- mcp</pre></div>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">D2 · CLI</div>
+          <h3>HEADLESS</h3>
+          <p>Evaluate a formula, or run commands over a workbook and write it back out — no window, no UI.</p>
+          <div class="codeblock"><pre><span class="c"># headless evaluation</span>
+cargo run -p cella-cli -- eval '=SUM(1,2,3)'</pre></div>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">D3 · CONTROL CHANNEL</div>
+          <h3>THE LIVE APP</h3>
+          <p>Newline-delimited JSON to 127.0.0.1:7979 while the app runs — pointer, keyboard, dialogs, even <span class="v">ui.screenshot</span> for visual verification.</p>
+          <div class="codeblock"><pre><span class="c"># desktop app + control channel</span>
+cargo run --release -p cella -- --sample sales --control 7979</pre></div>
+        </div>
+      </div>
+
+      <div class="reveal" style="margin-top: 32px">
+        <figure class="console">
+          <div class="console-head">
+            <span>CELLA — CONTROL CHANNEL</span>
+            <span class="on">JSON LINES</span>
+            <span>127.0.0.1:7979</span>
+          </div>
+          <div class="console-body">
+            <pre class="ln-p">cella --sample sales --control 7979</pre>
+            <pre class="ln-req" id="req-line">{"<span class="k">id</span>": 1, "<span class="k">method</span>": "<span class="v">engine.execute</span>", "<span class="k">params</span>": {"<span class="k">command</span>": "<span class="v">cell.set</span>", "<span class="k">params</span>": {"<span class="k">cell</span>": "<span class="s">B2</span>", "<span class="k">input</span>": "<span class="s">=SUM(A1:A9)</span>"}}</pre>
+            <pre class="ln-res">{"<span class="k">id</span>": 1, "<span class="k">ok</span>": true, "<span class="k">result</span>": {"<span class="k">cell</span>": "<span class="s">B2</span>", "<span class="k">value</span>": "<span class="s">45</span>"}}</pre>
+          </div>
+          <figcaption class="fig-cap">
+            <span>FIG. 02 — A REAL EXCHANGE, VERBATIM</span>
+            <span>ONE LINE IN, ONE LINE OUT</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="gridlines g-auto reveal" style="margin-top: 32px">
+        <div class="panel">
+          <div class="panel-idx">D4</div>
+          <h3>DISCOVERY</h3>
+          <ul class="spec">
+            <li>engine.commands returns the full catalog — search included</li>
+            <li>Each entry: id, label, ribbon path, shortcut, params doc, enabled</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">D5</div>
+          <h3>REPLAY</h3>
+          <ul class="spec">
+            <li>engine.journal replays the session's commands</li>
+            <li>Passwords are never journaled</li>
+            <li>Capped at 10,000 entries and 64 MB</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">D6</div>
+          <h3>NO DIALOGS</h3>
+          <ul class="spec">
+            <li>Empty params run with defaults or return an error</li>
+            <li>Only menu-style invocation opens a dialog</li>
+            <li>ui.screenshot returns a PNG, base64 when no path</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================= SECTION E: STABILITY -->
+    <section class="sec wrap" id="stability" aria-labelledby="stab-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION E</span>
+        <h2 id="stab-h">NEVER CRASH</h2>
+        <span class="sec-idx">E / G</span>
+      </div>
+      <div class="quote reveal">
+        <p>People trust Cella with their numbers; a crash loses their work.</p>
+        <cite>THE ENGINEERING STANDARD — DENIED BY LINT IN EVERY CRATE, PROVEN BY FUZZING</cite>
+      </div>
+      <div class="gridlines g-2 reveal">
+        <div class="panel">
+          <div class="panel-idx">E1</div>
+          <h3>THE POLICY</h3>
+          <p>No panics in non-test code: <span class="v">unwrap</span>, <span class="v">expect</span>, <span class="v">panic!</span>, <span class="v">todo!</span> and <span class="v">unreachable!</span> are denied by lint in every crate, and <span class="v">unsafe</span> is forbidden outright. Errors are <span class="v">Result&lt;T, E&gt;</span> end to end, through each crate's own error type.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">E2</div>
+          <h3>HOSTILE INPUT</h3>
+          <p>Files, formulas and command parameters are hostile numbers: checked and saturating arithmetic, capped allocations for huge ranges, bounded recursion — and evaluation budgets for nesting, work and LAMBDA fuel behind an 896 KiB stack guard. A hostile formula is an error value, never a process abort.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">E3</div>
+          <h3>THE PROOF</h3>
+          <p>2,136 tests, and a command-sequence fuzzer replaying random sequences against undo/redo, XLSX round-trip and full-recalculation invariants. The real-world corpus run: <b>3,084 workbooks opened, zero reader failures; 635 save/reopen cycles, zero mismatches</b> — Excel 16 found Cella's copies identical.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">E4</div>
+          <h3>LAST RESORT</h3>
+          <p><span class="v">Session::execute</span> catches anything that escapes and restores the workbook. It is a safety net for the user's data — never a licence for the code.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================== SECTION F: START -->
+    <section class="sec wrap" id="start" aria-labelledby="start-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION F</span>
+        <h2 id="start-h">PLATFORMS &amp; QUICK START</h2>
+        <span class="sec-idx">F / G</span>
+      </div>
+      <div class="gridlines g-auto reveal">
+        <div class="panel">
+          <div class="panel-idx">F1</div>
+          <h3>NATIVE</h3>
+          <p>One Rust core, native windows on macOS, Windows, Linux and BSD, with per-platform chrome. On Windows, OpenGL is the default renderer — a 183 MB lighter window at 144 Hz.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">F2</div>
+          <h3>BROWSER</h3>
+          <p>The WebAssembly build is a gate, not a stretch goal: <span class="v">cargo xtask wasm</span> runs in CI, so the browser target is never broken.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">F3</div>
+          <h3>LANGUAGES</h3>
+          <p>English and Simplified Chinese, deliberately two: all 438 command labels are translated and verified in the running app. Formulas stay en-US — exactly as in Microsoft's own Chinese build.</p>
+        </div>
+      </div>
+      <div class="reveal" style="margin-top: 32px">
+        <figure class="codeblock">
+          <button class="copy-btn" type="button" data-copy="qs-code">COPY</button>
+          <pre id="qs-code">cargo run --release -p cella -- --sample sales                        <span class="c"># the desktop app</span>
+cargo run --release -p cella -- --sample sales --control 7979         <span class="c"># + control channel</span>
+cargo run -p cella-cli -- eval '=SUM(1,2,3)'                          <span class="c"># headless evaluation</span>
+cargo run -p cella-cli -- mcp                                        <span class="c"># the MCP server on stdio</span>
+cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png <span class="c"># offscreen render</span></pre>
+          <figcaption class="fig-cap">
+            <span>FIG. 04 — QUICK START, VERBATIM FROM README.MD</span>
+            <span>REQUIRES A RUST TOOLCHAIN</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ================================================== SECTION G: STATUS -->
+    <section class="sec wrap" id="status" aria-labelledby="status-h">
+      <div class="sec-head">
+        <span class="sec-tag">SECTION G</span>
+        <h2 id="status-h">STATUS — ALPHA, STATED HONESTLY</h2>
+        <span class="sec-idx">G / G</span>
+      </div>
+      <p class="sec-sub">Alpha means the six core workflows pass end to end with save and reopen, and the large-workbook beta gate is met: 100M cells open at 16.7 MiB live / 183 MiB peak, and a 100k-row edit recalculates in 20–25 ms on the machine's own threads. Estimates are drawn hatched; measurements are solid.</p>
+      <div class="gridlines g-4 reveal">
+        <div class="meter">
+          <div class="meter-head"><span>RIBBON CATALOG</span><span class="meter-val">288/300 — 96.0%</span></div>
+          <div class="meter-track"><div class="meter-fill" style="--w:.96"></div></div>
+        </div>
+        <div class="meter">
+          <div class="meter-head"><span>WORKSHEET FUNCTIONS · 504 WORKING</span><span class="meter-val">513/523 — 98.1%</span></div>
+          <div class="meter-track"><div class="meter-fill" style="--w:.981"></div></div>
+        </div>
+        <div class="meter">
+          <div class="meter-head"><span>FEATURE BREADTH · WEIGHTED</span><span class="meter-val">~78%</span></div>
+          <div class="meter-track"><div class="meter-fill hatch" style="--w:.78"></div></div>
+        </div>
+        <div class="meter">
+          <div class="meter-head"><span>READY FOR REAL WORK</span><span class="meter-val">~55%</span></div>
+          <div class="meter-track"><div class="meter-fill hatch" style="--w:.55"></div></div>
+        </div>
+      </div>
+      <p class="meter-legend">FIG. 03 — SOLID = MEASURED · HATCH = ESTIMATE · SOURCE: ROADMAP.MD</p>
+      <div class="gridlines g-2 reveal" style="margin-top: 32px">
+        <div class="panel">
+          <div class="panel-idx">G1</div>
+          <h3>WHAT IS MET</h3>
+          <p>The six alpha-gate workflows, the large-workbook beta gate, calculation correctness (a 595-example oracle suite through the real calc path), and the real-world corpus run of 2026-11-03 — 3,084 workbooks, 635 saves, zero mismatches.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-idx">G2</div>
+          <h3>WHAT REMAINS</h3>
+          <p>The release run (8–12 h) and pinning the corpus for CI. The ranked work list is public — every known shortfall, with its hours:</p>
+          <p class="hero-links" style="margin-top: 14px">
+            <a href="https://github.com/Matt-qwq/cella/blob/main/ROADMAP.md">ROADMAP.MD</a>
+            <a href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md">DOCS/ROADMAP.MD</a>
+            <a href="https://github.com/Matt-qwq/cella/blob/main/docs/gaps.md">DOCS/GAPS.MD</a>
+            <a href="https://github.com/Matt-qwq/cella/blob/main/docs/target-app-parity.md">TARGET-APP-PARITY.MD</a>
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============================================================= FOOTER -->
+  <footer class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <svg class="glyph" width="40" height="40" viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" fill="none" stroke="currentColor" stroke-opacity=".5"/><path d="M12 1.5v21M1.5 12h21" stroke="currentColor" stroke-opacity=".35"/><rect x="12.5" y="12.5" width="9.5" height="9.5" fill="#4FD5F2"/></svg>
+        <div>
+          <div class="foot-name">CELLA</div>
+          <p class="foot-tag">An independent, high-performance spreadsheet built in Rust. For data sets, for agents, and for the files people actually send.</p>
+        </div>
+      </div>
+      <nav class="foot-col" aria-label="Repository">
+        <h3>SOURCE</h3>
+        <ul>
+          <li><a href="https://github.com/Matt-qwq/cella">GitHub repository</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/README.md">README.md</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md">docs/performance.md</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md">docs/control-protocol.md</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/ROADMAP.md">ROADMAP.md</a></li>
+        </ul>
+      </nav>
+      <nav class="foot-col" aria-label="Licence and credits">
+        <h3>LEGAL</h3>
+        <ul>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-MIT">LICENSE-MIT</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-APACHE">LICENSE-APACHE</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE">NOTICE</a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/ATTRIBUTION.md">ATTRIBUTION.md</a></li>
+        </ul>
+      </nav>
+      <div class="foot-col">
+        <h3>COLOPHON</h3>
+        <p>Hand-authored HTML, CSS and JavaScript — no frameworks, no build step, no tracking, no external requests. System type stacks only; every graphic on this page is drawn in code.</p>
+        <p style="margin-top: 10px">"Excel" appears on this page only in factual, measured comparisons.</p>
+      </div>
+    </div>
+    <div class="foot-credit">
+      <p><b>Cella is an independent, modified version of GridCraft</b>, based on the work of the ArtCraft team and the GridCraft contributors. It is <b>not</b> an ArtCraft product and carries none of the ArtCraft marks: upstream's brand licence requires a modified version to remove them, and this repository did.</p>
+      <p>Original work: Copyright © 2026 the ArtCraft Team and the GridCraft contributors. Modifications in this repository: Copyright © 2026 its contributors. Licensed under <b>MIT OR Apache-2.0</b>, at your option. Per-file asset attribution is in ATTRIBUTION.md; third-party material and the trademark position are in NOTICE.</p>
+    </div>
+    <div class="foot-bottom">
+      <span>CELLA — SHEET 1 / 1 · DRAWN IN CODE</span>
+      <span>EXCEL AND WPS ARE TRADEMARKS OF THEIR RESPECTIVE OWNERS · CELLA IS UNAFFILIATED</span>
+    </div>
+  </footer>
+</body>
+</html>
