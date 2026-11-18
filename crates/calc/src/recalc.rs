@@ -755,7 +755,7 @@ impl Calc {
                     // A shard keeps slot tables of its own: the values cannot be shared (the pass's
                     // are a `&mut` borrow its threads do not have), and its leaves only read cells
                     // outside the dirty set anyway.
-                    let mut trees = Trees::with_capacity(local.len());
+                    let mut trees = Trees::for_cells(&local);
                     let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
                     for &k in &local {
                         if let Some(node) = graph.node(k) {
@@ -1465,7 +1465,9 @@ impl Calc {
             // legacy array): the pass reads them from there instead of rebuilding 100k cells.
             // One dense table of the formulas to evaluate, in the row-major order `dirty` is in: the
             // pass looks a cell up once (its slot), and the write-back below walks the same order.
-            let mut trees = Trees::with_capacity(dirty.len());
+            // The table is indexed by the box `dirty` fills, so a lookup is arithmetic rather than a
+            // hash probe (and a sparse set keeps the hash table instead).
+            let mut trees = Trees::for_cells(&dirty);
             let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
             for k in &dirty {
                 if let Some(node) = self.graph.node(*k) {
@@ -2706,5 +2708,109 @@ pub(crate) mod tests {
             true
         })
         .then_some(seen)
+    }
+
+    /// The formula cells of `wb`, in the row-major order a pass lists them.
+    fn dirty_formulas(wb: &Workbook) -> Vec<Key> {
+        let mut dirty: Vec<Key> = Vec::new();
+        for (si, sheet) in wb.sheets.iter().enumerate() {
+            for (at, cell) in sheet.cells.iter() {
+                if cell.formula.is_some() {
+                    dirty.push((si, at));
+                }
+            }
+        }
+        dirty.sort_unstable_by_key(|(s, c)| (*s, c.row, c.col));
+        dirty
+    }
+
+    /// One sequential pass over `dirty`, as the recalc runs it, on the slot table `dense` picks.
+    /// Returns whether the table was dense, and the value of every listed cell.
+    fn pass_values(wb: &Workbook, dirty: &[Key], dense: bool) -> (bool, Vec<(Key, Option<Value>)>) {
+        let mut trees = if dense { Trees::for_cells(dirty) } else { Trees::for_cells_sparse(dirty) };
+        for &k in dirty {
+            let Some(text) = wb.sheet(k.0).and_then(|s| s.cells.get(k.1)).and_then(|c| c.formula.as_ref().map(|f| f.text.clone())) else {
+                continue;
+            };
+            let Some(expr) = cella_formula::parse(text.strip_prefix('=').unwrap_or(&text)).ok() else { continue };
+            trees.push_tree(k, &std::sync::Arc::new(expr));
+        }
+        let mut rng = 1u64;
+        let graph = Graph::default();
+        let legacy = HashMap::default();
+        let mut names = crate::eval::NameCache::default();
+        let mut host = PassHost::new(wb, &graph, &trees, &legacy, &mut names, &mut rng, 0.0);
+        for (slot, k) in trees.iter() {
+            host.calculate_at(k, slot);
+        }
+        (trees.is_dense(), dirty.iter().map(|k| (*k, host.value(*k).cloned())).collect())
+    }
+
+    /// The slot table a pass builds is a performance choice, not a semantic one: the same workbook
+    /// and the same dirty list must calculate the same values through the dense box and the hash
+    /// table, and the values must be the ones a whole recalculation gives.
+    #[test]
+    fn a_dense_slot_table_calculates_what_the_hash_table_does() {
+        let mut wb = Workbook::new();
+        {
+            let sh = wb.sheet_mut(0).expect("sheet");
+            for r in 0..5 {
+                let row = r + 1;
+                sh.cells.set(CellRef::new(r, 0), Cell::value(Value::Number(f64::from(row))));
+                sh.cells.set(CellRef::new(r, 1), Cell::formula(Formula::new(&format!("=A{row}*2"))));
+                sh.cells.set(CellRef::new(r, 2), Cell::formula(Formula::new(&format!("=B{row}+A{row}"))));
+                sh.cells.set(CellRef::new(r, 3), Cell::formula(Formula::new(&format!("=SUM(B$1:B{row})"))));
+                sh.cells.set(CellRef::new(r, 4), Cell::formula(Formula::new(&format!("=IF(C{row}>4,\"big\",C{row}*1.5)"))));
+            }
+            sh.cells.set(CellRef::new(0, 5), Cell::formula(Formula::new("=SUM(E1:E5)")));
+            sh.cells.set(CellRef::new(1, 5), Cell::formula(Formula::new("=Z1+1")));
+            sh.cells.set(CellRef::new(2, 5), Cell::formula(Formula::new("=1/0")));
+        }
+        let dirty = dirty_formulas(&wb);
+        assert!(dirty.len() > 20, "{} formulas", dirty.len());
+        let (dense, dense_values) = pass_values(&wb, &dirty, true);
+        let (sparse, sparse_values) = pass_values(&wb, &dirty, false);
+        assert!(dense, "a filled box must use the dense table");
+        assert!(!sparse, "the sparse table is the one the sparse path builds");
+        assert_eq!(dense_values.len(), dirty.len(), "every formula got a slot");
+        assert_eq!(dense_values, sparse_values, "the two tables must agree cell for cell");
+        let mut full = wb.clone();
+        Calc::new().recalc_all(&mut full);
+        for (k, v) in &dense_values {
+            let expected = full.sheet(k.0).expect("sheet").value(k.1);
+            assert_eq!(v.as_ref(), Some(&expected), "cell {k:?}");
+        }
+    }
+
+    /// A dirty set that does not fill its box keeps the hash table: three cells far apart would
+    /// otherwise zero-fill the box between them, which is the cost this table exists to avoid.
+    #[test]
+    fn a_sparse_dirty_set_keeps_the_hash_table() {
+        let far: Vec<Key> = vec![(0, CellRef::new(0, 0)), (0, CellRef::new(200_000, 5)), (0, CellRef::new(900_000, 40))];
+        assert!(!Trees::for_cells(&far).is_dense(), "three cells far apart must not zero-fill a box of the sheet");
+        // A column is a box one cell wide, however tall.
+        let column: Vec<Key> = (0..1_000u32).map(|r| (0, CellRef::new(r, 7))).collect();
+        assert!(Trees::for_cells(&column).is_dense());
+        // One listed cell in eight box cells is the threshold: ten cells on a ten-by-ten diagonal
+        // are 100 box cells against 80, so the hash table.
+        let diagonal: Vec<Key> = (0..10u32).map(|i| (0, CellRef::new(i, i))).collect();
+        assert!(!Trees::for_cells(&diagonal).is_dense());
+        // The sheet is part of the box, so a list split over two sheets pays for both, and the
+        // arithmetic puts a second sheet's cells after the first sheet's rows.
+        let two_sheets: Vec<Key> = (0..2usize).flat_map(|s| (0..400u32).map(move |r| (s, CellRef::new(r, 3)))).collect();
+        let mut trees = Trees::for_cells(&two_sheets);
+        assert!(trees.is_dense());
+        let one = std::sync::Arc::new(cella_formula::parse("1").expect("a literal parses"));
+        trees.push_tree(two_sheets[0], &one);
+        trees.push_tree((1, CellRef::new(0, 3)), &one);
+        assert_eq!(trees.slot(two_sheets[0]), Some(0));
+        assert_eq!(trees.slot((1, CellRef::new(0, 3))), Some(1));
+        assert_eq!(trees.slot((1, CellRef::new(400, 3))), None, "a cell past the box has no slot");
+        // A row past the box would land inside the next sheet's rows of a table that only checked
+        // the end of the list: a pass hopping between two sheets of the same height must not read
+        // the other sheet's cell.
+        assert_eq!(trees.slot((0, CellRef::new(450, 3))), None, "a row past the box must not read the next sheet");
+        assert_eq!(trees.slot((0, CellRef::new(0, 4))), None, "a cell beside the box has no slot");
+        assert_eq!(trees.slot((2, CellRef::new(0, 3))), None, "a sheet the box does not span has no slot");
     }
 }
