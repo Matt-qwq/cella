@@ -375,24 +375,31 @@ without a window, is **8.1 MB**, and a **bare eframe window with one label** - b
 beside it - holds 236-256 MB on DirectX 12 and 91-109 MB on OpenGL. So the windowing stack is the
 largest part and the backend is the largest lever inside it.
 
-The same file in all three backends (two runs each, the edit is B3 = 5; the recalculate figure is
-there to show that the backend does not touch the engine's cost):
+The same file in all three backends, on a **visible** and on a **hidden desktop** (a desktop created
+by the harness, so a measurement never puts a window in front of the user). Two runs each, the edit
+is B3 = 5:
 
-| backend | idle | after opening 70 MB | after the edit | peak | `ui.screenshot` |
-|---|---:|---:|---:|---:|---:|
-| DirectX 12 | 307 MB | 1,189 MB | 1,326 MB | 1,489 MB | 140 ms |
-| Vulkan | **230 MB** | 1,111 MB | 1,248 MB | 1,412 MB | **hangs** (60 s timeout, six times) |
-| OpenGL | 238 MB | **1,052 MB** | **1,188 MB** | **1,351 MB** | **135 ms** |
-| recalculate 2M formulas | | | | | 0.86-0.90 s in all three |
+| backend | idle (hidden) | after opening 70 MB (hidden) | `ui.screenshot` (hidden) | `ui.screenshot` (visible) |
+|---|---:|---:|---:|---:|
+| DirectX 12 | 317 MB | 1,200 MB | 135 ms | 140 ms |
+| Vulkan | **240 MB** | 1,123 MB | 137 ms | **hangs** in this build |
+| OpenGL | **173 MB** | **1,056 MB** | **315 ms** | 135 ms |
+| recalculate 2M formulas | | | 0.84-0.90 s in all three | |
 
-Three things follow. **OpenGL is both the lightest and as fast as DirectX 12** here (135 ms against
-140 ms for a full screenshot, the same engine time), so the ~137 MB it saves with a document open is
-not paid for in this measurement - what it does not prove is frame pacing and vsync under real
-scrolling, which needs a frame-time probe rather than a screenshot. **Vulkan is lightest idle but its
-readback path hung** in this build, before the known Intel `igvk64.dll` crash that keeps it off by
-default (#120); it is not a default candidate. **Wayland is not a render backend**: it is the Linux
-window protocol (the app ships both `wayland` and `x11` features), so on Linux the
-choice is Vulkan or OpenGL under either protocol - a measurement this Windows machine cannot make.
+Two things are solid. **Memory: OpenGL and Vulkan save 70-145 MB over DirectX 12**, and the saving
+is the same whether a window is on screen or not. **Engine cost: the backend does not touch it** -
+recalculate is 0.84-0.90 s in all three. **Latency is the open question**, and the two environments
+disagree: on a visible desktop OpenGL matches DirectX 12 (135 against 140 ms for a full screenshot),
+while on the hidden desktop its readback costs 2.3x more - an artefact of a window that is not
+composited, but exactly the sort of thing that makes a screenshot a bad proxy. What is still missing
+is a real frame-time probe (paint cost per frame, then pacing with a visible window), which is what
+the decision to change the default has to wait for.
+
+Vulkan is not a default candidate whatever the numbers say: its readback hung on the visible desktop
+in this build, on top of the known Intel `igvk64.dll` crash that keeps it off (#120). Wayland is not
+a render backend at all - it is the Linux window protocol (the app ships `wayland` and `x11`),
+so on Linux the choice is Vulkan or OpenGL under either protocol, which this machine cannot measure.
+
 
 Inside our own ~130 MB over the bare window: **fonts 66.7 MB** (19 faces; the six script fallbacks
 are 53 MB - Chinese 19.7, Japanese 13.8, Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4 - and
