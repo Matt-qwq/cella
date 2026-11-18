@@ -149,6 +149,12 @@ Reading it:
   helps at 1M by making an allocation cheaper can still cost at 100k, where the whole workbook fits
   in cache.
 - **CSV import is the cheap open now.** `open.csv` reads 2.8 MB in 153 ms and 30 MB in 1.11 s (1M rows × 6 cells), against 1.97 s for the same file before the reader scanned bytes into row batches. It was measured on its own, after the byte scanner landed, so it is not from the parallel-build session the rest of that table was recorded on.
+- **An A/B that edits a constant leaves the incremental cache poisoned on Windows.** Two
+  rebuilds of one crate (edit, measure, revert, rebuild) can leave objects that reference symbols
+  from the other incremental session, and mingw's `ld` then fails the *test* link with `undefined
+  reference to anon.<hash>.<n>.llvm.<hash>` — no code change involved. `CARGO_INCREMENTAL=0` links
+  fine and `cargo clean -p <crate>` fixes it; do that before re-running `cargo xtask ci` after a
+  constant-flip A/B.
 - The two tables are separate sources. Best-of-three reports the pass the machine was quietest for,
   which is why `open.xlsx` (the longest scenario, so the one a loaded pass distorts most) comes out
   at 8.6 s here against the 15.3 s of the single-pass ad-hoc example. The budgets are keyed to the
