@@ -1,10 +1,11 @@
 //! `cargo xtask perf-report`: one generated page from the harnesses themselves.
 //!
 //! It runs the scenario gate (`cargo xtask perf`) and the live-heap example in release, and writes
-//! `docs/performance-report.md` with their own output, so the numbers on the page are the numbers
-//! the tools printed - the page cannot drift the way a hand-copied table does. What needs another
-//! application (the Excel/WPS comparison) or another platform stays curated in
-//! `docs/performance.md` and is linked, and what is *not* measured is listed on the page itself.
+//! `docs/performance-report.md` and its Chinese companion `docs/performance-report.zh-CN.md` from
+//! their own output, so the numbers on the page are the numbers the tools printed - the page cannot
+//! drift the way a hand-copied table does. The external comparison lives in
+//! `docs/external-benchmark.md` (it needs Excel, WPS and a second build) and is embedded here, and
+//! what is *not* measured is listed on the page itself.
 
 use std::path::Path;
 use std::process::Command;
@@ -28,6 +29,13 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(capture(c, root)?.trim().to_string())
 }
 
+/// The external benchmark, demoted one heading level so it nests inside a report section.
+fn external(root: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(root.join("docs/external-benchmark.md")).map_err(|e| format!("read docs/external-benchmark.md: {e}"))?;
+    let body = text.split_once("\n").map(|(_, rest)| rest).unwrap_or("").trim_start();
+    Ok(body.replace("\n## ", "\n### "))
+}
+
 pub fn run(root: &Path) -> Result<(), String> {
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| format!("read Cargo.toml: {e}"))?;
     let version = crate::version::read(&manifest)?;
@@ -48,17 +56,31 @@ pub fn run(root: &Path) -> Result<(), String> {
     mem.args(["run", "--release", "-q", "-p", "cella-engine", "--example", "memory", "--", "1000000"]);
     let heap = capture(mem, root)?;
 
-    let page = render(&version, &sha, &date, rustc.trim(), &table, &heap);
-    let path = root.join("docs/performance-report.md");
-    let text = crate::eol::for_write(&path, &page);
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
-    println!("perf-report: wrote {} ({} lines)", path.display(), page.lines().count());
+    let benchmark = external(root)?;
+    let facts = Facts { version: &version, sha: &sha, date: &date, rustc: rustc.trim(), table: &table, heap: &heap, benchmark: &benchmark };
+    for (path, page) in [("docs/performance-report.md", render_en(&facts)), ("docs/performance-report.zh-CN.md", render_zh(&facts))] {
+        let path = root.join(path);
+        let text = crate::eol::for_write(&path, &page);
+        std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+        println!("perf-report: wrote {} ({} lines)", path.display(), page.lines().count());
+    }
     Ok(())
 }
 
-fn render(version: &str, sha: &str, date: &str, rustc: &str, table: &str, heap: &str) -> String {
+struct Facts<'a> {
+    version: &'a str,
+    sha: &'a str,
+    date: &'a str,
+    rustc: &'a str,
+    table: &'a str,
+    heap: &'a str,
+    benchmark: &'a str,
+}
+
+fn render_en(f: &Facts) -> String {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
+    let (version, sha, date, rustc, table, heap, benchmark) = (f.version, f.sha, f.date, f.rustc, f.table, f.heap, f.benchmark);
     format!(
         r#"# Performance report
 
@@ -79,12 +101,9 @@ fn render(version: &str, sha: &str, date: &str, rustc: &str, table: &str, heap: 
 {heap}
 ```
 
-## Measured against Excel and WPS
+## Measured against Excel, WPS and upstream GridCraft
 
-The external comparison - the same 70 MB file opened and recalculated by Excel 16.0.20527 and WPS
-12.1.0.25222, with working set, private bytes and idle - is in
-[performance.md](performance.md#compared-with-excel-and-wps-2026-11-18), with its method and
-caveats. It is not generated here because it drives two other applications through COM.
+{benchmark}
 
 ## Not measured
 
@@ -103,7 +122,55 @@ No number below means no measurement, not a zero:
 ```bash
 cargo xtask perf                              # the scenario gate against xtask/perf-budgets.txt
 cargo run --release -p cella-engine --example memory -- 1000000
-cargo xtask perf-report                       # this page
+cargo xtask perf-report                       # this page and its Chinese companion
+```
+"#
+    )
+}
+
+fn render_zh(f: &Facts) -> String {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let (version, sha, date, rustc, table, heap, benchmark) = (f.version, f.sha, f.date, f.rustc, f.table, f.heap, f.benchmark);
+    format!(
+        r#"# 性能报告
+
+> 由 `cargo xtask perf-report` 生成，对象是 Cella {version}，提交 `{sha}`（{date}）。
+> 机器：{os} {arch}；{rustc}。所有数字都是同一台空闲机器上的墙钟时间，本机跑动之间波动约 10%，
+> 这也是门禁预算取"安静一次的两倍"的原因。方法与口径见 [performance.md](performance.md)。
+
+## 场景：10 万行与 100 万行（release，单次最优）
+
+```text
+{table}
+```
+
+## 活堆内存：100 万行 x 6 列、200 万公式
+
+```text
+{heap}
+```
+
+## 与 Excel、WPS、上游 GridCraft 的横评
+
+{benchmark}
+
+## 没有测量的项目
+
+下面没有数字，代表**没有测**，不是 0：
+
+- **启动时间**：冷启动、热启动，带文档 / 不带文档。
+- **界面交互延迟**：按键到单元格重绘、100 万行滚动、打开对话框、图表重绘。只有帧绘制（约 1.4 ms @144 Hz）有数字。
+- **平台**：macOS、Linux、wasm 都没有测；以上全部来自一台 Windows 机器。
+- **对 Excel 的多负载对比**：透视表、图表、打印/PDF、CSV 导入、查询与 Parquet、多工作表、1 亿单元格分页。
+- **长时间运行内存**：没有一小时级别的漂移观察。
+
+## 复现
+
+```bash
+cargo xtask perf                              # 场景门，对照 xtask/perf-budgets.txt
+cargo run --release -p cella-engine --example memory -- 1000000
+cargo xtask perf-report                       # 重新生成本页与英文版
 ```
 "#
     )

@@ -1,6 +1,6 @@
 # Performance report
 
-> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `201d2d41` (2026-11-18).
+> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `29a35f71` (2026-11-19).
 > Machine: windows x86_64; rustc 1.97.1 (8bab26f4f 2026-07-14). Every number is wall clock on one idle machine, and this
 > machine's run-to-run spread is about 10 %, which is why a gate budget is twice a quiet pass.
 > Method and caveats: [performance.md](performance.md).
@@ -13,28 +13,28 @@ budgets D:\pycharm_projects\cella\xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      213 ms     400 ms     53%
-fill.formulas          100000      160 ms     380 ms     42%
-fill.chained           100000      215 ms     540 ms     40%
-aggregate              100000       71 ms     200 ms     35%
-edit.recalc            100000      102 ms     350 ms     29%
-edit.undo              100000      1.9 ms     4.0 ms     48%
-sort.desc              100000      391 ms     1.05 s     37%
-save.xlsx              100000      165 ms     370 ms     45%
-open.xlsx              100000      309 ms     670 ms     46%
-rebuild.graph          100000       59 ms     170 ms     35%
-open.csv               100000       64 ms     140 ms     46%
-fill.values           1000000      2.46 s     4.10 s     60%
-fill.formulas         1000000      1.43 s     3.55 s     40%
-fill.chained          1000000      1.95 s     5.95 s     33%
-aggregate             1000000      768 ms     1.95 s     39%
-edit.recalc           1000000      946 ms     3.65 s     26%
-edit.undo             1000000       30 ms      54 ms     55%
-sort.desc             1000000      4.88 s    13.75 s     35%
-save.xlsx             1000000      1.91 s     4.10 s     47%
-open.xlsx             1000000      3.51 s     8.05 s     44%
-rebuild.graph         1000000      790 ms     2.25 s     35%
-open.csv              1000000      626 ms     1.25 s     50%
+fill.values            100000      202 ms     400 ms     51%
+fill.formulas          100000      150 ms     380 ms     40%
+fill.chained           100000      194 ms     540 ms     36%
+aggregate              100000       71 ms     200 ms     36%
+edit.recalc            100000       91 ms     350 ms     26%
+edit.undo              100000      2.1 ms     4.0 ms     52%
+sort.desc              100000      385 ms     1.05 s     37%
+save.xlsx              100000      190 ms     370 ms     51%
+open.xlsx              100000      310 ms     670 ms     46%
+rebuild.graph          100000       56 ms     170 ms     33%
+open.csv               100000       67 ms     140 ms     48%
+fill.values           1000000      2.10 s     4.10 s     51%
+fill.formulas         1000000      1.26 s     3.55 s     35%
+fill.chained          1000000      1.86 s     5.95 s     31%
+aggregate             1000000      740 ms     1.95 s     38%
+edit.recalc           1000000      851 ms     3.65 s     23%
+edit.undo             1000000       25 ms      54 ms     46%
+sort.desc             1000000      4.26 s    13.75 s     31%
+save.xlsx             1000000      1.76 s     4.10 s     43%
+open.xlsx             1000000      2.90 s     8.05 s     36%
+rebuild.graph         1000000      758 ms     2.25 s     34%
+open.csv              1000000      594 ms     1.25 s     48%
 
 OK: all 22 scenarios within budget (D:\pycharm_projects\cella\xtask/perf-budgets.txt)
 
@@ -159,12 +159,66 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
 
 ```
 
-## Measured against Excel and WPS
+## Measured against Excel, WPS and upstream GridCraft
 
-The external comparison - the same 70 MB file opened and recalculated by Excel 16.0.20527 and WPS
-12.1.0.25222, with working set, private bytes and idle - is in
-[performance.md](performance.md#compared-with-excel-and-wps-2026-11-18), with its method and
-caveats. It is not generated here because it drives two other applications through COM.
+> **Measured** 2026-11-18 on the development machine (Windows 11, AMD Ryzen, 32 GB), release
+> builds. Every product ran the same file and the same edit; the answer cell is identical across
+> all four. Run-to-run spread on this machine is about 10 %.
+
+The file is `plan/bench/ref-1m.xlsx`: 1,000,000 rows x 8 columns, 2,000,000 formulas
+(`G = B*C+D`, `H = H(n-1)+G(n)`), 70,371,330 bytes, written by Cella. The edit is `B1 = 3`, which
+dirties `G1` and the whole `H` chain (about 1,000,000 cells); every product had automatic
+calculation on, so the assignment pays for the recalculation.
+
+| | Excel 16.0.20527 | WPS 12.1.0.25222 | upstream GridCraft v0.19.1 | Cella 0.13.0 |
+|---|---:|---:|---:|---:|
+| open the 70 MB file | 7.8 s | 11.7 s | 21.4 s (open + full recalc) | **3.1 s** (3.33 s with a full recalc after it) |
+| full recalculation of 2M formulas | **0.31 s** | 16.9 s | included above | 1.30 s |
+| **edit B1 -> the dependent chain** | **0.08 s** | 16.9 s | 3.64 s | 0.36 s |
+| working set after opening | **588 MB** | 987 MB | n/a (engine only) | 996 MB |
+| private working set after opening | **468 MB** | 864 MB | n/a | 1,341 MB |
+| idle, no document | **~35 MB** | 288 MB | n/a | 196 MB |
+| H1000000 after the edit | 23,999,823,993,691 | the same | the same | the same |
+
+Two runs each, and the table quotes both where they differ (Excel open 7.9/7.71 s, edit
+0.08/0.07 s; WPS open 11.3/12.14 s, edit 17.19/16.6 s; Cella open 2.88/3.30 s, edit 0.29/0.42 s).
+Memory was read from the running process (WMI) after the document was open; the Excel and WPS
+figures are from the same day and file.
+
+### The same operations in each engine
+
+Excel and WPS were driven through COM; Cella through its control channel on a hidden desktop (no
+window is put in front of anyone). Upstream GridCraft v0.19.1 cannot be driven that way here (its
+app opens a DX12 window, and the control port dies on a hidden desktop), so it ran **its own
+engine benchmark script** (`crates/engine/examples/perf.rs`, the direct ancestor of ours) on the
+same 1,000,000 rows. Cella ran the equivalent operations in its gate harness, which builds the
+same three columns. The harness mechanics are not identical - upstream sets one row per
+`range.setValues`, ours chunks 10,000 - so read these as engine-scale ratios, not lab-grade totals:
+
+| operation, 1M rows | upstream v0.19.1 | Cella 0.13.0 | ratio |
+|---|---:|---:|---:|
+| fill `G = B*C+D` | 5.48 s | **1.43 s** | 3.8x |
+| fill the chained running sum | 5.21 s | **1.95 s** | 2.7x |
+| three aggregates (`SUM`, `SUMIFS`, `XLOOKUP`) | 0.99 s | **0.77 s** | 1.3x |
+| edit B1 -> recalc ~1,000,000 cells | 3.64 s | **0.95 s** | 3.8x |
+| sort 1M rows | 11.19 s | **4.88 s** | 2.3x |
+| save xlsx | 7.65 s (64.9 MB) | **1.91 s** (70.4 MB) | 4.0x |
+
+### What this does and does not say
+
+- Cella opens this file 2.5x faster than Excel and 3.8x faster than WPS, recalculates the chain
+  4.4x faster than upstream and 47x faster than WPS, and holds 996 MB of working set against
+  Excel's 588 and WPS's 987 - 1.3x behind the leader, on a document that also carries the undo
+  step (212 MB) and the replayable journal (15 MB).
+- **Excel still wins the one thing a chain edit measures**: 0.08 s against our 0.36 s, 4.4x. That
+  is the honest remaining gap; it is the whole reason the evaluator is the next work item.
+- Upstream v0.19.1 has moved on since this repository forked at v0.11.1, and the comparison above
+  is not a score against it: it was never tracked as a target. It is here so a reader can see that
+  this line's own work (the query pipeline, the data model, the memory round, the recalculation
+  round) did not leave the core slow.
+- Startup, UI interaction latency, other platforms and workload variety (pivots, charts, print)
+  are **not measured** (see `performance-report.md`).
+
 
 ## Not measured
 
@@ -183,5 +237,5 @@ No number below means no measurement, not a zero:
 ```bash
 cargo xtask perf                              # the scenario gate against xtask/perf-budgets.txt
 cargo run --release -p cella-engine --example memory -- 1000000
-cargo xtask perf-report                       # this page
+cargo xtask perf-report                       # this page and its Chinese companion
 ```
