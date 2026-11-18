@@ -301,6 +301,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   the hash. 100k `fill.formulas` **155-171 ms** (was 164), 1M **1.30 s**; a 100k link test asserts
   the copy count, not a stopwatch. Memory: two cells a dependent at rest (16 B against ~17 B a hash
   entry), a 16M-cell ceiling a sheet.
+- **Landed (11-18, second wave): 646 -> 460 ms.** The slot-table build **66-74 -> 40-47 ms** (a slot
+  borrows its shape from the graph instead of cloning an `Arc` a cell, one `Vec<Entry>` instead of
+  two parallel vectors, and one sheet-table probe a sheet run instead of a `graph.node` probe a
+  cell) and the closure **190 -> 27 ms** (the single-precedent dependents table: 84 % of the phase
+  was one hash probe a cell on a cold 34 MB table). `edit.recalc` at 1M **589/596 -> 465/460 ms**,
+  and from the start of the round **893 -> 460 ms (-48 %)**. The dependents box was built twice: the
+  first attempt copied the box once per new precedent and took a 100k `fill.formulas` to 37.96 s;
+  the kept one copies once a doubling of an explicit capacity and is accepted against **100k 154 ms**
+  and **1M 1.27/1.28 s**. What is left of the edit: eval 179 ms (chain run), write 70 ms.
 - **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
   tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
   the calc graph's three tables and of the one undo step found structure, not slack, and changed

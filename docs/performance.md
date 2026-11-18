@@ -535,6 +535,26 @@ development build does not inline the general evaluator's own fast path. **A sho
 work the release compiler already removes only shows its real size in release**. This one was
 reverted when a first release pass showed no gain, then re-landed on two further passes each side and
 a new cycle test (a circular column reports the same values through both paths).
+
+**Then two more, and the command lands at 460 ms** (same harness, `edit.recalc` at 1M, two runs each
+side of a same-binary A/B unless noted):
+
+- **The slot-table build** (`cde71870`): a slot's shape is **borrowed from the graph's node** instead
+  of `Arc::clone`d (a million atomic increments and as many decrements a pass, for shapes the graph
+  owns) and the two parallel `Vec`s became one `Vec<Entry>` of 32 B; the per-cell `graph.node` probe
+  became one sheet-table probe a sheet run (`Graph::nodes_of`). Build **66-74 -> 40-47 ms**,
+  `edit.recalc` **641/652 -> 589/596 ms**. The closure does not move (it is not its structure).
+- **The single-precedent dependents box** (`5eb57d38`): 84 % of the closure was one hash probe a
+  cell on a cold 34 MB table. A per-sheet box table (4-8 B a cell, hash fallback when the cells do
+  not fill it) answers in arithmetic: closure **190 -> 27 ms**, the command **589/596 -> 465/460 ms**.
+  The first attempt at it was reverted: the box grew by copying every entry per new precedent, and
+  `fill.formulas` at 100k went 164 ms -> 37.96 s. The kept version copies **once a doubling** of an
+  explicit capacity and absorbs refused cells in one batch a command; the fill it is accepted on is
+  **100k 154 ms** (164 before) and **1M 1.27/1.28 s**.
+
+**From 893 to 460 ms, -48 %**, on the shape of edit this page has measured all day: a cell at the top
+of a million-row chain. The phase split after it is closure 27, eval 179 (with the chain run), write
+70 ms. What is left is the evaluator's own 179 ms and the write-back's 70.
 The comparison table above predates this change: its Cella column is the pre-round build through the
 control channel (0.90 s). The gate's `edit.recalc` on the same file went 0.87 -> 0.75 s, so the row is
 now 2.4x behind Excel (0.31 s) rather than 2.9x, and the effective-memory table's 0.853 s / 2.3M
