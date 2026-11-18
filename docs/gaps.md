@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§2), three waves: byte accounting per part; the dependency graph compacted twice (dependents 478.2 → 142.6 MB, nodes 172 → 104.9, areas 201 → 125); the save build parallelised; formula **shape sharing** (2M formulas → 3 shapes, the per-cell tree deleted, `Formula` 48 B, `Node` 16 B); a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s); and an **undo that restores a paged store**, gated so it never costs the edit (a sort of a paged store used to take minutes and now takes the sheet back into memory). A 1M × 6 workbook is **2.90 → 0.971 GB** live (reopened 0.77 GB) and no scenario is slower: save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, rebuild 1.7 → 1.12 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** round 23 closed the memory and performance line (§2): a 1M × 6 workbook is **0.971 GB** live / 0.77 GB reopened (2.90 GB before the round), the row side tables (144 → 72 MB), the band's number index (66 → 33 MB) and the journal (42 → 15 MB) taking the last steps; **measured against Excel 16 and WPS 12.1** on one 70 MB file (open 3.3 vs 8.0 / 10.7 s, recalc 0.75 vs 0.31 / 15.3 s, idle 246 vs 35 / 288 MB) with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); two recalculation changes took the 1M chain 0.85 → 0.75 s; and the soak found one reference bug (§6: a formula moved by Remove Duplicates kept its stale shape), fixed with its test. Earlier: the memory round (§2), three waves: byte accounting per part; the dependency graph compacted twice (dependents 478.2 → 142.6 MB, nodes 172 → 104.9, areas 201 → 125); the save build parallelised; formula **shape sharing** (2M formulas → 3 shapes, the per-cell tree deleted, `Formula` 48 B, `Node` 16 B); a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s); and an **undo that restores a paged store**, gated so it never costs the edit (a sort of a paged store used to take minutes and now takes the sheet back into memory). A 1M × 6 workbook is **2.90 → 0.971 GB** live (reopened 0.77 GB) and no scenario is slower: save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, rebuild 1.7 → 1.12 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using Cella for real work first). This is the work list: pick from the top, check the open
@@ -266,6 +266,23 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   edit still prints every moved cell's text (S5's floor: one print per moved cell); and the undo of a
   workbook *opened* paged (>200 MiB file) still walks the bands, because such a step never records a
   delta.
+- **Landed (11-18): the chained edit, 9-10 % faster** - the last engine cost with a clear shape.
+  Two changes, each tested beside the code: the closure's fast path and its generic array path share
+  one scalar implementation, and a chained fill keeps eight links in a stack array (`INLINE_CHAIN`)
+  instead of a per-formula frame; and the closure pass probes each cell once - the empty-table checks
+  hoisted per pass, `SeenCells` bitmaps sized once, a `Vec` with a head index for the queue, no
+  per-formula frame in `calculate_at`, and `legacy_of` short-circuited (a bitmap-doubling regression
+  of its own was caught by the fuzz and fixed). On the 70 MB reference workbook's edit (999,999
+  chained formulas) **0.85/0.83 -> 0.75/0.77 s**, two runs each side of a same-binary A/B; profile
+  after: closure 164 ms, eval 408 ms, write 63 ms. Priced and deferred: a value-slot/write-back merge
+  (est. -60-100 ms), a dense slot index (-30-40 ms), and for the 2.4x gap to Excel, bytecode
+  linearisation (a rewrite of `eval.rs` and `eval/*.rs`).
+- **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
+  tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
+  the calc graph's three tables and of the one undo step found structure, not slack, and changed
+  nothing. Measured against Excel 16 and WPS 12.1 on the same 70 MB file, with the idle window
+  identified as the one part buying nothing (246 MB; **OpenGL is the Windows default** now, 183 MB
+  lighter at the same 144 Hz).
 - **Missing:** dependent chains that never become a wave of leaves remain sequential; whole-sheet
   clear/copy/paste still clone the stored cells (they scale with the data, not the file); the
   per-band value dictionaries still cost full price when values do not repeat;
@@ -518,6 +535,17 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   range from the dependency graph, so dynamic formulas and used-range readers are re-evaluated on any
   spill change); and `#SPILL!` after an edit moved the used range. Each has a direct regression test
   that asserts the two paths agree **and** the right value.
+- **Soak (11-18): a formula that Remove Duplicates moved kept its stale shape.** Remove Duplicates
+  copies the rows it keeps to the top of its range instead of deleting rows, so a formula inside the
+  range lands on a new row. Its interned *shape* — the tree whose relative references are offsets from
+  the cell the formula was written at — stayed where it was, so the cell resolved its references from
+  the old row: `=XLOOKUP(D15,G1:G20,G1:G20)` written at J11 and compacted to J10 read from row 11 and
+  showed `#REF!` in memory, while the file (which holds the text only) calculated 0 after a reload,
+  the same file both times. A moved formula is re-based at its new cell now — the same absolute
+  references, carrying the file-rewrite hint, the array range and the dynamic mark — and `data.sort`
+  was already correct because it routes every moved cell through `Formula::copied_to`. Regression
+  test: `a_row_compacted_by_remove_duplicates_keeps_the_references_its_text_names`; the sweep that
+  found it (8 seeds × 150 steps) and a 16 × 120 sweep pass.
 - **Soak, save/reload (10-30):** an array entry over more cells than the evaluator lays out left the
   array `#NUM!` while cells inside its declared range kept values that the reader's own array rule
   drops — the entry is refused now (as Excel refuses it), so that state cannot be created; a written

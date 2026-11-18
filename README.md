@@ -41,8 +41,9 @@ and BSD, and in the browser via WebAssembly.</p>
   offscreen snapshot for tests.
 
 Performance is a feature, not an afterthought: the 1,000,000-row × 6-column reference workbook holds
-**1.14 GB** of live heap, saves in ~2 s and opens in ~4 s on the development machine. The numbers,
-the harness and the gate are in [docs/performance.md](docs/performance.md).
+**0.97 GB** of live heap, saves in ~2 s and opens in ~4 s on the development machine — against
+**7.9 s** for Excel 16 to open the same file and **0.31 s** for it to run the same recalculation. The
+numbers, the harness, the comparison and the gate are in [docs/performance.md](docs/performance.md).
 
 ## Look around
 

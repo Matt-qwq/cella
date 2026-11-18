@@ -1,6 +1,6 @@
 # Target-app parity: Cella vs Microsoft Excel
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (**N1 wave 1 + two languages, 11-14**: PivotTable Show Details and the Generate GetPivotData click, chart gridlines per axis (major/minor, x and y) and the legend's overlay and per-entry delete, and a Format pane for shapes and pictures behind `object.format` — catalog 284/299, and `cargo xtask oracle` passes every fixture in Excel 16 and WPS after the changes. **Localization is rescoped to English + Simplified Chinese**: 18 catalogs removed, 1,489 strings and 214/362 command labels translated behind a ratchet and the new `cargo xtask i18n` gate, formula syntax en-US by decision. **#10 out of scope**: the field machines belong upstream, so the stability gate is not ours to close; the release run is what remains. 2026-11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× / text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame — plus three filter save-fidelity bugs a 150-seed soak found, and a real-app check (20k name formulas: 5 ms per unrelated keystroke, 8 ms for the name's cell; data bars rescale after an edit; `grid_ms` 0.75 ms). 2026-11-13: a **performance round**, every number measured on the owner's machine before and after: `used_range` 6.5 ms → 10 ns per call at 1M rows (it sized both scrollbars every frame), conditional-format statistics and chart/sparkline layouts kept across frames (grid paint 10.7 → 1.4 ms/frame on a 100k-row data bar), a defined name resolved to a static precedent instead of a dynamic reference (a keystroke on a name-formula column: 100,000 cells/158 ms → 1 cell/5 µs) and read from a cache when evaluated (31 ms per 100k names, at parity with an inline reference), the array guard asking the store instead of diffing it (1M-row keystroke 4.6 → 0.9 ms), and the parsed tree handed back to the cell so a save stops rebuilding it (12 % of a save). Round 18: the real-world corpus ran — 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches, Excel 16-identical copies on 16 `.xlsx` files and all 37 readable `.xls` — so #1 is met and only #10 (field machines) plus the release run remain; remaining-to-beta ~8–12 h + 8–12 h. The corpus digest now covers formula text and merges/comments/links/CF/DV/tables/objects, and an `.xls` trailing-styled-column used-range bug is fixed. No score change) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** the performance line closed (11-18): a 1M × 6 workbook is **0.971 GB** live / 0.77 GB reopened, measured against Excel 16 and WPS 12.1 on one 70 MB file (open 3.3 vs 8.0 / 10.7 s; recalc 0.90 → **0.75 s**, 2.4x behind Excel rather than 2.9x; idle 246 vs 35 / 288 MB) with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz), and a soak-found reference bug fixed. Earlier: minor (**N1 wave 1 + two languages, 11-14**: PivotTable Show Details and the Generate GetPivotData click, chart gridlines per axis (major/minor, x and y) and the legend's overlay and per-entry delete, and a Format pane for shapes and pictures behind `object.format` — catalog 284/299, and `cargo xtask oracle` passes every fixture in Excel 16 and WPS after the changes. **Localization is rescoped to English + Simplified Chinese**: 18 catalogs removed, 1,489 strings and 214/362 command labels translated behind a ratchet and the new `cargo xtask i18n` gate, formula syntax en-US by decision. **#10 out of scope**: the field machines belong upstream, so the stability gate is not ours to close; the release run is what remains. 2026-11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× / text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame — plus three filter save-fidelity bugs a 150-seed soak found, and a real-app check (20k name formulas: 5 ms per unrelated keystroke, 8 ms for the name's cell; data bars rescale after an edit; `grid_ms` 0.75 ms). 2026-11-13: a **performance round**, every number measured on the owner's machine before and after: `used_range` 6.5 ms → 10 ns per call at 1M rows (it sized both scrollbars every frame), conditional-format statistics and chart/sparkline layouts kept across frames (grid paint 10.7 → 1.4 ms/frame on a 100k-row data bar), a defined name resolved to a static precedent instead of a dynamic reference (a keystroke on a name-formula column: 100,000 cells/158 ms → 1 cell/5 µs) and read from a cache when evaluated (31 ms per 100k names, at parity with an inline reference), the array guard asking the store instead of diffing it (1M-row keystroke 4.6 → 0.9 ms), and the parsed tree handed back to the cell so a save stops rebuilding it (12 % of a save). Round 18: the real-world corpus ran — 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches, Excel 16-identical copies on 16 `.xlsx` files and all 37 readable `.xls` — so #1 is met and only #10 (field machines) plus the release run remain; remaining-to-beta ~8–12 h + 8–12 h. The corpus digest now covers formula text and merges/comments/links/CF/DV/tables/objects, and an `.xls` trailing-styled-column used-range bug is fixed. No score change) · **Target:** Microsoft Excel (Microsoft 365)
 
 This is the authoritative parity assessment. [`ROADMAP.md`](../ROADMAP.md) summarizes it,
 [`gaps.md`](gaps.md) lists every shortfall, and the area checklists hold the detail:
@@ -243,11 +243,11 @@ Same file, same machine, values checked cell by cell. `crates/engine/examples/be
 | | Excel 16.0.20527 | WPS 12.1.0.25222 | Cella 0.12 |
 |---|---:|---:|---:|
 | open the 70 MB workbook | 7.9-8.2 s | 10.7 s | **3.3 s** |
-| edit B1 -> 2,000,000 formulas recalculated | **0.31 s** | 15.3 s | 0.90 s |
+| edit B1 -> 2,000,000 formulas recalculated | **0.31 s** | 15.3 s | 0.90 s (0.75 since) |
 | working set after opening | **588 MB** | 987 MB | 1,054 MB |
 | private working set | **468 MB** | 864 MB | 1,330 MB |
 | working set with no document open | **~35 MB** | 288 MB | 246 MB |
-| per-formula evaluation | **0.155 us** | 7.6 us | 0.45 us |
+| per-formula evaluation | **0.155 us** | 7.6 us | 0.45 us (0.38 since) |
 | G1 / G1000000 / H1000000 after the edit | 0 / 25,999,974 / 23,999,823,993,691 | the same | the same |
 
 Read against the baselines, the document itself costs **553 MB (Excel), 700 MB (WPS) and 808 MB
@@ -255,7 +255,8 @@ Read against the baselines, the document itself costs **553 MB (Excel), 700 MB (
 including 212 MB of undo and 15 MB of journal) is in the right place. Where the rank is clear:
 
 - **Opening is ours by 2.4-3.2x.** Excel and WPS both re-read and rebuild more on load.
-- **Recalculation is Excel's.** We are 2.9x behind it on a fully sequential chain and 17x ahead of
+- **Recalculation is Excel's.** We are 2.4x behind it on a fully sequential chain (2.9x before the
+  round's last change) and 17x ahead of
   WPS, which recalculates this sheet in 15.3 s.
 - **Memory is not ours.** Subtract the idle baseline and we are between Excel and WPS; do not, and
   we are last because of the **246 MB the window holds before any document is open**. The same
@@ -274,9 +275,9 @@ H1000000 23,999,823,993,692).
 |---|---:|---:|---:|
 | document memory | **553 MB** | 700 MB | 808 MB |
 | bytes per populated cell | **69** | 88 | 101 |
-| one edit -> 1,000,000 formulas recomputed | **0.07 s** | 14.8 s | 0.853 s |
-| formulas recomputed per second | **28.6M** | 0.14M | 2.3M |
-| formulas per second per MB | **51.7k** | 0.19k | 2.7k |
+| one edit -> 1,000,000 formulas recomputed | **0.07 s** | 14.8 s | 0.853 s (0.76 since) |
+| formulas recomputed per second | **28.6M** | 0.14M | 2.3M (2.6M since) |
+| formulas per second per MB | **51.7k** | 0.19k | 2.7k (3.2k since) |
 
 Read against Excel, our 255 MB of extra document memory is **not buying speed** - we are 12x
 slower on the same edit - so on this workload we are Pareto-dominated by it except on opening
@@ -290,6 +291,12 @@ rather than trade.
 
 The idle window buys nothing measurable: the same build headless is 8.1 MB and the same
 latency. That is the one number to treat as waste.
+
+The "(since)" numbers are the round's last change: the scalar fast path shared by both array
+paths and a closure pass that probes each cell once took the same edit to **0.75 s** in the gate
+(0.87 before, 0.90 through the control channel) - 2.4x behind Excel rather than 2.9x - and the
+effective-memory rows to 0.76 s / 2.6M formulas a second / 3.2k per MB. The Pareto conclusion is
+unchanged: Excel recomputes the same chain in 0.07 s.
 
 Caveats: working set includes shared DLL pages, so the private column is the fairer one; our cells
 keep the exact A1 text (133 MB) where Excel keeps tokens; the file is our own writer's, so both

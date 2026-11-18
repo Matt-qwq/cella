@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-17 · **Last updated:** 2026-11-17 · **Change:** the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Cella is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
@@ -481,6 +481,36 @@ into a sorted vector is an O(n) insert or a delta layer to reconcile at `settle`
 hot path is what would carry the risk. At two million formulas 372 MB is not where the product stops
 working; recorded here so the next reader does not re-run the audit.
 
+### Recalculation throughput, 2026-11-18
+
+The edit the comparison above measures - one cell into a chain of 999,999 formulas - is the number
+a user feels after a keystroke, and it was the last engine cost with a clear shape: **0.85 / 0.83 s
+before, 0.75 / 0.77 s after** (-9-10 %, two runs each side of a same-binary A/B on an idle machine).
+Two changes, each proven by the tests beside it:
+
+- **The scalar fast path is shared.** The closure's fast path and its generic path were two
+  implementations of the same arithmetic, and a chained fill's inline path kept an eight-deep chain
+  in a stack array instead of walking the recursion through a per-formula frame (`INLINE_CHAIN = 8`,
+  `crates/calc/src/eval/eval.rs`); the array path now calls the same `arith` as the scalar one, so
+  equivalence is by construction (the array tests keep it honest).
+- **The closure pass probes each cell once.** The empty-precedent-table checks moved out of the
+  per-cell loop (one test per pass, `Walker` in `crates/calc/src/recalc/graph.rs`), `SeenCells`
+  bitmaps are sized once (`DirtyBox::grow`), a `Vec` with a head index replaced a reversed stack,
+  `calculate_at` no longer takes a per-formula frame, and `legacy_of` short-circuits on the legacy
+  count. A bitmap-doubling regression the change itself introduced was caught by the fuzz and fixed.
+
+Profile after (same file, `CELLA_PROFILE=1`): closure **164 ms**, eval **408 ms**, write **63 ms** of a
+**574 ms** pass, so the evaluation of two million expressions is ~85 % of it. What is left of the
+plan is priced and deferred: a value-slot/write-back merge (est. -60-100 ms) and a dense slot index
+(-30-40 ms), both edits to the hot path, and **bytecode linearisation** - the one change that would
+move the gap to Excel - which is a rewrite of `eval.rs` (810 lines) and `eval/*.rs` (1.9k) and was
+deliberately not attempted in this round.
+
+The comparison table above predates this change: its Cella column is the pre-round build through the
+control channel (0.90 s). The gate's `edit.recalc` on the same file went 0.87 -> 0.75 s, so the row is
+now 2.4x behind Excel (0.31 s) rather than 2.9x, and the effective-memory table's 0.853 s / 2.3M
+formulas a second / 2.7k per MB become 0.76 s / 2.6M / 3.2k. The Pareto conclusion does not move:
+Excel recomputes the same chain in 0.07 s, and a tenth of a second is not what closes that.
 What is left, in the order the accounting ranks it:
 
 - **The calc graph, 372.4 MB** — audited 2026-11-18 (above): structure, not slack. A CSR table is
@@ -500,6 +530,9 @@ What is left, in the order the accounting ranks it:
 - **Formula text 133.4 MB.** It is the file spelling, the JSON envelope, the formula bar and the
   save's fast path — the shape design deliberately keeps it (§ 5.4), and 24 B of struct per formula
   is what is left of the per-cell cost.
+- **A chained million recalculation takes 0.75 s** (audited above): evaluating two million
+  expressions is ~85 % of the pass; a value-slot merge (est. -60-100 ms) and a dense slot index
+  (-30-40 ms) are priced, and bytecode linearisation is the only route to Excel's 0.31 s (deferred).
 - **A structural edit still prints every moved cell's text.** The rewrite is shape-level now (one
   tree per shape, one print per changed cell, per-cell only where a reference straddles the edit or
   a span has one `$` end on the edited axis), which measures 2.1–2.4×; the printing is the floor.
@@ -540,6 +573,13 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (seventh):** the chained edit, 9-10 % faster (**0.85/0.83 -> 0.75/0.77 s**, two
+  runs each side of a same-binary A/B). The scalar fast path and the generic array path share one
+  implementation and a chained fill keeps eight links in a stack array (`INLINE_CHAIN`), and the
+  closure pass probes each cell once: hoisted empty-table checks, `SeenCells` bitmaps sized once, a
+  `Vec` with a head index instead of a reversed stack, no per-formula frame in `calculate_at`, and a
+  `legacy_of` short-circuit (with a bitmap-doubling regression of its own caught by the fuzz). The
+  comparison table's Cella column predates it - the gap to Excel is 2.4x now, not 2.9x.
 - **2026-11-18 (sixth):** measured against Excel 16 on the same file: open **3.3 s vs 8.0 s**,
   recalculate **0.90 s vs 0.31 s**, working set **1,213 vs 588 MB**, private bytes **1,538 vs
   468 MB**, idle **382 vs 35 MB**. Our own accounting (971 MB) is in the right place; the app's

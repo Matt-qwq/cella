@@ -35,8 +35,9 @@ Linux 与 BSD，也能通过 WebAssembly 跑在浏览器里。</p>
   [控制协议](docs/control-protocol.md)、[CLI](docs/cli.md)、[MCP](docs/mcp.md)。
 - **界面** —— 中英双语、键位提示、键盘上下文菜单、无障碍树，以及用于测试的离屏截图。
 
-性能是功能，不是补丁：100 万行 × 6 列的参考工作簿占用 **1.14 GB** 活堆内存，在开发机上保存约
-2 秒、打开约 4 秒。数字、测量工具与门禁见 [docs/performance.md](docs/performance.md)。
+性能是功能，不是补丁：100 万行 × 6 列的参考工作簿占用 **0.97 GB** 活堆内存，在开发机上保存约
+2 秒、打开约 4 秒——同一份文件 Excel 16 打开要 **7.9 秒**，跑同一次重算要 **0.31 秒**。数字、
+测量工具、横向对比与门禁见 [docs/performance.md](docs/performance.md)。
 
 ## 看一眼
 
