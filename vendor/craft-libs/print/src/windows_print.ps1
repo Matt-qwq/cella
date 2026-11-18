@@ -188,8 +188,13 @@ if ($env:CRAFT_PRINT_DRYRUN -eq '1') {
             $pixels = Get-RenderSize $sheet 150
             $bitmap = Render-Sheet $page $sheet 150
             try {
-                if ($bitmap.Width -ne $pixels.Width -or $bitmap.Height -ne $pixels.Height) {
-                    throw 'the PDF renderer changed the requested sheet dimensions'
+                # Destination sizes are DIPs, so a display scale (125 %, 150 %) multiplies both sides
+                # of the bitmap: the sheet keeps its shape and a real print draws it at the page's own
+                # size. What this dry run refuses is a renderer that changed the sheet's shape.
+                $scale = $bitmap.Width / [double]$pixels.Width
+                $shape = [math]::Abs($scale - $bitmap.Height / [double]$pixels.Height)
+                if ($shape -gt 0.01 -or $scale -lt 0.99 -or $scale -gt 4.01) {
+                    throw ('the PDF renderer changed the requested sheet dimensions: ' + $bitmap.Width + 'x' + $bitmap.Height + ' for ' + $pixels.Width + 'x' + $pixels.Height)
                 }
             } finally { $bitmap.Dispose() }
         } finally { $page.Dispose() }

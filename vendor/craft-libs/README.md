@@ -26,6 +26,12 @@ The licence texts and the upstream NOTICE are in this directory (`LICENSE-MIT`, 
   frame's `TexturesDelta` was applied, and a headless test has no renderer to apply it to, so the
   two tests that render text clear the deltas before dropping the output. Without this the crate's
   tests panic under `cargo test --workspace`; nothing outside tests changed.
+- `print/src/windows_print.ps1`, the dry run's size check (2026-11-18): `PdfPageRenderOptions`
+  takes DIPs, so on a display scaled above 100 % the bitmap comes back multiplied (125 % turns
+  1275x1650 into 1594x2063) and the old equality check threw. The dry run now refuses a changed
+  *shape* (the ratio must agree within 1 %, the scale within 0.99-4.01), which is what it is for; the
+  printed image is drawn at the page's own size either way. Found on a machine whose display scale
+  changed between two gate runs, with the same test binary passing before it.
 
 **Updating:** copy the two directories from a newer `craft-libs` revision, re-apply those manifest
 edits, and run `cargo check --workspace` plus `cargo xtask layers`. If a newer revision adds crates
