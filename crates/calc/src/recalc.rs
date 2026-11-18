@@ -684,18 +684,54 @@ struct Shard {
     clean: bool,
 }
 
-/// Writes values back without sorting: the caller guarantees row-major order.
-fn write_values_ordered(wb: &mut Workbook, values: &[(Key, Value)]) {
-    let mut start = 0;
-    while start < values.len() {
-        let si = values[start].0.0;
-        let end = values[start..].partition_point(|(k, _)| k.0 == si) + start;
-        if let Some(sheet) = wb.sheet_mut(si) {
-            let mut batch: Vec<(CellRef, Value)> = values[start..end].iter().map(|(k, v)| (k.1, v.clone())).collect();
-            sheet.cells.set_values(&mut batch);
+/// Writes a pass's results back, moving every value out of whatever holds it: `results` arrive in
+/// row-major order (sheet, then row, then column), so a run of one sheet is one band-ordered
+/// batch and the store is handed exactly the batches a whole-list write would have given it.
+///
+/// The values are *moved*, never cloned, and `batch` is the caller's scratch, so a million-value
+/// write-back allocates its temporary once per pass instead of once per sheet, and a pass that
+/// streams its slots in here builds no list of its own. Returns how many values it wrote.
+fn write_values<I>(wb: &mut Workbook, results: I, batch: &mut Vec<(CellRef, Value)>, max: usize) -> usize
+where
+    I: Iterator<Item = (Key, Value)>,
+{
+    // One allocation for the whole pass: a batch that grows by doubling copies 16 MB at 1M
+    // results, and the buffer is handed from one flush to the next either way.
+    batch.reserve(max);
+    let mut written = 0;
+    let mut sheet: Option<usize> = None;
+    #[cfg(debug_assertions)]
+    let mut last: Option<Key> = None;
+    for (k, v) in results {
+        #[cfg(debug_assertions)]
+        {
+            // The store walks each batch in band order and relies on it being sorted (it checks
+            // that itself); a pass that broke the order is a bug in the pass, caught here.
+            debug_assert!(last.is_none_or(|l| (l.0, l.1.row, l.1.col) <= (k.0, k.1.row, k.1.col)), "a pass's results must be in row-major order");
+            last = Some(k);
         }
-        start = end;
+        if sheet != Some(k.0) {
+            if let Some(si) = sheet {
+                flush_values(wb, si, batch);
+            }
+            sheet = Some(k.0);
+        }
+        batch.push((k.1, v));
+        written += 1;
     }
+    if let Some(si) = sheet {
+        flush_values(wb, si, batch);
+    }
+    written
+}
+
+/// Hands one sheet's batch to its store — a value whose sheet is gone is dropped, as it was when
+/// the batches were built per sheet — and takes the buffer back for the next one.
+fn flush_values(wb: &mut Workbook, si: usize, batch: &mut Vec<(CellRef, Value)>) {
+    if let Some(sheet) = wb.sheet_mut(si) {
+        sheet.cells.set_values(batch);
+    }
+    batch.clear();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -710,7 +746,7 @@ impl Calc {
     /// stored values. Each shard scans its slice of the dirty set, evaluates its leaves with its own
     /// expression and result maps, and returns them in row order; the values are merged and written
     /// in that order.
-    fn try_parallel(&mut self, wb: &mut Workbook, dirty: &mut Vec<Key>) -> bool {
+    fn try_parallel(&mut self, wb: &mut Workbook, dirty: &mut Vec<Key>, batch: &mut Vec<(CellRef, Value)>) -> bool {
         let threads = parallel_threads();
         let min = parallel_min(threads);
         // Counting the dirty formulas against the wave's price first: below it no arrangement of
@@ -837,7 +873,9 @@ impl Calc {
             return false;
         }
         let write_started = prof_now();
-        write_values_ordered(wb, &values);
+        // The shards' values are moved into the store; their keys stay for the merge below.
+        let max = values.len();
+        write_values(wb, values.iter_mut().map(|(k, v)| (*k, std::mem::take(v))), batch, max);
         let write_ms = prof_now() - write_started;
         // Remove the candidates from `dirty` in one linear merge: each shard's candidates are a
         // subsequence of its slice of the (row-major) dirty list, and `values` is in that order.
@@ -867,7 +905,7 @@ impl Calc {
 
 #[cfg(target_arch = "wasm32")]
 impl Calc {
-    fn try_parallel(&mut self, _wb: &mut Workbook, _dirty: &mut Vec<Key>) -> bool {
+    fn try_parallel(&mut self, _wb: &mut Workbook, _dirty: &mut Vec<Key>, _batch: &mut Vec<(CellRef, Value)>) -> bool {
         false
     }
 }
@@ -1459,6 +1497,10 @@ impl Calc {
         // Every loop the rounds met: a later round evaluates only its dependents, so the cells
         // that were re-entered are remembered for the UI and `Calc::circular`.
         let mut found_cycles: Vec<Key> = Vec::new();
+        // The write-back's batch buffer, kept across the rounds and waves of this pass so a
+        // million-value write-back allocates its temporary once (and the values are moved into it,
+        // never cloned). Dropped when the pass ends, so it holds no memory between edits.
+        let mut batch: Vec<(CellRef, Value)> = Vec::new();
         for _round in 0..8 {
             if dirty.is_empty() {
                 break;
@@ -1473,7 +1515,7 @@ impl Calc {
                 // A layered sheet can have many waves; after a handful the remaining formulas are
                 // cheaper to take in one sequential pass than to rescan again and again.
                 let mut waves = 0;
-                while waves < 16 && self.try_parallel(wb, &mut dirty) {
+                while waves < 16 && self.try_parallel(wb, &mut dirty, &mut batch) {
                     waves += 1;
                     if dirty.is_empty() {
                         break;
@@ -1594,10 +1636,10 @@ impl Calc {
             // what makes the write-back touch each band once instead of jumping between 1,563 of
             // them at random. Values only change, so the store rewrites the packed slot and nothing
             // else (no `Cell` built, no formula or style looked up).
-            let values: Vec<(Key, Value)> = trees.keys().zip(slots).filter_map(|(k, s)| s.into_value().map(|v| (k, v))).collect();
-            debug_assert!(values.windows(2).all(|w| (w[0].0.0, w[0].0.1.row, w[0].0.1.col) <= (w[1].0.0, w[1].0.1.row, w[1].0.1.col)));
-            self.last_recalc_cells += values.len();
-            write_values_ordered(wb, &values);
+            // The slots move straight into the store: a million values first collected into a list
+            // of their own was 16 MB built only to be walked again.
+            let written = write_values(wb, trees.keys().zip(slots).filter_map(|(k, s)| s.into_value().map(|v| (k, v))), &mut batch, trees.len());
+            self.last_recalc_cells += written;
             let two = prof_now();
             if std::env::var_os("CELLA_PROFILE").is_some() {
                 eprintln!("  write values {:.1} ms", two - twr);
