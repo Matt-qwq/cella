@@ -23,12 +23,20 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// A monotonic reading for the report at the end. The workspace lint that forbids `Instant` exists
+/// because it traps on wasm; this example writes a file for desktop benchmarks and never builds for
+/// wasm, so the one call is allowed here rather than wrapped in a `cfg`.
+#[allow(clippy::disallowed_methods)]
+fn now() -> Instant {
+    Instant::now()
+}
+
 fn exec(session: &mut Session, id: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
     session.execute(id, params).map_err(|e| e.to_string())
 }
 
 fn run(rows: usize, out: &str) -> Result<(), String> {
-    let t = Instant::now();
+    let t = now();
     let mut session = Session::new();
     session.new_workbook();
     const CHUNK: usize = 10_000;

@@ -100,19 +100,21 @@ fn measure(rows: usize) -> Result<(), String> {
 fn print_undo(session: &Session) {
     let Ok(doc) = session.doc() else { return };
     let total: usize = doc.undo.iter().map(|e| e.retained_bytes).sum();
-    println!("  {:<26}{:>16}{:>9}  {}", format!("undo stack ({} steps)", doc.undo.len()), total, "", "retained beyond the live workbook");
+    println!("  {:<26}{:>16}{:>9}  retained beyond the live workbook", format!("undo stack ({} steps)", doc.undo.len()), total, "");
     for entry in doc.undo.iter().rev().take(4) {
-        println!("  {:<26}{:>16}{:>9}  {}", format!("  {}", entry.label), entry.retained_bytes, "", "the newest first");
+        println!("  {:<26}{:>16}{:>9}  the newest first", format!("  {}", entry.label), entry.retained_bytes, "");
         for (index, sheet) in entry.wb.sheets.iter().enumerate() {
             let live_cells = doc.wb.sheets.get(index).map(|live| &live.cells);
             let retained = live_cells.map_or(0, |live| sheet.cells.retained_bytes_against(live));
             let m = sheet.cells.memory();
             println!(
-                "  {:<26}{:>16}{:>9}  {}",
-                format!("    {} / stripes", sheet.name),
+                "    {} / stripes{:>16}{:>9}  retained {} · row tables {} · texts {}",
+                sheet.name,
                 m.band_headers.saturating_add(m.bitmaps).saturating_add(m.payloads).saturating_add(m.kind_runs).saturating_add(m.style_runs),
                 "",
-                format!("retained {} · row tables {} · texts {}", retained, m.row_extras, m.texts)
+                retained,
+                m.row_extras,
+                m.texts
             );
         }
     }
