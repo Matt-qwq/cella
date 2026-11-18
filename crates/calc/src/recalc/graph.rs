@@ -161,11 +161,25 @@ impl<K: Copy + Eq + Hash, V: Copy + Eq> Deps<K, V> {
     /// Appends the dependents of `c` to `out`, `to_key` turning a stored dependent into its
     /// [`Key`].
     fn push_into(&self, c: K, out: &mut Vec<Key>, to_key: impl Fn(V) -> Key) {
-        if let Some(v) = self.one.get(&c) {
-            out.push(to_key(*v));
+        self.for_each_of(c, &mut |k| out.push(k), to_key);
+    }
+
+    /// Calls `f` for every dependent of `c`, `to_key` turning a stored dependent into its [`Key`].
+    ///
+    /// A table that holds nothing is not probed: on an ordinary sheet a precedent cell has one
+    /// dependent and no list, so the walk asks one table and hashes the cell once.
+    fn for_each_of(&self, c: K, f: &mut impl FnMut(Key), to_key: impl Fn(V) -> Key) {
+        if !self.one.is_empty()
+            && let Some(v) = self.one.get(&c)
+        {
+            f(to_key(*v));
         }
-        if let Some(v) = self.many.get(&c) {
-            out.extend(v.iter().map(|x| to_key(*x)));
+        if !self.many.is_empty()
+            && let Some(v) = self.many.get(&c)
+        {
+            for x in v {
+                f(to_key(*x));
+            }
         }
     }
 
@@ -281,6 +295,78 @@ impl CellDeps {
             slots = slots.saturating_add(deps.slots());
         }
         slots
+    }
+}
+
+/// The tables a dependents walk answers from, with the ones a workbook leaves empty set aside.
+///
+/// A cell's dependents are in its sheet's table. The three other tables answer only for a
+/// reference another sheet reads, a whole-column reference and a range wider than the `WIDE`
+/// columns cutoff, and a workbook of ordinary formulas has none of them — yet the walk probed all
+/// four per cell, so a chain of a million formulas paid five hash lookups a cell for one answer.
+/// This asks the three once, remembers the sheet's table across the cells of that sheet, and skips
+/// a table that holds nothing at all (`Deps::for_each_of`).
+pub(super) struct Walker<'a> {
+    same: &'a HashMap<usize, Deps<CellRef, CellRef>>,
+    cross: &'a Deps<Key, Key>,
+    col_deps: &'a HashMap<(usize, u32), Intervals<Key>>,
+    wide_deps: &'a HashMap<usize, Intervals<(u32, u32, Key)>>,
+    has_cross: bool,
+    has_cols: bool,
+    has_wide: bool,
+    /// The sheet whose table the last lookup asked for, and what it found. The graph does not change
+    /// under a walk, so a run of cells of one sheet — a column of formulas — pays for it once.
+    cached: Option<(usize, Option<&'a Deps<CellRef, CellRef>>)>,
+}
+
+impl<'a> Walker<'a> {
+    fn of(graph: &'a Graph) -> Self {
+        Self {
+            same: &graph.cell_deps.same,
+            cross: &graph.cell_deps.cross,
+            col_deps: &graph.col_deps,
+            wide_deps: &graph.wide_deps,
+            has_cross: !graph.cell_deps.cross.is_empty(),
+            has_cols: !graph.col_deps.is_empty(),
+            has_wide: !graph.wide_deps.is_empty(),
+            cached: None,
+        }
+    }
+
+    /// The table of `sheet`, or the one the last lookup found when it is the same sheet.
+    fn sheet(&mut self, sheet: usize) -> Option<&'a Deps<CellRef, CellRef>> {
+        match self.cached {
+            Some((asked, found)) if asked == sheet => found,
+            _ => {
+                let found = self.same.get(&sheet);
+                self.cached = Some((sheet, found));
+                found
+            }
+        }
+    }
+
+    /// Calls `f` for every formula that reads the cell `c` of `sheet`.
+    pub(super) fn dependents_of(&mut self, sheet: usize, c: CellRef, f: &mut impl FnMut(Key)) {
+        if let Some(deps) = self.sheet(sheet) {
+            deps.for_each_of(c, &mut |k| f(k), |v| (sheet, v));
+        }
+        if self.has_cross {
+            self.cross.for_each_of((sheet, c), f, |k| k);
+        }
+        if self.has_cols
+            && let Some(v) = self.col_deps.get(&(sheet, c.col))
+        {
+            v.query(c.row, c.row, &mut |k| f(*k));
+        }
+        if self.has_wide
+            && let Some(v) = self.wide_deps.get(&sheet)
+        {
+            v.query(c.row, c.row, &mut |(c0, c1, k)| {
+                if *c0 <= c.col && c.col <= *c1 {
+                    f(*k);
+                }
+            });
+        }
     }
 }
 
@@ -889,6 +975,11 @@ impl Graph {
 
     /// The range of the legacy array anchored at `k`, if it is one.
     pub(super) fn legacy_of(&self, k: Key) -> Option<RangeRef> {
+        // A workbook of plain formulas has no array at all, and a pass asks this for every formula
+        // it evaluates: the side table being empty answers that without hashing a cell.
+        if self.legacy_range.is_empty() {
+            return None;
+        }
         self.legacy_range.get(&k).copied()
     }
 
@@ -1170,17 +1261,13 @@ impl Graph {
 
     /// Formulas that read cell `c` of `sheet`.
     pub fn dependents(&self, sheet: usize, c: CellRef, out: &mut Vec<Key>) {
-        self.cell_deps.dependents_into(sheet, c, out);
-        if let Some(v) = self.col_deps.get(&(sheet, c.col)) {
-            v.query(c.row, c.row, &mut |k| out.push(*k));
-        }
-        if let Some(v) = self.wide_deps.get(&sheet) {
-            v.query(c.row, c.row, &mut |(c0, c1, k)| {
-                if *c0 <= c.col && c.col <= *c1 {
-                    out.push(*k);
-                }
-            });
-        }
+        self.walker().dependents_of(sheet, c, &mut |k| out.push(k));
+    }
+
+    /// The tables a dependents walk answers from (see [`Walker`]): reused across the cells of a
+    /// walk, so what a workbook leaves empty is checked once instead of once per cell.
+    pub(super) fn walker(&self) -> Walker<'_> {
+        Walker::of(self)
     }
 
     /// Formulas that read any cell of `range` (a formula can be listed more than once).

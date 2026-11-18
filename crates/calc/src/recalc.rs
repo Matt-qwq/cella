@@ -10,8 +10,6 @@
 //! and the formulas that read one are evaluated again until the loop settles
 //! (`PassHost::iterate_loops`).
 
-use std::collections::VecDeque;
-
 mod graph;
 mod pass_host;
 
@@ -456,6 +454,205 @@ impl DirtyBox {
         let i = dr as usize * self.width as usize + dc as usize;
         self.bits.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
     }
+
+    /// Whether `c` is inside the box at all (set or not), the test that says whether [`Self::set`]
+    /// would reach its bit.
+    fn in_bounds(&self, c: CellRef) -> bool {
+        c.row >= self.row && c.col >= self.col && c.row - self.row < self.height && c.col - self.col < self.width
+    }
+
+    /// The box of the single cell `c`: what a walk of a sheet starts from.
+    fn at(c: CellRef) -> Self {
+        let mut boxed = DirtyBox { row: c.row, col: c.col, height: 1, width: 1, bits: vec![0u64; 1] };
+        boxed.set(c);
+        boxed
+    }
+
+    /// Calls `f` for each cell the box holds set (the cells a sheet had when its box was dropped).
+    fn for_each_set(&self, mut f: impl FnMut(CellRef)) {
+        let width = self.width as usize;
+        if width == 0 {
+            return;
+        }
+        for (word, bits) in self.bits.iter().enumerate() {
+            let mut rest = *bits;
+            while rest != 0 {
+                let bit = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                let i = word.saturating_mul(64).saturating_add(bit);
+                let (dr, dc) = (u32::try_from(i / width).unwrap_or(u32::MAX), u32::try_from(i % width).unwrap_or(u32::MAX));
+                f(CellRef::new(self.row.saturating_add(dr), self.col.saturating_add(dc)));
+            }
+        }
+    }
+
+    /// Grows the box around `c`, keeping the cells of `sheet` in `keys` set, and answers whether
+    /// it could: a box that would have to cover more than `MAX_DIRTY_BITS` cells is refused, and
+    /// the caller keeps its cells another way.
+    ///
+    /// The sides double, because the walk this serves adds rows to a column one at a time: each
+    /// growth pays for the cells already in the box and leaves room for as many again, so a walk
+    /// of a million cells copies them a couple of million times rather than a billion.
+    fn grow(&mut self, c: CellRef, keys: &[Key], sheet: usize) -> bool {
+        let row = self.row.min(c.row);
+        let col = self.col.min(c.col);
+        let bottom = self.row.saturating_add(self.height.saturating_sub(1)).max(c.row);
+        let right = self.col.saturating_add(self.width.saturating_sub(1)).max(c.col);
+        let (need_h, need_w) = (bottom - row + 1, right - col + 1);
+        let area = |h: u32, w: u32| (h as usize).saturating_mul(w as usize);
+        // The side that has to grow doubles; the other keeps its size, so a walk down a column does
+        // not make the box wider than the column is.
+        let mut height = if need_h > self.height { need_h.max(self.height.saturating_mul(2)) } else { self.height };
+        let mut width = if need_w > self.width { need_w.max(self.width.saturating_mul(2)) } else { self.width };
+        if area(height, width) > MAX_DIRTY_BITS {
+            // The doubling is what has to give, not the cell that is out of the box: as much of the
+            // dense-map budget as the sides can use, and a hash only when not even the cells the
+            // walk has visited fit in a box.
+            let rows = (MAX_DIRTY_BITS / (width as usize).max(1)).max(need_h as usize);
+            height = u32::try_from(rows).unwrap_or(need_h);
+            let cols = (MAX_DIRTY_BITS / (height as usize).max(1)).max(need_w as usize);
+            width = u32::try_from(cols).unwrap_or(need_w);
+            if area(height, width) > MAX_DIRTY_BITS {
+                return false;
+            }
+        }
+        let mut grown = DirtyBox { row, col, height, width, bits: vec![0u64; area(height, width).div_ceil(64)] };
+        for &(s, k) in keys {
+            if s == sheet {
+                grown.set(k);
+            }
+        }
+        grown.set(c);
+        *self = grown;
+        true
+    }
+}
+
+/// The cells a dependents walk has visited: a bit each where a sheet's cells fit a dense box (a
+/// chain walks a column, where a box is the cheapest set there is), a hash set where they do not.
+///
+/// The walk asks this once for every dependent it finds, so it has to cost less than the hash set
+/// it replaced: a compare, a shift and a mask while the cells stay in the box, where a `Key` in a
+/// hash table was a hash of two words and a cache miss. The box grows by doubling (see
+/// [`DirtyBox::grow`]), so the rows a chain adds below the edited cell cost a copy per doubling,
+/// not per row.
+#[derive(Default)]
+struct SeenCells {
+    /// Every cell the walk visited, in the order it visited them: the closure's answer.
+    keys: Vec<Key>,
+    /// Each sheet's box, or that its cells went to `loose` once a box would have grown past
+    /// `MAX_DIRTY_BITS` (a paste over a whole sheet).
+    #[cfg(not(target_arch = "wasm32"))]
+    sheets: HashMap<usize, SheetSeen>,
+    /// The visited cells no box covers — every cell of them where a box is not built at all (wasm).
+    loose: HashSet<Key>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum SheetSeen {
+    Boxed(DirtyBox),
+    Loose,
+}
+
+/// What a box did with a cell.
+#[cfg(not(target_arch = "wasm32"))]
+enum Marked {
+    /// The box did not hold it and does now.
+    New,
+    /// The box already held it.
+    Seen,
+    /// No box covers the sheet: the caller decides with `loose`.
+    Loose,
+}
+
+impl SeenCells {
+    /// Marks `k` visited, answering whether it was new.
+    fn mark(&mut self, k: Key) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        match self.mark_boxed(k) {
+            Marked::New => {
+                self.keys.push(k);
+                return true;
+            }
+            Marked::Seen => return false,
+            Marked::Loose => {}
+        }
+        if self.loose.insert(k) {
+            self.keys.push(k);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn mark_boxed(&mut self, k: Key) -> Marked {
+        // Where the cell stands is answered before anything is written, because the table it asks
+        // is borrowed either way; a sheet the walk has not seen yet starts a box of its own cell.
+        let place = match self.sheets.get(&k.0) {
+            None => Place::First,
+            Some(SheetSeen::Loose) => Place::Loose,
+            Some(SheetSeen::Boxed(boxed)) => {
+                if boxed.contains(k.1) {
+                    Place::Seen
+                } else if boxed.in_bounds(k.1) {
+                    Place::Inside
+                } else {
+                    Place::Outside
+                }
+            }
+        };
+        match place {
+            Place::Seen => Marked::Seen,
+            Place::Loose => Marked::Loose,
+            Place::First => {
+                self.sheets.insert(k.0, SheetSeen::Boxed(DirtyBox::at(k.1)));
+                Marked::New
+            }
+            Place::Inside => match self.sheets.get_mut(&k.0) {
+                Some(SheetSeen::Boxed(boxed)) => {
+                    boxed.set(k.1);
+                    Marked::New
+                }
+                // The table cannot have changed between the two lookups; a hash is still right.
+                _ => Marked::Loose,
+            },
+            Place::Outside => {
+                let grown = match self.sheets.get_mut(&k.0) {
+                    Some(SheetSeen::Boxed(boxed)) => boxed.grow(k.1, &self.keys, k.0),
+                    _ => false,
+                };
+                if grown {
+                    Marked::New
+                } else {
+                    // Too wide to box: this sheet's cells go to the hash set from here on — the
+                    // ones the box already holds included, since the walk asks for them again and
+                    // a cell it marks twice is a cell it visits twice.
+                    if let Some(SheetSeen::Boxed(old)) = self.sheets.insert(k.0, SheetSeen::Loose) {
+                        old.for_each_set(|c| {
+                            self.loose.insert((k.0, c));
+                        });
+                    }
+                    Marked::Loose
+                }
+            }
+        }
+    }
+
+    /// The visited cells, in the order the walk found them.
+    fn into_keys(self) -> Vec<Key> {
+        self.keys
+    }
+}
+
+/// Where a cell stands with the box of its sheet.
+#[cfg(not(target_arch = "wasm32"))]
+enum Place {
+    First,
+    Seen,
+    Inside,
+    Outside,
+    Loose,
 }
 
 /// Largest precedent block a leaf may read and still be a parallel candidate. A formula reading a
@@ -1194,41 +1391,43 @@ impl Calc {
         }
     }
 
+    /// The cells an edit reaches: the seeds, the formulas that read them, and so on out to the last
+    /// formula of the chain.
+    ///
+    /// One probe a cell. The seen-set is the sheet's bits ([`SeenCells`]), the queue is a vector, and
+    /// the tables a workbook of ordinary formulas leaves empty — cross-sheet, whole column, wide
+    /// range — are skipped once per walk instead of once per cell ([`graph::Walker`]).
     fn dirty_closure(&self, _wb: &Workbook, seeds: &[Key]) -> Vec<Key> {
-        let mut seen: HashSet<Key> = HashSet::default();
-        let mut queue: VecDeque<Key> = VecDeque::new();
-        for k in seeds {
-            if self.graph.has_node(*k) && seen.insert(*k) {
-                queue.push_back(*k);
+        let mut seen = SeenCells::default();
+        // Found but not walked yet. A seed can name a million dependents (the cell every formula
+        // reads), so the front moves along the vector instead of shifting it.
+        let mut queue: Vec<Key> = Vec::new();
+        let mut walk = self.graph.walker();
+        for &k in seeds {
+            if self.graph.has_node(k) && seen.mark(k) {
+                queue.push(k);
             }
-            let mut deps = Vec::new();
-            self.graph.dependents(k.0, k.1, &mut deps);
-            // One seed (the cell every formula reads) can name a million dependents: reserve once
-            // instead of growing the set and queue through a dozen rehashes.
-            seen.reserve(deps.len());
-            queue.reserve(deps.len());
-            for d in deps {
-                if seen.insert(d) {
-                    queue.push_back(d);
+            walk.dependents_of(k.0, k.1, &mut |d| {
+                if seen.mark(d) {
+                    queue.push(d);
                 }
+            });
+        }
+        for &k in &self.graph.dynamic {
+            if seen.mark(k) {
+                queue.push(k);
             }
         }
-        for k in &self.graph.dynamic {
-            if seen.insert(*k) {
-                queue.push_back(*k);
-            }
-        }
-        let mut deps = Vec::new();
-        while let Some(k) = queue.pop_front() {
-            deps.clear();
-            self.graph.dependents(k.0, k.1, &mut deps);
-            for d in deps.drain(..) {
-                if seen.insert(d) {
-                    queue.push_back(d);
+        let mut head = 0;
+        while let Some(&k) = queue.get(head) {
+            head += 1;
+            walk.dependents_of(k.0, k.1, &mut |d| {
+                if seen.mark(d) {
+                    queue.push(d);
                 }
-            }
+            });
         }
-        seen.into_iter().collect()
+        seen.into_keys()
     }
 
     /// Evaluates the dirty set and writes results (and spills) back.
@@ -1556,7 +1755,7 @@ pub(crate) mod tests {
     use crate::eval::Host;
 
     use super::graph::Intervals;
-    use super::{Calc, Graph, HashMap, Key, PassHost, Trees};
+    use super::{Calc, Graph, HashMap, Key, PassHost, SeenCells, Trees};
 
     /// xorshift64 for repeatable pseudo-random cases.
     fn rng(state: &mut u64) -> u64 {
@@ -1945,6 +2144,91 @@ pub(crate) mod tests {
         deps.clear();
         calc.graph.dependents(1, CellRef::parse("A2").unwrap(), &mut deps);
         assert_eq!(deps, vec![at("DA9"), at("DA9")]);
+    }
+
+    /// The closure carries every dependent of a seed once: down a column of formulas that makes the
+    /// seen-set's box grow, through a diamond that reaches a formula twice, and across a sheet edge
+    /// the empty tables of an ordinary workbook would hide.
+    #[test]
+    fn the_closure_visits_each_dependent_once() {
+        let mut wb = Workbook::new();
+        let at = |s: &str| CellRef::parse(s).unwrap();
+        wb.sheets.push(std::sync::Arc::new(cella_model::Sheet::new("Data")));
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.set(at("A1"), Cell::value(Value::Number(3.0)));
+            sh.cells.set(at("B1"), Cell::formula(Formula::new("=A1*2")));
+            sh.cells.set(at("C1"), Cell::formula(Formula::new("=A1+1")));
+            // A diamond: A1 feeds B1 and C1, and D1 reads both of them.
+            sh.cells.set(at("D1"), Cell::formula(Formula::new("=B1+C1")));
+            sh.cells.set(at("E1"), Cell::formula(Formula::new("=A1+D1")));
+            for row in 1..300u32 {
+                sh.cells.set(CellRef::new(row, 4), Cell::formula(Formula::new("=$A$1")));
+            }
+        }
+        if let Some(sh) = wb.sheet_mut(1) {
+            sh.cells.set(at("A1"), Cell::formula(Formula::new("=Sheet1!D1")));
+        }
+        let mut calc = Calc::new();
+        calc.rebuild(&wb);
+        // A1 is a value, so it is no node of the graph and the closure starts at what reads it.
+        let closure = calc.dirty_closure(&wb, &[(0, at("A1"))]);
+        let mut sorted = closure.clone();
+        sorted.sort_unstable();
+        let mut once = sorted.clone();
+        once.dedup();
+        assert_eq!(once.len(), sorted.len(), "the walk visited a cell twice: {:?}", closure);
+        let mut want: Vec<Key> = vec![(0, at("B1")), (0, at("C1")), (0, at("D1")), (0, at("E1")), (1, at("A1"))];
+        want.extend((1..300u32).map(|row| (0, CellRef::new(row, 4))));
+        want.sort_unstable();
+        assert_eq!(once, want);
+        // The same walk through the graph's own cell lookup, which is the one the engine's Trace
+        // Dependents command and the write-back use: one sheet's table, then the cross-sheet one.
+        let mut deps = Vec::new();
+        calc.graph.dependents(0, at("A1"), &mut deps);
+        deps.sort_unstable();
+        for wanted in ["B1", "C1", "E1"] {
+            assert!(deps.contains(&(0, at(wanted))), "{wanted} missing: {deps:?}");
+        }
+        assert_eq!(deps.len(), 3 + 299, "the column that reads it too");
+        deps.clear();
+        calc.graph.dependents(0, at("D1"), &mut deps);
+        assert_eq!(deps, vec![(0, at("E1")), (1, at("A1"))], "the cross-sheet dependent is found");
+    }
+
+    /// The seen-set the closure relies on: a bit each while the cells of a sheet fit a box, the box
+    /// grown by doubling as the walk leaves it, and a cell no box could hold marked in the hash set
+    /// — but each cell marked once whichever set answers, or the walk visits it twice.
+    #[test]
+    fn the_seen_set_marks_a_cell_once() {
+        let mut seen = SeenCells::default();
+        // A column: the one-cell box the first mark makes is doubled a dozen times to hold it.
+        for row in 0..4_000u32 {
+            assert!(seen.mark((0, CellRef::new(row, 1))), "row {row} is new");
+        }
+        for row in (0..4_000u32).rev() {
+            assert!(!seen.mark((0, CellRef::new(row, 1))), "row {row} was marked");
+        }
+        // Another sheet, and a cell forty columns past the box.
+        assert!(seen.mark((1, CellRef::new(9, 9))));
+        assert!(!seen.mark((1, CellRef::new(9, 9))));
+        assert!(seen.mark((0, CellRef::new(3, 10))));
+        assert!(seen.mark((0, CellRef::new(3, 40))), "a cell the box has to grow sideways for");
+        assert!(!seen.mark((0, CellRef::new(3, 40))));
+        // A cell a box cannot hold — the far corner of the sheet is past `MAX_DIRTY_BITS` cells
+        // away — and the cells the box held before it, which the hash set then answers for.
+        let far = (2, CellRef::new(cella_core::MAX_ROWS - 1, cella_core::MAX_COLS - 1));
+        for row in 0..5u32 {
+            assert!(seen.mark((2, CellRef::new(row, 0))));
+        }
+        assert!(seen.mark(far));
+        assert!(!seen.mark(far));
+        assert!(!seen.mark((2, CellRef::new(3, 0))), "a cell the dropned box held is still marked");
+        let keys = seen.into_keys();
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "a cell was marked twice");
+        assert_eq!(keys.len(), 4_000 + 2 + 1 + 5 + 1);
     }
 
     #[test]

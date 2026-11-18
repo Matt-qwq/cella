@@ -583,12 +583,17 @@ impl PassHost<'_> {
     /// Calculates the formula in `slot`, whose cell is `k`: the caller walks the pass's slots, so
     /// the cell's slot is known and is not looked up again.
     pub(super) fn calculate_at(&mut self, k: Key, slot: u32) {
-        // Formulas to calculate, innermost last, each with the ones abandoned to calculate the
-        // next.
-        let mut work: Vec<(Key, Vec<Key>)> = vec![(k, Vec::new())];
-        let mut first = Some(slot);
-        while let Some(&(top, _)) = work.last() {
-            match first.take() {
+        // The formula the caller asked for is evaluated with its slot, and the formulas it needs
+        // past the depth limit are frames of their own, each with the ones abandoned to calculate
+        // the next. That first formula is *not* a frame: it is kept here and its held formulas in
+        // `held`, so a formula that never suspends — every ordinary chain — allocates nothing where
+        // a one-element `Vec` was a malloc per cell.
+        let mut work: Vec<(Key, Vec<Key>)> = Vec::new();
+        let mut held: Vec<Key> = Vec::new();
+        let mut top = k;
+        let mut top_slot = Some(slot);
+        loop {
+            match top_slot.take() {
                 Some(slot) => {
                     self.compute_at(top, slot);
                 }
@@ -602,10 +607,11 @@ impl PassHost<'_> {
                     {
                         self.suspensions += 1;
                     }
-                    let held = std::mem::take(&mut self.abandoned);
-                    self.waiting.extend(held.iter().copied());
-                    if let Some(entry) = work.last_mut() {
-                        entry.1 = held;
+                    let abandoned = std::mem::take(&mut self.abandoned);
+                    self.waiting.extend(abandoned.iter().copied());
+                    match work.last_mut() {
+                        Some(entry) => entry.1 = abandoned,
+                        None => held = abandoned,
                     }
                     // The other formulas read at the limit are calculated after `next`, before the
                     // held evaluations restart. Each has nothing held of its own, so the held ones
@@ -618,14 +624,28 @@ impl PassHost<'_> {
                         }
                     }
                     work.push((next, Vec::new()));
+                    top = next;
                 }
                 None => {
+                    // This frame is done: release what it held and go back to the one below it —
+                    // the first formula again once the last frame is gone.
+                    if work.is_empty() {
+                        return;
+                    }
                     work.pop();
-                    if let Some(entry) = work.last_mut() {
-                        for a in entry.1.drain(..) {
-                            self.waiting.remove(&a);
+                    match work.last_mut() {
+                        Some(entry) => {
+                            for a in entry.1.drain(..) {
+                                self.waiting.remove(&a);
+                            }
+                        }
+                        None => {
+                            for a in held.drain(..) {
+                                self.waiting.remove(&a);
+                            }
                         }
                     }
+                    top = work.last().map_or(k, |entry| entry.0);
                 }
             }
         }
