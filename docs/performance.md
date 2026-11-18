@@ -369,33 +369,36 @@ part is certainly one value without building anything.
 
 ### The idle window, audited 2026-11-18
 
-An empty Cella window holds **382 MB** working set with the DirectX 12 backend and **237 MB** with
-OpenGL (`WGPU_BACKEND=gl`). The engine is not it: `cella-cli mcp`, the same build without
-a window, is **8.1 MB**. To find the rest, a **bare eframe window with one label** was built and
-measured beside it:
+An empty Cella window holds **307 MB** on DirectX 12, **230 MB** on Vulkan and **238 MB** on OpenGL
+(`WGPU_BACKEND=vulkan`, `=gl`). The engine is not it: `cella-cli mcp`, the same build
+without a window, is **8.1 MB**, and a **bare eframe window with one label** - built and measured
+beside it - holds 236-256 MB on DirectX 12 and 91-109 MB on OpenGL. So the windowing stack is the
+largest part and the backend is the largest lever inside it.
 
-| | DirectX 12 | OpenGL |
-|---|---:|---:|
-| bare eframe window (one label, no Cella code) | **236-256 MB** | **91-109 MB** |
-| Cella, no document | 382 MB | 237 MB |
-| Cella on top of the floor | ~126-137 MB | ~128-146 MB |
+The same file in all three backends (two runs each, the edit is B3 = 5; the recalculate figure is
+there to show that the backend does not touch the engine's cost):
 
-So the idle footprint decomposes into three parts, and the biggest is not ours:
+| backend | idle | after opening 70 MB | after the edit | peak | `ui.screenshot` |
+|---|---:|---:|---:|---:|---:|
+| DirectX 12 | 307 MB | 1,189 MB | 1,326 MB | 1,489 MB | 140 ms |
+| Vulkan | **230 MB** | 1,111 MB | 1,248 MB | 1,412 MB | **hangs** (60 s timeout, six times) |
+| OpenGL | 238 MB | **1,052 MB** | **1,188 MB** | **1,351 MB** | **135 ms** |
+| recalculate 2M formulas | | | | | 0.86-0.90 s in all three |
 
-1. **The windowing stack: 236-256 MB on DirectX 12, 91-109 MB on OpenGL.** The driver choice alone
-   costs ~145 MB - more than everything Cella adds. Whether OpenGL draws as smoothly here is the
-   open question (the app already falls back to it when DirectX 12 has no usable GPU), and it is a
-   frame-time measurement, not a memory one.
-2. **Fonts: 66.7 MB** (19 faces; the six script fallbacks are 53 MB - Chinese 19.7, Japanese 13.8,
-   Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4 - and the Latin set is 12.8). The glyph atlas
-   is only 1.0 MB (`FontsView::font_image_size`: 8192 x 32), so the bytes are the files.
-3. **Our UI state: ~60 MB** (382 - 256 - 67): the ribbon, theme and text caches an empty window
-   already builds.
+Three things follow. **OpenGL is both the lightest and as fast as DirectX 12** here (135 ms against
+140 ms for a full screenshot, the same engine time), so the ~137 MB it saves with a document open is
+not paid for in this measurement - what it does not prove is frame pacing and vsync under real
+scrolling, which needs a frame-time probe rather than a screenshot. **Vulkan is lightest idle but its
+readback path hung** in this build, before the known Intel `igvk64.dll` crash that keeps it off by
+default (#120); it is not a default candidate. **Wayland is not a render backend**: it is the Linux
+window protocol (the app ships both `wayland` and `x11` features), so on Linux the
+choice is Vulkan or OpenGL under either protocol - a measurement this Windows machine cannot make.
 
-It arrives in one step: **51.5 MB at 250 ms after launch, 312.6 MB at 500 ms** - fonts, the adapter
-probe and device creation all happen there. The font set is locked by a test now
-(`the_font_set_stays_inside_its_budget`: 70 MB total, 15 MB Latin), so a new face is a deliberate
-change.
+Inside our own ~130 MB over the bare window: **fonts 66.7 MB** (19 faces; the six script fallbacks
+are 53 MB - Chinese 19.7, Japanese 13.8, Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4 - and
+the Latin set is 12.8) and ~60 MB of UI state. The glyph atlas is 1.0 MB (`font_image_size`:
+8192 x 32), so the font bytes are the files. The set is locked by a test now
+(`the_font_set_stays_inside_its_budget`: 70 MB total, 15 MB Latin).
 
 ### Compared with Excel and WPS, 2026-11-18
 
