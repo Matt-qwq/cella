@@ -389,6 +389,13 @@ window holds with nothing open** - the same build headless (`cella-cli mcp`) is 
 is UI startup allocation and it is the next memory target. Detail and caveats in
 [target-app-parity.md](target-app-parity.md#measured-against-excel-and-wps-2026-11-18).
 
+Memory alone is not a score. The same file pair gives **bytes per populated cell** (Excel 69,
+WPS 88, Cella 104) and **one edit that recomputes 999,999 chained formulas** (Excel 0.07 s,
+WPS 14.8 s, Cella 0.853 s), i.e. 51.7k / 0.19k / 2.7k formulas a second per MB of document
+memory: our extra 277 MB is not buying speed, and what it does buy is the undo of that same
+edit, the exact formula text and the replayable journal. The 382 MB idle window buys nothing
+(the headless build is 8.1 MB with the same latency) - that is the number to treat as waste.
+
 
 ### The undo step, audited 2026-11-18
 

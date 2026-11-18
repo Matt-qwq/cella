@@ -263,6 +263,34 @@ including 212 MB of undo and 15 MB of journal) is in the right place. Where the 
   that 382 MB is startup allocation in the UI, and it is the next memory target rather than the
   cell store.
 
+#### Effective memory: what the bytes buy
+
+A byte count alone says nothing: the question is what the memory is doing. The same file gives a
+fair pair of measures - bytes per populated cell, and the latency of one edit that a user would
+feel (B2 = 2, which changes 999,999 chained H formulas; the three products agree on the result,
+H1000000 23,999,823,993,692).
+
+| | Excel 16.0.20527 | WPS 12.1.0.25222 | Cella 0.12 |
+|---|---:|---:|---:|
+| document memory | **553 MB** | 700 MB | 830 MB |
+| bytes per populated cell | **69** | 88 | 104 |
+| one edit -> 1,000,000 formulas recomputed | **0.07 s** | 14.8 s | 0.853 s |
+| formulas recomputed per second | **28.6M** | 0.14M | 2.3M |
+| formulas per second per MB | **51.7k** | 0.19k | 2.7k |
+
+Read against Excel, our 277 MB of extra document memory is **not buying speed** - we are 12x
+slower on the same edit - so on this workload we are Pareto-dominated by it except on opening
+(3.3 s against 8.0). What our memory does buy, and Excel does not: **an undo of that same
+999,999-formula edit** (one step, 212 MB, restored in 27 ms; Excel and WPS expose no undo through
+automation at all, and interactively Excel refuses the largest fills), the **exact formula text**
+the user typed (133 MB - we write back byte for byte, Excel normalises), a **replayable journal**
+for agents (15 MB) and the spill/dynamic-array model. The 372 MB dependency graph buys the same
+thing Excel's smaller one does, and is the next place where memory and speed can both improve
+rather than trade.
+
+The 382 MB idle window buys nothing measurable: the same build headless is 8.1 MB and the same
+latency. That is the one number to treat as waste.
+
 Caveats: working set includes shared DLL pages, so the private column is the fairer one; our cells
 keep the exact A1 text (133 MB) where Excel keeps tokens; the file is our own writer's, so both
 readers may be doing work a file from their own writer would not need; WPS may have recalculated
