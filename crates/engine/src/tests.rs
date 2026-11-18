@@ -7328,12 +7328,16 @@ mod compressed_history {
         assert!(compress_latest(&mut s), "the step has bands of its own to spill");
         let after = latest_retained(&s);
         // Its pages, plus the delta of the thousand formulas the fill wrote (sixteen bytes a cell):
-        // both are memory the step keeps, and both are charged.
-        assert!(after * 2 < before, "compressed to {after} from {before} bytes");
+        // both are memory the step keeps, and both are charged. The delta does not compress, so the
+        // saving is the pages — more than a third of a step whose row side tables are 72 B a row
+        // now, not 144.
+        assert!(before - after > before / 3, "compressed to {after} from {before} bytes");
         assert!(after * 4 < cells, "{after} bytes of step against {cells} of live cells");
-        // The report charges the step what it now costs, not what it used to.
+        // The report charges the step what it now costs, not what it used to. Two thirds, not a
+        // half: the pages are the sheet's own cells deflated and the formula delta does not
+        // compress, while the live figure no longer carries 144 B a row of row side tables.
         let report = s.memory_report();
-        assert!(report.undo < cells / 2, "{} against {cells}", report.undo);
+        assert!(report.undo * 3 < cells * 2, "{} against {cells}", report.undo);
         // And the step still reads back exactly.
         s.execute("edit.undo", json!({})).unwrap();
         assert!(v(&s, "F1000").is_empty());

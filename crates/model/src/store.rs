@@ -337,16 +337,46 @@ fn drop_slice<T>(v: &mut Vec<T>, at: usize, n: usize) {
     v.drain(lo..hi);
 }
 
-/// The two things a cell only rarely carries: a formula, and an array value.
+/// What a row carries beside its cells: its formulas, and the two things almost no row has.
+///
+/// The formula vector is sized exactly (`shrink_to_fit` after an edit): a million rows of two
+/// formulas used to hold a doubling's spare capacity — four slots for two entries, 32 MB of
+/// nothing at a million rows — because `Vec` doubles rather than fitting what it holds.
 #[derive(Clone, Debug, Default)]
 struct RowExtras {
     /// `(column, formula)`, sorted by column.
     formulas: Vec<(u32, Arc<Formula>)>,
+    /// Allocated only by a row that holds an array value or a wide payload table.
+    rare: Option<Box<RareRow>>,
+}
+
+/// The parts of a row's side table that almost no row needs, kept out of line so a row of formulas
+/// pays for its formulas alone.
+#[derive(Clone, Debug, Default)]
+struct RareRow {
     /// `(column, array value)`, sorted by column.
     arrays: Vec<(u32, Arc<cella_core::Array>)>,
     /// Payloads too wide for the `u16` array, in the order their cells reached for them. Only a
     /// band with more than 65,535 distinct numbers ever has one.
     wide: Vec<u64>,
+}
+
+impl RowExtras {
+    fn arrays(&self) -> &[(u32, Arc<cella_core::Array>)] {
+        self.rare.as_deref().map_or(&[], |r| r.arrays.as_slice())
+    }
+
+    fn wide(&self) -> &[u64] {
+        self.rare.as_deref().map_or(&[], |r| r.wide.as_slice())
+    }
+
+    fn rare_mut(&mut self) -> &mut RareRow {
+        self.rare.get_or_insert_with(Default::default)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.formulas.is_empty() && self.rare.as_ref().is_none_or(|r| r.arrays.is_empty() && r.wide.is_empty())
+    }
 }
 
 /// One row of a band: the row number, and where that row's cells sit in the band's four stripes.
@@ -410,7 +440,7 @@ impl BandRow {
 
     fn wide_at(&self, band: &Band, i: usize) -> u64 {
         let slot = self.payload_at(band, i) as usize;
-        self.extras.as_ref().and_then(|e| e.wide.get(slot).copied()).unwrap_or(0)
+        self.extras.as_ref().map_or(0, |e| e.wide().get(slot).copied().unwrap_or(0))
     }
 
     fn formulas(&self) -> &[(u32, Arc<Formula>)] {
@@ -418,7 +448,7 @@ impl BandRow {
     }
 
     fn arrays(&self) -> &[(u32, Arc<cella_core::Array>)] {
-        self.extras.as_ref().map_or(&[], |e| e.arrays.as_slice())
+        self.extras.as_ref().map_or(&[], |e| e.arrays())
     }
 
     /// Whether two versions of a row share its formula side table, which an edit that did not
@@ -432,7 +462,7 @@ impl BandRow {
     }
 
     fn drop_unused_extras(&mut self) {
-        if self.extras.as_ref().is_some_and(|e| e.formulas.is_empty() && e.arrays.is_empty() && e.wide.is_empty()) {
+        if self.extras.as_ref().is_some_and(|e| e.is_empty()) {
             self.extras = None;
         }
     }
@@ -521,14 +551,19 @@ impl BandRow {
                 let e = Arc::make_mut(self.extras.get_or_insert_with(Default::default));
                 match e.formulas.binary_search_by_key(&col, |(c, _)| *c) {
                     Ok(i) => e.formulas[i].1 = f.clone(),
-                    Err(i) => e.formulas.insert(i, (col, f.clone())),
+                    Err(i) => {
+                        e.formulas.insert(i, (col, f.clone()));
+                        e.formulas.shrink_to_fit();
+                    }
                 }
             }
             None => {
                 if let Some(e) = self.extras.as_mut()
                     && let Ok(i) = e.formulas.binary_search_by_key(&col, |(c, _)| *c)
                 {
-                    Arc::make_mut(e).formulas.remove(i);
+                    let e = Arc::make_mut(e);
+                    e.formulas.remove(i);
+                    e.formulas.shrink_to_fit();
                 }
                 self.drop_unused_extras();
             }
@@ -538,17 +573,19 @@ impl BandRow {
     fn set_array(&mut self, col: u32, array: Option<&Arc<cella_core::Array>>) {
         match array {
             Some(a) => {
-                let e = Arc::make_mut(self.extras.get_or_insert_with(Default::default));
+                let e = Arc::make_mut(self.extras.get_or_insert_with(Default::default)).rare_mut();
                 match e.arrays.binary_search_by_key(&col, |(c, _)| *c) {
                     Ok(i) => e.arrays[i].1 = a.clone(),
                     Err(i) => e.arrays.insert(i, (col, a.clone())),
                 }
             }
             None => {
-                if let Some(e) = self.extras.as_mut()
-                    && let Ok(i) = e.arrays.binary_search_by_key(&col, |(c, _)| *c)
-                {
-                    Arc::make_mut(e).arrays.remove(i);
+                let held = self.extras.as_ref().is_some_and(|e| e.arrays().binary_search_by_key(&col, |(c, _)| *c).is_ok());
+                if held && let Some(e) = self.extras.as_mut() {
+                    let r = Arc::make_mut(e).rare_mut();
+                    if let Ok(i) = r.arrays.binary_search_by_key(&col, |(c, _)| *c) {
+                        r.arrays.remove(i);
+                    }
                 }
                 self.drop_unused_extras();
             }
@@ -747,19 +784,22 @@ impl Band {
                 // Another owner (a snapshot's band) holds the table's contents.
                 continue;
             }
-            m.row_extras = m
-                .row_extras
-                .saturating_add(size_of::<RowExtras>())
-                .saturating_add(extras.formulas.capacity() * size_of::<(u32, Arc<Formula>)>())
-                .saturating_add(extras.arrays.capacity() * size_of::<(u32, Arc<cella_core::Array>)>());
-            m.wide = m.wide.saturating_add(extras.wide.capacity() * size_of::<u64>());
+            m.row_extras =
+                m.row_extras.saturating_add(size_of::<RowExtras>()).saturating_add(extras.formulas.capacity() * size_of::<(u32, Arc<Formula>)>());
+            if let Some(rare) = &extras.rare {
+                m.row_extras = m
+                    .row_extras
+                    .saturating_add(size_of::<RareRow>())
+                    .saturating_add(rare.arrays.capacity() * size_of::<(u32, Arc<cella_core::Array>)>());
+                m.wide = m.wide.saturating_add(rare.wide.capacity() * size_of::<u64>());
+            }
             for (_, f) in &extras.formulas {
                 formulas.push((Arc::as_ptr(f) as usize, f.text.len()));
                 if let Some(s) = &f.shape {
                     shapes.push((Arc::as_ptr(s) as usize, s.bytes));
                 }
             }
-            for (_, a) in &extras.arrays {
+            for (_, a) in extras.arrays() {
                 arrays.push(Arc::as_ptr(a) as usize);
             }
         }
@@ -1139,13 +1179,14 @@ impl Band {
         // A value write appends (it cannot tell which entry was the cell's own), so a band
         // rewritten many times — a recalculated row of formulas — walks past the 65,535 an index
         // can hold; `compact_wide` brings it back to one entry per value the row still uses.
-        if self.rows[at].extras.as_ref().is_some_and(|e| e.wide.len() > usize::from(u16::MAX)) {
+        if self.rows[at].extras.as_ref().is_some_and(|e| e.wide().len() > usize::from(u16::MAX)) {
             self.compact_wide(at);
         }
         let extras = Arc::make_mut(self.rows[at].extras.get_or_insert_with(Default::default));
-        extras.wide.push(value);
+        let rare = extras.rare_mut();
+        rare.wide.push(value);
         // Compaction keeps the table at or below the row's cell count, so the index always fits.
-        u16::try_from(extras.wide.len() - 1).unwrap_or(u16::MAX)
+        u16::try_from(rare.wide.len() - 1).unwrap_or(u16::MAX)
     }
 
     /// Rebuilds the row's wide table with one entry per distinct value its cells still use, so the
@@ -1153,7 +1194,7 @@ impl Band {
     /// [`cella_core::MAX_COLS`] cells, so the rebuilt table always fits.
     fn compact_wide(&mut self, at: usize) {
         let cells = self.rows[at].cells as usize;
-        let len = self.rows[at].extras.as_ref().map_or(0, |e| e.wide.len());
+        let len = self.rows[at].extras.as_ref().map_or(0, |e| e.wide().len());
         if len <= usize::from(u16::MAX) {
             return;
         }
@@ -1164,7 +1205,7 @@ impl Band {
                 continue;
             }
             let slot = usize::from(self.rows[at].payload_at(self, i));
-            if let Some(v) = self.rows[at].extras.as_ref().and_then(|e| e.wide.get(slot)) {
+            if let Some(v) = self.rows[at].extras.as_ref().and_then(|e| e.wide().get(slot)) {
                 used.push((i, *v));
             }
         }
@@ -1184,7 +1225,7 @@ impl Band {
             slots.push((i, slot));
         }
         if let Some(extras) = self.rows[at].extras.as_mut() {
-            Arc::make_mut(extras).wide = wide;
+            Arc::make_mut(extras).rare_mut().wide = wide;
         }
         let cells_at = self.rows[at].cells_at as usize;
         for (i, slot) in slots {
@@ -1352,8 +1393,11 @@ impl Band {
             self.payloads.push(payload);
             stored += 1;
         }
-        let extras =
-            if formulas.is_empty() && arrays.is_empty() && wide.is_empty() { None } else { Some(Arc::new(RowExtras { formulas, arrays, wide })) };
+        // A Vec's first push allocates four 16-byte slots for a two-entry row, and a read of a
+        // million rows would keep that spare capacity alive: give it back before the row is built.
+        formulas.shrink_to_fit();
+        let rare = (!arrays.is_empty() || !wide.is_empty()).then(|| Box::new(RareRow { arrays, wide }));
+        let extras = if formulas.is_empty() && rare.is_none() { None } else { Some(Arc::new(RowExtras { formulas, rare })) };
         let row = BandRow {
             key: row_key,
             first,
@@ -3706,7 +3750,7 @@ impl CellStore {
                 let Some(row) = band.row(physical % BAND) else { continue };
                 let owned = row.extras.as_ref().is_some_and(|e| {
                     e.formulas.iter().any(|(c, _)| self.col_map.inverse(*c).is_some_and(|col| (r.start.col..=r.end.col).contains(&col)))
-                        || e.arrays.iter().any(|(c, _)| self.col_map.inverse(*c).is_some_and(|col| (r.start.col..=r.end.col).contains(&col)))
+                        || e.arrays().iter().any(|(c, _)| self.col_map.inverse(*c).is_some_and(|col| (r.start.col..=r.end.col).contains(&col)))
                 });
                 if owned {
                     return true;
@@ -4382,7 +4426,7 @@ impl CellStore {
             out[3] += band.payloads.capacity() * size_of::<u16>();
             out[4] += band.styles.capacity() * size_of::<(u16, u16)>();
             for row in &band.rows {
-                out[6] += row.extras.as_ref().map_or(0, |e| e.formulas.capacity() * (4 + 8) + e.arrays.capacity() * (4 + 8));
+                out[6] += row.extras.as_ref().map_or(0, |e| e.formulas.capacity() * (4 + 8) + e.arrays().len() * (4 + 8) + e.wide().len() * 8);
             }
         }
         out
@@ -5000,7 +5044,7 @@ mod page {
 
     use cella_core::{CellError, CellRef, RangeRef, Value};
 
-    use super::{Band, BandRow, ERRORS, Formula, PageCacheStats, RowExtras, StyleId, error_code};
+    use super::{Band, BandRow, ERRORS, Formula, PageCacheStats, RareRow, RowExtras, StyleId, error_code};
 
     const MAGIC: u32 = 0x4750_4231; // "GPB1"
     const VERSION: u8 = 1;
@@ -5907,8 +5951,8 @@ mod page {
                     put_u32(out, *col);
                     encode_formula(out, f)?;
                 }
-                put_len(out, e.arrays.len());
-                for (col, a) in &e.arrays {
+                put_len(out, e.arrays().len());
+                for (col, a) in e.arrays() {
                     put_u32(out, *col);
                     put_u32(out, u32::try_from(a.rows).ok()?);
                     put_u32(out, u32::try_from(a.cols).ok()?);
@@ -5917,8 +5961,8 @@ mod page {
                         encode_value(out, v, 0)?;
                     }
                 }
-                put_len(out, e.wide.len());
-                for v in &e.wide {
+                put_len(out, e.wide().len());
+                for v in e.wide() {
                     put_u64(out, *v);
                 }
             }
@@ -5986,7 +6030,7 @@ mod page {
                 for _ in 0..wide_len {
                     wide.push(take_u64(input)?);
                 }
-                Some(Arc::new(RowExtras { formulas, arrays, wide }))
+                Some(Arc::new(RowExtras { formulas, rare: (!arrays.is_empty() || !wide.is_empty()).then(|| Box::new(RareRow { arrays, wide })) }))
             }
             _ => return None,
         };
@@ -8463,5 +8507,39 @@ mod array_anchor_tests {
         s.set(CellRef::new(4, 1), anchored("=2", "B5:B6"));
         s.rebuild();
         assert!(s.has_array_anchors(), "a rebuild that carries the array raises it");
+    }
+}
+#[cfg(test)]
+mod row_extras_memory {
+    use super::*;
+    use crate::cell::{Cell, Formula};
+    use std::mem::size_of;
+
+    /// A row of two formulas charges two formula slots, not the four a growing `Vec` keeps: at a
+    /// million rows that spare capacity was 32 MB, and the reader's rows kept it until `put_row`
+    /// gave it back. Both write paths are covered — a whole row at once, and cell by cell.
+    #[test]
+    fn a_row_of_two_formulas_charges_two_formulas_and_no_spare_capacity() {
+        let mut row_at_once = CellStore::default();
+        let mut cell_by_cell = CellStore::default();
+        for row in 0..1_000 {
+            let two = |row: u32| -> Vec<(u32, Cell)> {
+                (0..2)
+                    .map(|c| {
+                        let mut cell = Cell::formula(Formula::new(&format!("=A{}", row + c + 1)));
+                        cell.value = Value::from(1.0);
+                        (c, cell)
+                    })
+                    .collect()
+            };
+            let mut cells = two(row);
+            row_at_once.set_row(row, &mut cells);
+            for (col, cell) in two(row) {
+                cell_by_cell.set(cella_core::CellRef::new(row, col), cell);
+            }
+        }
+        let per_row = 8 + size_of::<RowExtras>() + 2 * size_of::<(u32, Arc<Formula>)>();
+        assert_eq!(row_at_once.memory().row_extras / 1_000, per_row);
+        assert_eq!(cell_by_cell.memory().row_extras / 1_000, per_row);
     }
 }
