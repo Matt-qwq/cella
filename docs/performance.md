@@ -398,9 +398,13 @@ open, on the visible desktop, at 144 Hz:
 | OpenGL | **1.38 ms** | 1.67 ms | 6.9 ms | **1,050 MB** |
 
 Both hold the display's refresh rate with the same paint cost, so **OpenGL is not slower here and
-costs 183 MB less with this document open**. The remaining risk is other machines' OpenGL drivers,
-which is what the automatic fallback to DirectX 12 exists for; Vulkan stays off (its readback hung
-on the visible desktop, on top of the known Intel `igvk64.dll` crash, #120). Wayland is not a
+costs 183 MB less with this document open** - and it is the **default** as of 2026-11-18
+(`graphics::choose_backends`): a machine whose DirectX 12 offers only WARP keeps both backends so
+wgpu still finds one, and any failure to create the GL device is retried with DirectX 12. A run
+with no override confirms it: the log reads `backends Backends(GL)`, idle 246 MB, 1,051 MB with
+the document open, paint 1.41 ms and a 7.0 ms interval (144 Hz). The risk this takes on is other
+machines' OpenGL drivers, which is exactly what the retry path covers. Vulkan stays off (its
+readback hung on the visible desktop, on top of the known Intel `igvk64.dll` crash, #120). Wayland is not a
 render backend at all - it is the Linux window protocol (the app ships `wayland` and `x11`),
 so on Linux the choice is Vulkan or OpenGL under either protocol, which this machine cannot measure.
 

@@ -30,6 +30,14 @@ use serde_json::json;
 /// and how far apart frames are. A memory number says nothing about smoothness, and a screenshot
 /// is a poor proxy - it adds a readback and a PNG encode - so the app measures itself, one line
 /// every sixty frames.
+/// A monotonic reading for the frame stats. The workspace lint that forbids `Instant` exists because
+/// it traps on wasm; this is the desktop app, which never builds for wasm, so the one call is allowed
+/// here rather than wrapped in a `cfg`.
+#[allow(clippy::disallowed_methods)]
+fn frame_now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
 #[derive(Default)]
 struct FrameStats {
     frames: u32,
@@ -96,11 +104,11 @@ impl eframe::App for App {
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let started = std::time::Instant::now();
+        let started = frame_now();
         self.sheet.ui(ui);
         let Some(stats) = &mut self.frame_stats else { return };
         let paint = started.elapsed().as_secs_f64() * 1000.0;
-        let now = std::time::Instant::now();
+        let now = frame_now();
         let interval = stats.last_frame.map_or(0.0, |last| (now - last).as_secs_f64() * 1000.0);
         stats.last_frame = Some(now);
         stats.frames = stats.frames.saturating_add(1);

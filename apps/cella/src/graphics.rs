@@ -39,16 +39,17 @@ pub fn choose_backends(backend_override: Option<Backends>, dx12_adapters: &[Dx12
     if let Some(backends) = backend_override {
         return backends;
     }
-    let hardware = |a: &&Dx12Adapter| a.device_type != DeviceType::Cpu;
-    if dx12_adapters.iter().filter(hardware).any(|a| a.meets_limits) {
-        Backends::DX12
-    } else if !dx12_adapters.is_empty() && !dx12_adapters.iter().any(|a| hardware(&a)) {
-        Backends::DX12 | Backends::GL
-    } else {
-        // No DirectX 12 adapter at all, or only GPUs that can't run the app: GL alone, so a
-        // DirectX 12 GPU that would fail device creation isn't picked over the OpenGL one.
-        Backends::GL
-    }
+    // OpenGL first. Measured on the reference workbook: the same 1.4 ms a frame at 144 Hz as
+    // DirectX 12, and **183 MB lighter with the document open** (performance.md, 2026-11-18).
+    // DirectX 12 is what the retry path reaches for when the GL device cannot be created
+    // ([fallback_backends]), which is the only case that needs it: the probe above exists to keep
+    // Vulkan off (#120) and to know whether DirectX 12 has a usable GPU at all.
+    //
+    // A machine whose DirectX 12 offers nothing but WARP keeps both in the list: wgpu prefers a
+    // hardware adapter over a software one across backends, so a GL driver wins when there is one
+    // and WARP is still there when there is not.
+    let warp_only = !dx12_adapters.is_empty() && dx12_adapters.iter().all(|a| a.device_type == DeviceType::Cpu);
+    if warp_only { Backends::GL | Backends::DX12 } else { Backends::GL }
 }
 
 /// The backends for a second start when the first one failed with a graphics error before the
@@ -162,7 +163,7 @@ mod tests {
         };
         assert!(eframe_default.instance_descriptor.backends.contains(Backends::GL));
         let gpu = [adapter(DeviceType::IntegratedGpu, true)];
-        assert_eq!(configured_backends(choose_backends(None, &gpu)), Backends::DX12);
+        assert_eq!(configured_backends(choose_backends(None, &gpu)), Backends::GL);
         // #120: whatever the DirectX 12 probe finds, and whatever the retry picks, no Vulkan.
         let probes: [&[Dx12Adapter]; 4] = [&[], &gpu, &[adapter(DeviceType::Cpu, true)], &[adapter(DeviceType::IntegratedGpu, false)]];
         for adapters in probes {
@@ -196,9 +197,17 @@ mod tests {
         // A GPU that can't create eframe's device: GL alone, so it isn't picked over the GL one.
         let weak_gpu = [adapter(DeviceType::IntegratedGpu, false), adapter(DeviceType::Cpu, true)];
         assert_eq!(choose_backends(None, &weak_gpu), Backends::GL);
-        // Any usable GPU keeps DirectX 12 only, next to WARP or a weaker GPU.
+        // OpenGL is the default whatever the DirectX 12 probe finds, because it is lighter at
+        // the same frame time; DirectX 12 is the retry path's backend.
         let mixed = [adapter(DeviceType::Cpu, true), adapter(DeviceType::IntegratedGpu, false), adapter(DeviceType::DiscreteGpu, true)];
-        assert_eq!(choose_backends(None, &mixed), Backends::DX12);
+        assert_eq!(choose_backends(None, &mixed), Backends::GL);
+        // Whatever the probe finds, the retry path offers DirectX 12 when the GL device fails - and
+        // a machine whose list already holds both has nothing left to retry with.
+        for adapters in [&[][..], &warp_only[..], &weak_gpu[..], &mixed[..]] {
+            let first = choose_backends(None, adapters);
+            let expected = if first == Backends::GL { Some(Backends::DX12) } else { None };
+            assert_eq!(fallback_backends(None, first), expected, "{adapters:?}");
+        }
     }
 
     #[test]
