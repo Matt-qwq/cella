@@ -277,7 +277,7 @@ capacities and layouts — not a heap census — and `total == Σ parts` is a te
 | · graph nodes (2M, 16 B) | 172.0 MB | **104.9 MB** | 9.2 % |
 | · dependents map | 478.2 MB | 142.6 MB | 12.6 % |
 | · precedent-area arena | 201.3 MB | 125.0 MB | 11.0 % |
-| **history / undo** | **737.6 MB** | **241.6 MB** | 21.3 % |
+| **history / undo** | **737.6 MB** | **212.3 MB** | 21.3 % |
 | journal (recent commands) | 42.1 MB | 42.1 MB | 4.2 % |
 | **total** | **2.90 GB** | **998 MB** | |
 
@@ -287,7 +287,7 @@ reference workbook costs three: the typed source formulas). After a save and reo
 the writer still writes one plain `<f>` per cell by design (§ `plan/SHAPE-SHARING.md` 5.4), so a
 reopened file parses once per read chunk.
 
-Two numbers are worth reading carefully. **Undo's 241.6 MB is a charge, not wholly heap**: about
+Two numbers are worth reading carefully. **Undo's 212.3 MB is a charge, not wholly heap**: about
 480 MB of the original 737.6 MB was formula trees shared with the live bands and the graph, so the
 snapshot's own heap was ≈257 MB — the shape work cut the charge because the shared tree is now one
 `Arc<Shape>` charged once, and the formula struct's shrink took another 24 MB. And **formula text
@@ -367,6 +367,22 @@ about sizes, which a shape does not change. The legacy `@` analysis got the same
 read path (`open.xlsx` 5.01 → 4.05 s in the same-binary A/B), and it now skips a formula whose every
 part is certainly one value without building anything.
 
+### The undo step, audited 2026-11-18
+
+`examples/memory` prints the undo stack now: how many steps it holds and what each retains
+beyond the live workbook. After the reference workload's fills, 1M × 6 holds **one step,
+212.3 MB** — and that step is the sheet as it was before the last fill: stripes (bitmaps, payloads,
+kind and style runs, band headers) 85.8 MB, the rows' side tables 56.0 MB, the text table
+32.0 MB (one `Arc<str>` per distinct text, shared with the live store's own table) and the
+rest line metadata.
+
+That is what an undo of a fill has to restore, and none of it is slack: a value delta (old payload,
+kind and style per changed cell) for a fill that rewrites the sheet is the same bytes as the stripes
+it would replace, and the step is already kept as one — at 1M the byte budget holds exactly this one
+and drops the next. Paging it was measured in the second wave and refused: the step's 10,400
+bands cost about a second to encode and priced +35 % into `fill.chained` and +40 % into
+`edit.recalc`.
+
 ### The graph's three structures, audited 2026-11-18
 
 The calc part is 372.4 MB at 1M × 6: nodes 104.9, dependents 142.6, the area arena 125.0. Audited
@@ -445,6 +461,11 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (fourth):** the undo step audited. `examples/memory` prints the stack (one
+  step, 212.3 MB after the two memory rounds of the same day; the charged figure was 241.6). Its
+  parts are the pre-edit sheet itself — stripes 85.8, row side tables 56.0, the text table 32.0,
+  line metadata — which is what restoring a fill needs; a value delta would cost the same and
+  paging was already refused. No change made beyond the diagnostic.
 - **2026-11-18 (third):** the calc graph audited. Nodes 104.9 MB, dependents 142.6 MB and the arena
   125.0 MB are power-of-two hash tables at their smallest bucket count — a `shrink_to_fit` after
   a build was written, measured and reverted because it changes nothing. A sorted vector per sheet

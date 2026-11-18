@@ -80,6 +80,7 @@ fn measure(rows: usize) -> Result<(), String> {
     println!("Cella memory — {rows} rows x 6 columns{}", if cfg!(debug_assertions) { " (debug build)" } else { "" });
     print_report("as built (built by the perf scenario's three fills)", &live);
     print_shapes(&session);
+    print_undo(&session);
 
     eprintln!("memory: {rows} rows — saving and opening again");
     let saved = session.execute("file.saveBytes", json!({"format": "xlsx"})).map_err(err)?;
@@ -91,6 +92,30 @@ fn measure(rows: usize) -> Result<(), String> {
     print_shapes(&session);
     print_difference(&live, &reopened);
     Ok(())
+}
+
+/// What the undo stack holds and what each step costs beyond the live workbook: a step that keeps
+/// every band its edit rewrote is charged those bands, so the line says how many steps there are
+/// and which one is the big one.
+fn print_undo(session: &Session) {
+    let Ok(doc) = session.doc() else { return };
+    let total: usize = doc.undo.iter().map(|e| e.retained_bytes).sum();
+    println!("  {:<26}{:>16}{:>9}  {}", format!("undo stack ({} steps)", doc.undo.len()), total, "", "retained beyond the live workbook");
+    for entry in doc.undo.iter().rev().take(4) {
+        println!("  {:<26}{:>16}{:>9}  {}", format!("  {}", entry.label), entry.retained_bytes, "", "the newest first");
+        for (index, sheet) in entry.wb.sheets.iter().enumerate() {
+            let live_cells = doc.wb.sheets.get(index).map(|live| &live.cells);
+            let retained = live_cells.map_or(0, |live| sheet.cells.retained_bytes_against(live));
+            let m = sheet.cells.memory();
+            println!(
+                "  {:<26}{:>16}{:>9}  {}",
+                format!("    {} / stripes", sheet.name),
+                m.band_headers.saturating_add(m.bitmaps).saturating_add(m.payloads).saturating_add(m.kind_runs).saturating_add(m.style_runs),
+                "",
+                format!("retained {} · row tables {} · texts {}", retained, m.row_extras, m.texts)
+            );
+        }
+    }
 }
 
 /// How many formulas the workbook holds and how many parsed trees they share: the shape work's
