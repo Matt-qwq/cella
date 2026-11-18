@@ -281,13 +281,13 @@ capacities and layouts — not a heap census — and `total == Σ parts` is a te
 | · band headers, payloads, runs, bitmaps | 92.3 MB | 92.3 MB | 7.9 % |
 | **calc** | **851.4 MB** | **372.4 MB** | 32.8 % |
 | · graph nodes (2M, 16 B) | 172.0 MB | **104.9 MB** | 9.2 % |
-| · dependents map | 478.2 MB | 142.6 MB | 12.6 % |
+| · dependents map | 478.2 MB | 56.0 MB | 6.3 % |
 | · precedent-area arena | 201.3 MB | 125.0 MB | 11.0 % |
 | **history / undo** | **737.6 MB** | **212.3 MB** | 21.3 % |
 | journal (recent commands) | 42.1 MB | **15.3 MB** | 1.6 % |
-| **total** | **2.90 GB** | **971 MB** | |
+| **total** | **2.90 GB** | **884 MB** | |
 
-Reopened from the 70 MB xlsx: **0.77 GB** (769.9 MB: the reader's bands were already finished, so the number table round above moved the as-built figure only) (was 2.18 GB; 868.8 MB before the row side tables were split). The workbook as built holds **3 shapes for
+Reopened from the 70 MB xlsx: **0.68 GB** (683.3 MB: the reader's bands were already finished, so the number table round above moved the as-built figure only) (was 2.18 GB; 868.8 MB before the row side tables were split). The workbook as built holds **3 shapes for
 2,000,000 formulas**, and `edit.autoFill` over a million rows now costs **zero parses** (the whole
 reference workbook costs three: the typed source formulas). After a save and reopen it holds 181 —
 the writer still writes one plain `<f>` per cell by design (§ `plan/SHAPE-SHARING.md` 5.4), so a
@@ -436,7 +436,7 @@ and WPS 12.1.0.25222 through COM: `examples/bench` writes the file (1M x 8, 2M f
 | with no document open | **~35 MB** | 288 MB | 246 MB |
 
 Against the baselines the document costs 553 MB (Excel), 700 MB (WPS) and 808 MB (Cella) - the
-engines are within 1.5x of each other, and our 971 MB live figure (undo 212, journal 15) is in the
+engines are within 1.5x of each other, and our 884 MB live figure (undo 212, journal 15) is in the
 right place. Opening is ours by 2.4-3.2x; recalculation is Excel's by 2.9x (and ours by 17x over
 WPS); memory is nobody's friend at the top end, and the reason we are last is the **382 MB the
 window holds with nothing open** - the same build headless (`cella-cli mcp`) is 8.1 MB, so that
@@ -469,7 +469,7 @@ bands cost about a second to encode and priced +35 % into `fill.chained` and +40
 
 ### The graph's three structures, audited 2026-11-18
 
-The calc part is 372.4 MB at 1M × 6: nodes 104.9, dependents 142.6, the area arena 125.0. Audited
+The calc part is 285.9 MB at 1M × 6: nodes 104.9, dependents 56.0, the area arena 125.0. Audited
 against the structures themselves, not guessed at:
 
 | part | size | what it is |
@@ -484,7 +484,7 @@ the dependents table and the arena. The only way down is a different structure �
 `Vec<(CellRef, Node)>` per sheet (24 B an entry, ~48 MB) or a CSR dependents table (an offset array
 plus a flat list, ~12 B a reference, ~24 MB) — and both pay for it in the edit: a single-cell edit
 into a sorted vector is an O(n) insert or a delta layer to reconcile at `settle`, and the recalc
-hot path is what would carry the risk. At two million formulas 372 MB is not where the product stops
+hot path is what would carry the risk. At two million formulas the graph is not where the product stops
 working; recorded here so the next reader does not re-run the audit.
 
 ### Recalculation throughput, 2026-11-18
@@ -655,7 +655,12 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
   **once a doubling** of it; a cell it refuses keeps its hash entry, and one batch in `settle` (at
   most one pass over a sheet's entries a command) takes those in when the box around them is worth
   its cells. The shape that killed the ninth attempt is the one it was accepted on:
-  `fill.formulas` at **100k 154 ms** (164 before) and **1M 1.27/1.28 s**, against a 3 s ceiling.
+  `fill.formulas` at **100k 154 ms** (164 before) and **1M 1.27/1.28 s**, against a 3 s ceiling. Its
+  memory was not priced when it was accepted and turned out to matter: the dependents table went
+  **142.6 -> 56.0 MB**, so the workbook's own ledger (this time from `xtask perf-report`, which runs
+  `examples/memory` on the same build) reads **884 MB live and 683 MB reopened**, against 971 and
+  769.9 before the box. The audit above was right that the old table was not slack; it was the
+  structure, and the box changed the structure.
 - **2026-11-18 (tenth):** the build of a pass's slot table, two costs the audit put at 36.7 and 35 ms
   on the 1M fill. The table's `Vec<Key>` and `Vec<Source>` became one `Vec<Entry>` (32 B a slot, the
   shape a slot reads **borrowed from the graph's node** rather than `Arc::clone`d: a million atomic

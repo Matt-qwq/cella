@@ -18,6 +18,7 @@ mod oracle;
 #[cfg_attr(not(feature = "engine"), allow(dead_code))]
 mod parity;
 mod perf;
+mod perfreport;
 mod stats;
 mod version;
 
@@ -49,6 +50,7 @@ commands:
                   lookup, with a ratchet baseline in xtask/i18n-baseline.txt (--write: refresh it,
                   --check: fail on a new literal)
   perf [--update] [--rows=N,N] [--scenario=ID,...] [--repeat=N] [--budgets=PATH] [--scale=F]
+  perf-report     write docs/performance-report.md from the scenario gate and the live-heap example
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
                   1M rows and compare it with xtask/perf-budgets.txt (--update records the current
                   numbers; CELLA_PERF_SCALE slackens every budget for a slower machine).
@@ -81,6 +83,7 @@ fn main() -> ExitCode {
         Some("keytips") => keytips::run(&root(), &rest),
         Some("i18n") => i18n::run(&root(), &rest),
         Some("perf") => perf::run(&root(), &rest),
+        Some("perf-report") => perfreport::run(&root()),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),
         Some("-h" | "--help" | "help") | None => {
