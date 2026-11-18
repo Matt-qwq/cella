@@ -559,9 +559,16 @@ side of a same-binary A/B unless noted):
   **179 -> 116-118 ms** and the command **465/460 -> 421/406 ms**. `fill.values`, `fill.formulas`
   and `fill.chained` are unchanged; `Sheet::value` is also what the grid paints through.
 
-**From 893 to 406 ms, -55 %**, on the shape of edit this page has measured all day: a cell at the top
+- **The write-back moves its values** (`f006f993`): the pass collected its results into a fresh
+  `Vec<(Key, Value)>`, then cloned every value again into a per-sheet batch — two temporaries (48 MB
+  at 1M) and a million `Value` clones. The store is now fed from a batch the pass owns and reuses
+  across passes, with each value moved out of its slot (`mem::take`): write **70 -> 45-50 ms**, the
+  command **421/406 -> 407/390 ms**. The store's order check stays: measured at 0.55-0.68 ms for a
+  million values, about 1 % of the write, and it is what catches a wrong-row batch.
+
+**From 893 to 390-407 ms, -56 %**, on the shape of edit this page has measured all day: a cell at the top
 of a million-row chain. The phase split after it is closure 27, eval 117 (with the chain run), write
-70 ms. What is left is the evaluator's own 117 ms and the write-back's 70.
+45-50 ms. What is left is the evaluator's own 117 ms.
 
 **Then the read inside the eval** (`value-only-read`): every row of the chain reads its second
 operand through `Sheet::value`, which went through `CellStore::get` — a band `Arc` clone, the cell

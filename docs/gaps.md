@@ -316,6 +316,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   band still decodes. eval **179 -> 116-118 ms**, the command **465/460 -> 421/406 ms**, the fills
   unchanged. The grid paints through the same read, so the display path pays less too. From the
   start of the round: **893 -> 406 ms (-55 %)** against Excel's 0.31 s for the same edit.
+- **Landed (11-18, fourth wave): the write-back, 70 -> 45-50 ms.** The pass cloned its results into a
+  second list (two temporaries, 48 MB at 1M, a million `Value` clones) before the store saw them;
+  it now feeds a batch it owns and reuses, moving each value out of its slot. `edit.recalc`
+  **421/406 -> 407/390 ms**. From the start of the round: **893 -> 390-407 ms (-56 %)**, against
+  Excel's 0.31 s for the same edit. The store's order check measured 0.55-0.68 ms and stays.
 - **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
   tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
   the calc graph's three tables and of the one undo step found structure, not slack, and changed
