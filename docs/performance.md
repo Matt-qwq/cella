@@ -367,6 +367,27 @@ about sizes, which a shape does not change. The legacy `@` analysis got the same
 read path (`open.xlsx` 5.01 → 4.05 s in the same-binary A/B), and it now skips a formula whose every
 part is certainly one value without building anything.
 
+### The idle window, audited 2026-11-18
+
+An empty Cella window holds **309 MB** working set (255 MB when `WGPU_BACKEND=gl` picks the
+OpenGL backend; the first measurement, maximized, read 383). It is not the engine: `cella-cli mcp`,
+the same build without a window, is **8.1 MB**, and the offscreen renderer (`examples/snapshot`,
+wgpu with no window) peaks at 330 and settles at 119.
+
+| part | bytes | how it was measured |
+|---|---:|---|
+| font files | **66.7 MB** | 19 faces; the six script fallbacks are 53 MB (Chinese 19.7, Japanese 13.8, Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4), the Latin set is 12.8 |
+| glyph atlas | 1.0 MB | `FontsView::font_image_size` at runtime: 8192 x 32 |
+| DirectX 12 over OpenGL | +53 MB | 255 MB with `WGPU_BACKEND=gl`, 309 with DirectX 12 |
+| everything else | ~188 MB | eframe, winit, accesskit and the UI state, between the offscreen 119 and the windowed 255 |
+
+It arrives in one step: **51.5 MB at 250 ms after launch, 312.6 MB at 500 ms** - fonts, the adapter
+probe and device creation all happen there. In order of certainty: the **53 MB of script faces an
+English session never draws** (prune them, and let the workbook-font rebuild add them back when a
+document has East Asian text), then the DirectX 12/OpenGL difference, then whatever eframe and
+accesskit hold, which is upstream of this repository. The font set is now a test:
+`the_font_set_stays_inside_its_budget` fails above 70 MB.
+
 ### Compared with Excel and WPS, 2026-11-18
 
 Every number above is ours. The same workload was put in front of Excel 16.0.20527 (Microsoft 365)

@@ -1600,3 +1600,22 @@ mod tests {
         }
     }
 }
+/// The font set is the largest fixed allocation the app makes before a document is open (66.7 MB
+/// on Windows: 19 faces, of which 53 MB are the six script fallbacks - Chinese 19.7, Japanese 13.8,
+/// Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4). This locks the figure so a new face is a
+/// deliberate change: the glyph atlas next to it is 1.0 MB, so the bytes are the files themselves.
+#[test]
+fn the_font_set_stays_inside_its_budget() {
+    let fonts = crate::theme::font_definitions();
+    let total: usize = fonts.font_data.values().map(|f| f.font.len()).sum();
+    assert!(fonts.font_data.len() <= 20, "one face per role and script: {}", fonts.font_data.len());
+    assert!(total <= 70_000_000, "the default font set is {} MB, budget 70", total / 1_000_000);
+    // The Latin faces are small; the script fallbacks are what the budget is about.
+    let latin: usize = fonts
+        .font_data
+        .iter()
+        .filter(|(name, _)| !name.starts_with("sys-cjk") && **name != "sys-devanagari" && **name != "sys-hebrew" && **name != "sys-thai")
+        .map(|(_, f)| f.font.len())
+        .sum();
+    assert!(latin < 15_000_000, "the Latin set is {} MB", latin / 1_000_000);
+}
