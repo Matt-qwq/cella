@@ -60,7 +60,7 @@ fn render(version: &str, sha: &str, date: &str, rustc: &str, table: &str, heap: 
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     format!(
-r#"# Performance report
+        r#"# Performance report
 
 > **Generated** by `cargo xtask perf-report` for Cella {version} at `{sha}` ({date}).
 > Machine: {os} {arch}; {rustc}. Every number is wall clock on one idle machine, and this
@@ -105,5 +105,6 @@ cargo xtask perf                              # the scenario gate against xtask/
 cargo run --release -p cella-engine --example memory -- 1000000
 cargo xtask perf-report                       # this page
 ```
-"#)
+"#
+    )
 }
