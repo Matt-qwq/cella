@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "cella"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "arboard",
  "cella-engine",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "cella-calc"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "cella-dax",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "cella-chart"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-calc",
  "cella-core",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "cella-cli"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-engine",
  "cella-mcp",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "cella-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "epaint_default_fonts",
  "js-sys",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "cella-dax"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "cella-model",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "cella-engine"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-calc",
  "cella-chart",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "cella-formula"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "serde",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "cella-functions"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "regex",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "cella-mcp"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-engine",
  "log",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "cella-model"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "cella-formula",
@@ -774,14 +774,14 @@ dependencies = [
 
 [[package]]
 name = "cella-numfmt"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
 ]
 
 [[package]]
 name = "cella-parquet"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "cella-core",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "cella-pdf"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "epaint_default_fonts",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "cella-query"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-core",
  "cella-model",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "cella-ui-egui"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-chart",
  "cella-engine",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "cella-web"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-engine",
  "cella-ui-egui",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "cella-xlsx"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "aes",
  "cella-core",
@@ -5294,7 +5294,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cella-engine",
  "serde_json",

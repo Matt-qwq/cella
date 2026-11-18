@@ -8,6 +8,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../assets/app-icon/cella.ico");
+    println!("cargo:rerun-if-env-changed=CELLA_REQUIRE_WINRES");
     println!("cargo:rerun-if-env-changed=GRIDCRAFT_REQUIRE_WINRES");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -21,7 +22,9 @@ fn main() {
         .set("OriginalFilename", "cella.exe")
         .set("InternalName", "cella");
     if let Err(e) = res.compile() {
-        if std::env::var_os("GRIDCRAFT_REQUIRE_WINRES").is_some() {
+        // The repository renamed from GridCraft to Cella; the packager already sets the new
+        // name, and the old one is still honoured so an old CI recipe keeps working.
+        if std::env::var_os("CELLA_REQUIRE_WINRES").is_some() || std::env::var_os("GRIDCRAFT_REQUIRE_WINRES").is_some() {
             eprintln!("embedding Windows resources failed: {e}");
             std::process::exit(1);
         }

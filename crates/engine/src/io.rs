@@ -848,6 +848,7 @@ pub fn list_files(dir: &str, _filter: &str) -> Result<Vec<String>> {
 
 /// Whether a file name matches a wildcard: \`*\` is any run of characters, \`?\` one character,
 /// everything else literal, compared case-insensitively.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn name_matches(name: &str, filter: &str) -> bool {
     let filter = if filter.trim().is_empty() { "*" } else { filter.trim() };
     let n: Vec<char> = name.to_lowercase().chars().collect();
