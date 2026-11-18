@@ -26,6 +26,25 @@ A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. The C is one st
 `(344,156)` round through the left side to `(344,356)`, width 52, rounded terminals; the cell is a
 64 px square with `rx=16` centred in the opening (`300,226`).
 
+## Material
+
+The mark is rendered as **enamel on a metal plate** (chosen 2026-11-18 from the six-way study in
+`plan/icon/material.html`): a deep plate under a soft overhead sheen with a blurred vignette at the
+bottom, the C as a raised cream stroke with a dark under-shadow and a light rim along its top edge,
+and the cell as a dome of amber enamel with an off-centre specular. Nothing here is a bitmap effect —
+it is gradients, two blurs and stroke offsets, so the SVG is still the source.
+
+Two files carry it:
+
+| File | Render for | Difference |
+|---|---|---|
+| `cella.svg` | 64 px and up, and `hicolor/scalable` | The full material |
+| `cella-small.svg` | 16, 20, 24, 32, 40, 48 px | Same geometry, no inner rim lines, a shadow that survives the drop, a brighter cell edge — a small size cannot show the bevel and should not try |
+
+A per-pixel grain was part of the study and is deliberately **not** in the shipped art: at 512 it is
+invisible, and it multiplies the PNG by about sixteen (a 1 MB `.icns`). The materiality comes from
+the bevel, the sheen and the dome.
+
 Windows and Linux use the full tile. The macOS icons (`.icns`, `cella-macos-512.png`) sit on
 Apple's grid: an 824/1024 body with a transparent margin (`packaging/icons.sh` widens the viewBox to
 `-62.136 -62.136 636.272 636.272`).
@@ -34,7 +53,8 @@ Apple's grid: an 824/1024 body with a transparent margin (`packaging/icons.sh` w
 
 | File | Use |
 |---|---|
-| `cella.svg` | Canonical artwork; also `hicolor/scalable` |
+| `cella.svg` | Canonical artwork (full material); also `hicolor/scalable` |
+| `cella-small.svg` | Canonical artwork for 16–48 px (no inner rim, higher contrast) |
 | `cella-1024.png` | 1024 px render of the full tile |
 | `cella-macos-512.png` | Runtime Dock icon on macOS (for `apps/cella` to embed) |
 | `cella.icns` | macOS bundle icon (`CFBundleIconFile`), 11 sizes |
@@ -47,6 +67,8 @@ release). The outputs are committed, so builds and packaging never need these to
 
 ## Provenance
 
-First version authored 2026-11-18 (owner's pick from a rendered comparison sheet). Replacing the art
-means: edit `cella.svg`, run `packaging/icons.sh`, refresh the rows in [`ATTRIBUTION.md`](../../ATTRIBUTION.md),
-and update this page's palette and geometry sections.
+First version authored 2026-11-18 (flat: the owner's pick from a rendered comparison sheet), and
+re-rendered the same day as enamel — the owner's pick from the six-way material study
+(`plan/icon/material.html`: enamel, brass, ceramic, glass, book cloth, graphite). Replacing the art
+means: edit `cella.svg` and `cella-small.svg`, run `packaging/icons.sh`, refresh the rows in
+[`ATTRIBUTION.md`](../../ATTRIBUTION.md), and update this page's palette, geometry and material sections.

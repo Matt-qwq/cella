@@ -1,19 +1,53 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- Cella app icon: the letter C with one cell in its opening.
-       Original geometry, hand-written for this repository; no vendor artwork, no vendor likeness.
+  <!-- Cella app icon, enamel: the letter C with one cell in its opening, on a glazed plate.
+       Original geometry and rendering, hand-written for this repository; no vendor artwork.
        Cella is named for the Latin "cella" (a cell, a small chamber) — the word "cell" comes from it.
-       Palette: tile #17181c, paper #efe9dc, cell #f7d98a -> #e8a83a. -->
+       Palette: plate #17181c, C #efe9dc, cell #f7d98a -> #e8a83a.
+       The C is one stroke (width 52, round caps) from (344,156) round the left side to (344,356);
+       the cell is a 64 px square (rx 16) centred in the opening. The small sizes use cella-small.svg,
+       which raises the contrast for 16-48 px. The study page (plan/icon/material.html) also
+       adds a per-pixel grain; it is dropped here because noise multiplies the PNG size by ~16 and
+       is invisible under 64 px anyway — the materiality comes from the bevel, the sheen and the dome. -->
   <defs>
     <clipPath id="tile"><rect width="512" height="512" rx="112"/></clipPath>
-    <linearGradient id="lit" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f7d98a"/>
-      <stop offset="1" stop-color="#e8a83a"/>
+    <linearGradient id="plate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#25262b"/><stop offset=".55" stop-color="#141519"/><stop offset="1" stop-color="#0d0e11"/>
     </linearGradient>
+    <radialGradient id="sheen" cx=".28" cy=".18" r=".75">
+      <stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cream" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffaf0"/><stop offset=".55" stop-color="#efe9dc"/><stop offset="1" stop-color="#d8cfbc"/>
+    </linearGradient>
+    <radialGradient id="amber" cx=".34" cy=".26" r=".9">
+      <stop offset="0" stop-color="#ffeec2"/><stop offset=".5" stop-color="#f7d98a"/><stop offset="1" stop-color="#d9942c"/>
+    </radialGradient>
+    <radialGradient id="dome" cx=".38" cy=".3" r=".6">
+      <stop offset="0" stop-color="#fff" stop-opacity=".85"/><stop offset=".55" stop-color="#fff" stop-opacity=".12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="underC" x="-25%" y="-25%" width="150%" height="150%"><feGaussianBlur stdDeviation="5"/></filter>
+    <filter id="vignette" x="-20%" y="-60%" width="140%" height="220%"><feGaussianBlur stdDeviation="30"/></filter>
+    <filter id="underCell" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7"/></filter>
   </defs>
   <g clip-path="url(#tile)">
-    <rect width="512" height="512" fill="#17181c"/>
+    <rect width="512" height="512" fill="url(#plate)"/>
+    <rect width="512" height="512" fill="url(#sheen)"/>
+    <rect x="3" y="3" width="506" height="506" rx="110" fill="none" stroke="#ffffff" stroke-opacity=".10" stroke-width="2"/>
+    <path d="M 4 424 C 118 502 394 502 508 424 L 508 516 L 4 516 Z" fill="#000" opacity=".38" filter="url(#vignette)"/>
+    <g filter="url(#underC)" opacity=".65">
+      <path d="M 344 163 L 196 163 A 52 52 0 0 0 144 215 L 144 311 A 52 52 0 0 0 196 363 L 344 363"
+            fill="none" stroke="#000" stroke-width="52" stroke-linecap="round"/>
+    </g>
     <path d="M 344 156 L 196 156 A 52 52 0 0 0 144 208 L 144 304 A 52 52 0 0 0 196 356 L 344 356"
-          fill="none" stroke="#efe9dc" stroke-width="52" stroke-linecap="round"/>
-    <rect x="300" y="226" width="64" height="64" rx="16" fill="url(#lit)"/>
+          fill="none" stroke="url(#cream)" stroke-width="52" stroke-linecap="round"/>
+    <path d="M 344 153 L 196 153 A 52 52 0 0 0 141 205 L 141 301 A 52 52 0 0 0 193 353 L 344 353"
+          transform="translate(0,-3)" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="5" stroke-linecap="round"/>
+    <path d="M 344 160 L 196 160 A 52 52 0 0 0 148 212 L 148 308 A 52 52 0 0 0 200 360 L 344 360"
+          transform="translate(0,4)" fill="none" stroke="#7a6f5c" stroke-opacity=".35" stroke-width="4" stroke-linecap="round"/>
+    <g filter="url(#underCell)" opacity=".55"><rect x="300" y="233" width="64" height="64" rx="16" fill="#000"/></g>
+    <rect x="300" y="226" width="64" height="64" rx="16" fill="url(#amber)"/>
+    <rect x="300" y="226" width="64" height="64" rx="16" fill="url(#dome)"/>
+    <rect x="301.5" y="227.5" width="61" height="61" rx="14.5" fill="none" stroke="#fff6dc" stroke-opacity=".5" stroke-width="1.5"/>
+    <rect x="300" y="226" width="64" height="64" rx="16" fill="none" stroke="#7a5312" stroke-opacity=".45" stroke-width="2"/>
   </g>
 </svg>
