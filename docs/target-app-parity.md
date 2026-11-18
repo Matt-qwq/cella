@@ -233,6 +233,39 @@ Excel recalculates on every core (multi-threaded recalculation), streams large f
 | Save a large workbook | 31.7M cells: **3.48 s, 1,283.9 MiB peak**; 100M-cell export: **28.42 s, 1,814.3 MiB peak** | should stay flat | measured 2026-10-29, `session_breakdown` release with counting allocator; per-sheet deflate, bytes identical |
 | Whole-sheet operations | Bounded: Remove Duplicates on 1M×10 falls from 91 s to 12 s, Sort 3.2 s, Fill Down of 1M rows 1.45 s; sort/remove duplicates/setValues cap at 12M cells (1M×20 refused in 1.3 s) | fine | measured on `max_1048576.xlsx` / `wide_1m_x20.xlsx`, `cella-cli` |
 
+### Measured against Excel (2026-11-18)
+
+Same file, same machine, values checked cell by cell. `crates/engine/examples/bench` writes
+1,000,000 rows x 8 columns with 2,000,000 formulas as a 70,371,330-byte `.xlsx`; Excel 16.0.20527
+(Microsoft 365, driven through COM) and Cella 0.12 (its control channel) open it, edit B1 and
+recalculate the whole sheet.
+
+| | Excel 16.0.20527 | Cella 0.12 | |
+|---|---:|---:|---|
+| open the 70 MB workbook | 7.9-8.2 s | **3.3 s** | 2.4x faster |
+| edit B1 -> 2,000,000 formulas recalculated | **0.31 s** | 0.90 s | 2.9x slower |
+| working set after opening | 588 MB | 1,213 MB | 2.1x |
+| private working set / private bytes | 468 MB | 1,538 MB | 3.3x |
+| working set with no document open | ~35 MB | 382 MB | - |
+| G1 / G1000000 / H1000000 after the edit | 0 / 25,999,974 / 23,999,823,993,691 | the same | equal |
+
+Read honestly: opening is ours, recalculation and memory are Excel's, and by a wide margin.
+The document accounts for about 830 MB of our working set (1,213 after opening minus 382 with
+nothing open), while our own accounting charges 971 MB - so the model is in the right place, and
+the largest single number nobody had measured is the **382 MB baseline with no document at all**.
+Two targets follow: the idle footprint, and the per-formula cost of evaluation (0.45 us against
+Excel's 0.155 us on a fully sequential chain, where neither can use threads).
+
+The baseline is the **window**, not the engine: the same build without a window (`cella-cli mcp`,
+the in-process engine on stdio) sits at 8.1 MB working set. So the next memory round is the UI's
+startup allocation, not the cell store.
+
+Caveats: Excel's figures are the process working set and private bytes from WMI (it shares
+more DLL pages than we do, so its private number is the fairer one); our cells keep the exact A1
+text (133 MB) where Excel keeps tokens; the file is our own writer's. WPS Office is not
+installed on this machine (only `wpscloudsvr.exe`), so it was not measured - the harness
+drives `KET.Application` when it is.
+
 Work: the deferred page-file rewrite and post-beta streaming save, then M17 zone maps and the M21
 Parquet read half after beta. The 2026-11-17 rounds took the memory ranking down in order: formula
 trees (768 → 12 MB, one interned tree per *shape*), the graph (851 → 440 MB: the precedent index

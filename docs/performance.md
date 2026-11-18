@@ -367,6 +367,18 @@ about sizes, which a shape does not change. The legacy `@` analysis got the same
 read path (`open.xlsx` 5.01 → 4.05 s in the same-binary A/B), and it now skips a formula whose every
 part is certainly one value without building anything.
 
+### Compared with Excel, 2026-11-18
+
+Every number above is ours. The same workload was put in front of Excel 16.0.20527 (Microsoft
+365) through COM: `examples/bench` writes the file (1M x 8, 2M formulas, 70.4 MB), both
+apps open it, edit B1 and recalculate the sheet. Open **3.3 s** against Excel's 8.0; recalculate
+**0.90 s against 0.31**; working set **1,213 MB against 588**, private bytes **1,538 MB against 468**
+- and with no document open we already hold 382 MB against Excel's 35. The values agree
+cell for cell (G1 0, G1000000 25,999,974, H1000000 23,999,823,993,691); the detail and the caveats
+are in [target-app-parity.md](target-app-parity.md#measured-against-excel-2026-11-18).
+The baseline is the window: the same build headless (`cella-cli mcp`) is 8.1 MB, so the 382 MB
+is startup allocation in the UI, and that is the next memory target rather than the cell store.
+
 ### The undo step, audited 2026-11-18
 
 `examples/memory` prints the undo stack now: how many steps it holds and what each retains
@@ -462,6 +474,10 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (sixth):** measured against Excel 16 on the same file: open **3.3 s vs 8.0 s**,
+  recalculate **0.90 s vs 0.31 s**, working set **1,213 vs 588 MB**, private bytes **1,538 vs
+  468 MB**, idle **382 vs 35 MB**. Our own accounting (971 MB) is in the right place; the app's
+  baseline is not, and the recalculate gap is 2.9x.
 - **2026-11-18 (fifth):** the journal budget 64 → 16 MB. The cap kept a hundred bulk entries at 1M rows (42 MB); sixteen megabytes still holds about forty, or thousands of single-cell commands. Journal 42.1 → **15.3 MB**, live heap 998 → **971 MB**, reopened 796.8 → **769.9 MB**.
 - **2026-11-18 (fourth):** the undo step audited. `examples/memory` prints the stack (one
   step, 212.3 MB after the two memory rounds of the same day; the charged figure was 241.6). Its
