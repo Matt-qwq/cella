@@ -3156,6 +3156,31 @@ impl CellStore {
     }
 
     /// Stores a cell; a default (empty, unstyled) cell is removed instead.
+    /// The band the cells being added are going into. Moving to another band gives the one that
+    /// was being built back to the allocator: [`Band::finish`] drops the number and text indexes,
+    /// which only adding cells needs, and shrinks the stripes. A band built cell by cell used to
+    /// keep them for the life of the workbook — a fill over a million rows kept a 1,024-byte number
+    /// index per band (16 MB) plus a quarter of its number table as spare capacity (16 MB more).
+    fn band_for_write(&mut self, key: u32) {
+        if self.building == Some(key) {
+            return;
+        }
+        if let Some(done) = self.building.replace(key) {
+            self.finish_band(done);
+        }
+    }
+
+    /// Gives one finished band back to the allocator when nobody shares it. A band an undo
+    /// snapshot also holds is left alone: its stripes are the snapshot's too, and shrinking them
+    /// would copy the band for nothing.
+    fn finish_band(&mut self, key: u32) {
+        if let Some(band) = self.bands.get_mut(&key)
+            && let Some(band) = Arc::get_mut(band)
+        {
+            band.finish();
+        }
+    }
+
     pub fn set(&mut self, c: CellRef, cell: Cell) {
         let row_physical = self.physical_row(c.row);
         let col_physical = self.physical_col(c.col);
@@ -3180,6 +3205,7 @@ impl CellStore {
         if self.pages.contains_key(&key) && self.materialize(key).is_none() {
             return;
         }
+        self.band_for_write(key);
         let had = self.contains(c);
         if !self.array_anchors {
             self.array_anchors = cell_has_array(&cell);
@@ -3287,6 +3313,7 @@ impl CellStore {
         if self.pages.contains_key(&key) && self.materialize(key).is_none() {
             return false;
         }
+        self.band_for_write(key);
         let Some(band) = self.bands.get_mut(&key) else { return false };
         Arc::make_mut(band).set_value(physical % BAND, col, value)
     }
@@ -3378,6 +3405,7 @@ impl CellStore {
                         }
                     }
                 }
+                self.finish_band(key);
                 i = run_end;
             }
             if i >= values.len() {
@@ -3401,6 +3429,7 @@ impl CellStore {
                     band.set_value(c.row % BAND, c.col, v);
                 }
             }
+            self.finish_band(key);
             i = end;
         }
     }
@@ -3528,6 +3557,7 @@ impl CellStore {
                         for (c, v) in &values[start..end] {
                             band.set_value(c.row % BAND, c.col, v);
                         }
+                        band.finish();
                         out.push((key, Arc::new(band)));
                     }
                     out
@@ -3595,15 +3625,7 @@ impl CellStore {
         if self.pages.contains_key(&key) && self.materialize(key).is_none() {
             return;
         }
-        if self.building != Some(key) {
-            // The band this replaces is finished; give back its index, if nobody shares it.
-            if let Some(done) = self.building.replace(key)
-                && let Some(band) = self.bands.get_mut(&done)
-                && let Some(band) = Arc::get_mut(band)
-            {
-                band.finish();
-            }
-        }
+        self.band_for_write(key);
         if !self.array_anchors {
             self.array_anchors = cells.iter().any(|(_, cell)| cell_has_array(cell));
         }
@@ -8541,5 +8563,28 @@ mod row_extras_memory {
         let per_row = 8 + size_of::<RowExtras>() + 2 * size_of::<(u32, Arc<Formula>)>();
         assert_eq!(row_at_once.memory().row_extras / 1_000, per_row);
         assert_eq!(cell_by_cell.memory().row_extras / 1_000, per_row);
+    }
+}
+#[cfg(test)]
+mod dictionary_audit {
+    use super::*;
+
+    /// A band that has stopped taking cells keeps neither the number index (which only adding
+    /// cells needs) nor the spare capacity a growing vector carries. A fill over a million rows
+    /// used to keep both per band for the life of the workbook: 1,024 bytes of index plus a
+    /// quarter of the number table.
+    #[test]
+    fn a_finished_band_keeps_no_number_index_and_no_spare_table() {
+        let mut store = CellStore::default();
+        for row in 0..600u32 {
+            for col in 0..6u32 {
+                let value = Value::from(f64::from(row * 6 + col) + 0.5);
+                store.set(cella_core::CellRef::new(row, col), crate::cell::Cell::value(value));
+            }
+        }
+        let slacked = store.bands.values().filter(|band| band.numbers.capacity() != band.numbers.len() || !band.number_slots.is_empty()).count();
+        assert_eq!(slacked, 1, "only the band still being added to keeps its index and its slack");
+        let exact = store.bands.values().filter(|band| band.numbers.capacity() == band.numbers.len()).count();
+        assert!(exact >= 9, "nine bands finished, one is being built: {exact}");
     }
 }

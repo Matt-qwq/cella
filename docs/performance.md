@@ -267,21 +267,21 @@ capacities and layouts — not a heap census — and `total == Σ parts` is a te
 
 | part (1M × 6, 2M formulas) | before the round | now | share |
 |---|---:|---:|---:|
-| **cells** | **1,267.7 MB** | **407.7 MB** | 38.3 % |
+| **cells** | **1,267.7 MB** | **370.6 MB** | 37.2 % |
 | · formula trees (`Arc<Expr>`, 2M) | 768.0 MB | **12.0 MB** | 1.0 % |
 | · formula text + `Formula` (48 B) | 165.4 MB | **133.4 MB** | 11.4 % |
 | · row side tables (`RowExtras`) | 144.0 MB | **72.0 MB** | 6.8 % |
-| · number tables / text dictionaries | 98.0 MB | 98.0 MB | 8.4 % |
+| · number tables / text dictionaries | 98.0 MB | **65.0 MB** | 6.5 % |
 | · band headers, payloads, runs, bitmaps | 92.3 MB | 92.3 MB | 7.9 % |
 | **calc** | **851.4 MB** | **372.4 MB** | 32.8 % |
 | · graph nodes (2M, 16 B) | 172.0 MB | **104.9 MB** | 9.2 % |
 | · dependents map | 478.2 MB | 142.6 MB | 12.6 % |
 | · precedent-area arena | 201.3 MB | 125.0 MB | 11.0 % |
 | **history / undo** | **737.6 MB** | **241.6 MB** | 21.3 % |
-| journal (recent commands) | 42.1 MB | 42.1 MB | 4.0 % |
-| **total** | **2.90 GB** | **1.06 GB** | |
+| journal (recent commands) | 42.1 MB | 42.1 MB | 4.2 % |
+| **total** | **2.90 GB** | **998 MB** | |
 
-Reopened from the 70 MB xlsx: **0.80 GB** (was 2.18 GB; 868.8 MB before the row side tables were split). The workbook as built holds **3 shapes for
+Reopened from the 70 MB xlsx: **0.80 GB** (796.8 MB: the reader's bands were already finished, so the number table round above moved the as-built figure only) (was 2.18 GB; 868.8 MB before the row side tables were split). The workbook as built holds **3 shapes for
 2,000,000 formulas**, and `edit.autoFill` over a million rows now costs **zero parses** (the whole
 reference workbook costs three: the typed source formulas). After a save and reopen it holds 181 —
 the writer still writes one plain `<f>` per cell by design (§ `plan/SHAPE-SHARING.md` 5.4), so a
@@ -296,6 +296,18 @@ cell's `Formula` is 48 B (the shape, not the tree, and a boxed legacy-array rang
 64 B with a 56-byte `Arc<Expr>` per cell.
 
 What each wave did, in a paragraph each:
+
+- **The band's number index** — a band keeps two tables for its numbers: the values (8 bytes a
+  distinct number) and an open-addressing index of 2-byte slots that only *adding* a cell needs.
+  `Band::finish` already dropped the index and shrank the vectors, and the file reader called it
+  when a batch was complete — but a band built by a fill or a paste never did, so at a million rows
+  each of 15,625 bands kept a 1,024-byte index and a quarter of its number table as spare capacity:
+  **66.0 MB of number tables, 33.0 MB of it waste**. A store now remembers the band it is adding
+  to and finishes the previous one on the move (`band_for_write`), and every bulk write finishes
+  the run it just wrote: **66.0 → 33.0 MB** and live heap **1.06 → 0.998 GB**. The reopened figure
+  does not move (796.8 MB) because the reader's batches already ended with a finished band. A/B on
+  the same binary: fill.formulas 1.44/1.45 s, fill.chained 2.35/2.42 s, edit.recalc 908/925 ms,
+  rebuild.graph 968/957 ms — inside this machine's spread, so the round records no speed change.
 
 - **The row side table** — every row with a formula carried one heap allocation: a `RowExtras` of
   three vectors (72 B) plus the formula vector's spare capacity. `Vec` grows by doubling, and for
@@ -411,6 +423,10 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (second):** the band's number index. Bands built by a fill or a paste never called
+  `Band::finish`, so each kept its 1,024-byte number index and a quarter of its number table as
+  slack: number tables **66.0 → 33.0 MB**, live heap 1.06 → **0.998 GB** (reopened unchanged at
+  796.8 MB). `band_for_write` finishes the band being left; every bulk write finishes its run.
 - **2026-11-18:** the row side table, 144.0 → **72.0 MB**. A row with formulas carried one heap
   allocation of three vectors (72 B) plus the formula vector's doubling — four 16-byte slots for
   two entries — 144 B a row. The rare parts (an array value, the wide payload table) moved out of
