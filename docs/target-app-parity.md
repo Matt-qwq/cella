@@ -244,13 +244,13 @@ Same file, same machine, values checked cell by cell. `crates/engine/examples/be
 |---|---:|---:|---:|
 | open the 70 MB workbook | 7.9-8.2 s | 10.7 s | **3.3 s** |
 | edit B1 -> 2,000,000 formulas recalculated | **0.31 s** | 15.3 s | 0.90 s |
-| working set after opening | **588 MB** | 987 MB | 1,213 MB |
-| private working set | **468 MB** | 864 MB | 1,538 MB |
-| working set with no document open | **~35 MB** | 288 MB | 382 MB |
+| working set after opening | **588 MB** | 987 MB | 1,054 MB |
+| private working set | **468 MB** | 864 MB | 1,330 MB |
+| working set with no document open | **~35 MB** | 288 MB | 246 MB |
 | per-formula evaluation | **0.155 us** | 7.6 us | 0.45 us |
 | G1 / G1000000 / H1000000 after the edit | 0 / 25,999,974 / 23,999,823,993,691 | the same | the same |
 
-Read against the baselines, the document itself costs **553 MB (Excel), 700 MB (WPS) and 830 MB
+Read against the baselines, the document itself costs **553 MB (Excel), 700 MB (WPS) and 808 MB
 (Cella)**, so the three engines are within 1.5x of each other and our own accounting (971 MB live,
 including 212 MB of undo and 15 MB of journal) is in the right place. Where the rank is clear:
 
@@ -258,9 +258,9 @@ including 212 MB of undo and 15 MB of journal) is in the right place. Where the 
 - **Recalculation is Excel's.** We are 2.9x behind it on a fully sequential chain and 17x ahead of
   WPS, which recalculates this sheet in 15.3 s.
 - **Memory is not ours.** Subtract the idle baseline and we are between Excel and WPS; do not, and
-  we are last because of the **382 MB the window holds before any document is open**. The same
+  we are last because of the **246 MB the window holds before any document is open**. The same
   build without a window (`cella-cli mcp`, the in-process engine on stdio) sits at **8.1 MB**, so
-  that 382 MB is startup allocation in the UI, and it is the next memory target rather than the
+  that baseline is the window and its backend, not the cell store, and it is the next memory target rather than the
   cell store.
 
 #### Effective memory: what the bytes buy
@@ -272,13 +272,13 @@ H1000000 23,999,823,993,692).
 
 | | Excel 16.0.20527 | WPS 12.1.0.25222 | Cella 0.12 |
 |---|---:|---:|---:|
-| document memory | **553 MB** | 700 MB | 830 MB |
-| bytes per populated cell | **69** | 88 | 104 |
+| document memory | **553 MB** | 700 MB | 808 MB |
+| bytes per populated cell | **69** | 88 | 101 |
 | one edit -> 1,000,000 formulas recomputed | **0.07 s** | 14.8 s | 0.853 s |
 | formulas recomputed per second | **28.6M** | 0.14M | 2.3M |
 | formulas per second per MB | **51.7k** | 0.19k | 2.7k |
 
-Read against Excel, our 277 MB of extra document memory is **not buying speed** - we are 12x
+Read against Excel, our 255 MB of extra document memory is **not buying speed** - we are 12x
 slower on the same edit - so on this workload we are Pareto-dominated by it except on opening
 (3.3 s against 8.0). What our memory does buy, and Excel does not: **an undo of that same
 999,999-formula edit** (one step, 212 MB, restored in 27 ms; Excel and WPS expose no undo through
@@ -288,7 +288,7 @@ for agents (15 MB) and the spill/dynamic-array model. The 372 MB dependency grap
 thing Excel's smaller one does, and is the next place where memory and speed can both improve
 rather than trade.
 
-The 382 MB idle window buys nothing measurable: the same build headless is 8.1 MB and the same
+The idle window buys nothing measurable: the same build headless is 8.1 MB and the same
 latency. That is the one number to treat as waste.
 
 Caveats: working set includes shared DLL pages, so the private column is the fairer one; our cells

@@ -425,11 +425,11 @@ and WPS 12.1.0.25222 through COM: `examples/bench` writes the file (1M x 8, 2M f
 |---|---:|---:|---:|
 | open the 70 MB workbook | 7.9-8.2 s | 10.7 s | **3.3 s** |
 | recalculate 2M formulas after the edit | **0.31 s** | 15.3 s | 0.90 s |
-| working set after opening | **588 MB** | 987 MB | 1,213 MB |
-| private working set | **468 MB** | 864 MB | 1,538 MB |
-| with no document open | **~35 MB** | 288 MB | 382 MB |
+| working set after opening | **588 MB** | 987 MB | 1,054 MB |
+| private working set | **468 MB** | 864 MB | 1,330 MB |
+| with no document open | **~35 MB** | 288 MB | 246 MB |
 
-Against the baselines the document costs 553 MB (Excel), 700 MB (WPS) and 830 MB (Cella) - the
+Against the baselines the document costs 553 MB (Excel), 700 MB (WPS) and 808 MB (Cella) - the
 engines are within 1.5x of each other, and our 971 MB live figure (undo 212, journal 15) is in the
 right place. Opening is ours by 2.4-3.2x; recalculation is Excel's by 2.9x (and ours by 17x over
 WPS); memory is nobody's friend at the top end, and the reason we are last is the **382 MB the
