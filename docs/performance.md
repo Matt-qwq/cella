@@ -552,9 +552,16 @@ side of a same-binary A/B unless noted):
   explicit capacity and absorbs refused cells in one batch a command; the fill it is accepted on is
   **100k 154 ms** (164 before) and **1M 1.27/1.28 s**.
 
-**From 893 to 460 ms, -48 %**, on the shape of edit this page has measured all day: a cell at the top
-of a million-row chain. The phase split after it is closure 27, eval 179 (with the chain run), write
-70 ms. What is left is the evaluator's own 179 ms and the write-back's 70.
+- **A value read borrows its band** (`b636f657`): `Sheet::value` rebuilt a `Cell` to return one
+  value — an `Arc<Band>` clone and an `Arc<Formula>` clone, then both dropped, four atomics a read,
+  a million of them for the chain's second operand. A value-only path (`CellStore::value` /
+  `value_with_formula`, borrowing a live band's packed row; a paged band still decodes) took eval
+  **179 -> 116-118 ms** and the command **465/460 -> 421/406 ms**. `fill.values`, `fill.formulas`
+  and `fill.chained` are unchanged; `Sheet::value` is also what the grid paints through.
+
+**From 893 to 406 ms, -55 %**, on the shape of edit this page has measured all day: a cell at the top
+of a million-row chain. The phase split after it is closure 27, eval 117 (with the chain run), write
+70 ms. What is left is the evaluator's own 117 ms and the write-back's 70.
 
 **Then the read inside the eval** (`value-only-read`): every row of the chain reads its second
 operand through `Sheet::value`, which went through `CellStore::get` — a band `Arc` clone, the cell

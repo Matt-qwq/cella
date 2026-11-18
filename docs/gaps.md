@@ -310,6 +310,12 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   first attempt copied the box once per new precedent and took a 100k `fill.formulas` to 37.96 s;
   the kept one copies once a doubling of an explicit capacity and is accepted against **100k 154 ms**
   and **1M 1.27/1.28 s**. What is left of the edit: eval 179 ms (chain run), write 70 ms.
+- **Landed (11-18, third wave): 460 -> 406-421 ms.** `Sheet::value` rebuilt a `Cell` per read (an
+  `Arc<Band>` and an `Arc<Formula>` cloned and dropped — four atomics, a million times for the
+  chain's second operand); a value-only path borrows a live band's packed row instead and a paged
+  band still decodes. eval **179 -> 116-118 ms**, the command **465/460 -> 421/406 ms**, the fills
+  unchanged. The grid paints through the same read, so the display path pays less too. From the
+  start of the round: **893 -> 406 ms (-55 %)** against Excel's 0.31 s for the same edit.
 - **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
   tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
   the calc graph's three tables and of the one undo step found structure, not slack, and changed
