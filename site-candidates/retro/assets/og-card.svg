@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Cella — a high-performance spreadsheet built in Rust">
+  <defs>
+    <pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="2" fill="#000000"/>
+    </pattern>
+    <radialGradient id="vig" cx="50%" cy="42%" r="75%">
+      <stop offset="60%" stop-color="#050b07" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.5"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#050b07"/>
+  <path d="M0 110h1200M0 210h1200M0 310h1200M0 410h1200M0 510h1200M100 0v630M300 0v630M500 0v630M700 0v630M900 0v630M1100 0v630" stroke="#0d2413" stroke-width="1"/>
+  <rect width="1200" height="630" fill="url(#scan)" opacity="0.16"/>
+  <!-- a small ledger sheet, one cell selected -->
+  <g transform="translate(770 240)">
+    <rect x="0" y="0" width="330" height="230" fill="#08120a" stroke="#2a6b41" stroke-width="2"/>
+    <path d="M0 46h330M0 92h330M0 138h330M0 184h330M66 0v230M132 0v230M198 0v230M264 0v230" stroke="#1a4d2c" stroke-width="1"/>
+    <rect x="132" y="92" width="66" height="46" fill="none" stroke="#46ff8c" stroke-width="3"/>
+    <text x="165" y="122" font-family="Menlo, Consolas, monospace" font-size="22" fill="#46ff8c" text-anchor="middle">42</text>
+    <text x="33" y="30" font-family="Menlo, Consolas, monospace" font-size="20" fill="#66c68f" text-anchor="middle">A</text>
+    <text x="99" y="30" font-family="Menlo, Consolas, monospace" font-size="20" fill="#66c68f" text-anchor="middle">B</text>
+    <text x="165" y="30" font-family="Menlo, Consolas, monospace" font-size="20" fill="#66c68f" text-anchor="middle">C</text>
+    <text x="231" y="30" font-family="Menlo, Consolas, monospace" font-size="20" fill="#66c68f" text-anchor="middle">D</text>
+    <text x="297" y="30" font-family="Menlo, Consolas, monospace" font-size="20" fill="#66c68f" text-anchor="middle">E</text>
+    <text x="140" y="285" font-family="Menlo, Consolas, monospace" font-size="18" fill="#7fc79b">fx =SUM(C1:C5)</text>
+  </g>
+  <text x="80" y="200" font-family="Menlo, Consolas, monospace" font-size="150" font-weight="bold" fill="#46ff8c" letter-spacing="6">CELLA</text>
+  <text x="80" y="240" font-family="Menlo, Consolas, monospace" font-size="20" fill="#7fc79b">v0.13.0 · ALPHA · MIT OR APACHE-2.0</text>
+  <text x="80" y="330" font-family="Menlo, Consolas, monospace" font-size="40" fill="#eaffef">An independent, high-performance</text>
+  <text x="80" y="380" font-family="Menlo, Consolas, monospace" font-size="40" fill="#eaffef">spreadsheet built in Rust.</text>
+  <text x="80" y="450" font-family="Menlo, Consolas, monospace" font-size="26" fill="#46ff8c">For data sets, for agents, and for the files people actually send.</text>
+  <text x="80" y="520" font-family="Menlo, Consolas, monospace" font-size="22" fill="#7fc79b">MACOS · WINDOWS · LINUX · BSD · WASM</text>
+  <text x="80" y="570" font-family="Menlo, Consolas, monospace" font-size="18" fill="#7fc79b">1M rows · 2M formulas · 0.971 GB live · ~400 ms recalc</text>
+  <rect width="1200" height="630" fill="url(#vig)"/>
+</svg>

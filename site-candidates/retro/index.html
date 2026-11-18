@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en" data-phos="green">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cella — a high-performance spreadsheet built in Rust</title>
+<meta name="description" content="Cella is an independent, open-source spreadsheet built in Rust: native on macOS, Windows, Linux and BSD, in the browser via WebAssembly. For data sets, for agents, and for the files people actually send. MIT OR Apache-2.0.">
+<meta name="theme-color" content="#050b07">
+<!-- Open Graph. og:image is relative on purpose: this page is served under /cella/
+     and must also open from disk; after publishing, absolutize it if scrapers matter. -->
+<meta property="og:title" content="Cella — a high-performance spreadsheet built in Rust">
+<meta property="og:description" content="For data sets, for agents, and for the files people actually send. Native on macOS, Windows, Linux and BSD; in the browser via WebAssembly. v0.13.0, alpha, MIT OR Apache-2.0.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://matt-qwq.github.io/cella/">
+<meta property="og:image" content="assets/og-card.svg">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='5'%20fill='%23050b07'/%3E%3Cpath%20d='M6%208h20M6%2016h20M6%2024h20M10%204v24M22%204v24'%20stroke='%2315431f'%20stroke-width='1'/%3E%3Crect%20x='12.4'%20y='12.4'%20width='7.2'%20height='7.2'%20fill='%230a1409'%20stroke='%2346ff8c'%20stroke-width='1.4'/%3E%3Cpath%20d='M22.5%209h-6.5a7%207%200%200%200%200%2014h6.5'%20fill='none'%20stroke='%2346ff8c'%20stroke-width='2.6'%20stroke-linecap='square'/%3E%3C/svg%3E">
+<script>try{var p=localStorage.getItem("cella-site-phos");if(p==="amber"||p==="green")document.documentElement.setAttribute("data-phos",p)}catch(e){}</script>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js" defer></script>
+</head>
+<body id="top">
+<a class="skip-link" href="#main">SKIP TO CONTENT ▸</a>
+
+<header class="topbar">
+  <div class="wrap topbar-row">
+    <a class="brand" href="#top">CELLA<span class="brand-ver">v0.13.0</span></a>
+    <nav class="sitenav" aria-label="Sections">
+      <a href="#why">WHY</a>
+      <a href="#capabilities">FEATURES</a>
+      <a href="#measured">MEASURED</a>
+      <a href="#demo">SHEET</a>
+      <a href="#agents">AGENTS</a>
+      <a href="#quickstart">START</a>
+    </nav>
+    <div class="topbar-tools">
+      <button id="phos-toggle" type="button" aria-pressed="false" title="Switch phosphor colour">PHOS:GREEN</button>
+      <a class="src-link" href="https://github.com/Matt-qwq/cella">SOURCE&nbsp;↗</a>
+    </div>
+  </div>
+</header>
+
+<div class="ticker" aria-label="A few of the 500+ worksheet functions">
+  <span class="ticker-cap">500+ FUNCTIONS</span>
+  <div class="ticker-track">
+    <ul class="ticker-list">
+      <li>SUM</li><li>AVERAGE</li><li>COUNT</li><li>MAX</li><li>MIN</li><li>ROUND</li><li>IF</li><li>IFS</li><li>SWITCH</li><li>IFERROR</li><li>XLOOKUP</li><li>INDEX</li><li>MATCH</li><li>SUMIFS</li><li>COUNTIFS</li><li>SUBTOTAL</li><li>AGGREGATE</li><li>LET</li><li>LAMBDA</li><li>SEQUENCE</li><li>SORT</li><li>FILTER</li><li>UNIQUE</li><li>PMT</li><li>NPV</li>
+    </ul>
+    <ul class="ticker-list" aria-hidden="true">
+      <li>SUM</li><li>AVERAGE</li><li>COUNT</li><li>MAX</li><li>MIN</li><li>ROUND</li><li>IF</li><li>IFS</li><li>SWITCH</li><li>IFERROR</li><li>XLOOKUP</li><li>INDEX</li><li>MATCH</li><li>SUMIFS</li><li>COUNTIFS</li><li>SUBTOTAL</li><li>AGGREGATE</li><li>LET</li><li>LAMBDA</li><li>SEQUENCE</li><li>SORT</li><li>FILTER</li><li>UNIQUE</li><li>PMT</li><li>NPV</li>
+    </ul>
+  </div>
+</div>
+
+<main id="main">
+
+  <!-- ================= HERO ================= -->
+  <section class="hero wrap" aria-labelledby="hero-h">
+    <h1 class="sr-only" id="hero-h">Cella — an independent, high-performance spreadsheet built in Rust</h1>
+    <div class="hero-copy">
+      <pre class="wordmark" aria-hidden="true"> █████ █████ █     █      ███
+█     █     █     █     █   █
+█     ████  █     █     █████
+█     █     █     █     █   █
+ ████ █████ █████ █████ █   █</pre>
+      <p class="hero-line">An independent, high-performance spreadsheet built in Rust.</p>
+      <p class="hero-line hero-pos">For data sets, for agents, and for the files people actually send.</p>
+      <p class="badges">
+        <span class="badge">MACOS</span><span class="badge">WINDOWS</span><span class="badge">LINUX</span><span class="badge">BSD</span><span class="badge">WASM</span>
+        <span class="badge badge-dim">v0.13.0</span><span class="badge badge-dim">ALPHA</span><span class="badge badge-dim">MIT OR APACHE-2.0</span>
+      </p>
+      <p class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/Matt-qwq/cella">VIEW SOURCE ↗</a>
+        <a class="btn" href="#quickstart">QUICK START</a>
+        <a class="btn" href="#measured">MEASURED PERFORMANCE</a>
+      </p>
+    </div>
+    <div class="hero-term panel">
+      <div class="panel-title">▚ BOOT.SYS — PHOSPHOR OK
+        <button id="boot-skip" type="button" class="skip-btn" hidden>SKIP ▸</button>
+      </div>
+      <pre class="boot" id="boot" aria-label="Boot log: Cella version 0.13.0, memory 0.971 GB live on the 1M-by-6 reference workbook, recalculation of a million chained formulas in about 400 ms, 2136 tests plus fuzzing, recalc engine ready."><span class="boot-line">CELLA v0.13.0 · SPREADSHEET ENGINE · RUST NATIVE
+</span><span class="boot-line">PLATFORMS ···················· MACOS · WIN · LINUX · BSD · WASM
+</span><span class="boot-line">MEMORY 1M×6 ·················· 0.971 GB LIVE · 2M FORMULAS — OK
+</span><span class="boot-line">RECALC 1M CHAIN ·············· ~400 MS · −56% — OK
+</span><span class="boot-line">TEST SUITE ··················· 2136 TESTS + FUZZ — OK
+</span><span class="boot-line">RECALC ENGINE ················ READY
+</span><span class="boot-line boot-prompt">A:&gt; <span class="cursor" aria-hidden="true">█</span></span></pre>
+    </div>
+  </section>
+
+  <!-- ================= WHY ================= -->
+  <section class="wrap section" id="why" aria-labelledby="why-h">
+    <h2 class="prompt-h" id="why-h"><span class="drive">A:&gt;</span> why cella</h2>
+    <p class="section-intro">A spreadsheet built like an engine room: every claim is measured, every action is a command, every file you are sent just opens.</p>
+    <ol class="ledger">
+      <li>
+        <h3>THE FILES PEOPLE ACTUALLY SEND</h3>
+        <p>The .xlsx a colleague exports at 4:59 p.m., the legacy .xls with its charts and shapes, the password-protected package, the CSV your pipeline produces: they open. Styles, tables, PivotTables, conditional formats, validation, comments, slicers and timelines are read and written — and the parts Cella does not model yet pass through untouched instead of being dropped.</p>
+      </li>
+      <li>
+        <h3>MEASURED, NOT MARKETED</h3>
+        <p>Every number on this page comes off a harness — crates/engine/examples/perf.rs — with a budget file and a release gate that fails on regression. The table below is not a claim; it is the measurement, attributed to the machine it ran on.</p>
+      </li>
+      <li>
+        <h3>EVERY ACTION IS A COMMAND</h3>
+        <p>The ribbon you click and the protocol an agent speaks are the same command set — 438 commands, from home.bold to data.sortAscending to cell.set. Nothing is UI-only: if you can click it, a program can run it, and it never opens a dialog on the programmatic path.</p>
+      </li>
+      <li>
+        <h3>OPEN AND CLEAN-ROOM</h3>
+        <p>MIT OR Apache-2.0, written in Rust. Behaviour is measured against Microsoft Excel only by black-box observation — never by copying it. Cella is an independent, modified version of GridCraft: credited, not disguised, and never presented as an ArtCraft product.</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ================= CAPABILITIES ================= -->
+  <section class="wrap section" id="capabilities" aria-labelledby="caps-h">
+    <h2 class="prompt-h" id="caps-h"><span class="drive">B:&gt;</span> capabilities</h2>
+    <ol class="ledger">
+      <li>
+        <h3>FILES</h3>
+        <p>Reads and writes .xlsx — styles, tables, charts, PivotTables, conditional formats, validation, comments, slicers and timelines, with pass-through of unmodelled parts. Reads .xls including its charts and shapes. Reads and writes password-protected packages. CSV/TSV, Cella's own JSON workbook, PDF export and printing.</p>
+      </li>
+      <li>
+        <h3>CALCULATION</h3>
+        <p>500+ Excel functions, dynamic arrays and spills, LET/LAMBDA, tables and structured references, iterative calculation, multi-threaded recalculation.</p>
+      </li>
+      <li>
+        <h3>DATA</h3>
+        <p>The query pipeline — a database file or a URL as a source — Parquet, the DAX data model, PivotTables and PivotCharts, slicers and timelines.</p>
+      </li>
+      <li>
+        <h3>AGENTS</h3>
+        <p>Every user-visible action is a command, and the MCP server, the CLI and the control channel all reach the same set. Programmatic calls never open a dialog.</p>
+      </li>
+      <li>
+        <h3>INTERFACE</h3>
+        <p>English and Simplified Chinese, key tips, keyboard context menus, an accessibility tree, and an offscreen snapshot renderer for tests.</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ================= MEASURED ================= -->
+  <section class="wrap section" id="measured" aria-labelledby="measured-h">
+    <h2 class="prompt-h" id="measured-h"><span class="drive">C:&gt;</span> measured performance</h2>
+    <p class="section-intro">Numbers, not adjectives. The memory and recalculation cuts are Cella against its own numbers from the morning of the same day; the open and idle figures were measured against Excel 16.0.20527 and WPS 12.1.0.25222 on one 70 MB file. Harness, scenarios and budgets: <a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md">docs/performance.md ↗</a></p>
+
+    <div class="stat-grid">
+      <div class="stat">
+        <p class="num">0.971<small>GB</small></p>
+        <p class="stat-label">LIVE HEAP · 1M×6 REFERENCE WORKBOOK · 2M FORMULAS</p>
+        <p class="stat-sub">0.77 GB reopened — down from 2.90 / 2.18 GB earlier the same day</p>
+      </div>
+      <div class="stat">
+        <p class="num">~400<small>MS</small></p>
+        <p class="stat-label">ONE EDIT RECALCULATES 1M CHAINED FORMULAS</p>
+        <p class="stat-sub">893 ms → −56% in the 0.13.0 round</p>
+      </div>
+      <div class="stat">
+        <p class="num">3.3<small>S</small></p>
+        <p class="stat-label">OPEN A 70 MB WORKBOOK</p>
+        <p class="stat-sub">Excel 16.0.20527: 7.9–8.2 s · WPS 12.1.0.25222: 10.7 s</p>
+      </div>
+      <div class="stat">
+        <p class="num">246<small>MB</small></p>
+        <p class="stat-label">IDLE AFTER THE 70 MB FILE</p>
+        <p class="stat-sub">Excel: ~35 MB · WPS: 288 MB</p>
+      </div>
+    </div>
+
+    <div class="bars">
+      <div class="bar-group" role="img" aria-label="Open a 70 MB workbook: Cella 3.3 seconds, Excel 16.0.20527 7.9 to 8.2 seconds, WPS 12.1.0.25222 10.7 seconds.">
+        <h3 class="bar-title">OPEN A 70 MB WORKBOOK — LOWER IS BETTER</h3>
+        <div class="bar-row"><span class="bar-label">CELLA</span><span class="bar-track"><span class="bar-fill me" style="width:31%"></span></span><span class="bar-val">3.3 S</span></div>
+        <div class="bar-row"><span class="bar-label">EXCEL 16.0.20527</span><span class="bar-track"><span class="bar-fill them" style="width:77%"></span></span><span class="bar-val">7.9–8.2 S</span></div>
+        <div class="bar-row"><span class="bar-label">WPS 12.1.0.25222</span><span class="bar-track"><span class="bar-fill them" style="width:100%"></span></span><span class="bar-val">10.7 S</span></div>
+      </div>
+      <div class="bar-group" role="img" aria-label="One edit recalculating a million chained formulas: 893 milliseconds before, about 400 milliseconds in 0.13.0.">
+        <h3 class="bar-title">ONE EDIT → RECALC 1M CHAINED FORMULAS</h3>
+        <div class="bar-row"><span class="bar-label">0.13.0</span><span class="bar-track"><span class="bar-fill me" style="width:45%"></span></span><span class="bar-val">~400 MS</span></div>
+        <div class="bar-row"><span class="bar-label">BEFORE</span><span class="bar-track"><span class="bar-fill them" style="width:100%"></span></span><span class="bar-val">893 MS</span></div>
+      </div>
+      <div class="bar-group" role="img" aria-label="Live heap on the 1M by 6 reference workbook: 0.971 GB now against 2.90 GB earlier the same day.">
+        <h3 class="bar-title">LIVE HEAP · 1M×6 · 2M FORMULAS</h3>
+        <div class="bar-row"><span class="bar-label">NOW</span><span class="bar-track"><span class="bar-fill me" style="width:34%"></span></span><span class="bar-val">0.971 GB</span></div>
+        <div class="bar-row"><span class="bar-label">SAME MORNING</span><span class="bar-track"><span class="bar-fill them" style="width:100%"></span></span><span class="bar-val">2.90 GB</span></div>
+      </div>
+    </div>
+
+    <p class="record-line">RECORD ▸ OpenGL is the Windows default — 183 MB lighter at 144 Hz on the same machine. Measured on the dev machine; the harness, the budgets and the full tables are public.</p>
+  </section>
+
+  <!-- ================= THE SHEET (SIGNATURE) ================= -->
+  <section class="wrap section" id="demo" aria-labelledby="demo-h">
+    <h2 class="prompt-h" id="demo-h"><span class="drive">D:&gt;</span> try the sheet</h2>
+    <p class="section-intro">A sketch of the engine in ~120 lines of vanilla JS. Click a cell, type a formula — =B4*C4, =SUM(D2:D5), =AVERAGE(C2:C5) — press ⏎ or RECALC, and watch the chain cascade down the RUNNING column.</p>
+
+    <div class="sheet-window panel">
+      <div class="panel-title">▚ LEDGER.WB — CELLA:DEMO — A1:E6 — 8 FORMULAS</div>
+      <div class="formula-row">
+        <span class="name-box" id="cell-name">D6</span>
+        <span class="fx-mark" aria-hidden="true">fx</span>
+        <label class="sr-only" for="fx-input">Formula bar</label>
+        <input id="fx-input" type="text" value="=SUM(D2:D5)" spellcheck="false" autocomplete="off" maxlength="120">
+      </div>
+      <table class="sheet" id="sheet">
+        <caption class="sr-only">Demo spreadsheet: item, units, price, line total and a running total chain. Editable with JavaScript enabled; otherwise the computed values are shown.</caption>
+        <thead>
+          <tr>
+            <th scope="col" class="corner" aria-label="row"></th>
+            <th scope="col">A</th><th scope="col">B</th><th scope="col">C</th><th scope="col">D</th><th scope="col">E</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">1</th>
+            <td data-cell="A1" tabindex="0">ITEM</td><td data-cell="B1" tabindex="0">UNITS</td><td data-cell="C1" tabindex="0">PRICE</td><td data-cell="D1" tabindex="0">LINE TOTAL</td><td data-cell="E1" tabindex="0">RUNNING</td>
+          </tr>
+          <tr>
+            <th scope="row">2</th>
+            <td data-cell="A2" tabindex="0">WIDGET</td><td data-cell="B2" tabindex="0">4</td><td data-cell="C2" tabindex="0">9.50</td><td data-cell="D2" tabindex="0" data-f="=B2*C2">38.00</td><td data-cell="E2" tabindex="0" data-f="=D2">38.00</td>
+          </tr>
+          <tr>
+            <th scope="row">3</th>
+            <td data-cell="A3" tabindex="0">GIMBAL</td><td data-cell="B3" tabindex="0">2</td><td data-cell="C3" tabindex="0">17.25</td><td data-cell="D3" tabindex="0" data-f="=B3*C3">34.50</td><td data-cell="E3" tabindex="0" data-f="=E2+D3">72.50</td>
+          </tr>
+          <tr>
+            <th scope="row">4</th>
+            <td data-cell="A4" tabindex="0">BEARING</td><td data-cell="B4" tabindex="0">12</td><td data-cell="C4" tabindex="0">3.10</td><td data-cell="D4" tabindex="0" data-f="=B4*C4">37.20</td><td data-cell="E4" tabindex="0" data-f="=E3+D4">109.70</td>
+          </tr>
+          <tr>
+            <th scope="row">5</th>
+            <td data-cell="A5" tabindex="0">FLANGE</td><td data-cell="B5" tabindex="0">3</td><td data-cell="C5" tabindex="0">24.00</td><td data-cell="D5" tabindex="0" data-f="=B5*C5">72.00</td><td data-cell="E5" tabindex="0" data-f="=E4+D5">181.70</td>
+          </tr>
+          <tr>
+            <th scope="row">6</th>
+            <td data-cell="A6" tabindex="0">TOTAL</td><td data-cell="B6" tabindex="0"></td><td data-cell="C6" tabindex="0"></td><td data-cell="D6" tabindex="0" data-f="=SUM(D2:D5)">181.70</td><td data-cell="E6" tabindex="0"></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="sheet-actions">
+        <button id="btn-commit" type="button" class="btn">COMMIT ⏎</button>
+        <button id="btn-recalc" type="button" class="btn btn-primary">RECALC</button>
+        <p class="sheet-log" id="sheet-log" aria-live="polite">READY · 8 FORMULA CELLS · EDIT A PRICE AND PRESS RECALC</p>
+      </div>
+      <p class="sheet-hint">TRY ▸ select C2 · type 12.5 · ⏎ · RECALC — and watch E3:E5 cascade.</p>
+    </div>
+    <noscript>
+      <p class="noscript-note">JAVASCRIPT IS OFF — the sheet above shows its computed values (D2 =B2*C2 … D6 =SUM(D2:D5)); the formula bar and RECALC need JavaScript. Everything else on this page works without scripts.</p>
+    </noscript>
+    <p class="section-outro">The cascade you just saw is the chain shape the real engine walks — a million formulas deep, in ~400 ms. This demo's evaluator is deliberately tiny and safe: no eval(), a 120-character cap, bounded recursion and a step budget — a hostile formula becomes an error value, never a crash. The real engine is held to the same rule at a slightly larger scale.</p>
+  </section>
+
+  <!-- ================= AGENTS ================= -->
+  <section class="wrap section" id="agents" aria-labelledby="agents-h">
+    <h2 class="prompt-h" id="agents-h"><span class="drive">E:&gt;</span> agents &amp; commands</h2>
+    <p class="section-intro">Everything a user can do, a program can do. Every user-visible action is a command — 438 of them — and the MCP server, the CLI and the control channel are all front doors to the same set.</p>
+
+    <pre class="term"><code>$ cella --control 7979
+$ {"id":1,"method":"engine.execute","params":{"command":"cell.set","params":{"cell":"B2","input":"=SUM(A1:A9)"}}}
+← {"id":1,"ok":true,"result":{"cell":"B2",…}}
+$ {"id":2,"method":"home.bold","params":{"range":"A1:C1"}}
+← {"id":2,"ok":true,…}
+# newline-delimited JSON on 127.0.0.1:7979 — any command id is a method name
+# programmatic calls never open a dialog: empty params run with defaults or error out</code></pre>
+
+    <div class="channel-grid">
+      <div class="channel">
+        <h3>CONTROL CHANNEL</h3>
+        <p>Run the app with --control 7979 and speak newline-delimited JSON to 127.0.0.1:7979. Drive input, the ribbon, dialogs, even ui.screenshot — and read the workbook back. <a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md">docs/control-protocol.md ↗</a></p>
+      </div>
+      <div class="channel">
+        <h3>CLI</h3>
+        <p>Headless and scriptable: cella-cli eval '=SUM(1,2,3)', cella-cli run --in book.xlsx --cmd 'home.bold={"range":"A1:C1"}' --out book.xlsx. <a href="https://github.com/Matt-qwq/cella/blob/main/docs/cli.md">docs/cli.md ↗</a></p>
+      </div>
+      <div class="channel">
+        <h3>MCP SERVER</h3>
+        <p>cella-cli mcp serves the Model Context Protocol on stdio: an agent lists the commands, runs them, inspects state — the same commands the ribbon runs. <a href="https://github.com/Matt-qwq/cella/blob/main/docs/mcp.md">docs/mcp.md ↗</a></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= NEVER CRASH ================= -->
+  <section class="wrap section" id="nevercrash" aria-labelledby="crash-h">
+    <h2 class="prompt-h" id="crash-h"><span class="drive">F:&gt;</span> never crash</h2>
+    <blockquote class="crash-quote">
+      <p>People trust Cella with their numbers; a crash loses their work.</p>
+    </blockquote>
+    <ol class="ledger">
+      <li>
+        <h3>NO PANICS IN NON-TEST CODE</h3>
+        <p>No unwrap, no expect, no panic!, no unreachable — and no unsafe anywhere: unsafe_code = "forbid". Errors are Result&lt;T, E&gt; from the file reader to the command layer, enforced by lints that deny the escape hatches.</p>
+      </li>
+      <li>
+        <h3>HOSTILE INPUT IS TREATED AS HOSTILE</h3>
+        <p>Input-derived numbers are assumed to be out to get you: checked and saturating arithmetic, capped allocations for huge ranges and whole-column formulas, bounded recursion for nesting, dependency chains and names that refer to names. Evaluation budgets turn a hostile formula into an error value, never a process abort.</p>
+      </li>
+      <li>
+        <h3>2136 TESTS + COMMAND-SEQUENCE FUZZING</h3>
+        <p>Every command is fuzzed with empty parameters; random command sequences are replayed against undo/redo, XLSX round-trip and full-recalc invariants. Soak runs replay from durable seeds. The full suite is the commit gate, not an afterthought.</p>
+      </li>
+      <li>
+        <h3>A LAST-RESORT GUARD, NOT A LICENCE</h3>
+        <p>If a panic ever escapes, Session::execute catches it and restores the workbook. It exists so that the worst day is a bad surprise, not lost work — and it is treated as a bug, every time.</p>
+      </li>
+    </ol>
+    <p class="section-outro">The standard is public: the never-crash rule is a standing repo policy with a regression test attached to every fix. <a href="https://github.com/storytold/craftrules/blob/main/standards/never-crash.md">craftrules/standards/never-crash.md ↗</a></p>
+  </section>
+
+  <!-- ================= QUICK START ================= -->
+  <section class="wrap section" id="quickstart" aria-labelledby="qs-h">
+    <h2 class="prompt-h" id="qs-h"><span class="drive">G:&gt;</span> platforms &amp; quick start</h2>
+    <p class="section-intro">NATIVE ▸ MACOS · WINDOWS · LINUX · BSD &nbsp; BROWSER ▸ WEBASSEMBLY. Alpha stage: built from source, straight from the README.</p>
+    <pre class="term"><code>cargo run --release -p cella -- --sample sales                        # the desktop app
+cargo run --release -p cella -- --sample sales --control 7979         # + control channel
+cargo run -p cella-cli -- eval '=SUM(1,2,3)'                          # headless evaluation
+cargo run -p cella-cli -- mcp                                        # the MCP server on stdio
+cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png   # offscreen render</code></pre>
+    <p class="section-outro">--release is not optional for the first command: a debug build is 10–30× slower, and the perf harness says so, politely. The sample workbook — File → New → Sample — is a quarterly sales dashboard with live charts.</p>
+  </section>
+
+  <!-- ================= STATUS ================= -->
+  <section class="wrap section" id="status" aria-labelledby="status-h">
+    <h2 class="prompt-h" id="status-h"><span class="drive">H:&gt;</span> status</h2>
+    <dl class="readout">
+      <div class="readout-row"><dt>STAGE</dt><dd>ALPHA · v0.13.0</dd></div>
+      <div class="readout-row"><dt>BETA GATE</dt><dd>LARGE-WORKBOOK GATE MET · THE RELEASE RUN IS WHAT IS LEFT</dd></div>
+      <div class="readout-row"><dt>CORPUS RUN</dt><dd>3,084 WORKBOOKS OPENED · 635 SAVE/REOPEN CYCLES · 0 MISMATCHES</dd></div>
+      <div class="readout-row"><dt>READINESS, SELF-ASSESSED</dt><dd>ESSENTIALS ~67% · MAINSTREAM ~56% · REAL WORK ~55%</dd></div>
+      <div class="readout-row"><dt>NOT BUILT ON PURPOSE</dt><dd>MOBILE · CO-AUTHORING · IN-APP ASSISTANT — RECORDED DECISIONS, NOT OMISSIONS</dd></div>
+    </dl>
+    <p class="section-outro">The readiness figures are estimates with a public method, not marketing — every known shortfall is ranked where you can see it: <a href="https://github.com/Matt-qwq/cella/blob/main/ROADMAP.md">ROADMAP.md ↗</a> · <a href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md">docs/roadmap.md ↗</a> · <a href="https://github.com/Matt-qwq/cella/blob/main/docs/gaps.md">docs/gaps.md ↗</a> · <a href="https://github.com/Matt-qwq/cella/blob/main/docs/target-app-parity.md">docs/target-app-parity.md ↗</a></p>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p class="fkeys" aria-label="Function key legend">
+      <a href="https://github.com/Matt-qwq/cella/blob/main/README.md"><kbd>F1</kbd> HELP</a>
+      <button id="fkey-edit" type="button"><kbd>F2</kbd> EDIT</button>
+      <button id="fkey-recalc" type="button"><kbd>F3</kbd> RECALC</button>
+      <span><kbd>F4</kbd> SORT</span>
+      <span><kbd>F5</kbd> QUERY</span>
+      <span><kbd>F6</kbd> PIVOT</span>
+      <span><kbd>F7</kbd> EXPORT</span>
+      <button id="fkey-phos" type="button" aria-pressed="false"><kbd>F8</kbd> PHOS</button>
+      <button id="fkey-calc" type="button"><kbd>F9</kbd> CALC</button>
+      <span><kbd>F10</kbd> MENU</span>
+    </p>
+    <p class="foot-credit">CELLA is an independent, modified version of <a href="https://github.com/storytold/gridcraft">GridCraft</a>, based on the work of the ArtCraft team and the GridCraft contributors. It is <strong>not</strong> an ArtCraft product and carries none of the ArtCraft marks. Original work Copyright (c) 2026 the ArtCraft Team and the GridCraft contributors; modifications in this repository Copyright (c) 2026 its contributors. See <a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE">NOTICE ↗</a>.</p>
+    <p class="foot-licence">LICENCE ▸ MIT OR APACHE-2.0, at your option — <a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-MIT">LICENSE-MIT ↗</a> · <a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-APACHE">LICENSE-APACHE ↗</a> · <a href="https://github.com/Matt-qwq/cella/blob/main/ATTRIBUTION.md">ATTRIBUTION.md ↗</a></p>
+    <p class="colophon">THIS PAGE IS ORIGINAL ARTWORK DRAWN IN CODE · NO BINARY ASSETS · NO TRACKERS · NO NETWORK · WORKS OFFLINE · 100% VIEW-SOURCE</p>
+  </div>
+</footer>
+
+</body>
+</html>
