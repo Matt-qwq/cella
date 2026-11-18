@@ -369,24 +369,33 @@ part is certainly one value without building anything.
 
 ### The idle window, audited 2026-11-18
 
-An empty Cella window holds **309 MB** working set (255 MB when `WGPU_BACKEND=gl` picks the
-OpenGL backend; the first measurement, maximized, read 383). It is not the engine: `cella-cli mcp`,
-the same build without a window, is **8.1 MB**, and the offscreen renderer (`examples/snapshot`,
-wgpu with no window) peaks at 330 and settles at 119.
+An empty Cella window holds **382 MB** working set with the DirectX 12 backend and **237 MB** with
+OpenGL (`WGPU_BACKEND=gl`). The engine is not it: `cella-cli mcp`, the same build without
+a window, is **8.1 MB**. To find the rest, a **bare eframe window with one label** was built and
+measured beside it:
 
-| part | bytes | how it was measured |
-|---|---:|---|
-| font files | **66.7 MB** | 19 faces; the six script fallbacks are 53 MB (Chinese 19.7, Japanese 13.8, Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4), the Latin set is 12.8 |
-| glyph atlas | 1.0 MB | `FontsView::font_image_size` at runtime: 8192 x 32 |
-| DirectX 12 over OpenGL | +53 MB | 255 MB with `WGPU_BACKEND=gl`, 309 with DirectX 12 |
-| everything else | ~188 MB | eframe, winit, accesskit and the UI state, between the offscreen 119 and the windowed 255 |
+| | DirectX 12 | OpenGL |
+|---|---:|---:|
+| bare eframe window (one label, no Cella code) | **236-256 MB** | **91-109 MB** |
+| Cella, no document | 382 MB | 237 MB |
+| Cella on top of the floor | ~126-137 MB | ~128-146 MB |
+
+So the idle footprint decomposes into three parts, and the biggest is not ours:
+
+1. **The windowing stack: 236-256 MB on DirectX 12, 91-109 MB on OpenGL.** The driver choice alone
+   costs ~145 MB - more than everything Cella adds. Whether OpenGL draws as smoothly here is the
+   open question (the app already falls back to it when DirectX 12 has no usable GPU), and it is a
+   frame-time measurement, not a memory one.
+2. **Fonts: 66.7 MB** (19 faces; the six script fallbacks are 53 MB - Chinese 19.7, Japanese 13.8,
+   Hangul 13.5, Devanagari 5.3, Hebrew 0.9, Thai 0.4 - and the Latin set is 12.8). The glyph atlas
+   is only 1.0 MB (`FontsView::font_image_size`: 8192 x 32), so the bytes are the files.
+3. **Our UI state: ~60 MB** (382 - 256 - 67): the ribbon, theme and text caches an empty window
+   already builds.
 
 It arrives in one step: **51.5 MB at 250 ms after launch, 312.6 MB at 500 ms** - fonts, the adapter
-probe and device creation all happen there. In order of certainty: the **53 MB of script faces an
-English session never draws** (prune them, and let the workbook-font rebuild add them back when a
-document has East Asian text), then the DirectX 12/OpenGL difference, then whatever eframe and
-accesskit hold, which is upstream of this repository. The font set is now a test:
-`the_font_set_stays_inside_its_budget` fails above 70 MB.
+probe and device creation all happen there. The font set is locked by a test now
+(`the_font_set_stays_inside_its_budget`: 70 MB total, 15 MB Latin), so a new face is a deliberate
+change.
 
 ### Compared with Excel and WPS, 2026-11-18
 
