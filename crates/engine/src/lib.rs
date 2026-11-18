@@ -222,9 +222,13 @@ const UNDO_LIMIT: usize = 100;
 const JOURNAL_MAX_ENTRIES: usize = 10_000;
 /// Past this many bytes (entries serialized as JSON) the journal drops its oldest entries until
 /// it is under half. Entries keep their full params so they replay (recorded scripts,
-/// `engine.journal`), and a `file.open` holds the whole file as base64: without a size cap a
-/// few opens of a large workbook keep tens of MB alive.
-pub(crate) const JOURNAL_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// `engine.journal`); a single huge parameter is boxed to a marker (`cmd::journal_params`), so
+/// what remains is many ordinary entries — a ten-thousand-row `range.setValues` is about 420 kB.
+///
+/// Sixteen megabytes is about forty of those bulk edits, or thousands of single-cell ones: a
+/// session's recent history is what an agent or the journal dialog reads, and 64 MB of it cost
+/// 42 MB at a million rows for a hundred bulk entries nobody was going to read back.
+pub(crate) const JOURNAL_MAX_BYTES: usize = 16 * 1024 * 1024;
 const UNDO_BYTES_LIMIT: usize = 128 * 1024 * 1024;
 /// The most bands a history step may spill to be offered its compressed chance. A band encodes in
 /// about 100 µs (the 15,625 bands of a million-row sheet took 1.2–1.6 s; the 1,563 of a hundred

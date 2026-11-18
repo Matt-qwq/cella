@@ -278,10 +278,10 @@ capacities and layouts — not a heap census — and `total == Σ parts` is a te
 | · dependents map | 478.2 MB | 142.6 MB | 12.6 % |
 | · precedent-area arena | 201.3 MB | 125.0 MB | 11.0 % |
 | **history / undo** | **737.6 MB** | **212.3 MB** | 21.3 % |
-| journal (recent commands) | 42.1 MB | 42.1 MB | 4.2 % |
-| **total** | **2.90 GB** | **998 MB** | |
+| journal (recent commands) | 42.1 MB | **15.3 MB** | 1.6 % |
+| **total** | **2.90 GB** | **971 MB** | |
 
-Reopened from the 70 MB xlsx: **0.80 GB** (796.8 MB: the reader's bands were already finished, so the number table round above moved the as-built figure only) (was 2.18 GB; 868.8 MB before the row side tables were split). The workbook as built holds **3 shapes for
+Reopened from the 70 MB xlsx: **0.77 GB** (769.9 MB: the reader's bands were already finished, so the number table round above moved the as-built figure only) (was 2.18 GB; 868.8 MB before the row side tables were split). The workbook as built holds **3 shapes for
 2,000,000 formulas**, and `edit.autoFill` over a million rows now costs **zero parses** (the whole
 reference workbook costs three: the typed source formulas). After a save and reopen it holds 181 —
 the writer still writes one plain `<f>` per cell by design (§ `plan/SHAPE-SHARING.md` 5.4), so a
@@ -438,8 +438,9 @@ What is left, in the order the accounting ranks it:
   transpose, clear-all, and the print/clipboard exports) found all of them band-ordered: a band is 64
   consecutive rows, and a write materialises the band it lands in. Anything added later that reorders
   rows has to do what sort does.
-- **The journal, 42.1 MB** at 1M rows — a hundred `range.setValues` entries of ten thousand
-  rows each, kept so they replay, under a 64 MB budget. A *single* huge parameter no longer
+- **The journal, 15.3 MB** at 1M rows — about forty `range.setValues` entries of ten thousand
+  rows each, kept so they replay, under a **16 MB** budget (it was 64: a hundred bulk entries
+  nobody read back cost 42 MB). A *single* huge parameter no longer
   survives: a string past 64 KiB is journalled as `<omitted: N chars>` (the base64 of an opened
   file was 94 MB of it), which took the reopened workbook's total from 954 to **869 MB**.
 - **A structural edit still prints every moved cell's text** (`rewrite_all_formulas` walks the shape
@@ -461,6 +462,7 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (fifth):** the journal budget 64 → 16 MB. The cap kept a hundred bulk entries at 1M rows (42 MB); sixteen megabytes still holds about forty, or thousands of single-cell commands. Journal 42.1 → **15.3 MB**, live heap 998 → **971 MB**, reopened 796.8 → **769.9 MB**.
 - **2026-11-18 (fourth):** the undo step audited. `examples/memory` prints the stack (one
   step, 212.3 MB after the two memory rounds of the same day; the charged figure was 241.6). Its
   parts are the pre-edit sheet itself — stripes 85.8, row side tables 56.0, the text table 32.0,
