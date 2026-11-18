@@ -518,6 +518,74 @@ fn operators() {
     assert_eq!(t.num("A7"), 0.0);
 }
 
+/// The scalar fast path (two plain numbers, an arithmetic operator, straight through `arith`)
+/// has to be exactly what the general coercion path computes, and everything that is not a plain
+/// number — numeric text, a boolean, a date written as text, an error — has to keep taking that
+/// path and keep its value or error code.
+#[test]
+fn scalar_arithmetic_fast_path_matches_the_generic_path() {
+    let mut t = T::new();
+    // Numbers: the fast arm, same results as before (and the same float noise).
+    t.set("A1", "=2+3");
+    assert_eq!(t.get("A1"), Value::Number(5.0));
+    t.set("A2", "=0.1+0.2");
+    assert_eq!(t.num("A2"), 0.1 + 0.2);
+    t.set("A3", "=7/2-1");
+    assert_eq!(t.num("A3"), 2.5);
+    t.set("A4", "=-3*2^2");
+    assert_eq!(t.num("A4"), -12.0);
+    // The fast arm's own error cases: they must match the coercing path's codes.
+    t.set("A5", "=1/0");
+    assert_eq!(t.get("A5"), Value::Error(CellError::Div0));
+    t.set("A6", "=0^0");
+    assert_eq!(t.get("A6"), Value::Error(CellError::Num));
+    t.set("A7", "=0^-1");
+    assert_eq!(t.get("A7"), Value::Error(CellError::Div0));
+    // Numeric text and booleans coerce through the old path.
+    t.set("B1", "=\"1\"+2");
+    assert_eq!(t.num("B1"), 3.0);
+    t.set("B2", "=TRUE+2");
+    assert_eq!(t.num("B2"), 3.0);
+    // A date is a serial number, so `DATE(...)+1` is the fast arm and stays exact; a date typed as
+    // text is coerced by the old path and has to land on the same serial.
+    t.set("C1", "=DATE(2024,1,1)+1");
+    assert_eq!(t.num("C1"), 45293.0);
+    t.set("C2", "=\"2024-01-01\"+1");
+    assert_eq!(t.num("C2"), 45293.0);
+    // An error operand short-circuits in either path.
+    t.set("D1", "=NA()+1");
+    assert_eq!(t.get("D1"), Value::Error(CellError::NA));
+    t.set("D2", "=1+(1/0)");
+    assert_eq!(t.get("D2"), Value::Error(CellError::Div0));
+    // Mixed operands: the outer addition is numeric, the inner one coerces.
+    t.set("E1", "=\"1\"+2+3");
+    assert_eq!(t.num("E1"), 6.0);
+    // Arrays keep their broadcasting; each element takes the same arithmetic.
+    t.set("F1", "={1,2.5}+{3,4}");
+    assert_eq!([t.num("F1"), t.num("G1")], [4.0, 6.5]);
+}
+
+/// A chain longer than the stack array spills to the heap, and the fold order has to stay the
+/// same either side of the seam: left-associative, so `-` and `/` expose any reordering.
+#[test]
+fn operator_chains_spill_past_the_stack_array_in_order() {
+    let mut t = T::new();
+    // Eight pending operators fit the array; nine spill one.
+    let sub = |n: u32| format!("=100{}", (1..=n).map(|k| format!("-{k}")).collect::<String>());
+    t.set("A1", &sub(8));
+    assert_eq!(t.num("A1"), 100.0 - 36.0);
+    t.set("A2", &sub(9));
+    assert_eq!(t.num("A2"), 100.0 - 45.0);
+    // Well past it.
+    t.set("A3", &sub(20));
+    assert_eq!(t.num("A3"), 100.0 - (1..=20).map(f64::from).sum::<f64>());
+    t.set("A4", &format!("=1024{}", "/2".repeat(10)));
+    assert_eq!(t.num("A4"), 1.0);
+    // ^ is left-associative, so this is (2^2)^3.
+    t.set("A5", "=2^2^3");
+    assert_eq!(t.num("A5"), 64.0);
+}
+
 #[test]
 fn blocked_spill_reads_as_spill_error() {
     // Calculated in the same pass, a formula over a blocked spill read the array that couldn't

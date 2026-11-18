@@ -173,7 +173,46 @@ pub(super) fn single(v: Value) -> Option<Value> {
 }
 
 pub fn binary_values(op: BinOp, x: &Value, y: &Value, sys: cella_core::DateSystem) -> Value {
+    // The hot path: two plain numbers and an arithmetic operator. `to_number_in` is the identity
+    // on a number, so this is exactly what the general path below computes — minus `zip2`, the
+    // coercion and the closure. Every other operand kind (empty, boolean, text, error, array) and
+    // every non-arithmetic operator still goes the long way round, where dates in text, `&` and
+    // the comparisons are handled.
+    if is_arith(op)
+        && let (Value::Number(a), Value::Number(b)) = (x, y)
+    {
+        return arith(op, *a, *b);
+    }
     zip2(x, y, |a, b| binary_scalar(op, a, b, sys))
+}
+
+/// Whether `op` is one of the five operators that only need two numbers.
+fn is_arith(op: BinOp) -> bool {
+    matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow)
+}
+
+/// One arithmetic operator applied to two numbers that are already coerced. The scalar fast path
+/// and the general path both go through here, so the two cannot disagree about a numeric pair.
+fn arith(op: BinOp, x: f64, y: f64) -> Value {
+    match op {
+        BinOp::Add => Value::number(x + y),
+        BinOp::Sub => Value::number(x - y),
+        BinOp::Mul => Value::number(x * y),
+        BinOp::Div if y == 0.0 => Value::Error(CellError::Div0),
+        BinOp::Div => Value::number(x / y),
+        BinOp::Pow => {
+            if x == 0.0 && y == 0.0 {
+                Value::Error(CellError::Num)
+            } else if x == 0.0 && y < 0.0 {
+                Value::Error(CellError::Div0)
+            } else {
+                Value::number(x.powf(y))
+            }
+        }
+        // Not arithmetic: no caller asks (they check `is_arith` first). `#VALUE!` is what Excel
+        // answers for an operator it cannot apply to numbers.
+        _ => Value::Error(CellError::Value),
+    }
 }
 
 fn binary_scalar(op: BinOp, a: &Value, b: &Value, sys: cella_core::DateSystem) -> Value {
@@ -183,25 +222,18 @@ fn binary_scalar(op: BinOp, a: &Value, b: &Value, sys: cella_core::DateSystem) -
     if let Value::Error(e) = b {
         return Value::Error(*e);
     }
-    let num = |f: fn(f64, f64) -> Value| match (a.to_number_in(sys), b.to_number_in(sys)) {
-        (Ok(x), Ok(y)) => f(x, y),
-        (Err(e), _) | (_, Err(e)) => Value::Error(e),
-    };
+    // The same fast path for the elements `zip2` hands over one at a time.
+    if is_arith(op)
+        && let (Value::Number(x), Value::Number(y)) = (a, b)
+    {
+        return arith(op, *x, *y);
+    }
     use std::cmp::Ordering::*;
     match op {
-        BinOp::Add => num(|x, y| Value::number(x + y)),
-        BinOp::Sub => num(|x, y| Value::number(x - y)),
-        BinOp::Mul => num(|x, y| Value::number(x * y)),
-        BinOp::Div => num(|x, y| if y == 0.0 { Value::Error(CellError::Div0) } else { Value::number(x / y) }),
-        BinOp::Pow => num(|x, y| {
-            if x == 0.0 && y == 0.0 {
-                Value::Error(CellError::Num)
-            } else if x == 0.0 && y < 0.0 {
-                Value::Error(CellError::Div0)
-            } else {
-                Value::number(x.powf(y))
-            }
-        }),
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => match (a.to_number_in(sys), b.to_number_in(sys)) {
+            (Ok(x), Ok(y)) => arith(op, x, y),
+            (Err(e), _) | (_, Err(e)) => Value::Error(e),
+        },
         BinOp::Concat => match (a.to_text(), b.to_text()) {
             (Ok(x), Ok(y)) => {
                 if x.len() + y.len() > 32767 * 4 {

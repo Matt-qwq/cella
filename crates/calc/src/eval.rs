@@ -47,6 +47,10 @@ const LAMBDA_FUEL: u64 = MAX_CELLS;
 /// inside every LAMBDA call). Past this the formula is `#CALC!`. It is far above what a formula
 /// that reads every cell of a full-size array a few times needs.
 const EVAL_WORK: u64 = 16 * MAX_CELLS;
+/// Pending operators a formula's left-nested operator chain keeps in a fixed array on the stack
+/// before it spills to a `Vec`. The audit's chained fill chains three; eight covers any formula a
+/// person writes, and the spill keeps a 4,096-operand chain working (see `flat_chains_as_long_as_excel_allows`).
+const INLINE_CHAIN: usize = 8;
 /// LAMBDA calls that one formula may have in progress at once, counted the same way on every build.
 /// The next call answers `#NUM!`. A countdown of `MAX_DEPTH` levels has far fewer calls in
 /// progress than this, so a formula that recursion alone limits still computes.
@@ -765,18 +769,36 @@ impl<'h> Evaluator<'h> {
                 }
                 // A long chain such as A1+A2+…+A500 nests to the left: fold it in a loop instead
                 // of one level of recursion per operator (past the depth limit it was #CALC!).
-                let mut rest = vec![(op, b)];
+                // A formula chains a handful of operators at most, so the pending list lives in a
+                // fixed array on the stack; only a chain longer than `INLINE_CHAIN` spills to the
+                // heap. The fold order is the same either way: deepest operator first.
+                let mut inline: [(BinOp, &Expr); INLINE_CHAIN] = [(op, b); INLINE_CHAIN];
+                let mut held = 1;
+                let mut spilled: Vec<(BinOp, &Expr)> = Vec::new();
                 let mut left = a;
                 while let Expr::Binary(o, l, r) = left
                     && !matches!(o, BinOp::Range | BinOp::Union | BinOp::Intersect)
                 {
-                    rest.push((*o, r.as_ref()));
+                    match inline.get_mut(held) {
+                        Some(slot) => {
+                            *slot = (*o, r.as_ref());
+                            held += 1;
+                        }
+                        None => spilled.push((*o, r.as_ref())),
+                    }
                     left = l.as_ref();
                 }
+                let sys = self.host.workbook().date_system;
                 let mut acc = self.value(left);
-                while let Some((o, r)) = rest.pop() {
+                while let Some((o, r)) = spilled.pop() {
                     let y = self.value(r);
-                    acc = binary_values(o, &acc, &y, self.host.workbook().date_system);
+                    acc = binary_values(o, &acc, &y, sys);
+                }
+                while held > 0 {
+                    held -= 1;
+                    let Some(&(o, r)) = inline.get(held) else { break };
+                    let y = self.value(r);
+                    acc = binary_values(o, &acc, &y, sys);
                 }
                 Ev::V(acc)
             }
