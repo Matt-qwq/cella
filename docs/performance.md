@@ -367,17 +367,28 @@ about sizes, which a shape does not change. The legacy `@` analysis got the same
 read path (`open.xlsx` 5.01 → 4.05 s in the same-binary A/B), and it now skips a formula whose every
 part is certainly one value without building anything.
 
-### Compared with Excel, 2026-11-18
+### Compared with Excel and WPS, 2026-11-18
 
-Every number above is ours. The same workload was put in front of Excel 16.0.20527 (Microsoft
-365) through COM: `examples/bench` writes the file (1M x 8, 2M formulas, 70.4 MB), both
-apps open it, edit B1 and recalculate the sheet. Open **3.3 s** against Excel's 8.0; recalculate
-**0.90 s against 0.31**; working set **1,213 MB against 588**, private bytes **1,538 MB against 468**
-- and with no document open we already hold 382 MB against Excel's 35. The values agree
-cell for cell (G1 0, G1000000 25,999,974, H1000000 23,999,823,993,691); the detail and the caveats
-are in [target-app-parity.md](target-app-parity.md#measured-against-excel-2026-11-18).
-The baseline is the window: the same build headless (`cella-cli mcp`) is 8.1 MB, so the 382 MB
-is startup allocation in the UI, and that is the next memory target rather than the cell store.
+Every number above is ours. The same workload was put in front of Excel 16.0.20527 (Microsoft 365)
+and WPS 12.1.0.25222 through COM: `examples/bench` writes the file (1M x 8, 2M formulas,
+70.4 MB), all three open it, edit B1 and recalculate the sheet, and the three agree cell for cell.
+
+| | Excel 16.0.20527 | WPS 12.1.0.25222 | Cella 0.12 |
+|---|---:|---:|---:|
+| open the 70 MB workbook | 7.9-8.2 s | 10.7 s | **3.3 s** |
+| recalculate 2M formulas after the edit | **0.31 s** | 15.3 s | 0.90 s |
+| working set after opening | **588 MB** | 987 MB | 1,213 MB |
+| private working set | **468 MB** | 864 MB | 1,538 MB |
+| with no document open | **~35 MB** | 288 MB | 382 MB |
+
+Against the baselines the document costs 553 MB (Excel), 700 MB (WPS) and 830 MB (Cella) - the
+engines are within 1.5x of each other, and our 971 MB live figure (undo 212, journal 15) is in the
+right place. Opening is ours by 2.4-3.2x; recalculation is Excel's by 2.9x (and ours by 17x over
+WPS); memory is nobody's friend at the top end, and the reason we are last is the **382 MB the
+window holds with nothing open** - the same build headless (`cella-cli mcp`) is 8.1 MB, so that
+is UI startup allocation and it is the next memory target. Detail and caveats in
+[target-app-parity.md](target-app-parity.md#measured-against-excel-and-wps-2026-11-18).
+
 
 ### The undo step, audited 2026-11-18
 
