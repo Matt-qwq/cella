@@ -101,9 +101,85 @@ struct Source {
     at: CellRef,
 }
 
+/// How much larger than the list a slot table may be before the hash table is kept instead: a box
+/// of cells holding one listed formula in eight would cost eight writes a formula to zero-fill,
+/// which is what a dirty set of a few cells far apart looks like.
+const DENSE_FILL_RATIO: usize = 8;
+
+/// The slots of a pass whose cells fill their box closely enough that one `u32` per box cell is
+/// cheaper than a hash probe per lookup: a cell's slot is `(row - row0) * cols + (col - col0)`
+/// within its sheet, and each sheet adds `rows * cols`.
+///
+/// `0` means "this pass does not evaluate the cell"; a slot is stored as its number plus one.
+#[derive(Debug)]
+struct DenseIndex {
+    /// The first sheet, row and column of the box the cells fill.
+    sheet0: usize,
+    row0: u32,
+    col0: u32,
+    /// The rows and columns of the box, and the cells one sheet of it spans.
+    rows: usize,
+    cols: usize,
+    sheet_stride: usize,
+    slots: Vec<u32>,
+}
+
+impl DenseIndex {
+    /// The box `cells` fill, when zero-filling it is worth it. `None` when they are too sparse:
+    /// three cells a thousand rows apart would memset megabytes to save three probes.
+    fn new(cells: &[Key]) -> Option<Self> {
+        let (first_sheet, first) = *cells.first()?;
+        let (mut sheet_lo, mut sheet_hi) = (first_sheet, first_sheet);
+        let (mut row_lo, mut row_hi) = (first.row, first.row);
+        let (mut col_lo, mut col_hi) = (first.col, first.col);
+        for &(sheet, at) in cells {
+            sheet_lo = sheet_lo.min(sheet);
+            sheet_hi = sheet_hi.max(sheet);
+            row_lo = row_lo.min(at.row);
+            row_hi = row_hi.max(at.row);
+            col_lo = col_lo.min(at.col);
+            col_hi = col_hi.max(at.col);
+        }
+        let rows = row_hi.checked_sub(row_lo)?.checked_add(1)? as usize;
+        let cols = col_hi.checked_sub(col_lo)?.checked_add(1)? as usize;
+        let sheets = sheet_hi.checked_sub(sheet_lo)?.checked_add(1)?;
+        let sheet_stride = rows.checked_mul(cols)?;
+        let cells_in_box = sheets.checked_mul(sheet_stride)?;
+        if cells_in_box > cells.len().checked_mul(DENSE_FILL_RATIO)? {
+            return None;
+        }
+        // `try_reserve` instead of `vec![0; n]`: a box the allocator refuses is a reason to keep the
+        // hash table, not to abort a recalculation.
+        let mut slots: Vec<u32> = Vec::new();
+        slots.try_reserve_exact(cells_in_box).ok()?;
+        slots.resize(cells_in_box, 0);
+        Some(Self { sheet0: sheet_lo, row0: row_lo, col0: col_lo, rows, cols, sheet_stride, slots })
+    }
+
+    /// Where `k` sits in the table, when it is inside the box.
+    fn at(&self, k: Key) -> Option<usize> {
+        let (sheet, at) = k;
+        let row = at.row.checked_sub(self.row0)? as usize;
+        let col = at.col.checked_sub(self.col0)? as usize;
+        // Both are checked: a row past the box would otherwise land in the next sheet's rows, which
+        // is why the table is only a plain rectangle for a pass of one sheet.
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        let i = sheet.checked_sub(self.sheet0)?.checked_mul(self.sheet_stride)?.checked_add(row.checked_mul(self.cols)?)?.checked_add(col)?;
+        // A box spanning several sheets is not a rectangle: the rest of the last sheet is past the
+        // table.
+        (i < self.slots.len()).then_some(i)
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Trees {
+    /// Cell to slot for a pass whose cells the box does not fit, and for any key outside the box of
+    /// a pass that has one. Empty for the common pass, where it is never asked.
     index: HashMap<Key, u32>,
+    /// Cell to slot by arithmetic, when the cells fill their box (see [`DenseIndex`]).
+    dense: Option<DenseIndex>,
     keys: Vec<Key>,
     trees: Vec<Source>,
 }
@@ -113,9 +189,37 @@ impl Trees {
     pub(super) fn with_capacity(cells: usize) -> Self {
         Self {
             index: HashMap::with_capacity_and_hasher(cells, Default::default()),
+            dense: None,
             keys: Vec::with_capacity(cells),
             trees: Vec::with_capacity(cells),
         }
+    }
+
+    /// The table for the cells a pass evaluates, listed in row-major order: a dense slot table when
+    /// they fill their box, the hash table when they do not (see [`DenseIndex::new`]).
+    pub(super) fn for_cells(cells: &[Key]) -> Self {
+        Self::build(cells, true)
+    }
+
+    /// [`Trees::for_cells`] with the dense table refused, for the test that the two agree.
+    #[cfg(test)]
+    pub(super) fn for_cells_sparse(cells: &[Key]) -> Self {
+        Self::build(cells, false)
+    }
+
+    /// Whether the cells are looked up by arithmetic (the sparseness fallback test reads it).
+    #[cfg(test)]
+    pub(super) fn is_dense(&self) -> bool {
+        self.dense.is_some()
+    }
+
+    fn build(cells: &[Key], dense: bool) -> Self {
+        let dense = if dense { DenseIndex::new(cells) } else { None };
+        // A dense pass keeps its hash table empty: the box answers every cell it listed, so the
+        // capacity the hash table would have taken is not allocated at all.
+        let mut trees = Self::with_capacity(if dense.is_some() { 0 } else { cells.len() });
+        trees.dense = dense;
+        trees
     }
 
     /// Adds the formula at `k` to evaluate, unless the cell already has a slot. A pass of more than
@@ -141,17 +245,36 @@ impl Trees {
     }
 
     fn add(&mut self, k: Key, source: Source) {
-        if self.index.contains_key(&k) {
-            return;
-        }
         let Ok(slot) = u32::try_from(self.trees.len()) else { return };
-        self.index.insert(k, slot);
+        // The dense table stores `slot + 1`, so the last number it can hold is one below the hash
+        // table's. A pass that large is beyond what a workbook can hold in memory anyway.
+        let Some(stored) = slot.checked_add(1) else { return };
+        match self.dense.as_ref().and_then(|dense| dense.at(k)) {
+            Some(i) => match self.dense.as_mut().and_then(|dense| dense.slots.get_mut(i)) {
+                Some(cell) if *cell == 0 => *cell = stored,
+                // The cell already has a slot, or the table lost it (which the width check rules
+                // out): either way this cell is not listed twice.
+                _ => return,
+            },
+            None => {
+                if self.index.contains_key(&k) {
+                    return;
+                }
+                self.index.insert(k, slot);
+            }
+        }
         self.keys.push(k);
         self.trees.push(source);
     }
 
     /// The slot of the formula at `k`, when this pass evaluates it.
     pub(super) fn slot(&self, k: Key) -> Option<u32> {
+        if let Some(slot) = self.dense.as_ref().and_then(|dense| dense.at(k).and_then(|i| dense.slots.get(i).copied())) {
+            // Inside the box the table answers alone — a cell it does not list has no slot — which
+            // is the hash probe this saves on every read of the pass. (A key outside the box is
+            // not in the table, so it keeps looking below.)
+            return slot.checked_sub(1);
+        }
         self.index.get(&k).copied()
     }
 
