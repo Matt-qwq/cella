@@ -288,16 +288,19 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   (a shortcut that removes work release already removed only shows its real size in release) is in
   `performance.md`. What is left of this edit: closure ~190 ms (1M dependents probes), write-back
   ~70 ms, eval ~179 ms.
-- **Measured and reverted (11-18): dense single-precedent dependents.** The audit put 84 % of the
-  closure on one hash probe a cell (1,000,002 probes, ~182 ns each on a cold 34 MB table) and
-  recommended a per-sheet box table for `Deps::one`. It was built with maintenance on link/unlink,
-  a sparse fallback and a trim in `settle`, and it is correct on small workbooks — but the graph
-  *build* collapses: at 100k rows `fill.formulas` goes **164 ms -> 37.96 s**, because growing the
-  box copies every entry once per new precedent (`DenseOne::grown`), so linking n precedents is
-  O(n²). Reverted. The lesson is in the acceptance, not the idea: **any graph structure change
-  carries a 100k `fill.formulas` budget as part of its own proof** (the perf harness does it in
-  ~10 s), because the unit tests' workbooks never build the shape that shows it. A retry must grow
-  the box geometrically — copy once per doubling, never per entry.
+- **Landed (11-18): the closure's hash probe is gone — 232.9 -> 27.4 ms at 1M** (same binary,
+  the gate harness's `edit.recalc`, 1,000,001 dirty cells; the command 1.25 s -> 539 ms). The retry
+  of the reverted dense single-precedent table keeps the maintenance and the sparse fallback and
+  rewrites growth: a per-sheet box of `CellRef -> CellRef` slots with an explicit `capacity`, grown
+  by **copying once a doubling** of that capacity (never per line), while a cell the box refuses keeps
+  the hash entry and one batch in `settle` — **at most one pass over a sheet's entries per command**
+  — takes them into the box when the box around all of them is worth its cells. Two measurements
+  shaped it: the box refuses a cell more than twice the budget away (that refusal is the whole of the
+  last attempt's O(n²)), and a batch rebuild is allowed the cells of the box it replaces, so a sheet
+  whose precedents arrive a column at a time keeps its index instead of dumping 5M entries back into
+  the hash. 100k `fill.formulas` **155-171 ms** (was 164), 1M **1.30 s**; a 100k link test asserts
+  the copy count, not a stopwatch. Memory: two cells a dependent at rest (16 B against ~17 B a hash
+  entry), a 16M-cell ceiling a sheet.
 - **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
   tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
   the calc graph's three tables and of the one undo step found structure, not slack, and changed

@@ -602,16 +602,22 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (eleventh):** the dense single-precedent dependents table, **rebuilt and kept**. The
+  closure's 1M walk goes **190 -> 27 ms** (CELLA_PROFILE, 1,000,001 cells), and with the slot-table
+  change below the command goes **589/596 -> 465/460 ms**. The ninth attempt's maintenance and sparse
+  fallback are unchanged; growth is not. The box carries an explicit cell `capacity` and is copied
+  **once a doubling** of it; a cell it refuses keeps its hash entry, and one batch in `settle` (at
+  most one pass over a sheet's entries a command) takes those in when the box around them is worth
+  its cells. The shape that killed the ninth attempt is the one it was accepted on:
+  `fill.formulas` at **100k 154 ms** (164 before) and **1M 1.27/1.28 s**, against a 3 s ceiling.
 - **2026-11-18 (tenth):** the build of a pass's slot table, two costs the audit put at 36.7 and 35 ms
   on the 1M fill. The table's `Vec<Key>` and `Vec<Source>` became one `Vec<Entry>` (32 B a slot, the
   shape a slot reads **borrowed from the graph's node** rather than `Arc::clone`d: a million atomic
   increments and as many decrements a pass, for shapes the graph owns); and the per-cell `graph.node`
-  probe became one sheet-table probe a sheet run (`Graph::nodes_of`, with `dirty` row-major so its
-  cells of one sheet are a run) — the closure's `legacy_of` already had its empty-table short-circuit.
-  Build **66-74 → 41-45 ms** (CELLA_PROFILE, `trees N slots`), `edit.recalc` **678/672/729 →
-  649/637/632 ms** and the `run` after it **343/335/369 → 297/300/290 ms**, same-binary A/B, one run
-  each side alternating; the closure is unchanged (175-194 ms both sides). No structure a cell
-  carries was added.
+  probe became one sheet-table probe a sheet run (`Graph::nodes_of`, `dirty` being row-major so its
+  cells of one sheet arrive together). Build **66-74 -> 40-47 ms** (CELLA_PROFILE, `trees N slots`),
+  `edit.recalc` **641/652 -> 589/596 ms**, same-binary A/B, two runs each side. The closure is
+  unchanged (as it must be: this moves no dependents). No structure a cell carries was added.
 - **2026-11-18 (ninth):** a dense single-precedent dependents table for the closure (84 % of the
   phase was one hash probe a cell) was built, tested and **reverted on measurement**: at 100k rows
   `fill.formulas` went 164 ms -> 37.96 s, a box grown by copying all entries per new precedent.
