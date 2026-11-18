@@ -6,10 +6,10 @@ use std::collections::VecDeque;
 
 use super::Graph;
 use super::graph::{HashMap, HashSet, Key, PackedArea};
-use crate::eval::{Evaluator, Host};
+use crate::eval::{Evaluator, Host, binary_values};
 use crate::spill_index::{Cover, SpillIndex};
 use cella_core::{Array, CellError, CellRef, RangeRef, Value};
-use cella_formula::Expr;
+use cella_formula::{BinOp, Expr, RefKind, SheetSel};
 use cella_model::Workbook;
 
 /// Formulas a formula may calculate on demand one inside the other (each needing one another's
@@ -289,6 +289,12 @@ impl Trees {
         Some((source.shape.tree(), Some(source.at)))
     }
 
+    /// The address of the shape in `slot`: one fill's cells share one shape, so two rows of a
+    /// chain compare equal in one load instead of re-reading the tree (`PassHost::chain_run`).
+    pub(super) fn shape_ptr(&self, slot: u32) -> Option<usize> {
+        self.trees.get(slot as usize).map(|source| std::sync::Arc::as_ptr(&source.shape) as usize)
+    }
+
     /// The cells, in the order their slots were added.
     pub(super) fn keys(&self) -> &[Key] {
         &self.keys
@@ -337,6 +343,65 @@ impl Slot {
     pub(super) fn into_value(self) -> Option<Value> {
         self.value
     }
+}
+
+/// The second operand of a chain formula: the same shape in every row of a run.
+#[derive(Clone, Debug, PartialEq)]
+enum Rhs {
+    /// One cell, at a fixed offset from the formula's own cell: `=H2+G2` filled down reads the
+    /// next row of `G` in every row.
+    Cell { dr: i32, dc: i32 },
+    /// A literal (`=H2+2`, `=H2*TRUE`).
+    Literal(Value),
+}
+
+/// A chain shape: `prev <op> rhs`, where `prev` is the cell directly above in the same column.
+/// Every cell of a run reads the same one, which is what lets a pass accumulate the run instead of
+/// evaluating a formula a row (see [`PassHost::chain_run`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Chain {
+    op: BinOp,
+    rhs: Rhs,
+}
+
+/// The chain `e` spells, when it is one, and nothing when it is anything else: another operator,
+/// a reference that is not the cell above, a cross-sheet reference, a name, a function call, an
+/// array, or a `$` part anywhere in it. The test is deliberately narrow — a shape it refuses keeps
+/// the general evaluator, which is always right.
+fn chain_of(e: &Expr) -> Option<Chain> {
+    let Expr::Binary(op, a, b) = e else { return None };
+    if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow) {
+        return None;
+    }
+    let Expr::Ref(prev) = a.as_ref() else { return None };
+    if !matches!(prev.sheet, SheetSel::Current) {
+        return None;
+    }
+    let RefKind::Cell(above) = &prev.kind else { return None };
+    // A relative offset of (-1, 0): the cell above, in this column.
+    if above.row_abs || above.col_abs || above.row != -1 || above.col != 0 {
+        return None;
+    }
+    let rhs = match b.as_ref() {
+        Expr::Number(n) => Rhs::Literal(Value::number(*n)),
+        Expr::Bool(x) => Rhs::Literal(Value::Bool(*x)),
+        Expr::Text(t) => Rhs::Literal(Value::Text(t.clone())),
+        Expr::Ref(r) => {
+            if !matches!(r.sheet, SheetSel::Current) {
+                return None;
+            }
+            let RefKind::Cell(c) = &r.kind else { return None };
+            // A `$` part reads the same cell in every row, which is a chain of its own kind: the
+            // run is defined over the whole-relative fill a formula dragged down makes, and a mixed
+            // shape keeps the general path.
+            if c.row_abs || c.col_abs {
+                return None;
+            }
+            Rhs::Cell { dr: c.row, dc: c.col }
+        }
+        _ => return None,
+    };
+    Some(Chain { op: *op, rhs })
 }
 
 pub(super) struct PassHost<'a> {
@@ -427,6 +492,14 @@ pub(super) struct PassHost<'a> {
     stack_top: usize,
     /// Whether an evaluation ran past the stack budget since the innermost formula started.
     out_of_stack: bool,
+    /// Runs of chain formulas this pass accumulated instead of evaluating a row (`CELLA_PROFILE`
+    /// prints them), and the formulas they covered.
+    pub(super) chains: u64,
+    pub(super) chain_formulas: u64,
+    /// Whether `chain_run` may take a run. Tests turn it off to calculate the same workbook through
+    /// the general path and compare.
+    #[cfg(test)]
+    pub(super) chain_fast: bool,
 }
 
 impl<'a> PassHost<'a> {
@@ -537,6 +610,10 @@ impl<'a> PassHost<'a> {
             precision: wb.calc.precision_as_displayed.then(crate::DisplayedPrecision::new),
             stack_top: 0,
             out_of_stack: false,
+            chains: 0,
+            chain_formulas: 0,
+            #[cfg(test)]
+            chain_fast: true,
         }
     }
 
@@ -695,6 +772,119 @@ pub(super) fn spills_as_before(sheet: &cella_model::Sheet, anchor: CellRef, rang
 }
 
 impl PassHost<'_> {
+    /// Accumulates the run of chain formulas that starts at `k` (whose slot is `slot`), when `k`
+    /// is one, and says whether it calculated `k`.
+    ///
+    /// A run is the rows below `k` in its column that this pass also evaluates and that read the
+    /// same [`Chain`] — the shape an edit at the top of a large sheet mostly dirties (`H2=H1+G2`,
+    /// `H3=H2+G3`, … a million rows of one formula). One `arith` step a row replaces a whole
+    /// evaluation: no `Evaluator`, no slot marked in flight, no walk of the formula's tree, and the
+    /// second operand is one read.
+    ///
+    /// The semantics are the general path's by construction, not by a second implementation of it:
+    /// the values go through [`binary_values`], the kernel `Expr::Binary` itself evaluates with, and
+    /// every operand is read through [`Host::cell_value`], the read the evaluator makes. So a blank
+    /// is 0, a boolean or text is coerced, an error propagates, a division by zero is `#DIV/0!`, an
+    /// overflow is `#NUM!` and a reference that leaves the sheet is `#REF!` — cell for cell the
+    /// same value, and "Set precision as displayed" rounds each one as it lands.
+    ///
+    /// A row the pass has already calculated keeps its value, and an operand still to be calculated
+    /// is calculated on demand here, exactly as the general path would when it reached the row.
+    pub(super) fn chain_run(&mut self, k: Key, slot: u32) -> bool {
+        #[cfg(test)]
+        if !self.chain_fast {
+            return false;
+        }
+        // Iterative calculation watches which formulas read a previous value and stops when they
+        // settle; a run keeps none of that bookkeeping, so a workbook that iterates keeps the
+        // general path. A suspension already unwinding is `calculate`'s business too.
+        if self.iterate || self.suspend.is_some() || self.slot_value(slot).is_some() {
+            return false;
+        }
+        let trees = self.trees;
+        let (sheet, base) = k;
+        let Some((expr, Some(at))) = trees.source(slot) else { return false };
+        if at != base {
+            return false;
+        }
+        let Some(chain) = chain_of(expr) else { return false };
+        let shape = trees.shape_ptr(slot);
+        // The cell above the run's first row is what its `prev` reference reads; past the top of
+        // the sheet the reference is `#REF!`, which the first row then carries down the column.
+        let mut acc = match base.offset(-1, 0) {
+            Some(above) => self.cell_value(sheet, above),
+            None => Value::Error(CellError::Ref),
+        };
+        if self.suspend.is_some() {
+            return false;
+        }
+        let date_system = self.wb.date_system;
+        let mut formulas = 0u64;
+        let mut abandoned: Option<u32> = None;
+        let mut step = 0u32;
+        while let Some(cell) = base.offset(i64::from(step), 0) {
+            let here = (sheet, cell);
+            let Some(slot) = trees.slot(here) else { break };
+            // The row must read the same chain: one fill's cells share one shape, so a pointer
+            // comparison settles every row of it, and a shape of its own is read before it ends
+            // the run on it.
+            let own = trees.shape_ptr(slot);
+            if step > 0 && own != shape {
+                let Some((row_expr, Some(_))) = trees.source(slot) else { break };
+                if chain_of(row_expr).as_ref() != Some(&chain) {
+                    break;
+                }
+            }
+            let next = step.saturating_add(1);
+            if let Some(v) = self.slot_value(slot) {
+                acc = v.clone();
+                step = next;
+                continue;
+            }
+            // A formula found circular is `#CIRC!` whatever its operands say; the rows from it
+            // down are left to the general path, which is what the walk reaches next.
+            if !self.cycle_seen.is_empty() && self.cycle_seen.contains(&here) {
+                break;
+            }
+            let rhs = match &chain.rhs {
+                Rhs::Literal(v) => v.clone(),
+                Rhs::Cell { dr, dc } => match cell.offset(i64::from(*dr), i64::from(*dc)) {
+                    Some(target) => self.cell_value(sheet, target),
+                    None => Value::Error(CellError::Ref),
+                },
+            };
+            // An operand read deeper than the stack or the nesting limit allows abandons the
+            // evaluations in progress: the values this run has written are given back below.
+            if self.suspend.is_some() {
+                abandoned = Some(step);
+                break;
+            }
+            let mut v = binary_values(chain.op, &acc, &rhs, date_system);
+            if let Some(p) = self.precision.as_mut() {
+                v = p.round_value(self.wb, sheet, cell, v);
+            }
+            self.set_slot(slot, Slot::done(v.clone()));
+            acc = v;
+            formulas = formulas.saturating_add(1);
+            step = next;
+        }
+        if let Some(abandoned) = abandoned {
+            // The run is abandoned: every cell it calculated is left to the pass again, which
+            // recalculates `k` here (`calculate_at`) and the rest when its walk reaches them.
+            for step in 0..=abandoned {
+                if let Some(cell) = base.offset(i64::from(step), 0)
+                    && let Some(slot) = trees.slot((sheet, cell))
+                {
+                    self.set_slot(slot, Slot::default());
+                }
+            }
+            return false;
+        }
+        self.chains = self.chains.saturating_add(1);
+        self.chain_formulas = self.chain_formulas.saturating_add(formulas);
+        true
+    }
+
     /// Calculates `k` (and the formulas it reads) with bounded stack: when [`Self::compute`] would
     /// go deeper than [`MAX_NESTED`], it suspends what is in progress, the formula it needed is
     /// calculated from here, then the suspended ones again (reading the results kept so far).

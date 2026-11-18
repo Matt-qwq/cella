@@ -2325,3 +2325,222 @@ fn a_name_defined_as_a_volatile_call_recalculates_its_users_on_open() {
     calc.recalc_on_open(&mut wb);
     assert_eq!(recalculated(&wb, &formulas), ["B1", "C1"]);
 }
+/// A chain's rows `first_row`..`rows` in column `col` (0-based), one formula a row from
+/// `text`, over a column of inputs at column A. The edge of a formula a fill makes a run of.
+fn chain_sheet(rows: u32, col: u32, first: &str, text: impl Fn(u32) -> String) -> Workbook {
+    let mut wb = Workbook::new();
+    {
+        let sh = wb.sheet_mut(0).expect("sheet");
+        for r in 0..rows {
+            let body = if r == 0 { first.to_string() } else { text(r) };
+            sh.cells.set(CellRef::new(r, col), Cell::formula(Formula::new(&body)));
+        }
+    }
+    wb
+}
+
+/// The cells of a chain test's sheet, in row-major order: every value a recalculation left
+/// behind.
+fn grid(wb: &Workbook, rows: u32, cols: u32) -> Vec<Value> {
+    let sh = wb.sheet(0).expect("sheet");
+    let mut out = Vec::new();
+    for r in 0..rows {
+        for col in 0..cols {
+            out.push(sh.value(CellRef::new(r, col)));
+        }
+    }
+    out
+}
+
+/// The workbook the equivalence test calculates: an input column of numbers, blanks, text,
+/// booleans, errors (including the `#DIV/0!` an error literal stands for), a negative and a value
+/// that overflows on the first multiplication, and five columns of running totals over it — `+`,
+/// `-`, `*`, `/` and `^`.
+fn chain_workbook(seed: u64) -> Workbook {
+    const ROWS: u32 = 200;
+    let mut wb = Workbook::new();
+    let mut state = seed | 1;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    {
+        let sh = wb.sheet_mut(0).expect("sheet");
+        for r in 0..ROWS {
+            let value = match next() % 11 {
+                0 => None,
+                1 => Some(Value::Number(2.0)),
+                2 => Some(Value::text("x")),
+                3 => Some(Value::Bool(true)),
+                4 => Some(Value::Error(CellError::Div0)),
+                5 => Some(Value::Error(CellError::Ref)),
+                6 => Some(Value::Number(-3.5)),
+                7 => Some(Value::Number(0.0)),
+                8 => Some(Value::Number(1e308)),
+                9 => Some(Value::Bool(false)),
+                _ => Some(Value::Number(f64::from(r) + 0.5)),
+            };
+            if let Some(value) = value {
+                sh.cells.set(CellRef::new(r, 0), Cell::value(value));
+            }
+            let row = r + 1;
+            let above = r;
+            for (col, op) in [('B', "+"), ('C', "-"), ('D', "*"), ('E', "/"), ('F', "^")] {
+                let body = if r == 0 { format!("=A{row}") } else { format!("={col}{above}{op}A{row}") };
+                sh.cells.set(CellRef::new(r, col as u32 - u32::from(b'A')), Cell::formula(Formula::new(&body)));
+            }
+        }
+    }
+    wb
+}
+
+/// `chain_workbook` calculated with the run fast path on or off, then edited at the top so the whole
+/// column is dirty again: the values, and the formulas the pass accumulated.
+fn chain_calculated(seed: u64, fast: bool) -> (Vec<Value>, u64) {
+    let mut wb = chain_workbook(seed);
+    let mut calc = Calc::new();
+    calc.chain_fast = fast;
+    calc.recalc_all(&mut wb);
+    calc.chain_formulas = 0;
+    wb.sheet_mut(0).expect("sheet").cells.set(CellRef::new(0, 0), Cell::value(Value::Number(3.0)));
+    calc.cells_changed(&mut wb, &[(0, CellRef::new(0, 0))]);
+    (grid(&wb, 200, 6), calc.chain_formulas)
+}
+
+/// A run is accumulated with the kernel `Expr::Binary` itself evaluates through and reads its
+/// operands with the read the evaluator makes, so it cannot disagree with the general path: this
+/// holds the two to the same value, cell for cell, over blanks, text, booleans, errors, a division
+/// by zero, a negative, an overflow — and the `#REF!` an error literal carries down a column.
+#[test]
+fn a_chain_run_calculates_what_the_general_path_does() {
+    for seed in [1u64, 7, 99, 12_345] {
+        let (fast, fast_formulas) = chain_calculated(seed, true);
+        let (general, general_formulas) = chain_calculated(seed, false);
+        assert_eq!(general_formulas, 0, "seed {seed}: the fast path was off");
+        assert!(fast_formulas > 0, "seed {seed}: no run was taken");
+        assert_eq!(fast, general, "seed {seed}");
+    }
+}
+
+/// The shape the reference workbook has, and the one case the run must get right on demand: an
+/// edit that dirties the column a running total reads as well as the total itself. The run starts
+/// at `C2` while `B2`.. are still to be calculated, so every row's second operand is calculated
+/// here, exactly as the general path calculates it when its walk reaches the row.
+#[test]
+fn a_run_reading_a_column_the_edit_also_dirties_matches_the_general_path() {
+    const ROWS: u32 = 300;
+    let book = || {
+        let mut wb = Workbook::new();
+        {
+            let sh = wb.sheet_mut(0).expect("sheet");
+            for r in 0..ROWS {
+                let row = r + 1;
+                sh.cells.set(CellRef::new(r, 0), Cell::value(Value::Number(f64::from(r) + 1.0)));
+                sh.cells.set(CellRef::new(r, 1), Cell::formula(Formula::new(&format!("=A{row}*2"))));
+                let body = if r == 0 { format!("=A{row}") } else { format!("=C{r}+B{row}") };
+                sh.cells.set(CellRef::new(r, 2), Cell::formula(Formula::new(&body)));
+            }
+        }
+        wb
+    };
+    let (mut fast_wb, mut general_wb) = (book(), book());
+    let (mut fast, mut general) = (Calc::new(), Calc::new());
+    general.chain_fast = false;
+    for (wb, calc) in [(&mut fast_wb, &mut fast), (&mut general_wb, &mut general)] {
+        calc.recalc_all(wb);
+        calc.chains = 0;
+        calc.chain_formulas = 0;
+        wb.sheet_mut(0).expect("sheet").cells.set(CellRef::new(0, 0), Cell::value(Value::Number(3.0)));
+        calc.cells_changed(wb, &[(0, CellRef::new(0, 0))]);
+    }
+    assert_eq!(fast.chain_formulas, u64::from(ROWS) - 1, "rows 2.. of the chain, its operands calculated on demand");
+    assert_eq!(general.chain_formulas, 0, "the fast path was off");
+    assert_eq!(grid(&fast_wb, ROWS, 3), grid(&general_wb, ROWS, 3));
+    // `C1` is `A1` = 3 after the edit, and every row below adds `2 * row`.
+    let added: f64 = (2..=ROWS).map(|r| 2.0 * f64::from(r)).sum();
+    assert_eq!(fast_wb.sheet(0).expect("sheet").value(CellRef::new(ROWS - 1, 2)), Value::Number(3.0 + added));
+}
+
+/// The dirty set of an edit at the top of a column of running totals is one long run: the pass
+/// accumulates the column in one loop instead of evaluating a formula a row.
+#[test]
+fn a_column_of_running_totals_is_one_run() {
+    const ROWS: u32 = 1000;
+    let mut wb = chain_sheet(ROWS, 1, "=A1", |r| format!("=B{r}+A{}", r + 1));
+    {
+        let sh = wb.sheet_mut(0).expect("sheet");
+        for r in 0..ROWS {
+            sh.cells.set(CellRef::new(r, 0), Cell::value(Value::Number(1.0)));
+        }
+    }
+    let mut calc = Calc::new();
+    calc.recalc_all(&mut wb);
+    calc.chains = 0;
+    calc.chain_formulas = 0;
+    wb.sheet_mut(0).expect("sheet").cells.set(CellRef::new(0, 0), Cell::value(Value::Number(5.0)));
+    calc.cells_changed(&mut wb, &[(0, CellRef::new(0, 0))]);
+    assert_eq!(calc.chains, 1, "the column is one run");
+    assert_eq!(calc.chain_formulas, u64::from(ROWS) - 1, "every row below the head");
+    assert_eq!(wb.sheet(0).expect("sheet").value(CellRef::new(ROWS - 1, 1)), Value::Number(f64::from(ROWS) + 4.0));
+}
+
+/// A shape the run does not cover is left to the general evaluator, whatever it is: a link that
+/// reads another column, a `$` part, a function call. Each still calculates the value it always
+/// did.
+#[test]
+fn a_shape_outside_the_run_keeps_the_general_path() {
+    // The link is not the cell above: it reads the same row of another column.
+    let cases: [(&str, fn(u32) -> String); 4] = [
+        ("=A1", |r| format!("=A{r}+A{}", r + 1)),
+        ("=A1", |r| format!("=B{r}+$A$1")),
+        ("=A1", |r| format!("=B$1+A{}", r + 1)),
+        ("=SUM(A1)", |r| format!("=SUM(B{r},A{})", r + 1)),
+    ];
+    for (first, text) in cases {
+        let mut wb = chain_sheet(64, 1, first, text);
+        {
+            let sh = wb.sheet_mut(0).expect("sheet");
+            for r in 0..64 {
+                sh.cells.set(CellRef::new(r, 0), Cell::value(Value::Number(1.0)));
+            }
+        }
+        let mut calc = Calc::new();
+        calc.recalc_all(&mut wb);
+        calc.chain_formulas = 0;
+        wb.sheet_mut(0).expect("sheet").cells.set(CellRef::new(0, 0), Cell::value(Value::Number(2.0)));
+        calc.cells_changed(&mut wb, &[(0, CellRef::new(0, 0))]);
+        assert_eq!(calc.chain_formulas, 0, "{first} / {}", text(1));
+        let last = wb.sheet(0).expect("sheet").value(CellRef::new(63, 1));
+        assert!(matches!(last, Value::Number(n) if n > 0.0), "{first} / {}: {last:?}", text(1));
+    }
+}
+
+/// A literal as the second operand is a chain too — `=B1*1.5` filled down, the column an
+/// integer overflow first shows up in — and the run gives every row the value the general path
+/// gives it, `#NUM!` from the row that goes infinite on.
+#[test]
+fn a_chain_with_a_literal_operand_matches_the_general_path() {
+    let book = || {
+        let mut wb = chain_sheet(1800, 1, "=A1", |r| format!("=B{r}*1.5"));
+        {
+            let sh = wb.sheet_mut(0).expect("sheet");
+            for r in 0..1800 {
+                sh.cells.set(CellRef::new(r, 0), Cell::value(Value::Number(2.0)));
+            }
+        }
+        wb
+    };
+    let (mut fast_wb, mut general_wb) = (book(), book());
+    let (mut fast, mut general) = (Calc::new(), Calc::new());
+    general.chain_fast = false;
+    fast.recalc_all(&mut fast_wb);
+    general.recalc_all(&mut general_wb);
+    assert!(fast.chain_formulas > 0, "the column is a run");
+    assert_eq!(general.chain_formulas, 0, "the fast path was off");
+    assert_eq!(fast.chain_formulas, 1799);
+    assert_eq!(grid(&fast_wb, 1800, 2), grid(&general_wb, 1800, 2));
+    assert_eq!(fast_wb.sheet(0).expect("sheet").value(CellRef::new(1, 1)), Value::Number(3.0));
+    assert_eq!(fast_wb.sheet(0).expect("sheet").value(CellRef::new(1799, 1)), Value::Error(CellError::Num), "the column overflows");
+}
