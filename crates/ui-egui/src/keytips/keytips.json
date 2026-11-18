@@ -1751,8 +1751,7 @@
    "kind": "command",
    "target": "formulas.pasteName",
    "excel": "Paste Names",
-   "note": "reserved until the command lands",
-   "pending": true
+   "note": "opens the name list to paste one"
   },
   {
    "seq": "MT",
@@ -1947,9 +1946,8 @@
    "seq": "AFW",
    "kind": "command",
    "target": "data.fromWeb",
-   "pending": true,
    "excel": "Get External Data: From Web",
-   "note": "reserved until the command lands"
+   "note": "a URL behind the connectors feature"
   },
   {
    "seq": "AG",
@@ -2024,9 +2022,8 @@
    "seq": "APND",
    "kind": "command",
    "target": "data.fromDatabase",
-   "pending": true,
    "excel": "From Database (Microsoft Query)",
-   "note": "gap #12; reserved until the command lands"
+   "note": "a database file behind the connectors feature"
   },
   {
    "seq": "APNE",

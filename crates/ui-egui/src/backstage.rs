@@ -421,7 +421,9 @@ fn recent_list(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Ou
 /// What the file system said about a recent workbook.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Modified {
-    /// When it was last changed, in seconds since 1970.
+    /// When it was last changed, in seconds since 1970. Never built on the web, which lists no
+    /// recent files.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     At(f64),
     /// It can't be reached: moved, deleted, or on a drive that is away. Only the native path
     /// asks the file system (the web build lists no recent files), so on wasm it is never built.

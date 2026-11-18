@@ -265,7 +265,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("MP", Entry::Finish(Action::Command("formulas.tracePrecedents"))), // Excel: Trace Precedents
     ("MQ", Entry::Finish(Action::Control("formulas.moreFunctions"))), // Excel: More Functions Menu; group level: containment(More Functions)
     ("MS", Entry::Continue),                                   // Excel: Use in Formula Menu; group level: containment(Use in Formula)
-    ("MSP", Entry::Finish(Action::Pending("formulas.pasteName"))), // pending; Excel: Paste Names; reserved until the command lands
+    ("MSP", Entry::Finish(Action::Command("formulas.pasteName"))), // Excel: Paste Names; opens the name list to paste one
     ("MT", Entry::Finish(Action::Control("formulas.text"))),   // Excel: Text Menu; group level: containment(Text)
     ("MU", Entry::Continue),                                   // Excel: AutoSum Menu; group level:
     ("MUA", Entry::Finish(Action::Command("formulas.autoSum"))), // Excel: Average; AutoSum: Average (variant TBD)
@@ -293,7 +293,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("AFF", Entry::Finish(Action::Command("edit.flashFill"))),     // Excel: Flash Fill
     ("AFO", Entry::Finish(Action::Pending("data.fromOtherSources"))), // pending; Excel: Get External Data: From Other Sources; gap #12; reserved until the command lands
     ("AFT", Entry::Finish(Action::Pending("data.fromText"))), // pending; Excel: Get External Data: From Text; gap #12; reserved until the command lands
-    ("AFW", Entry::Finish(Action::Pending("data.fromWeb"))),  // pending; Excel: Get External Data: From Web; reserved until the command lands
+    ("AFW", Entry::Finish(Action::Command("data.fromWeb"))),  // Excel: Get External Data: From Web; a URL behind the connectors feature
     ("AG", Entry::Continue),                                  // Excel: Group Menu; group level: containment(Group)
     ("AGA", Entry::Finish(Action::Pending("data.autoOutline"))), // pending; Excel: Auto Outline; Auto Outline; reserved until the command lands
     ("AGG", Entry::Finish(Action::Command("data.group"))),    // Excel: Group
@@ -304,7 +304,7 @@ pub const SEQUENCES: &[(&str, Entry)] = &[
     ("AO", Entry::Finish(Action::Command("data.queriesConnections"))), // Excel: Queries & Connections
     ("AP1", Entry::Finish(Action::Command("file.properties"))), // Excel: Properties
     ("APN", Entry::Continue),                                 // Excel: Get Data (Power Query) Menu; group level: Power Query variants = GAP
-    ("APND", Entry::Finish(Action::Pending("data.fromDatabase"))), // pending; Excel: From Database (Microsoft Query); gap #12; reserved until the command lands
+    ("APND", Entry::Finish(Action::Command("data.fromDatabase"))), // Excel: From Database (Microsoft Query); a database file behind the connectors feature
     ("APNE", Entry::Finish(Action::Pending("data.powerQueryEditor"))), // pending; Excel: Launch Power Query Editor; gap #12; reserved until the command lands
     ("APNG", Entry::Finish(Action::Command("data.getData"))),          // Excel: Get Data (Power Query); containment(Get Data)
     ("APNH", Entry::Finish(Action::Pending("data.fromHtml"))),         // pending; Excel: From HTML; gap #12; reserved until the command lands
