@@ -602,6 +602,16 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (tenth):** the dense single-precedent dependents table, **rebuilt and kept**: the
+  closure's 1M walk is **232.9 -> 27.4 ms** in the gate harness (`edit.recalc` 1.25 s -> 539 ms,
+  same binary, one run a side) — the 84 % of the phase that one hash probe a cell cost is gone. The
+  ninth attempt's maintenance and sparse fallback are unchanged; what changed is growth. The box has
+  an explicit cell `capacity` and is copied **once a doubling** of it, a cell it refuses keeps the
+  hash entry, and one batch in `settle` (at most one pass over a sheet's entries per command) takes
+  those entries in when the box around them is worth its cells; a rebuild is allowed the cells of the
+  box it replaces, which is what lets a sheet whose precedents arrive a column at a time keep its
+  index. `fill.formulas` (the shape that killed the ninth attempt): **100k 155-171 ms** (164 before),
+  **1M 1.30 s**; the 100k link test asserts copies, not a clock.
 - **2026-11-18 (ninth):** a dense single-precedent dependents table for the closure (84 % of the
   phase was one hash probe a cell) was built, tested and **reverted on measurement**: at 100k rows
   `fill.formulas` went 164 ms -> 37.96 s, a box grown by copying all entries per new precedent.

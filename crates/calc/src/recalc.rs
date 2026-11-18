@@ -1790,7 +1790,7 @@ pub(crate) mod tests {
 
     use crate::eval::Host;
 
-    use super::graph::Intervals;
+    use super::graph::{Intervals, without_dense};
     use super::{Calc, Graph, HashMap, Key, PassHost, SeenCells, Trees};
 
     /// xorshift64 for repeatable pseudo-random cases.
@@ -2846,5 +2846,130 @@ pub(crate) mod tests {
         assert_eq!(trees.slot((0, CellRef::new(450, 3))), None, "a row past the box must not read the next sheet");
         assert_eq!(trees.slot((0, CellRef::new(0, 4))), None, "a cell beside the box has no slot");
         assert_eq!(trees.slot((2, CellRef::new(0, 3))), None, "a sheet the box does not span has no slot");
+    }
+
+    /// A chain of `rows` formulas down column B: each reads the cell above it, and every tenth also
+    /// reads the one value cell A1 — so one precedent is a list and the rest are single cells.
+    fn chain(rows: u32) -> Workbook {
+        let mut wb = Workbook::new();
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.set(CellRef::new(0, 0), Cell::value(Value::Number(1.0)));
+            sh.cells.set(CellRef::new(0, 1), Cell::formula(Formula::new("=A1*2")));
+            for row in 1..rows {
+                let text = if row % 10 == 0 { format!("=B{}+$A$1", row) } else { format!("=B{}+1", row) };
+                sh.cells.set(CellRef::new(row, 1), Cell::formula(Formula::new(&text)));
+            }
+        }
+        wb
+    }
+
+    /// The same workbook's graph with the dense box refused: the hash table the dense index has to
+    /// agree with, key for key.
+    fn sparse_twin(wb: &Workbook) -> Calc {
+        let mut calc = Calc::new();
+        without_dense(true, || calc.rebuild(wb));
+        assert!((0..wb.sheets.len()).all(|sheet| !calc.graph.has_dense_index(sheet)), "the box is refused here");
+        calc
+    }
+
+    /// Every precedent the two graphs answer for, and the dependents each gives it — as sets: the
+    /// order of a list is the order its dependents were linked in, which a rebuild (row by row) and
+    /// an edit (a cell at a time) do not share, so only the same construction path can be held to
+    /// the same order (see the closure test above).
+    fn assert_same_index(a: &Calc, b: &Calc) {
+        assert_eq!(a.graph.index_answers(), b.graph.index_answers(), "the two indexes hold different entries");
+        for ((sheet, at), _) in a.graph.index_answers() {
+            let (mut boxed, mut hashed) = (Vec::new(), Vec::new());
+            a.graph.dependents(sheet, at, &mut boxed);
+            b.graph.dependents(sheet, at, &mut hashed);
+            boxed.sort_unstable();
+            hashed.sort_unstable();
+            assert_eq!(boxed, hashed, "the dependents of sheet {sheet} at {at:?} differ");
+        }
+    }
+
+    /// The closure an edit walks — every cell, in the order the walk reaches it — is the same with
+    /// the dense box and with the hash table, and so is every value the pass writes.
+    #[test]
+    fn the_dense_index_and_the_hash_table_reach_the_same_cells_in_the_same_order() {
+        let seeds: Vec<Key> = vec![(0, CellRef::new(0, 1))];
+        let mut wb = chain(2_000);
+        let mut dense = Calc::new();
+        dense.rebuild(&wb);
+        assert!(dense.graph.has_dense_index(0), "2,000 precedents fill a box");
+        let dense_dirty = dense.dirty_closure(&wb, &seeds);
+        assert!(dense_dirty.len() > 1_900, "the whole chain is behind B1: {}", dense_dirty.len());
+
+        let mut sparse = sparse_twin(&wb);
+        let sparse_dirty = sparse.dirty_closure(&wb, &seeds);
+        assert_eq!(dense_dirty, sparse_dirty, "the same cells, in the same order");
+        assert_same_index(&dense, &sparse);
+
+        // The values the pass writes have to agree cell for cell after the same edit.
+        let mut sparse_wb = wb.clone();
+        let touched: Vec<Key> = vec![(0, CellRef::new(0, 0))];
+        for book in [&mut wb, &mut sparse_wb] {
+            if let Some(sh) = book.sheet_mut(0) {
+                sh.cells.set(CellRef::new(0, 0), Cell::value(Value::Number(7.0)));
+            }
+        }
+        dense.cells_changed(&mut wb, &touched);
+        without_dense(true, || sparse.cells_changed(&mut sparse_wb, &touched));
+        for row in 0..2_000u32 {
+            let at = CellRef::new(row, 1);
+            let (a, b) = (wb.sheet(0).map(|s| s.value(at)), sparse_wb.sheet(0).map(|s| s.value(at)));
+            assert_eq!(a, b, "the value of B{} differs", row + 1);
+        }
+        assert_same_index(&dense, &sparse);
+    }
+
+    /// A structural edit is a rebuild, and an undo relinks cells one at a time; both leave the dense
+    /// box holding exactly the entries the hash table of the same workbook holds.
+    #[test]
+    fn a_structural_edit_and_a_restore_keep_the_dense_index_equal_to_the_hash_one() {
+        let mut wb = chain(1_500);
+        let mut calc = Calc::new();
+        calc.rebuild(&wb);
+        assert!(calc.graph.has_dense_index(0), "1,500 precedents fill a box");
+        assert_same_index(&calc, &sparse_twin(&wb));
+
+        // insertRows: every cell from row 500 down moves four rows down, formulas and all.
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.shift_rows(500, 4);
+        }
+        calc.rebuild(&wb);
+        assert!(calc.graph.has_dense_index(0), "the moved precedents still fill a box");
+        assert_same_index(&calc, &sparse_twin(&wb));
+
+        // insertCols, then formulas re-entered and others replaced by values: the incremental path
+        // a command takes.
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.shift_cols(0, 1);
+        }
+        calc.rebuild(&wb);
+        assert_same_index(&calc, &sparse_twin(&wb));
+        let mut edited: Vec<Key> = Vec::new();
+        if let Some(sh) = wb.sheet_mut(0) {
+            for row in 1..400u32 {
+                sh.cells.set(CellRef::new(row, 2), Cell::formula(Formula::new(&format!("=C{}+A1", row))));
+                edited.push((0, CellRef::new(row, 2)));
+            }
+            for row in 300..400u32 {
+                sh.cells.set(CellRef::new(row, 2), Cell::value(Value::Number(2.0)));
+            }
+        }
+        calc.cells_changed(&mut wb, &edited);
+        assert!(calc.graph.has_dense_index(0), "the re-entered formulas are linked into the box");
+        assert_same_index(&calc, &sparse_twin(&wb));
+
+        // Undo: the graph is put right from the cells the two versions disagree on.
+        let snapshot = wb.clone();
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.set(CellRef::new(1, 2), Cell::formula(Formula::new("=C1+2")));
+        }
+        calc.cells_changed(&mut wb, &[(0, CellRef::new(1, 2))]);
+        let edited_wb = std::mem::replace(&mut wb, snapshot);
+        assert!(calc.restore(&edited_wb, &wb), "an edit is restored from the cell it changed");
+        assert_same_index(&calc, &sparse_twin(&wb));
     }
 }
