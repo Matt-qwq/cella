@@ -2341,6 +2341,39 @@ fn chain_sheet(rows: u32, col: u32, first: &str, text: impl Fn(u32) -> String) -
 
 /// The cells of a chain test's sheet, in row-major order: every value a recalculation left
 /// behind.
+/// A chain run writes its slots in one loop without marking each cell in flight, so a column
+/// whose formulas are also circular must still find the cycle and report it where the general
+/// path does: this holds the two to the same values cell for cell.
+#[test]
+fn a_chain_run_in_a_cycle_calculates_what_the_general_path_does() {
+    let build = || {
+        let mut wb = Workbook::new();
+        {
+            let sh = wb.sheet_mut(0).expect("sheet");
+            for r in 0..20u32 {
+                sh.cells.set(CellRef::new(r, 0), Cell::value(Value::Number(f64::from(r + 1))));
+            }
+            // H1 reads the bottom of its own column: every H is in the cycle.
+            sh.cells.set(CellRef::new(0, 7), Cell::formula(Formula::new("=H20+A1")));
+            for r in 1..20u32 {
+                sh.cells.set(CellRef::new(r, 7), Cell::formula(Formula::new(&format!("=H{}+A{}", r, r + 1))));
+            }
+        }
+        wb
+    };
+    let run = |fast: bool| {
+        let mut wb = build();
+        let mut calc = Calc::new();
+        calc.chain_fast = fast;
+        calc.recalc_all(&mut wb);
+        (grid(&wb, 20, 8), calc.chains)
+    };
+    let (fast, fast_chains) = run(true);
+    let (slow, _) = run(false);
+    assert_eq!(fast, slow, "a cycle through a chain run changed the values");
+    assert!(fast_chains > 0, "the run must be taken for this test to mean anything");
+}
+
 fn grid(wb: &Workbook, rows: u32, cols: u32) -> Vec<Value> {
     let sh = wb.sheet(0).expect("sheet");
     let mut out = Vec::new();
