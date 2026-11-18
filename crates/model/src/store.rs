@@ -1237,8 +1237,14 @@ impl Band {
 
     /// Rebuilds the `Cell` at `col` from the packed row.
     fn cell_at(&self, row: &BandRow, i: usize, col: u32) -> Cell {
+        Cell { value: self.value_at(row, i, col), formula: row.formula_at(col).cloned(), style: self.style(row.style_at(self, i)) }
+    }
+
+    /// The value of the `i`th stored cell alone, without the formula `Arc` and the style a
+    /// [`Cell`] also carries: a read that wants the value pays for nothing else.
+    fn value_at(&self, row: &BandRow, i: usize, col: u32) -> Value {
         let payload = row.payload_at(self, i);
-        let value = match row.kind_at(self, i) {
+        match row.kind_at(self, i) {
             NUMBER => Value::Number(self.number(payload)),
             NUMBER_WIDE => Value::Number(f64::from_bits(row.wide_at(self, i))),
             TEXT => Value::Text(self.text(u64::from(payload))),
@@ -1250,8 +1256,7 @@ impl Band {
                 Err(_) => Value::Empty,
             },
             _ => Value::Empty,
-        };
-        Cell { value, formula: row.formula_at(col).cloned(), style: self.style(row.style_at(self, i)) }
+        }
     }
 
     /// Stores `cell` at `col`; a blank cell is removed instead. Text and style slots are resolved
@@ -3124,6 +3129,45 @@ impl CellStore {
         let row = band.row(physical % BAND)?;
         let i = row.index_of(&band, col)?;
         Some(band.cell_at(row, i, col))
+    }
+
+    /// Reads `c` through `f` without rebuilding the cell. A live band is borrowed where it is —
+    /// no `Arc<Band>` clone, so no atomic — and only a paged band is decoded, into an `Arc` this
+    /// read holds alone. `None` when this store holds nothing at `c`.
+    fn read_cell<R>(&self, c: CellRef, f: impl FnOnce(&Band, &BandRow, usize, u32) -> R) -> Option<R> {
+        let physical = self.physical_row(c.row)?;
+        let col = self.physical_col(c.col)?;
+        let key = physical / BAND;
+        if let Some(band) = self.bands.get(&key) {
+            let row = band.row(physical % BAND)?;
+            let i = row.index_of(band, col)?;
+            return Some(f(band, row, i, col));
+        }
+        let band = self.band_arc(key)?;
+        let row = band.row(physical % BAND)?;
+        let i = row.index_of(&band, col)?;
+        Some(f(&band, row, i, col))
+    }
+
+    /// The value stored at `c`, without rebuilding the cell: no `Cell`, no `Arc<Formula>` clone
+    /// and, for a live band, no `Arc<Band>` clone. A recalculation reads one value per cell, and
+    /// `get` charged each of those reads two atomics for a formula nobody wanted and two more for
+    /// the band. `Value::Empty` where nothing is stored, which is what `get` reads there.
+    pub fn value(&self, c: CellRef) -> Value {
+        self.read_cell(c, Band::value_at).unwrap_or(Value::Empty)
+    }
+
+    /// The value stored at `c`, keeping "nothing stored" apart from a stored empty value (a
+    /// formatted cell, or a formula whose result is empty).
+    pub fn value_ref(&self, c: CellRef) -> Option<Value> {
+        self.read_cell(c, Band::value_at)
+    }
+
+    /// The value stored at `c` together with whether a formula sits on it: what a display read
+    /// needs to tell a cell's own (empty) answer from a spilled value under it, without cloning
+    /// either the formula or the band.
+    pub fn value_with_formula(&self, c: CellRef) -> Option<(Value, bool)> {
+        self.read_cell(c, |band, row, i, col| (band.value_at(row, i, col), row.formula_at(col).is_some()))
     }
 
     /// The formula stored at `c`, without rebuilding the cell's value: what an undo reads for the
@@ -6270,6 +6314,67 @@ mod tests {
         let mut moved = older.clone();
         moved.shift_rows(4, 1);
         assert!(moved.formula_changes_against(&older).is_none());
+    }
+
+    /// `value` and `value_ref` read exactly what `get` rebuilds — for a number, a text, a
+    /// boolean, an error, a style-only cell, a formula whose value is empty, an array, and a cell
+    /// nothing is stored at — and they read it without rebuilding the `Cell`.
+    #[test]
+    fn value_reads_what_get_rebuilds() {
+        let mut s = CellStore::new();
+        let array = Arc::new(cella_core::Array::row(vec![Value::Number(2.0), Value::Text(Arc::from("x"))]));
+        let cells = [
+            (c(0, 0), Cell::value(Value::Number(1.25))),
+            (c(1, 0), Cell::value(Value::Text(Arc::from("hello")))),
+            (c(2, 0), Cell::value(Value::Bool(true))),
+            (c(3, 0), Cell::value(Value::Error(CellError::Div0))),
+            (c(4, 0), Cell { style: StyleId(3), ..Default::default() }),
+            (c(5, 0), Cell { formula: Some(Arc::new(Formula::new("A1"))), ..Default::default() }),
+            (c(6, 0), Cell::value(Value::Array(array))),
+            (c(65, 3), Cell::value(Value::Text(Arc::from("past the first band")))),
+        ];
+        for (at, cell) in cells {
+            s.set(at, cell);
+        }
+        // Every position of two bands, so the bands' ends, the gaps and the empty rows are read too.
+        for row in 0..BAND * 2 {
+            for col in 0..8u32 {
+                let at = c(row, col);
+                let stored = s.get(at);
+                assert_eq!(s.value(at), stored.clone().map(|cell| cell.value).unwrap_or(Value::Empty), "{at:?}");
+                assert_eq!(s.value_ref(at), stored.map(|cell| cell.value), "{at:?}");
+            }
+        }
+        // The formula travels alongside the value for a display read, without being cloned.
+        assert_eq!(s.value_with_formula(c(5, 0)), Some((Value::Empty, true)));
+        assert_eq!(s.value_with_formula(c(4, 0)), Some((Value::Empty, false)));
+        assert_eq!(s.value_with_formula(c(7, 7)), None);
+    }
+
+    /// A paged band is decoded for a value read: the value comes back as the live band gave it,
+    /// and the read leaves the band on its page (nothing is installed in the live map).
+    #[test]
+    fn value_reads_a_paged_band() {
+        let mut s = CellStore::new();
+        let rows = BAND * 3;
+        for row in 0..rows {
+            s.set(c(row, 0), Cell::value(Value::Number(f64::from(row))));
+            s.set(c(row, 1), Cell::value(Value::Text(Arc::from(format!("r{row}").as_str()))));
+        }
+        assert!(s.enable_paging_with_cache(64 << 20), "the store pages");
+        let paged = s.paged_band_count();
+        assert!(paged > 0, "the bands went to pages");
+        assert!(s.bands.is_empty(), "every band is a page");
+        for _ in 0..2 {
+            for row in 0..rows {
+                let (number, text) = (c(row, 0), c(row, 1));
+                assert_eq!(s.value(number), Value::Number(f64::from(row)), "{number:?}");
+                assert_eq!(s.value(text), Value::Text(Arc::from(format!("r{row}").as_str())), "{text:?}");
+                assert_eq!(s.value(c(row, 2)), Value::Empty);
+            }
+        }
+        assert!(s.bands.is_empty(), "a value read does not materialize the page");
+        assert_eq!(s.paged_band_count(), paged);
     }
 
     #[test]
