@@ -512,6 +512,29 @@ plan is priced and deferred: a value-slot/write-back merge (est. -60-100 ms) and
 move the gap to Excel - which is a rewrite of `eval.rs` (810 lines) and `eval/*.rs` (1.9k) and was
 deliberately not attempted in this round.
 
+
+**Two more steps the same day, measured in the gate's own harness** (`edit.recalc` at 1M, best of
+three, two runs each side of a same-binary A/B):
+
+- **Dense slot index** (`54a0cacd`): a pass's cells are looked up by arithmetic in a per-sheet box
+  table instead of a hash probe per cell, with the hash table kept when the cells do not fill their
+  box (three cells far apart would zero-fill megabytes). **893 / 893 ms -> 665 / 692 ms**, which is
+  the ~200 ms four million hash probes were costing: the audit that called this path memory-latency
+  bound was right, and its own estimate (-30-40 ms) was ten times too low.
+- **Chain runs** (`983c8f04`): a column of running totals (`H(n) = H(n-1) + G(n)`, one fill's
+  shape) is accumulated in one loop instead of one evaluation a row, reading its operands through
+  the evaluator's own read and its arithmetic through the kernel `Expr::Binary` itself uses (so
+  blanks, coercion, errors, `#DIV/0!`, `#NUM!` and precision-as-displayed cannot disagree). 999,999
+  of the edit's 1,000,001 formulas take it; eval **218.3 -> 178.8 ms**, the command **712 -> 646 ms**
+  (best of three). Iterative calculation and any shape with a `$`, a name, a function or a non-adjacent
+  reference stay on the general path.
+
+Together: **893 -> 646 ms (-28 %)** on this harness. The lesson beside the number: the chain run
+measured 265.8 -> 87.1 ms in a development build — three times what release gave — because a
+development build does not inline the general evaluator's own fast path. **A shortcut that removes
+work the release compiler already removes only shows its real size in release**. This one was
+reverted when a first release pass showed no gain, then re-landed on two further passes each side and
+a new cycle test (a circular column reports the same values through both paths).
 The comparison table above predates this change: its Cella column is the pre-round build through the
 control channel (0.90 s). The gate's `edit.recalc` on the same file went 0.87 -> 0.75 s, so the row is
 now 2.4x behind Excel (0.31 s) rather than 2.9x, and the effective-memory table's 0.853 s / 2.3M
@@ -579,6 +602,12 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-18 (eighth):** the recalculated chain, two steps. A **dense slot index** (a pass's cells
+  looked up by arithmetic, hash fallback when they do not fill their box) takes `edit.recalc` at 1M
+  **893 -> 665-692 ms**; a **chain run** (a column of running totals accumulated in one loop through
+  the same `binary_values` kernel) takes eval **218 -> 179 ms** and the command **712 -> 646 ms**.
+  Both same-binary A/Bs in the gate harness, best of three, two runs each side. The chain run measured
+  three times larger in a dev build, which is the lesson recorded above.
 - **2026-11-18 (seventh):** the chained edit, 9-10 % faster (**0.85/0.83 -> 0.75/0.77 s**, two
   runs each side of a same-binary A/B). The scalar fast path and the generic array path share one
   implementation and a chained fill keeps eight links in a stack array (`INLINE_CHAIN`), and the

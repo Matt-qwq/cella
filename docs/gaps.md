@@ -277,6 +277,17 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   after: closure 164 ms, eval 408 ms, write 63 ms. Priced and deferred: a value-slot/write-back merge
   (est. -60-100 ms), a dense slot index (-30-40 ms), and for the 2.4x gap to Excel, bytecode
   linearisation (a rewrite of `eval.rs` and `eval/*.rs`).
+- **Landed (11-18, round 24): the chained edit 893 -> 646 ms** in the gate's harness, two steps: a
+  **dense slot index** (a pass's cells looked up by arithmetic in a per-sheet box table, hash
+  fallback when they do not fill their box — 893 -> 665/692 ms, the ~200 ms four million hash probes
+  cost) and a **chain run** (a column of running totals accumulated in one loop through the same
+  `binary_values` kernel; 999,999 of the edit's 1,000,001 formulas take it, eval 218 -> 179 ms,
+  command 712 -> 646 ms). Both same-binary A/Bs, best of three, two runs each side. Iterative
+  calculation and any shape with `$`, a name or a function keep the general path; a cycle test holds
+  the two to the same values. The chain run measured three times larger in a dev build — the lesson
+  (a shortcut that removes work release already removed only shows its real size in release) is in
+  `performance.md`. What is left of this edit: closure ~190 ms (1M dependents probes), write-back
+  ~70 ms, eval ~179 ms.
 - **The memory line closed at 0.971 GB on 11-18** (from 1.14 GB at the end of 11-17): row side
   tables 144 -> 72 MB, the band's number index 66 -> 33 MB, the journal 42 -> 15 MB; the audits of
   the calc graph's three tables and of the one undo step found structure, not slack, and changed
