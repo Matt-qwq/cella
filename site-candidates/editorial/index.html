@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cella — an independent, high-performance spreadsheet built in Rust</title>
+<meta name="description" content="Cella is an independent, high-performance spreadsheet built in Rust: for data sets, for agents, and for the files people actually send. Native on macOS, Windows, Linux and BSD, in the browser via WebAssembly. Version 0.13.0, stage alpha, MIT OR Apache-2.0.">
+<meta name="theme-color" content="#FAF7F0">
+<meta property="og:title" content="Cella — an independent, high-performance spreadsheet built in Rust">
+<meta property="og:description" content="For data sets, for agents, and for the files people actually send. Native on macOS, Windows, Linux and BSD; in the browser via WebAssembly. Version 0.13.0, stage alpha.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Cella">
+<meta property="og:url" content="https://matt-qwq.github.io/cella/">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20fill%3D%22%23FAF7F0%22%2F%3E%3Crect%20x%3D%2232%22%20y%3D%2232%22%20width%3D%2222%22%20height%3D%2222%22%20fill%3D%22%237A2E26%22%2F%3E%3Cpath%20d%3D%22M32%2010v44M10%2032h44%22%20stroke%3D%22%231F1B16%22%20stroke-width%3D%224%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to the article</a>
+
+<!-- ——— Masthead ——————————————————————————————————————— -->
+<header class="masthead">
+  <div class="shell">
+    <p class="mast-meta"><span>Vol. 0.13 · stage alpha</span><span>MIT OR Apache-2.0</span></p>
+    <p class="mast-brand">
+      <svg class="seal" viewBox="0 0 64 64" width="38" height="38" aria-hidden="true" focusable="false"><rect x="32" y="32" width="26" height="26" fill="#7A2E26"/><path d="M32 6v52M6 32h52" stroke="#1F1B16" stroke-width="5"/></svg>
+      <span class="mast-word">CELLA</span>
+    </p>
+    <p class="mast-sub">An independent, high-performance spreadsheet, built in Rust</p>
+    <nav class="mast-nav" aria-label="Edition">
+      <a href="#contents">Contents</a><span aria-hidden="true">·</span>
+      <a href="https://github.com/Matt-qwq/cella">Source&nbsp;↗</a><span aria-hidden="true">·</span>
+      <a href="https://github.com/Matt-qwq/cella#docs">Documents&nbsp;↗</a><span aria-hidden="true">·</span>
+      <a href="#colophon">Colophon</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ——— Article head ————————————————————————————————— -->
+  <header class="article-head shell">
+    <p class="kicker">A feature in six chapters · the measured-performance release</p>
+    <h1>For data sets, for agents, and for the files people actually&nbsp;send.</h1>
+    <p class="standfirst">Cella is an independent, high-performance spreadsheet built in Rust — native on macOS, Windows, Linux and BSD, in the browser via WebAssembly. The goal is parity with Microsoft Excel, and superiority in speed, openness, and agent control. Version 0.13 is the release where the performance claims became measurements; this page reports them the way the project keeps them: with the harness, the comparison, and the gate.</p>
+    <p class="dateline">Recorded 18 November 2026 · the Cella contributors</p>
+    <nav class="imprint" aria-label="Edition and quick links">
+      <span>macOS · Windows · Linux · BSD · WebAssembly</span>
+      <span>Version 0.13.0 · stage alpha · MIT OR Apache-2.0</span>
+      <span><a href="https://github.com/Matt-qwq/cella">GitHub&nbsp;↗</a> · <a href="#begin">Quick start&nbsp;↓</a></span>
+    </nav>
+  </header>
+
+  <!-- ——— Plate ———————————————————————————————————————— -->
+  <figure class="plate-fig shell">
+    <div class="plate">
+      <svg viewBox="0 0 680 310" role="img" aria-label="An illustration of a small worksheet: a hairline grid of regions and quarterly figures, with a formula bar reading =SUM(E2:E5) and the total cell drawn in oxblood.">
+        <text class="p-fx" x="56" y="20">fx</text>
+        <text class="p-form" x="86" y="20">=SUM(E2:E5)</text>
+        <text class="p-col" x="128" y="50" text-anchor="middle">A</text>
+        <text class="p-col" x="253" y="50" text-anchor="middle">B</text>
+        <text class="p-col" x="359" y="50" text-anchor="middle">C</text>
+        <text class="p-col" x="465" y="50" text-anchor="middle">D</text>
+        <text class="p-col" x="571" y="50" text-anchor="middle">E</text>
+        <text class="p-rn" x="48" y="81" text-anchor="end">1</text>
+        <text class="p-rn" x="48" y="115" text-anchor="end">2</text>
+        <text class="p-rn" x="48" y="149" text-anchor="end">3</text>
+        <text class="p-rn" x="48" y="183" text-anchor="end">4</text>
+        <text class="p-rn" x="48" y="217" text-anchor="end">5</text>
+        <text class="p-rn" x="48" y="251" text-anchor="end">6</text>
+        <text class="p-rn" x="48" y="285" text-anchor="end">7</text>
+        <text class="p-hdr" x="66" y="81">Region</text>
+        <text class="p-hdr" x="296" y="81" text-anchor="end">Q1</text>
+        <text class="p-hdr" x="402" y="81" text-anchor="end">Q2</text>
+        <text class="p-hdr" x="508" y="81" text-anchor="end">Q3</text>
+        <text class="p-hdr" x="614" y="81" text-anchor="end">Q4</text>
+        <text class="p-lab" x="66" y="115">North</text>
+        <text class="p-num" x="296" y="115" text-anchor="end">1,250</text>
+        <text class="p-num" x="402" y="115" text-anchor="end">980</text>
+        <text class="p-num" x="508" y="115" text-anchor="end">1,410</text>
+        <text class="p-num" x="614" y="115" text-anchor="end">860</text>
+        <text class="p-lab" x="66" y="149">South</text>
+        <text class="p-num" x="296" y="149" text-anchor="end">990</text>
+        <text class="p-num" x="402" y="149" text-anchor="end">1,120</text>
+        <text class="p-num" x="508" y="149" text-anchor="end">780</text>
+        <text class="p-num" x="614" y="149" text-anchor="end">1,340</text>
+        <text class="p-lab" x="66" y="183">East</text>
+        <text class="p-num" x="296" y="183" text-anchor="end">1,440</text>
+        <text class="p-num" x="402" y="183" text-anchor="end">1,010</text>
+        <text class="p-num" x="508" y="183" text-anchor="end">1,260</text>
+        <text class="p-num" x="614" y="183" text-anchor="end">720</text>
+        <text class="p-lab" x="66" y="217">West</text>
+        <text class="p-num" x="296" y="217" text-anchor="end">860</text>
+        <text class="p-num" x="402" y="217" text-anchor="end">940</text>
+        <text class="p-num" x="508" y="217" text-anchor="end">1,180</text>
+        <text class="p-num" x="614" y="217" text-anchor="end">1,050</text>
+        <text class="p-tot" x="66" y="251">Total</text>
+        <text class="p-num" x="296" y="251" text-anchor="end">4,540</text>
+        <text class="p-num" x="402" y="251" text-anchor="end">4,050</text>
+        <text class="p-num" x="508" y="251" text-anchor="end">4,630</text>
+        <rect x="518" y="230" width="106" height="34" fill="#7A2E26"/>
+        <text class="p-act" x="614" y="251" text-anchor="end">3,970</text>
+        <path d="M56 32v266M200 32v266M306 32v266M412 32v266M518 32v266M624 32v266" stroke="#D9D2C3" stroke-width="1"/>
+        <path d="M56 94h568M56 128h568M56 162h568M56 196h568M56 230h568M56 264h568" stroke="#D9D2C3" stroke-width="1"/>
+        <path d="M56 32h568M56 60h568" stroke="#1F1B16" stroke-width="1.6"/>
+        <path d="M56 298h568" stroke="#1F1B16" stroke-width="2.2"/>
+      </svg>
+    </div>
+    <figcaption>Fig. 1 — a worksheet the way this journal sees it: hairlines, ink, old-style figures, one active cell. An illustration drawn in code, not a screenshot of the application.</figcaption>
+  </figure>
+
+  <!-- ——— Contents ————————————————————————————————————— -->
+  <nav class="toc shell" id="contents" aria-labelledby="toc-title">
+    <p class="toc-title" id="toc-title">In this issue</p>
+    <ol>
+      <li><a href="#ch-01"><span class="no">01</span><span class="t">Why another spreadsheet</span></a>
+        <p class="d">The positioning, the clean-room method, and the argument in brief.</p></li>
+      <li><a href="#ch-02"><span class="no">02</span><span class="t">The files people actually send</span></a>
+        <p class="d">.xlsx, .xls, encrypted packages, CSV — read, written, kept faithful.</p></li>
+      <li><a href="#ch-03"><span class="no">03</span><span class="t">Speed, measured</span></a>
+        <p class="d">The reference workbook, the incumbents, and the gate that refuses a regression.</p></li>
+      <li><a href="#ch-04"><span class="no">04</span><span class="t">Open by construction</span></a>
+        <p class="d">No panics, all Results, 2,136 tests, and a fuzzer that remembers its seed.</p></li>
+      <li><a href="#ch-05"><span class="no">05</span><span class="t">Built for agents</span></a>
+        <p class="d">438 commands; MCP, the CLI and a JSON channel to every one of them.</p></li>
+      <li><a href="#ch-06"><span class="no">06</span><span class="t">Status, and what is next</span></a>
+        <p class="d">An honest scorecard, the decisions not to build, and the public queue.</p></li>
+      <li><a href="#begin"><span class="no">A.</span><span class="t">Appendix — how to begin</span></a>
+        <p class="d">Five commands, verbatim from the README.</p></li>
+    </ol>
+  </nav>
+
+  <!-- ——— Chapter 01 ——————————————————————————————————— -->
+  <section class="chapter shell" id="ch-01" data-chapter data-ch-no="01" data-ch-name="Why another spreadsheet" aria-labelledby="ch-01-h">
+    <header class="chapter-head">
+      <p class="ch-no">01</p>
+      <h2 id="ch-01-h">Why another spreadsheet</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">Spreadsheets are where the work actually lives: the budget, the export, the invoice that arrived this morning. The files come in whether or not the tool can read them, and every year the tool is asked for more — more rows, more formats, more programs doing the driving. Cella is built for that world, and its positioning line says so without decoration: for data sets, for agents, and for the files people actually send.<sup class="fn"><a href="#note-1" id="ref-1">1</a></sup></p>
+      <aside class="note" id="note-1" role="note" tabindex="-1"><span class="n" aria-hidden="true">1</span> The positioning line is the README&#8217;s, verbatim. — <code>README.md</code></aside>
+
+      <p>It is an independent spreadsheet written in Rust — one codebase, compiled natively for macOS, Windows, Linux and the BSDs, and again to WebAssembly for the browser. There is no closed core: the repository is the product, the licence is MIT OR Apache-2.0 at your option, and the architecture is enforced by the build itself: the user-interface crate is swappable, and a cargo task verifies the layering, so that nothing below the interface can quietly grow a dependency on a windowing toolkit.<sup class="fn"><a href="#note-2" id="ref-2">2</a></sup></p>
+      <aside class="note" id="note-2" role="note" tabindex="-1"><span class="n" aria-hidden="true">2</span> The layering rule is a checked task, <code>cargo xtask layers</code>; the UI crate is swappable by design. — <code>docs/architecture.md</code></aside>
+
+      <p>The ambition is stated plainly: parity with Microsoft Excel — the ribbon verbs, the file formats, the function catalog — and superiority in the three places where a spreadsheet can be superior: raw speed on large workbooks, openness of source and of measurement, and control by programs rather than only through a graphical interface. The comparison is made against the real application, black-box, and the results are published in the repository for anyone to re-run.<sup class="fn"><a href="#note-3" id="ref-3">3</a></sup></p>
+      <aside class="note" id="note-3" role="note" tabindex="-1"><span class="n" aria-hidden="true">3</span> Clean-room, in the project&#8217;s words: Excel is observed black-box — synthetic workbooks in, screenshots out — and never read. — <code>AGENTS.md</code></aside>
+
+      <h3 class="ex-cap">Exhibit A — the three commitments</h3>
+      <dl class="exhibit wide">
+        <div class="ex-row">
+          <dt>For data sets</dt>
+          <dd>The query pipeline — a database file or a URL as a source — Parquet, the DAX data model, PivotTables and PivotCharts. A million-row workbook is a first-class citizen, and chapter three shows the memory bill.</dd>
+        </div>
+        <div class="ex-row">
+          <dt>For agents</dt>
+          <dd>Every user-visible action is a command; the MCP server, the CLI and the control channel reach all 438 of them. Chapter five runs a whole session in three lines.</dd>
+        </div>
+        <div class="ex-row">
+          <dt>For the files people actually send</dt>
+          <dd>.xlsx with everything that travels inside it, legacy .xls including its charts and shapes, password-protected packages, CSV and TSV — read, written, and kept faithful. Chapter two carries the evidence.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ——— Chapter 02 ——————————————————————————————————— -->
+  <section class="chapter shell" id="ch-02" data-chapter data-ch-no="02" data-ch-name="The files people actually send" aria-labelledby="ch-02-h">
+    <header class="chapter-head">
+      <p class="ch-no">02</p>
+      <h2 id="ch-02-h">The files people actually send</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">The first test of a spreadsheet is not what it can build but what it can open. Real files arrive exported, forwarded, zipped, encrypted, and made in versions of tools that have since moved on. Cella treats the formats that reach people as the mainline of the product, not as import filters bolted to the side of it.</p>
+
+      <p>The mainline format is .xlsx: styles, tables, charts, PivotTables, conditional formats, validation, comments, slicers and timelines are read and written — and the parts Cella has not yet modelled pass through untouched, so saving someone else&#8217;s file does not quietly discard someone else&#8217;s work.<sup class="fn"><a href="#note-4" id="ref-4">4</a></sup> Legacy .xls is read whole, embedded charts and shapes included. Password-protected packages — both the Agile and the Standard encryption — open and save. CSV and TSV come in on the daily path, PDF export and printing go out, and there is a JSON workbook of Cella&#8217;s own whose versioned envelope keeps unknown fields for the next reader.</p>
+      <aside class="note" id="note-4" role="note" tabindex="-1"><span class="n" aria-hidden="true">4</span> What each format still lacks is kept ranked, with the rest of the work queue, in <code>docs/file-format-parity.md</code>.</aside>
+
+      <p>Fidelity here is claimed with evidence, not adjectives. On 3 November 2026 a real-world corpus ran through the reader: 3,084 workbooks opened with no reader failure; 635 save-and-reopen cycles produced zero mismatches; and when Excel 16 was shown Cella&#8217;s copies it found them identical — sixteen .xlsx files compared cell for cell, and all thirty-seven readable .xls conversions matched.<sup class="fn"><a href="#note-5" id="ref-5">5</a></sup></p>
+      <aside class="note" id="note-5" role="note" tabindex="-1"><span class="n" aria-hidden="true">5</span> Logged in the progress log under 2026-11-03: 3,084 opened, 635 saved, zero mismatches. — <code>ROADMAP.md</code></aside>
+    </div>
+  </section>
+
+  <!-- ——— Chapter 03 ——————————————————————————————————— -->
+  <section class="chapter shell" id="ch-03" data-chapter data-ch-no="03" data-ch-name="Speed, measured" aria-labelledby="ch-03-h">
+    <header class="chapter-head">
+      <p class="ch-no">03</p>
+      <h2 id="ch-03-h">Speed, measured</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">Performance is a product feature at Cella, which means it is a number with a harness attached. The reference workbook is 1,000,000 rows by 6 columns — 72 MB on disk, two million formulas, the shape of a real export rather than a synthetic grid — and the program that measures it ships with the source.<sup class="fn"><a href="#note-6" id="ref-6">6</a></sup></p>
+      <aside class="note" id="note-6" role="note" tabindex="-1"><span class="n" aria-hidden="true">6</span> 1,000,000&nbsp;rows × 6&nbsp;columns, 72&nbsp;MB as .xlsx — &#8220;the shape of a real export, not a synthetic grid.&#8221; — <code>docs/performance.md</code></aside>
+
+      <figure class="pull wide">
+        <blockquote>
+          <p>&#8220;A number someone measured once is folklore within a month. This page is the number, the harness that produces it, and the gate that refuses a regression.&#8221;</p>
+        </blockquote>
+        <figcaption>— <cite>docs/performance.md</cite></figcaption>
+      </figure>
+
+      <p>Version 0.13 is the measured-performance release: sixteen changes in a single day, each measured before and after on the same machine, two of them reverted and re-landed when the numbers disagreed with the intuition.<sup class="fn"><a href="#note-7" id="ref-7">7</a></sup> The day&#8217;s ledger, for the reference workbook:</p>
+      <aside class="note" id="note-7" role="note" tabindex="-1"><span class="n" aria-hidden="true">7</span> Two of the sixteen were reverted and re-landed on measurement. — <code>ROADMAP.md</code>, 2026-11-18</aside>
+
+      <figure class="table-fig wide">
+        <div class="table-wrap">
+          <table>
+            <caption><span class="t-no">Table 1</span> — the reference workbook, 1,000,000 × 6, two million formulas; one machine, one day.</caption>
+            <thead>
+              <tr><th>Measure</th><th class="num">Earlier the same day</th><th class="num">Cella 0.13.0</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Live heap, workbook open in the editor</td><td class="num">2.90 GB</td><td class="num">0.971 GB</td></tr>
+              <tr><td>Live heap, reopened from disk</td><td class="num">2.18 GB</td><td class="num">0.77 GB</td></tr>
+              <tr><td>One edit, a million chained formulas recalculated</td><td class="num">893 ms</td><td class="num">≈ 400 ms (−56 %)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-src">Source: <code>ROADMAP.md</code>, progress log, 2026-11-18. The harness is <code>docs/performance.md</code>, run with <code>cargo run --release -p cella-engine --example perf</code>.</p>
+      </figure>
+
+      <p>The incumbents get the same file. One 70 MB workbook, one development machine, release builds all around:<sup class="fn"><a href="#note-8" id="ref-8">8</a></sup></p>
+      <aside class="note" id="note-8" role="note" tabindex="-1"><span class="n" aria-hidden="true">8</span> Excel 16.0.20527 and WPS 12.1.0.25222, one 70&nbsp;MB file, release builds, the same development machine. — <code>ROADMAP.md</code></aside>
+
+      <figure class="table-fig wide">
+        <div class="table-wrap">
+          <table>
+            <caption><span class="t-no">Table 2</span> — one 70 MB workbook, three applications, one machine. Times in seconds, memory in MB.</caption>
+            <thead>
+              <tr><th>Measure</th><th class="num">Cella 0.13.0</th><th class="num">Excel 16.0.20527</th><th class="num">WPS 12.1.0.25222</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Open</td><td class="num">3.3</td><td class="num">7.9–8.2</td><td class="num">10.7</td></tr>
+              <tr><td>Recalculate</td><td class="num">0.75</td><td class="num">0.31</td><td class="num">15.3</td></tr>
+              <tr><td>Working set</td><td class="num">1,054</td><td class="num">588</td><td class="num">987</td></tr>
+              <tr><td>Idle<sup class="cell-fn">a</sup></td><td class="num">246</td><td class="num">≈ 35</td><td class="num">288</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-note">Note — the runs Cella loses are printed with the rest: on this file Excel 16 recalculates faster, holds the lighter working set, and idles lower. A measurement that records only its wins is advertising.</p>
+        <p class="table-src"><sup class="cell-fn">a</sup>&#8201;Of Cella&#8217;s 246 MB idle, 183 MB is the window surface — which is why OpenGL is the Windows default now, 183 MB lighter at the same 144 Hz, with DirectX 12 kept as the retry. Source: <code>ROADMAP.md</code>.</p>
+      </figure>
+
+      <p>None of it is folklore, because none of it is allowed to become folklore. The perf gate runs the eleven scenarios at 100,000 and 1,000,000 rows and compares every reading against budgets checked into the repository; a scenario that comes in over budget is measured once more, and if it is still over, the release fails.<sup class="fn"><a href="#note-9" id="ref-9">9</a></sup> In 0.13.0, all twenty-two scenario rows finished within budget.</p>
+      <aside class="note" id="note-9" role="note" tabindex="-1"><span class="n" aria-hidden="true">9</span> Budgets live in <code>xtask/perf-budgets.txt</code>; an over-budget scenario is re-measured once, then the run fails. — <code>docs/performance.md</code></aside>
+    </div>
+  </section>
+
+  <!-- ——— Chapter 04 ——————————————————————————————————— -->
+  <section class="chapter shell" id="ch-04" data-chapter data-ch-no="04" data-ch-name="Open by construction" aria-labelledby="ch-04-h">
+    <header class="chapter-head">
+      <p class="ch-no">04</p>
+      <h2 id="ch-04-h">Open by construction</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">A spreadsheet holds numbers people are paid to be right about, so the project&#8217;s first rule outranks its feature list: never crash.</p>
+
+      <figure class="pull wide">
+        <blockquote>
+          <p>&#8220;People trust Cella with their numbers; a crash loses their work.&#8221;</p>
+        </blockquote>
+        <figcaption>— the project&#8217;s standing rule, <cite>AGENTS.md</cite></figcaption>
+      </figure>
+
+      <p>The rule is enforced by the compiler before it is enforced by review. The crates deny unwrap, expect and panic outright, and unsafe code is forbidden entirely; errors travel as Result values through each crate&#8217;s own error type.<sup class="fn"><a href="#note-10" id="ref-10">10</a></sup> Numbers that arrive from the outside — file sizes, formula nesting depth, command parameters — are treated as hostile: checked arithmetic, bounded recursion, capped allocations, evaluation budgets, so a hostile formula becomes an error value in a cell rather than an aborted process.</p>
+      <aside class="note" id="note-10" role="note" tabindex="-1"><span class="n" aria-hidden="true">10</span> The lints are denied crate-wide: <code>clippy::unwrap_used</code>, <code>clippy::expect_used</code>, <code>clippy::panic</code>, and <code>unsafe_code = forbid</code>. — <code>AGENTS.md</code></aside>
+
+      <p>The proof is a suite of 2,136 tests, but the interesting half is the fuzzing: every command is invoked with empty parameters, to prove that nothing assumes a graphical caller, and random command sequences are replayed against undo/redo, XLSX round-trip and full-recalculation invariants. Every fuzzer run records its seed, so a failure found at three in the morning replays exactly at nine.<sup class="fn"><a href="#note-11" id="ref-11">11</a></sup> Beneath everything sits a last-resort guard — if a panic ever escaped, the session catches it and restores the workbook — which the project describes, honestly, as a safety net and not a licence.</p>
+      <aside class="note" id="note-11" role="note" tabindex="-1"><span class="n" aria-hidden="true">11</span> The fuzzer is <code>crates/engine/tests/command_sequence_fuzz.rs</code>; every run&#8217;s seed is recorded for exact replay.</aside>
+
+      <p>Openness goes past the licence. Every known shortfall is ranked in a public ledger; every asset carries a row in an attribution file, with a cargo task enforcing it; every layering rule is a checked task, not a paragraph in a wiki. A repository that publishes its own homework is easier to trust than one that promises.</p>
+    </div>
+  </section>
+
+  <!-- ——— Chapter 05 ——————————————————————————————————— -->
+  <section class="chapter shell" id="ch-05" data-chapter data-ch-no="05" data-ch-name="Built for agents" aria-labelledby="ch-05-h">
+    <header class="chapter-head">
+      <p class="ch-no">05</p>
+      <h2 id="ch-05-h">Built for agents</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">Every user-visible action in Cella is a command — an object with an id, a label, a ribbon path, a shortcut, a documented parameter list and an enabled state. Bold is <code>home.bold</code>; a descending sort is <code>data.sortDescending</code>; writing one cell is <code>cell.set</code>. There are 438 commands, and a program can reach every one of them.<sup class="fn"><a href="#note-12" id="ref-12">12</a></sup></p>
+      <aside class="note" id="note-12" role="note" tabindex="-1"><span class="n" aria-hidden="true">12</span> <code>engine.commands</code> lists every command with its id, label, ribbon path, shortcut and parameter documentation. — <code>docs/control-protocol.md</code></aside>
+
+      <p>Three doors lead to the same set: an MCP server for agents, a CLI for scripts, and a JSON control channel for driving the live application. Nothing is graphical-only and nothing is automation-only — the command a person clicks from the ribbon is the command a program sends down the wire.</p>
+
+      <figure class="code-fig wide">
+        <pre><code>cella --control 7979
+{"id": 1, "method": "engine.execute", "params": {"command": "cell.set", "params": {"cell": "B2", "input": "=SUM(A1:A9)"}}}
+{"id": 1, "ok": true, "result": {"cell": "B2", "value": "45"}}</code></pre>
+        <figcaption>Listing 1 — a whole session: start the desktop app with a control port, write one formula over newline-delimited JSON, read the answer. Verbatim from <code>docs/control-protocol.md</code>.</figcaption>
+      </figure>
+
+      <p>Programmatic calls never open dialogs: invoked with empty parameters, a command either runs with defaults or returns an error, and only a menu-style invocation shows a person anything at all. The channel keeps a replayable journal of commands already run (passwords excluded), lists every command with its documentation on request, and can screenshot the running window — which is how the project&#8217;s own examples render the interface offscreen for tests.<sup class="fn"><a href="#note-13" id="ref-13">13</a></sup></p>
+      <aside class="note" id="note-13" role="note" tabindex="-1"><span class="n" aria-hidden="true">13</span> &#8220;The interface has no motion: the selection outline and the zoom jump to where they are going.&#8221; — <code>docs/control-protocol.md</code></aside>
+
+      <p>The user interface is a client of the engine, and so is everything else. That is the whole agent story, told in one sentence.</p>
+    </div>
+  </section>
+
+  <!-- ——— Chapter 06 ——————————————————————————————————— -->
+  <section class="chapter shell" id="ch-06" data-chapter data-ch-no="06" data-ch-name="Status, and what is next" aria-labelledby="ch-06-h">
+    <header class="chapter-head">
+      <p class="ch-no">06</p>
+      <h2 id="ch-06-h">Status, and what is next</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">Cella is at version 0.13.0, stage alpha, and the stage is stated with the evidence attached: the six core workflows pass end to end on macOS with save and reopen; the large-workbook gate for beta is met; the real-world corpus has run. What is left before the beta is hygiene rather than features — pinning the corpus for continuous integration, and a stability soak on the Windows GPU machines behind the field crash reports.</p>
+
+      <p>The project keeps a scorecard of itself, and it is not a generous one:<sup class="fn"><a href="#note-14" id="ref-14">14</a></sup></p>
+      <aside class="note" id="note-14" role="note" tabindex="-1"><span class="n" aria-hidden="true">14</span> The method and weights are published, and the table is re-measured, not copied forward. — <code>docs/target-app-parity.md</code>, <code>ROADMAP.md</code></aside>
+
+      <figure class="table-fig wide">
+        <div class="table-wrap">
+          <table>
+            <caption><span class="t-no">Table 3</span> — the project&#8217;s own scorecard, estimated with published weights.</caption>
+            <thead>
+              <tr><th>Reading</th><th class="num">Estimate</th><th>Anchored on</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Feature breadth, weighted</td><td class="num">≈ 78 %</td><td>288 of 300 ribbon commands; 504 working worksheet functions</td></tr>
+              <tr><td>Ready for real work</td><td class="num">≈ 55 %</td><td>written weights, re-measured 2026-10-30</td></tr>
+              <tr><td>Mainstream practitioner</td><td class="num">≈ 56 %</td><td>the weekly analyst&#8217;s feature set</td></tr>
+              <tr><td>Essentials user</td><td class="num">≈ 67 %</td><td>core features; opening the files people send</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-src">Source: <code>ROADMAP.md</code>, headline numbers; the method is <code>docs/target-app-parity.md</code>.</p>
+      </figure>
+
+      <p>Some things are not built on purpose, each a dated decision rather than an omission: Python cells, equation layout, a twelve-language catalogue, real-time collaboration, mobile clients, an in-app assistant.<sup class="fn"><a href="#note-15" id="ref-15">15</a></sup> The two languages that are built — English and Simplified Chinese — are built deliberately deep: all 504 user-visible labels are translated, and the Chinese interface was verified in the running application, surface by surface.</p>
+      <aside class="note" id="note-15" role="note" tabindex="-1"><span class="n" aria-hidden="true">15</span> Each refusal is a dated decision in <code>docs/roadmap.md</code> — a record, not an apology.</aside>
+
+      <p>What is next is written down in order, in public: the one-page summary in <code>ROADMAP.md</code>, the execution queue and its decisions in <code>docs/roadmap.md</code>, and every known shortfall ranked in <code>docs/gaps.md</code>. Pick a gap, land it with its test, and the gate runs. That is how this repository works.</p>
+    </div>
+  </section>
+
+  <!-- ——— Appendix ——————————————————————————————————— -->
+  <section class="chapter appendix shell" id="begin" data-chapter data-ch-no="App." data-ch-name="How to begin" aria-labelledby="begin-h">
+    <header class="chapter-head">
+      <p class="ch-no">A.</p>
+      <h2 id="begin-h">How to begin</h2>
+    </header>
+    <div class="prose">
+      <p class="dropcap">Cella builds from source with cargo. Five commands, verbatim from the README, cover the whole surface — the desktop application, the same application with a control port, a headless evaluation, an MCP server, and an offscreen render:</p>
+
+      <figure class="code-fig wide">
+        <pre><code>cargo run --release -p cella -- --sample sales                        # the desktop app
+cargo run --release -p cella -- --sample sales --control 7979         # + control channel
+cargo run -p cella-cli -- eval '=SUM(1,2,3)'                          # headless evaluation
+cargo run -p cella-cli -- mcp                                        # the MCP server on stdio
+cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png   # offscreen render</code></pre>
+        <figcaption>Listing 2 — the quick start, verbatim from <code>README.md</code>.</figcaption>
+      </figure>
+
+      <p>The same codebase compiles to WebAssembly for the browser; a cargo task builds it, and the commit gate refuses to let a change break it.<sup class="fn"><a href="#note-16" id="ref-16">16</a></sup></p>
+      <aside class="note" id="note-16" role="note" tabindex="-1"><span class="n" aria-hidden="true">16</span> <code>cargo xtask wasm</code> builds the browser version; the gate runs it on every commit. — <code>AGENTS.md</code></aside>
+    </div>
+  </section>
+
+</main>
+
+<!-- ——— Colophon ——————————————————————————————————————— -->
+<footer class="colophon" id="colophon">
+  <div class="shell">
+    <h2 class="col-kicker">Colophon · licence and credit</h2>
+    <p class="col-credit">Cella is an independent, modified version of GridCraft, based on the work of the ArtCraft team and the GridCraft contributors. It is not an ArtCraft product, and it carries none of the ArtCraft marks. The original work is Copyright © 2026 the ArtCraft Team and the GridCraft contributors; modifications in this repository are Copyright © 2026 its contributors — under the MIT Licence or the Apache Licence 2.0, at your option.</p>
+    <ul class="record">
+      <li><span>Source code</span><a href="https://github.com/Matt-qwq/cella">github.com/Matt-qwq/cella&nbsp;↗</a></li>
+      <li><span>Readme and quick start</span><a href="https://github.com/Matt-qwq/cella/blob/main/README.md">README.md&nbsp;↗</a></li>
+      <li><span>The one-page summary</span><a href="https://github.com/Matt-qwq/cella/blob/main/ROADMAP.md">ROADMAP.md&nbsp;↗</a></li>
+      <li><span>Performance, measured</span><a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md">docs/performance.md&nbsp;↗</a></li>
+      <li><span>The control protocol</span><a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md">docs/control-protocol.md&nbsp;↗</a></li>
+      <li><span>Known gaps, ranked</span><a href="https://github.com/Matt-qwq/cella/blob/main/docs/gaps.md">docs/gaps.md&nbsp;↗</a></li>
+      <li><span>Licences</span><span class="rec-links"><a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-MIT">LICENSE-MIT</a> · <a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-APACHE">LICENSE-APACHE</a></span></li>
+      <li><span>Trademarks and third-party material</span><a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE">NOTICE&nbsp;↗</a></li>
+      <li><span>Asset attribution</span><a href="https://github.com/Matt-qwq/cella/blob/main/ATTRIBUTION.md">ATTRIBUTION.md&nbsp;↗</a></li>
+    </ul>
+    <p class="col-set">This page is set in the system serifs — Charter, Iowan Old Style, Palatino, Georgia — with old-style figures in the prose and tabular figures in the tables. The mark, the rules and Figure 1 are drawn in code. Nothing is fetched and nothing is tracked; print the page and it reads.</p>
+    <p class="col-issue">Cella · Vol. 0.13 · alpha · recorded 18 November 2026</p>
+  </div>
+</footer>
+
+<div class="chip" hidden aria-hidden="true">Ch. 01 · Why another spreadsheet</div>
+
+<script src="assets/app.js" defer></script>
+</body>
+</html>
