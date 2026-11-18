@@ -26,8 +26,24 @@ use cella_engine::Session;
 use cella_ui_egui::{Services, SheetApp};
 use serde_json::json;
 
+/// Frame statistics for a benchmark run (`CELLA_FRAME_STATS=1`): what one frame of the app costs
+/// and how far apart frames are. A memory number says nothing about smoothness, and a screenshot
+/// is a poor proxy - it adds a readback and a PNG encode - so the app measures itself, one line
+/// every sixty frames.
+#[derive(Default)]
+struct FrameStats {
+    frames: u32,
+    paint_ms: f64,
+    paint_max_ms: f64,
+    interval_ms: f64,
+    last_frame: Option<std::time::Instant>,
+}
+
 struct App {
     sheet: SheetApp,
+    /// `Some` when `CELLA_FRAME_STATS` is set: the app then repaints continuously and prints one
+    /// line every sixty frames.
+    frame_stats: Option<FrameStats>,
     /// The window geometry kept for the next start (see [`window`]).
     window: window::WindowState,
     /// Set until the window has been asked to maximize: see the first `logic` frame.
@@ -80,7 +96,34 @@ impl eframe::App for App {
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
         self.sheet.ui(ui);
+        let Some(stats) = &mut self.frame_stats else { return };
+        let paint = started.elapsed().as_secs_f64() * 1000.0;
+        let now = std::time::Instant::now();
+        let interval = stats.last_frame.map_or(0.0, |last| (now - last).as_secs_f64() * 1000.0);
+        stats.last_frame = Some(now);
+        stats.frames = stats.frames.saturating_add(1);
+        stats.paint_ms += paint;
+        stats.paint_max_ms = stats.paint_max_ms.max(paint);
+        stats.interval_ms += interval;
+        if stats.frames >= 60 {
+            let n = f64::from(stats.frames);
+            eprintln!(
+                "frame stats: {} frames, paint avg {:.2} ms (max {:.2}), interval avg {:.1} ms",
+                stats.frames,
+                stats.paint_ms / n,
+                stats.paint_max_ms,
+                stats.interval_ms / n
+            );
+            stats.frames = 0;
+            stats.paint_ms = 0.0;
+            stats.paint_max_ms = 0.0;
+            stats.interval_ms = 0.0;
+        }
+        // Continuous painting is what makes the interval meaningful: nothing else in an empty
+        // window asks for a repaint.
+        ui.ctx().request_repaint();
     }
     fn on_exit(&mut self) {
         print::finish_pending_jobs();
@@ -420,6 +463,7 @@ fn main() -> eframe::Result<()> {
                 }
                 Ok(Box::new(App {
                     sheet: app,
+                    frame_stats: std::env::var_os("CELLA_FRAME_STATS").map(|_| FrameStats::default()),
                     window: window_state.clone(),
                     start_maximized: true,
                     #[cfg(target_os = "macos")]

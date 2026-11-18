@@ -386,18 +386,22 @@ is B3 = 5:
 | OpenGL | **173 MB** | **1,056 MB** | **315 ms** | 135 ms |
 | recalculate 2M formulas | | | 0.84-0.90 s in all three | |
 
-Two things are solid. **Memory: OpenGL and Vulkan save 70-145 MB over DirectX 12**, and the saving
-is the same whether a window is on screen or not. **Engine cost: the backend does not touch it** -
-recalculate is 0.84-0.90 s in all three. **Latency is the open question**, and the two environments
-disagree: on a visible desktop OpenGL matches DirectX 12 (135 against 140 ms for a full screenshot),
-while on the hidden desktop its readback costs 2.3x more - an artefact of a window that is not
-composited, but exactly the sort of thing that makes a screenshot a bad proxy. What is still missing
-is a real frame-time probe (paint cost per frame, then pacing with a visible window), which is what
-the decision to change the default has to wait for.
+Memory is solid - OpenGL and Vulkan save 70-145 MB over DirectX 12 in both environments - and the
+engine cost is identical. Latency could not be read from a screenshot, so the app now measures
+itself: `CELLA_FRAME_STATS=1` repaints continuously and prints one line every sixty frames with
+the time our own `ui` spends per frame and the interval between frames. With the 70 MB workbook
+open, on the visible desktop, at 144 Hz:
 
-Vulkan is not a default candidate whatever the numbers say: its readback hung on the visible desktop
-in this build, on top of the known Intel `igvk64.dll` crash that keeps it off (#120). Wayland is not
-a render backend at all - it is the Linux window protocol (the app ships `wayland` and `x11`),
+| backend | paint per frame | paint max | frame interval | working set, document open |
+|---|---:|---:|---:|---:|
+| DirectX 12 | 1.41 ms | 1.95 ms | 7.0 ms | 1,233 MB |
+| OpenGL | **1.38 ms** | 1.67 ms | 6.9 ms | **1,050 MB** |
+
+Both hold the display's refresh rate with the same paint cost, so **OpenGL is not slower here and
+costs 183 MB less with this document open**. The remaining risk is other machines' OpenGL drivers,
+which is what the automatic fallback to DirectX 12 exists for; Vulkan stays off (its readback hung
+on the visible desktop, on top of the known Intel `igvk64.dll` crash, #120). Wayland is not a
+render backend at all - it is the Linux window protocol (the app ships `wayland` and `x11`),
 so on Linux the choice is Vulkan or OpenGL under either protocol, which this machine cannot measure.
 
 
