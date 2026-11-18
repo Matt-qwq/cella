@@ -316,16 +316,18 @@ impl Sheet {
         self.spill_ranges.iter().find(|(anchor, range)| **anchor != c && range.contains(c)).map(|(anchor, _)| *anchor)
     }
 
-    /// Displayed value of a cell: its own value, or a spilled value.
+    /// Displayed value of a cell: its own value, or a spilled value. Read through the store's
+    /// value path, not `CellStore::get`: a recalculation asks this of every cell it evaluates, and
+    /// rebuilding the `Cell` cost it an `Arc` for the formula and one for the band each time.
     pub fn value(&self, c: CellRef) -> Value {
-        match self.cells.get(c) {
-            Some(cell) if !cell.value.is_empty() || cell.formula.is_some() => cell.value.clone(),
+        match self.cells.value_with_formula(c) {
+            Some((value, has_formula)) if !value.is_empty() || has_formula => value,
             _ => self.spill.get(&c).cloned().unwrap_or(Value::Empty),
         }
     }
     pub fn value_ref(&self, c: CellRef) -> Option<Value> {
-        match self.cells.get(c) {
-            Some(cell) if !cell.value.is_empty() || cell.formula.is_some() => Some(cell.value),
+        match self.cells.value_with_formula(c) {
+            Some((value, has_formula)) if !value.is_empty() || has_formula => Some(value),
             _ => self.spill.get(&c).cloned(),
         }
     }
@@ -819,6 +821,37 @@ mod tests {
         }
         fn below(&mut self, n: u32) -> u32 {
             self.next() % n.max(1)
+        }
+    }
+
+    /// `value` and `value_ref` read a cell's own value or the value spilled under it exactly as
+    /// rebuilding the cell (and inspecting its formula) did — the store's value-only path has to
+    /// keep both of those apart from a stored empty value and a formula whose result is empty.
+    #[test]
+    fn value_matches_the_rebuilt_cell_and_the_spill() {
+        let mut s = Sheet::new("S");
+        s.set_value(CellRef::new(0, 0), Value::Number(1.0));
+        s.set_value(CellRef::new(1, 0), Value::Text(Arc::from("t")));
+        s.set_value(CellRef::new(2, 0), Value::Error(cella_core::CellError::Div0));
+        // A formatted spill child: stored with a style only, so the spill value shows through.
+        s.set_cell(CellRef::new(3, 0), Cell { style: StyleId(1), ..Default::default() });
+        s.spill.insert(CellRef::new(3, 0), Value::Number(9.0));
+        // Nothing stored at all, only a spill value from an array formula anchored elsewhere.
+        s.spill.insert(CellRef::new(4, 0), Value::Number(4.0));
+        // A formula whose cached value is empty: its own answer wins over the spill under it.
+        s.set_cell(CellRef::new(5, 0), Cell { formula: Some(Arc::new(Formula::new("\"\""))), ..Default::default() });
+        s.spill.insert(CellRef::new(5, 0), Value::Number(7.0));
+        for row in 0..8u32 {
+            let at = CellRef::new(row, 0);
+            let (own, value_ref) = match s.cell(at) {
+                Some(cell) if !cell.value.is_empty() || cell.formula.is_some() => (cell.value.clone(), Some(cell.value)),
+                other => {
+                    let spilled = s.spill.get(&at).cloned();
+                    (spilled.clone().unwrap_or(Value::Empty), spilled.or(other.map(|cell| cell.value)))
+                }
+            };
+            assert_eq!(s.value(at), own, "{at:?}");
+            assert_eq!(s.value_ref(at), value_ref, "{at:?}");
         }
     }
 
