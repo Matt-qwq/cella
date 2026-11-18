@@ -9,7 +9,7 @@ use super::graph::{HashMap, HashSet, Key, PackedArea};
 use crate::eval::{Evaluator, Host, binary_values};
 use crate::spill_index::{Cover, SpillIndex};
 use cella_core::{Array, CellError, CellRef, RangeRef, Value};
-use cella_formula::{BinOp, Expr, RefKind, SheetSel};
+use cella_formula::{BinOp, Expr, RefKind, Shape, SheetSel};
 use cella_model::Workbook;
 
 /// Formulas a formula may calculate on demand one inside the other (each needing one another's
@@ -83,22 +83,34 @@ const MAX_CACHED_BLOCK_CELLS: usize = 4_000_000;
 /// All shared blocks together, at 24 bytes a value.
 const MAX_CACHED_BLOCK_CELLS_TOTAL: usize = 4_000_000;
 
-/// The formula a pass evaluates in one slot: the shape it reads, and the cell its relative parts
-/// are offsets from. S7 of `plan/SHAPE-SHARING.md` deleted the variant that held a cell's own tree
-/// — a formula has no tree of its own any more, and the graph's node for a text-only cell holds the
-/// shape its parse was interned as — so this is 16 bytes instead of an enum of 24.
+/// The formula a pass evaluates in one slot: the shape it reads, the cell its relative parts are
+/// offsets from, and the cell itself. S7 of `plan/SHAPE-SHARING.md` deleted the variant that held a
+/// cell's own tree — a formula has no tree of its own any more, and the graph's node for a
+/// text-only cell holds the shape its parse was interned as.
 ///
 /// One table for what used to be asked of three — an expression map for the tree, the result map
 /// for the value, and the result map again for "is it in flight" and for storing the value, five
 /// hash lookups on the common path. The slots are dense and in the order the caller lists the cells
 /// (row-major, which is also the order the write-back walks), so a value is a bounds-checked index
 /// and evaluating a formula is one lookup.
-#[derive(Clone, Debug)]
-struct Source {
+///
+/// The shape is **borrowed** from the graph's node rather than held as an `Arc`: filling a
+/// million-formula pass used to be a million atomic increments (and as many decrements to drop the
+/// table), for shapes the graph owns and outlives the pass with. That also merges what was a
+/// `Vec<Key>` and a `Vec<Source>` written side by side — two pushes and two allocations a cell —
+/// into one `Vec` of these.
+///
+/// The fields are ordered for the two walks over it: `shape` and `at` first, the two an evaluation
+/// reads, then `key`, which the write-back reads. Thirty-two bytes a slot, so two slots share a
+/// cache line and walking them in order touches each line once.
+#[derive(Clone, Copy, Debug)]
+struct Entry<'a> {
     /// The shape the cell shares with every cell of its fill.
-    shape: std::sync::Arc<cella_formula::Shape>,
-    /// The cell its relative parts are offsets from.
+    shape: &'a Shape,
+    /// The cell its relative parts are offsets from: the slot's own cell.
     at: CellRef,
+    /// The cell the slot evaluates.
+    key: Key,
 }
 
 /// How much larger than the list a slot table may be before the hash table is kept instead: a box
@@ -174,25 +186,20 @@ impl DenseIndex {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct Trees {
+pub(super) struct Trees<'a> {
     /// Cell to slot for a pass whose cells the box does not fit, and for any key outside the box of
     /// a pass that has one. Empty for the common pass, where it is never asked.
     index: HashMap<Key, u32>,
     /// Cell to slot by arithmetic, when the cells fill their box (see [`DenseIndex`]).
     dense: Option<DenseIndex>,
-    keys: Vec<Key>,
-    trees: Vec<Source>,
+    /// The slots, in the order the caller listed the cells — the order every walk over them takes.
+    entries: Vec<Entry<'a>>,
 }
 
-impl Trees {
+impl<'a> Trees<'a> {
     /// Room for `cells` formulas, so a million-formula pass neither grows nor rehashes twice.
     pub(super) fn with_capacity(cells: usize) -> Self {
-        Self {
-            index: HashMap::with_capacity_and_hasher(cells, Default::default()),
-            dense: None,
-            keys: Vec::with_capacity(cells),
-            trees: Vec::with_capacity(cells),
-        }
+        Self { index: HashMap::with_capacity_and_hasher(cells, Default::default()), dense: None, entries: Vec::with_capacity(cells) }
     }
 
     /// The table for the cells a pass evaluates, listed in row-major order: a dense slot table when
@@ -228,24 +235,24 @@ impl Trees {
     /// rather than clobber the slots before them.
     ///
     /// A shape node is listed by its shape and its cell, not by a tree: the tree it reads is
-    /// resolved when the pass needs it ([`Trees::expr`]), so a million formulas of one fill hold
+    /// resolved when the pass needs it ([`Trees::source`]), so a million formulas of one fill hold
     /// one tree between them at rest.
-    pub(super) fn push(&mut self, k: Key, node: &super::graph::Node) {
-        let Some(shape) = &node.shape else { return };
-        self.add(k, Source { shape: std::sync::Arc::clone(shape), at: k.1 });
+    pub(super) fn push(&mut self, k: Key, node: &'a super::graph::Node) {
+        // The shape is read where the graph keeps it: the pass borrows it for as long as it lives.
+        let Some(shape) = node.shape.as_deref() else { return };
+        self.add(k, shape);
     }
 
-    /// [`Trees::push`] with an absolute tree, for a pass a test builds without a graph: the tree
-    /// becomes the one shape the cell reads there (`Shape::from_expr` at the cell resolves back to
-    /// it).
+    /// [`Trees::push`] for a shape a test built itself (a pass a test runs without a graph): the
+    /// caller keeps it alive for as long as the table, which is why a test parses its formulas into
+    /// a list first and pushes from there.
     #[cfg(test)]
-    pub(super) fn push_tree(&mut self, k: Key, tree: &std::sync::Arc<Expr>) {
-        let shape = cella_formula::Shape::from_expr((**tree).clone(), k.1);
-        self.add(k, Source { shape: std::sync::Arc::new(shape), at: k.1 });
+    pub(super) fn push_shape(&mut self, k: Key, shape: &'a Shape) {
+        self.add(k, shape);
     }
 
-    fn add(&mut self, k: Key, source: Source) {
-        let Ok(slot) = u32::try_from(self.trees.len()) else { return };
+    fn add(&mut self, k: Key, shape: &'a Shape) {
+        let Ok(slot) = u32::try_from(self.entries.len()) else { return };
         // The dense table stores `slot + 1`, so the last number it can hold is one below the hash
         // table's. A pass that large is beyond what a workbook can hold in memory anyway.
         let Some(stored) = slot.checked_add(1) else { return };
@@ -263,8 +270,7 @@ impl Trees {
                 self.index.insert(k, slot);
             }
         }
-        self.keys.push(k);
-        self.trees.push(source);
+        self.entries.push(Entry { shape, at: k.1, key: k });
     }
 
     /// The slot of the formula at `k`, when this pass evaluates it.
@@ -285,28 +291,28 @@ impl Trees {
     /// of being resolved into a private tree per formula per pass (S4 of
     /// `plan/SHAPE-SHARING.md`).
     pub(super) fn source(&self, slot: u32) -> Option<(&Expr, Option<CellRef>)> {
-        let source = self.trees.get(slot as usize)?;
-        Some((source.shape.tree(), Some(source.at)))
+        let entry = self.entries.get(slot as usize)?;
+        Some((entry.shape.tree(), Some(entry.at)))
     }
 
     /// The address of the shape in `slot`: one fill's cells share one shape, so two rows of a
     /// chain compare equal in one load instead of re-reading the tree (`PassHost::chain_run`).
     pub(super) fn shape_ptr(&self, slot: u32) -> Option<usize> {
-        self.trees.get(slot as usize).map(|source| std::sync::Arc::as_ptr(&source.shape) as usize)
+        self.entries.get(slot as usize).map(|entry| std::ptr::from_ref(entry.shape) as usize)
     }
 
     /// The cells, in the order their slots were added.
-    pub(super) fn keys(&self) -> &[Key] {
-        &self.keys
+    pub(super) fn keys(&self) -> impl Iterator<Item = Key> + '_ {
+        self.entries.iter().map(|entry| entry.key)
     }
 
     /// Each cell with its slot, for a pass that calculates every formula of the table.
     pub(super) fn iter(&self) -> impl Iterator<Item = (u32, Key)> + '_ {
-        self.keys.iter().enumerate().filter_map(|(i, k)| u32::try_from(i).ok().map(|slot| (slot, *k)))
+        self.entries.iter().enumerate().filter_map(|(i, entry)| u32::try_from(i).ok().map(|slot| (slot, entry.key)))
     }
 
     pub(super) fn len(&self) -> usize {
-        self.trees.len()
+        self.entries.len()
     }
 }
 
@@ -414,7 +420,7 @@ pub(super) struct PassHost<'a> {
     /// [`crate::eval::NameCache`]).
     names: &'a mut crate::eval::NameCache,
     /// The formulas this pass evaluates: cell to slot, and the tree in each slot (see [`Trees`]).
-    trees: &'a Trees,
+    trees: &'a Trees<'a>,
     /// The anchors of legacy array formulas in this pass (usually none).
     legacy: &'a HashMap<Key, RangeRef>,
     /// One slot per formula in `trees`, in the same order.
@@ -564,7 +570,7 @@ impl<'a> PassHost<'a> {
     pub(super) fn new(
         wb: &'a Workbook,
         graph: &'a Graph,
-        trees: &'a Trees,
+        trees: &'a Trees<'a>,
         legacy: &'a HashMap<Key, RangeRef>,
         names: &'a mut crate::eval::NameCache,
         rng: &'a mut u64,

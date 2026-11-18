@@ -774,8 +774,13 @@ impl Calc {
                     // outside the dirty set anyway.
                     let mut trees = Trees::for_cells(&local);
                     let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
-                    for &k in &local {
-                        if let Some(node) = graph.node(k) {
+                    // The sheet's node table is found once for the run of its cells (see
+                    // `Graph::nodes_of`).
+                    for group in local.chunk_by(|a, b| a.0 == b.0) {
+                        let Some(sheet) = group.first().map(|k| k.0) else { continue };
+                        let nodes = graph.nodes_of(sheet);
+                        for &k in group {
+                            let Some(node) = nodes.and_then(|nodes| nodes.get(&k.1)) else { continue };
                             trees.push(k, node);
                             if let Some(r) = graph.legacy_of(k) {
                                 legacy.insert(k, r);
@@ -802,7 +807,7 @@ impl Calc {
                         && host.members.is_empty()
                         && host.depth == 0;
                     // Keep the local order: the values then concatenate into a row-major list.
-                    let values: Vec<(Key, Value)> = trees.keys().iter().filter_map(|k| host.value(*k).map(|v| (*k, v.clone()))).collect();
+                    let values: Vec<(Key, Value)> = trees.keys().filter_map(|k| host.value(k).map(|v| (k, v.clone()))).collect();
                     let clean = clean && values.len() == local.len();
                     Shard { values, clean }
                 }));
@@ -1484,15 +1489,28 @@ impl Calc {
             // pass looks a cell up once (its slot), and the write-back below walks the same order.
             // The table is indexed by the box `dirty` fills, so a lookup is arithmetic rather than a
             // hash probe (and a sparse set keeps the hash table instead).
+            //
+            // Its build is timed only when profiling is asked for: a clock read is not a pass's
+            // business otherwise.
+            let trees_started = std::env::var_os("CELLA_PROFILE").is_some().then(prof_now);
             let mut trees = Trees::for_cells(&dirty);
             let mut legacy: HashMap<Key, RangeRef> = HashMap::default();
-            for k in &dirty {
-                if let Some(node) = self.graph.node(*k) {
+            // The sheet's node table is found once for the run of its cells `dirty` lists
+            // (`dirty` is row-major, so they arrive together): a million-formula pass of one sheet
+            // asked the sheet table a million times for a table it never changed.
+            for group in dirty.chunk_by(|a, b| a.0 == b.0) {
+                let Some(sheet) = group.first().map(|k| k.0) else { continue };
+                let nodes = self.graph.nodes_of(sheet);
+                for k in group {
+                    let Some(node) = nodes.and_then(|nodes| nodes.get(&k.1)) else { continue };
                     trees.push(*k, node);
                     if let Some(r) = self.graph.legacy_of(*k) {
                         legacy.insert(*k, r);
                     }
                 }
+            }
+            if let Some(started) = trees_started {
+                eprintln!("  trees {} slots {:.1} ms", trees.len(), prof_now() - started);
             }
             let now = self.now();
             let mut rng = self.rng;
@@ -1576,7 +1594,7 @@ impl Calc {
             // what makes the write-back touch each band once instead of jumping between 1,563 of
             // them at random. Values only change, so the store rewrites the packed slot and nothing
             // else (no `Cell` built, no formula or style looked up).
-            let values: Vec<(Key, Value)> = trees.keys().iter().copied().zip(slots).filter_map(|(k, s)| s.into_value().map(|v| (k, v))).collect();
+            let values: Vec<(Key, Value)> = trees.keys().zip(slots).filter_map(|(k, s)| s.into_value().map(|v| (k, v))).collect();
             debug_assert!(values.windows(2).all(|w| (w[0].0.0, w[0].0.1.row, w[0].0.1.col) <= (w[1].0.0, w[1].0.1.row, w[1].0.1.col)));
             self.last_recalc_cells += values.len();
             write_values_ordered(wb, &values);
@@ -2691,11 +2709,13 @@ pub(crate) mod tests {
     fn wide_read_at_the_nesting_limit_suspends_once() {
         const WIDTH: u32 = 3000;
         let mut wb = Workbook::new();
-        let mut trees = Trees::default();
+        // The shapes a pass reads are borrowed from the graph it runs on; here they are kept in
+        // one list, which the table below borrows for as long as it lives.
+        let mut formulas: Vec<(CellRef, cella_formula::Shape)> = Vec::new();
         let mut put = |wb: &mut Workbook, at: String, text: String| {
             let at = CellRef::parse(&at).unwrap();
             wb.sheet_mut(0).unwrap().cells.set(at, Cell::formula(Formula::new(&text)));
-            trees.push_tree((0, at), &std::sync::Arc::new(cella_formula::parse(&text[1..]).unwrap()));
+            formulas.push((at, cella_formula::Shape::from_expr(cella_formula::parse(&text[1..]).unwrap(), at)));
         };
         // A1 reads A2, ..., A64 (the 64th formula deep) reads a wide range of formulas.
         for r in 1..64 {
@@ -2704,6 +2724,10 @@ pub(crate) mod tests {
         put(&mut wb, "A64".to_string(), format!("=SUM(B1:B{WIDTH})"));
         for r in 1..=WIDTH {
             put(&mut wb, format!("B{r}"), format!("={r}*2"));
+        }
+        let mut trees = Trees::default();
+        for (at, shape) in &formulas {
+            trees.push_shape((0, *at), shape);
         }
         let mut rng = 1u64;
         let graph = Graph::default();
@@ -2721,10 +2745,19 @@ pub(crate) mod tests {
     /// values it hands over for `range` while the formulas in `pending` (cell, formula) have not been
     /// calculated yet, or `None` when it declines the block.
     pub(crate) fn probe_visit_range(wb: &Workbook, pending: &[(&str, &str)], range: RangeRef) -> Option<Vec<Value>> {
+        // Parsed into one list first: the table points at the shapes a real pass borrows from its
+        // graph, so they have to outlive it.
+        let cells: Vec<(CellRef, cella_formula::Shape)> = pending
+            .iter()
+            .filter_map(|(at, formula)| {
+                let at = CellRef::parse(at)?;
+                let expr = cella_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).ok()?;
+                Some((at, cella_formula::Shape::from_expr(expr, at)))
+            })
+            .collect();
         let mut trees = Trees::default();
-        for (at, formula) in pending {
-            let expr = cella_formula::parse(formula.strip_prefix('=').unwrap_or(formula)).ok()?;
-            trees.push_tree((0, CellRef::parse(at)?), &std::sync::Arc::new(expr));
+        for (at, shape) in &cells {
+            trees.push_shape((0, *at), shape);
         }
 
         // A cell in `pending` is calculated the first time something reads it, which is the state
@@ -2761,13 +2794,19 @@ pub(crate) mod tests {
     /// One sequential pass over `dirty`, as the recalc runs it, on the slot table `dense` picks.
     /// Returns whether the table was dense, and the value of every listed cell.
     fn pass_values(wb: &Workbook, dirty: &[Key], dense: bool) -> (bool, Vec<(Key, Option<Value>)>) {
+        // The shapes are built first and kept here: the table borrows them (as a pass borrows its
+        // graph's).
+        let shapes: Vec<(Key, cella_formula::Shape)> = dirty
+            .iter()
+            .filter_map(|&k| {
+                let text = wb.sheet(k.0).and_then(|s| s.cells.get(k.1)).and_then(|c| c.formula.as_ref().map(|f| f.text.clone()))?;
+                let expr = cella_formula::parse(text.strip_prefix('=').unwrap_or(&text)).ok()?;
+                Some((k, cella_formula::Shape::from_expr(expr, k.1)))
+            })
+            .collect();
         let mut trees = if dense { Trees::for_cells(dirty) } else { Trees::for_cells_sparse(dirty) };
-        for &k in dirty {
-            let Some(text) = wb.sheet(k.0).and_then(|s| s.cells.get(k.1)).and_then(|c| c.formula.as_ref().map(|f| f.text.clone())) else {
-                continue;
-            };
-            let Some(expr) = cella_formula::parse(text.strip_prefix('=').unwrap_or(&text)).ok() else { continue };
-            trees.push_tree(k, &std::sync::Arc::new(expr));
+        for (k, shape) in &shapes {
+            trees.push_shape(*k, shape);
         }
         let mut rng = 1u64;
         let graph = Graph::default();
@@ -2834,9 +2873,9 @@ pub(crate) mod tests {
         let two_sheets: Vec<Key> = (0..2usize).flat_map(|s| (0..400u32).map(move |r| (s, CellRef::new(r, 3)))).collect();
         let mut trees = Trees::for_cells(&two_sheets);
         assert!(trees.is_dense());
-        let one = std::sync::Arc::new(cella_formula::parse("1").expect("a literal parses"));
-        trees.push_tree(two_sheets[0], &one);
-        trees.push_tree((1, CellRef::new(0, 3)), &one);
+        let one = cella_formula::Shape::from_expr(cella_formula::parse("1").expect("a literal parses"), CellRef::new(0, 3));
+        trees.push_shape(two_sheets[0], &one);
+        trees.push_shape((1, CellRef::new(0, 3)), &one);
         assert_eq!(trees.slot(two_sheets[0]), Some(0));
         assert_eq!(trees.slot((1, CellRef::new(0, 3))), Some(1));
         assert_eq!(trees.slot((1, CellRef::new(400, 3))), None, "a cell past the box has no slot");

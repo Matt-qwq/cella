@@ -542,6 +542,12 @@ impl NodeTable {
         self.sheets.get(&k.0)?.get(&k.1)
     }
 
+    /// The formulas of `sheet`, by cell — for a pass that lists a run of one sheet's cells and
+    /// would otherwise pay the sheet's own probe once a cell (see [`Graph::nodes_of`]).
+    fn sheet(&self, sheet: usize) -> Option<&HashMap<CellRef, Node>> {
+        self.sheets.get(&sheet)
+    }
+
     /// Whether a formula is stored at `k`.
     fn contains_key(&self, k: Key) -> bool {
         self.sheets.get(&k.0).is_some_and(|m| m.contains_key(&k.1))
@@ -926,6 +932,15 @@ impl Graph {
     /// The node of the formula at `k` — the sheet's table, its cell's entry.
     pub(super) fn node(&self, k: Key) -> Option<&Node> {
         self.nodes.get(k)
+    }
+
+    /// The formulas of `sheet`, by cell.
+    ///
+    /// A pass lists its cells in row-major order, so the cells of one sheet arrive together: asking
+    /// the sheet's table once for the run replaces the sheet-table probe `node` makes a cell, which
+    /// on a million-formula pass is a million probes for one answer.
+    pub(super) fn nodes_of(&self, sheet: usize) -> Option<&HashMap<CellRef, Node>> {
+        self.nodes.sheet(sheet)
     }
 
     /// Whether the graph holds a formula at `k`.
