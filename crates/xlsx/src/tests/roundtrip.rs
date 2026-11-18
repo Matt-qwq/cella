@@ -691,8 +691,13 @@ fn saved_package_bytes_are_stable() {
     use sha2::Digest as _;
     let bytes = write_xlsx(&sample()).unwrap();
     let digest: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(bytes.len(), 37185, "the package changed size");
-    assert_eq!(digest, "a4bcc476976c4e9f7c0519cfa61cfcd2755da129ba4394b0025d8886af3fc16e", "the package changed bytes");
+    // Re-pinned 2026-11-18, when the full suite was first run after the formula-shape rounds: a
+    // formula is printed from its interned shape now (SH2, 2026-11-17), which is seven bytes
+    // smaller over this workbook's sixty formulas and changes no value. Everything else in the
+    // package is byte-identical; diffing the parts against a stashed build showed only the
+    // worksheets' formula text.
+    assert_eq!(bytes.len(), 37178, "the package changed size");
+    assert_eq!(digest, "7da2832177604451e322768b1da06b1859b224d9c0f2f07d3e366d093657bbe9", "the package changed bytes");
 }
 
 /// Every sheet is deflated as it is produced, which must not change a byte, drop a part or make
