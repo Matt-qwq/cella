@@ -9,7 +9,7 @@
 
 ```text
 
-budgets D:\pycharm_projects\cella\xtask/perf-budgets.txt (scale 1.00)
+budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
@@ -36,7 +36,7 @@ open.xlsx             1000000      2.90 s     8.05 s     36%
 rebuild.graph         1000000      758 ms     2.25 s     34%
 open.csv              1000000      594 ms     1.25 s     48%
 
-OK: all 22 scenarios within budget (D:\pycharm_projects\cella\xtask/perf-budgets.txt)
+OK: all 22 scenarios within budget (xtask/perf-budgets.txt)
 
 ```
 

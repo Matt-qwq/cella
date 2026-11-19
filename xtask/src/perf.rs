@@ -228,6 +228,12 @@ fn env_scale() -> f64 {
     std::env::var("CELLA_PERF_SCALE").ok().and_then(|s| s.trim().parse().ok()).filter(|s| *s > 0.0).unwrap_or(1.0)
 }
 
+/// The budgets file as the report shows it: relative to the repository root when it lives there,
+/// so a generated page carries no machine's absolute path.
+fn shown(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).display().to_string()
+}
+
 pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let args = parse_args(args)?;
     let path = args.budgets.clone().unwrap_or_else(|| root.join("xtask/perf-budgets.txt"));
@@ -273,7 +279,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         let again = measure(&args, Some(&suspects))?;
         keep_min(&mut measured, &again);
     }
-    println!("\nbudgets {} (scale {:.2})", path.display(), args.scale);
+    println!("\nbudgets {} (scale {:.2})", shown(root, &path), args.scale);
     print!("{}", render_check(&measured, &budgets, args.scale, true));
     let mut slow: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
@@ -308,7 +314,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
             slow.join("\n")
         ));
     }
-    println!("\nOK: all {} scenarios within budget ({})", measured.len(), path.display());
+    println!("\nOK: all {} scenarios within budget ({})", measured.len(), shown(root, &path));
     Ok(())
 }
 
