@@ -28,14 +28,16 @@ Then open [Workbook Studio](http://127.0.0.1:8000/site-candidates/studio/) or
 No build, package manager, or network-loaded fonts are needed. The website uses
 only its native HTML controls and CSS; the app and its Rust/WASM build are separate.
 
-## Deploy after review
+## Deploy
 
-1. Once the files are on `main`, set **Settings → Pages → Build and deployment → Source**
-   to **GitHub Actions** in the repository. This needs repository administration access.
-2. In **Actions → GitHub Pages → Run workflow**, select **main** and leave the
+The site is live at <https://matt-qwq.github.io/cella/> (English:
+<https://matt-qwq.github.io/cella/en.html>). The repository's **Settings → Pages →
+Source** is set to **GitHub Actions** and the repository homepage points at the site.
+
+1. In **Actions → GitHub Pages → Run workflow**, select **main** and leave the
    design set to `studio`. Use `compare` only if you want to publish the review gallery
    instead. The workflow is manual: a push does not publish or replace the site.
-3. Check the deployment URL reported by the job (for the default project domain,
+2. Check the deployment URL reported by the job (for the default project domain,
    `https://matt-qwq.github.io/cella/`). Rerun the workflow with a different choice
    to replace it. The Pages artifact includes only the website, its assets and
    licence notices, not the source tree.
