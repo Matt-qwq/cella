@@ -2,7 +2,7 @@
 
 Workbook Studio is the selected GitHub Pages homepage for Cella. This is a
 product-first page for spreadsheet users deciding whether to try the alpha:
-see the actual workbook, check compatibility, then build a sales report. The
+see the actual workbook, check compatibility, then explore what sets Cella apart. The
 landing page keeps the product-first headline, blue-gray mount, and graphite
 workbook section. The amber hero action starts the guide; downloads live in Get Cella.
 
@@ -23,20 +23,19 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
 - **Explore the sales workbook.** The four native options move the real screenshot
   inside a fixed window. The selection follows the table, regional chart or pie
   on the same image coordinate system. On narrow layouts the options move above the
-  image, keeping the controls and result close together. The full PNG stays linked.
+  image, keeping the controls and result close together.
 - **Switch between real views.** Six workbook screenshots share one frame:
   Insert, PivotTable, formulas, budget, chart formatting and page breaks. The
-  selector wraps to keep every choice visible. The screenshot, caption and
-  full-image link change together. Both preview groups switch on mouse hover
+  selector wraps to keep every choice visible. The screenshot and caption
+  change together. Both preview groups switch on mouse hover
   (240ms when motion is enabled) and return to the checked view on exit.
   Touch, click to keep a view, and native keyboard selection still work;
   keyboard focus takes precedence over the mouse. Reduced motion switches
   instantly. The compatibility strip stays immediately below the workbook section.
-- **Build a report.** The quick start pairs three desktop steps with the expected
-  totals for the downloadable synthetic CSV. The selectable CLI example builds
-  the same PivotTable and writes a new workbook. Trace command illustrates read
-  → summarize → write; it does not run a command or touch a file. Reset returns
-  to the first state. The trace becomes vertical on a narrow column.
+- **Show what sets Cella apart.** A short feature section points to automation,
+  measured performance, and build targets. The CLI example keeps the localized
+  sample CSV beside the command. Trace command illustrates read → summarize → write;
+  it does not run a command or touch a file.
 - **Show measured performance.** A labelled chart compares like-for-like open
   times; the table keeps recalculation and memory visible, including results
   where Cella trails Excel. Engine gates and heap measurements stay in a native
@@ -47,25 +46,23 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
   frame, settle the CLI example, and draw reading progress and the release divider.
   This does not intercept the wheel or touch. Browsers without native scroll
   timelines keep the complete content and local controls.
-- **Keep motion optional.** Preview motion plays the opening and enables the full
-  page's motion regardless of the system default, until unchecked or the page is
-  left. Without opt-in, reduced motion keeps all three demonstrations usable as
-  immediate state changes. Browsers without CSS `:has()` see the static examples;
-  the controls that depend on it are hidden. No loops, runtime scripts, third-party
-  fonts, or tracking.
+- **Follow device motion preferences.** Reduced motion keeps all three
+  demonstrations usable as immediate state changes. Browsers without CSS `:has()`
+  see the static examples; the controls that depend on it are hidden. No loops,
+  runtime scripts, third-party fonts, or tracking.
 
 ## Preview and publish
 
 [简体中文](index.html) is the default. [English](en.html) is a complete sibling
 page. Both share a stylesheet and anchor IDs; each links to its own localized
 workbook screenshots and equivalent synthetic sales CSV. Keep the preview images,
-full-image links, CSV headers, expected results, and CLI arguments in sync with the
+CSV headers and CLI arguments in sync with the
 page language. The Chinese previews are actual Cella renders from the snapshot
 example (`--language zh --fonts --size 2000x1250 --scale 1`), with translated
 workbook labels set through commands and a locally installed CJK font applied to
 the cells containing Chinese text. Keep the sales dashboard layout aligned with
 the English render so the shared crop coordinates still work. Header links switch
-language at the top; guide links switch directly to the other quick start.
+language at the top.
 The [Pages workflow](../README.md#deploy-after-review) publishes both files.
 The site describes the WASM build; it does not host a running app.
 
