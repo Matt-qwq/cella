@@ -23,7 +23,7 @@ fn sheet_prefix(s: &SheetSel) -> String {
 /// of SHAPE-SHARING.md: a shape is never printed with `print`), so the fallback never runs; it
 /// keeps a misuse printing a valid cell instead of a 20-digit number.
 fn on_sheet(v: i32) -> u32 {
-    u32::try_from(v).map_or(0, |v| v)
+    u32::try_from(v).unwrap_or(0)
 }
 
 /// One coordinate of an A1 anchor: an absolute part is the coordinate it names, a relative one is

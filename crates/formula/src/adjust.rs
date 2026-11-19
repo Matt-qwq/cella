@@ -390,7 +390,7 @@ pub fn adjust_canonical(tree: &Expr, host: &str, target: &str, edit: &Edit, cell
     // edit does not touch keeps its coordinates, so the cell spells it that much further away.
     let carry = match (cell, insert) {
         (CellMove::Stays, _) => 0,
-        (CellMove::Moves, true) => i32::try_from(count).map_or(i32::MAX, |c| c),
+        (CellMove::Moves, true) => i32::try_from(count).unwrap_or(i32::MAX),
         (CellMove::Moves, false) => i32::try_from(count).map_or(i32::MIN, |c| -c),
     };
     let mut changed = false;
