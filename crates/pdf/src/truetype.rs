@@ -245,7 +245,7 @@ impl Face {
             let text = if platform == 1 {
                 bytes.iter().map(|b| *b as char).collect()
             } else {
-                let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
                 String::from_utf16(&units).ok()?
             };
             let text: String = text.chars().filter(|c| !c.is_control()).collect();

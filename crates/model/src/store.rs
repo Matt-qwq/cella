@@ -6650,7 +6650,7 @@ mod tests {
         let beside = page::spill_file_name("book", None, 3);
         assert_eq!(beside, ".cella-spill-book-3.bin");
         let temp = page::spill_file_name("book", Some(7), 3);
-        assert_eq!(temp, format!(".cella-spill-book-7-3.bin"));
+        assert_eq!(temp, ".cella-spill-book-7-3.bin");
     }
 
     /// The first write failure latches the file shut: later bands are not retried against the same
