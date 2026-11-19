@@ -12,7 +12,7 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
 | --- | --- |
 | Page and content | Porcelain `#f8f9fa` with graphite `#17222d`. Headings use a Song-style serif (Noto Serif SC with local fallbacks) in Chinese and a corresponding local serif in English. Prose, navigation and data stay sans; monospace is reserved for commands and standalone file labels. |
 | Product surfaces | The dashboard sits on a cool mount (`#edf2f6` to `#e2eaf1`); the second cut stays in graphite (`#253443` to `#15202b`). Depth belongs to the mounted screenshots, not to every section. |
-| Actions | Amber `#f2b958` marks the primary guide and release actions. The top-right repository link uses the ISC-licensed Lucide Cat pictogram and an accessible GitHub name, not a third-party mark. |
+| Actions | Amber `#f2b958` marks the primary guide and release actions. The top-right repository link spells out GitHub and reuses the original external-link arrow; it does not use a third-party mark. |
 | Motion | One Silk curve (`.22, .9, .24, 1`): 780ms opening, 460ms view changes, 980ms command trace, 200ms or less for feedback. Motion has a distinct job in each scene. |
 
 - **Set type by role.** The two-line Chinese headline adds the character of a
@@ -57,7 +57,14 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
 ## Preview and publish
 
 [简体中文](index.html) is the default. [English](en.html) is a complete sibling
-page. Both share a stylesheet, examples, and anchor IDs. Header links switch
+page. Both share a stylesheet and anchor IDs; each links to its own localized
+workbook screenshots and equivalent synthetic sales CSV. Keep the preview images,
+full-image links, CSV headers, expected results, and CLI arguments in sync with the
+page language. The Chinese previews are actual Cella renders from the snapshot
+example (`--language zh --fonts --size 2000x1250 --scale 1`), with translated
+workbook labels set through commands and a locally installed CJK font applied to
+the cells containing Chinese text. Keep the sales dashboard layout aligned with
+the English render so the shared crop coordinates still work. Header links switch
 language at the top; guide links switch directly to the other quick start.
 The [Pages workflow](../README.md#deploy-after-review) publishes both files.
 The site describes the WASM build; it does not host a running app.

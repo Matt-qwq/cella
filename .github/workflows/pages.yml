@@ -52,7 +52,6 @@ jobs:
             install -Dm644 "$source/index.html" "$dest/index.html"
             if [[ "$1" == studio ]]; then
               install -Dm644 "$source/en.html" "$dest/en.html"
-              install -Dm644 "$source/assets/cat.svg" "$dest/assets/cat.svg"
             fi
             for file in "$source"/*.css "$source"/assets/*.css "$source"/examples/*.csv; do
               install -Dm644 "$file" "$dest/${file#"$source/"}"
@@ -61,7 +60,7 @@ jobs:
 
           files=(LICENSE-APACHE LICENSE-MIT NOTICE assets/app-icon/LICENSE.txt)
           if [[ "$DESIGN" == studio ]]; then
-            files+=(assets/app-icon/cella-small.svg docs/images/{hero-sales,dark-insert,pivot,grades-formulas,budget,format-chart,page-break}.png)
+            files+=(assets/app-icon/cella-small.svg docs/images/{hero-sales,dark-insert,pivot,grades-formulas,budget,format-chart,page-break}{,-zh}.png)
           else
             files+=(assets/app-icon/*.svg assets/app-icon/*.png docs/images/*.png)
           fi

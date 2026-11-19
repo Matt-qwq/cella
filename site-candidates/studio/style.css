@@ -135,17 +135,23 @@ h3 {
 .site-nav { grid-area: nav; }
 .repository-link {
   flex: none;
-  display: inline-grid;
-  place-items: center;
-  inline-size: 44px;
-  block-size: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-block-size: 44px;
+  padding-inline: 10px;
+  font-size: .875rem;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
   border: 1px solid var(--control-line);
   border-radius: var(--radius-control);
   color: var(--ink);
   background: var(--white);
   transition: background-color var(--feedback-time) var(--ease-silk), border-color var(--feedback-time) var(--ease-silk);
 }
-.repository-icon { inline-size: 24px; block-size: 24px; }
+.repository-link .repository-icon { inline-size: 15px; block-size: 15px; }
 .repository-link:hover { background: var(--stage-top); border-color: var(--secondary-ink); }
 .masthead-brand { display: flex; flex-wrap: wrap; align-items: center; gap: 0 clamp(.85rem, 2.3vw, 1.8rem); }
 .wordmark {
@@ -1375,7 +1381,6 @@ html[lang="zh-Hans"] .bench-details-body p { max-inline-size: 61ic; }
 
 @media (forced-colors: active) {
   .button, .repository-link, .motion-preview, .trace-player summary { border-color: ButtonText; }
-  .repository-icon { forced-color-adjust: none; background: #fff; border-radius: 3px; }
   #motion-preview:checked + .motion-indicator, .trace-pin { border-color: Highlight; }
   .sales-option:has(input:checked), .view-switch label:has(input:checked) { border-color: Highlight; }
   .sales-outline { stroke: Highlight; }
