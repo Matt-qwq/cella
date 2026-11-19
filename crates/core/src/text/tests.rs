@@ -252,22 +252,30 @@ fn arabic_shapes_contextual_forms() {
     let text = "سلام";
     let shaped = fixture.shape(text, Direction::Auto);
     assert_eq!(shaped.base_direction, Direction::Rtl);
-    assert_eq!(shaped.glyph_count(), 4);
+    // A face may collapse the lam-alef pair into its mandatory ligature, so the word carries
+    // four glyphs where the pair stays separate and three where it ligates. The cluster map
+    // below still covers every letter either way.
+    let glyphs: Vec<u16> = shaped.glyphs().map(|glyph| glyph.id).collect();
+    assert!(matches!(shaped.glyph_count(), 3 | 4), "unexpected glyph count: {glyphs:?}");
     assert_run_map(&shaped, text);
     assert_cluster_map(&shaped, text);
     assert_visual_order(&shaped);
 
-    // Every letter joins: the glyph at its cluster is not the isolated form a per-character
-    // mapping would draw.
+    // Every letter joins: the glyph that covers its cluster is not the isolated form a
+    // per-character mapping would draw. A ligated pair is covered by the one glyph it shares.
     let mut differing = 0;
     for (at, c) in text.char_indices() {
         let isolated = fixture.shape(&c.to_string(), Direction::Rtl).glyphs().next().expect("one glyph").id;
-        let joined = shaped.glyphs().find(|glyph| glyph.cluster_start as usize == at).expect("a glyph starts at each letter").id;
+        let joined = shaped
+            .glyphs()
+            .find(|glyph| (glyph.cluster_start as usize..glyph.cluster_end as usize).contains(&at))
+            .expect("every letter is covered by a cluster")
+            .id;
         if joined != isolated {
             differing += 1;
         }
     }
-    assert!(differing > 0, "no letter took a contextual form: {:?}", shaped.glyphs().map(|g| g.id).collect::<Vec<_>>());
+    assert!(differing > 0, "no letter took a contextual form: {glyphs:?}");
 
     // And the word is not the naive per-character mapping (which is what the unshaped path drew).
     let naive: Vec<u16> = text.chars().map(|c| fixture.nominal(c)).collect();
