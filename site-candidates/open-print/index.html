@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Cella is an independent, open-source spreadsheet built in Rust. Work with XLSX files on the desktop, at the command line, or through documented interfaces.">
+  <meta name="theme-color" content="#f8f2e7">
+  <title>Cella — The open-source Rust spreadsheet</title>
+  <link rel="icon" href="../../assets/app-icon/cella-small.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="frame masthead" id="top">
+    <span class="wordmark">
+      <svg class="wordmark-mark" width="28" height="27" viewBox="0 0 28 27" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M1 5 13 1 27 6v20l-14-5L1 25Z"/>
+        <path class="wordmark-cut" d="M13 1v20m5-13 5 2v6l-5-2Z"/>
+      </svg>
+      Cella
+    </span>
+    <nav aria-label="Main navigation">
+      <ul class="nav-list">
+        <li><a href="#workbooks">Workbooks</a></li>
+        <li><a href="#commands">Commands</a></li>
+        <li><a href="#docs">Docs</a></li>
+        <li class="language"><a href="https://github.com/Matt-qwq/cella/blob/main/README.zh-CN.md" lang="zh-Hans" hreflang="zh-CN">简体中文</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="frame poster" aria-labelledby="headline">
+      <div class="poster-copy">
+        <h1 id="headline">Your sheets.<br><span>Open tools.</span></h1>
+        <p>Cella is an independent, open-source spreadsheet built in Rust. Edit workbooks on your desktop or run the same commands from scripts and agents.</p>
+        <div class="actions">
+          <a class="button button-primary" href="https://github.com/Matt-qwq/cella/releases">GitHub releases <span class="arrow-out" aria-hidden="true"></span></a>
+          <a class="button button-outline" href="https://github.com/Matt-qwq/cella">View source <span class="arrow-out" aria-hidden="true"></span></a>
+        </div>
+      </div>
+
+      <figure class="plate">
+        <svg class="plate-art" width="600" height="452" viewBox="0 0 600 452" role="img" aria-labelledby="plate-title" aria-describedby="plate-desc" focusable="false">
+          <title id="plate-title">Two spreadsheet grids form an open workbook</title>
+          <desc id="plate-desc">On the left, one cell is selected. On the right, SEQUENCE(3,2) fills cells B2 through C4 with the numbers 1 to 6.</desc>
+          <g class="register-marks" fill="none" stroke-width="1">
+            <path d="M12 24h24M24 12v24m540-12h24m-12-12v24M12 428h24m-12-12v24m540-12h24m-12-12v24"/>
+            <path d="M282 24v28m0 306v70" stroke-dasharray="3 5"/>
+          </g>
+          <g class="plate-labels" font-size="13" letter-spacing="1.6">
+            <text x="48" y="29">LOCAL WORKBOOK</text>
+            <text x="552" y="433" text-anchor="end">.XLSX</text>
+          </g>
+
+          <!-- The two faces are affine projections of ordinary cell grids. -->
+          <path class="endpaper" d="M54 153 282 96l252 70v239l-252-70-228 57Z"/>
+          <path class="endpaper" d="M60 146 282 91l246 68v238l-246-68-222 55Z"/>
+          <g transform="matrix(1 -.25 0 1 66 140)">
+            <rect class="face-light" width="216" height="238"/>
+            <path class="grid-light" d="M22 45h172M22 71h172v144H22ZM65 71v144m43-144v144m43-144v144M22 107h172m-172 36h172m-172 36h172"/>
+            <rect class="cell-start" x="65" y="107" width="43" height="36"/>
+            <path class="cell-corner" d="M99 135h4v4"/>
+            <g class="type-light" font-size="12">
+              <text x="22" y="35">Sheet 1</text>
+              <text x="44" y="63" text-anchor="middle">A</text>
+              <text x="87" y="63" text-anchor="middle">B</text>
+              <text x="130" y="63" text-anchor="middle">C</text>
+              <text x="173" y="63" text-anchor="middle">D</text>
+              <text x="9" y="93">1</text><text x="9" y="129">2</text>
+              <text x="9" y="165">3</text><text x="9" y="201">4</text>
+            </g>
+            <g class="sample-values" font-size="14" text-anchor="middle">
+              <text x="44" y="94">Jan</text><text x="87" y="94">12</text>
+              <text x="44" y="130">Feb</text><text class="type-reverse" x="87" y="130">18</text>
+              <text x="44" y="166">Mar</text><text x="87" y="166">24</text>
+            </g>
+            <path class="grid-light" d="M119 191h20m23 0h20m-63 8h20m23 0h20"/>
+          </g>
+          <g transform="matrix(1 .28 0 1 282 86)">
+            <rect class="face-red" width="240" height="238"/>
+            <path class="grid-red" d="M24 45h192M24 71h192v144H24ZM72 71v144m48-144v144m48-144v144M24 107h192m-192 36h192m-192 36h192"/>
+            <path class="spill" d="M72 107h96v108H72Z"/>
+            <path class="spill-rules" d="M120 107v108m-48-72h96m-96 36h96"/>
+            <rect class="spill-origin" x="72" y="107" width="48" height="36"/>
+            <g class="type-reverse" font-size="12">
+              <text x="24" y="35">=SEQUENCE(3,2)</text>
+              <text x="48" y="63" text-anchor="middle">A</text>
+              <text x="96" y="63" text-anchor="middle">B</text>
+              <text x="144" y="63" text-anchor="middle">C</text>
+              <text x="192" y="63" text-anchor="middle">D</text>
+              <text x="10" y="93">1</text><text x="10" y="129">2</text>
+              <text x="10" y="165">3</text><text x="10" y="201">4</text>
+            </g>
+            <g class="spill-values" font-size="17" text-anchor="middle">
+              <text x="96" y="131">1</text><text x="144" y="131">2</text>
+              <text x="96" y="167">3</text><text x="144" y="167">4</text>
+              <text x="96" y="203">5</text><text x="144" y="203">6</text>
+            </g>
+          </g>
+          <path class="spine" d="M282 86v238"/>
+        </svg>
+        <figcaption><span class="file-label">.xlsx</span> A local file you can open, edit and pass on.</figcaption>
+      </figure>
+    </section>
+
+    <dl class="frame edition-line" aria-label="Platforms and stage">
+      <div><dt>Native</dt><dd>macOS, Windows, Linux, BSD</dd></div>
+      <div><dt>Web</dt><dd>WebAssembly build</dd></div>
+      <div><dt>Stage</dt><dd>Alpha · v0.13.0</dd></div>
+    </dl>
+
+    <section class="frame section workbooks" id="workbooks" aria-labelledby="workbook-title">
+      <div class="section-lead">
+        <h2 id="workbook-title">The workbook<br>is the point.</h2>
+        <p>Open an <code>.xlsx</code> file, edit it in the grid, and save it as XLSX. Cella is in alpha, and Excel compatibility is still in progress. Try a copy of a workbook you rely on before switching.</p>
+      </div>
+      <div class="workbook-spread">
+        <figure class="sample">
+          <img src="../../docs/images/hero-sales.png" width="2000" height="1250" alt="Cella’s sales workbook with a filterable table, data bars and sparklines next to column and pie charts." loading="lazy" decoding="async">
+          <figcaption><strong>Quarterly sales</strong><span>Cella’s bundled sample workbook</span></figcaption>
+        </figure>
+        <ul class="evidence">
+          <li>
+            <h3>Read and write XLSX</h3>
+            <p>Read and save formatting, validation rules and comments alongside your data.</p>
+            <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/file-format-parity.md">File-format status <span class="arrow-out" aria-hidden="true"></span></a>
+          </li>
+          <li>
+            <h3>500+ formula functions</h3>
+            <p>Use <code>LET</code> and <code>LAMBDA</code>, or spill the results of a dynamic array across cells.</p>
+            <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/function-parity.md">Function coverage <span class="arrow-out" aria-hidden="true"></span></a>
+          </li>
+          <li>
+            <h3>Tables, PivotTables and charts</h3>
+            <p>Filter a table, group dates in a PivotTable, and chart the results.</p>
+            <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/chart-parity.md">Chart coverage <span class="arrow-out" aria-hidden="true"></span></a>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section protocol" id="commands" aria-labelledby="commands-title">
+      <div class="frame">
+        <div class="section-lead">
+          <h2 id="commands-title">One engine.<br>Four ways in.</h2>
+          <p>Enter a formula in the grid or set it from a script: both use the same engine command. The desktop app, CLI, MCP server and control channel all run on that model.</p>
+        </div>
+        <div class="dispatch">
+          <h3><code>cell.set</code></h3>
+          <p><code>{"cell": "B2", "input": "=SEQUENCE(3,2)"}</code></p>
+        </div>
+        <ul class="ports">
+          <li>
+            <h3>Desktop</h3>
+            <p>Enter a formula directly in the workbook grid.</p>
+            <a class="text-link" href="#start">Try the sample <span class="arrow-right" aria-hidden="true"></span></a>
+          </li>
+          <li>
+            <h3>CLI</h3>
+            <p>Inspect, convert or edit a workbook without a window.</p>
+            <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/cli.md">CLI reference <span class="arrow-out" aria-hidden="true"></span></a>
+          </li>
+          <li>
+            <h3>MCP</h3>
+            <p>Give an agent workbook tools over standard input and output.</p>
+            <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/mcp.md">MCP setup <span class="arrow-out" aria-hidden="true"></span></a>
+          </li>
+          <li>
+            <h3>Control channel</h3>
+            <p>Drive a desktop session on localhost with newline-delimited JSON.</p>
+            <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md">Control protocol <span class="arrow-out" aria-hidden="true"></span></a>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="frame section start" id="start" aria-labelledby="start-title">
+      <div class="section-lead start-lead">
+        <div>
+          <h2 id="start-title">Start with<br>a sample.</h2>
+          <p>Try the sales workbook before opening your own.</p>
+          <a class="button button-primary" href="https://github.com/Matt-qwq/cella/releases">Browse releases <span class="arrow-out" aria-hidden="true"></span></a>
+        </div>
+        <div class="runbook">
+          <h3>Run the desktop app from source</h3>
+          <p>With Rust installed, run this from the root of a Cella checkout:</p>
+          <pre><code>cargo run --release -p cella -- --sample sales</code></pre>
+          <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/README.md#quick-start">Quick-start instructions <span class="arrow-out" aria-hidden="true"></span></a>
+        </div>
+      </div>
+    </section>
+
+    <div class="frame resources" id="docs">
+      <section aria-labelledby="docs-title">
+        <h2 id="docs-title">Documentation</h2>
+        <ul class="index-links">
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/README.md">Project README <span class="arrow-out" aria-hidden="true"></span></a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md">Roadmap and alpha status <span class="arrow-out" aria-hidden="true"></span></a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md">Performance scenarios and budgets <span class="arrow-out" aria-hidden="true"></span></a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/README.zh-CN.md" lang="zh-Hans" hreflang="zh-CN">简体中文 README <span class="arrow-out" aria-hidden="true"></span></a></li>
+        </ul>
+      </section>
+      <section aria-labelledby="contribute-title">
+        <h2 id="contribute-title">Contribute</h2>
+        <p>Cella is built clean-room. Pick a documented gap, then reproduce it in a small workbook made from scratch.</p>
+        <ul class="index-links">
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/AGENTS.md">Contributor guide <span class="arrow-out" aria-hidden="true"></span></a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/gaps.md">Ranked work list <span class="arrow-out" aria-hidden="true"></span></a></li>
+          <li><a href="https://github.com/Matt-qwq/cella/blob/main/docs/architecture.md">Engine architecture <span class="arrow-out" aria-hidden="true"></span></a></li>
+        </ul>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="frame footer-line">
+      <div class="footer-signature">Cella</div>
+      <div class="footer-credits">
+        <p>Cella is an independent, modified version of GridCraft, originally by the ArtCraft Team and the GridCraft contributors. See <a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE">NOTICE</a>.</p>
+        <p><a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-MIT">MIT</a> or <a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-APACHE">Apache-2.0</a>, at your option.</p>
+      </div>
+      <a class="back-link" href="#top">Back to top <span class="arrow-up" aria-hidden="true"></span></a>
+    </div>
+  </footer>
+</body>
+</html>

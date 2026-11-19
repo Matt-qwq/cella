@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Cella — Website design previews</title>
+  <link rel="icon" href="../assets/app-icon/cella-small.svg" type="image/svg+xml">
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f6f8;
+      --ink: #20232a;
+      --muted: #565e6a;
+      --line: #c5cbd4;
+      --accent: #833e21;
+      --focus: #a44717;
+      --content: 72rem;
+      font: 100%/1.55 system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; }
+    a { color: inherit; text-underline-offset: .22em; }
+    a:hover { color: var(--accent); }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 5px; }
+    ::selection { color: #fff; background: var(--accent); }
+    .wrap { max-inline-size: var(--content); margin-inline: auto; padding-inline: clamp(1rem, 5vw, 3rem); }
+    .skip { position: absolute; inset: .75rem auto auto 1rem; z-index: 3; padding: .75rem; background: var(--paper); }
+    .skip:not(:focus) { clip-path: inset(50%); }
+    .mast {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem 1.5rem;
+      flex-wrap: wrap;
+      padding-block: .875rem;
+      border-block-end: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: .65rem; font-size: 1.125rem; font-weight: 700; }
+    .mast a { display: inline-flex; align-items: center; min-block-size: 2.75rem; }
+    .intro {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: end;
+      gap: .85rem 1.5rem;
+      padding-block: clamp(1.8rem, 4vw, 3.5rem) clamp(1.5rem, 3vw, 2.35rem);
+    }
+    h1, h2, p { margin: 0; }
+    h1 {
+      font: 400 clamp(2.45rem, 5.8vw, 4.6rem)/.99 Georgia, serif;
+      letter-spacing: -.04em;
+      text-wrap: balance;
+    }
+    .intro p { max-inline-size: 37ch; font-size: clamp(1rem, 1.8vw, 1.125rem); color: var(--muted); }
+    .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; }
+    .option { position: relative; min-inline-size: 0; border-block-end: 1px solid var(--line); padding-block-end: 1.25rem; }
+    .plate {
+      position: relative;
+      display: grid;
+      place-items: center;
+      container-type: inline-size;
+      aspect-ratio: 8 / 5;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: var(--plate, #e0e4ea);
+      color: var(--plate-ink, #2a2d33);
+      font-size: clamp(1.15rem, 4vw, 2.25rem);
+    }
+    .plate--lab { --plate: #30242e; --plate-ink: #ffeadc; }
+    .plate--print { --plate: #eedecf; --plate-ink: #851f16; }
+    .plate--cases { --plate: #d1dfd7; --plate-ink: #203d32; }
+    .plate iframe { display: none; }
+    @supports (transform: scale(tan(atan2(100cqw, 1280px)))) {
+      .plate iframe {
+        display: block;
+        position: absolute;
+        inset: 0 auto auto 0;
+        width: 1280px;
+        height: 800px;
+        border: 0;
+        transform: scale(tan(atan2(100cqw, 1280px)));
+        transform-origin: 0 0;
+        pointer-events: none;
+      }
+    }
+    h2 { margin-top: .5rem; font-size: clamp(1.35rem, 3vw, 1.65rem); letter-spacing: -.035em; }
+    h2 a { display: inline-flex; align-items: center; min-block-size: 2.75rem; gap: .65rem; text-decoration: none; }
+    h2 a::after { content: ""; position: absolute; inset: 0; }
+    h2 a:hover { text-decoration: underline; }
+    h2 svg { inline-size: .85em; block-size: .85em; }
+    .option p { color: var(--muted); max-inline-size: 53ch; }
+    footer { padding-block: 2rem 3rem; color: var(--muted); font-size: .875rem; }
+    @media (max-width: 42em) {
+      .intro, .options { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#designs">Skip to the designs</a>
+  <div class="wrap">
+    <header class="mast">
+      <span class="brand"><img src="../assets/app-icon/cella-small.svg" width="32" height="32" alt=""> Cella</span>
+      <a href="https://github.com/Matt-qwq/cella">Project on GitHub</a>
+    </header>
+    <main id="designs" tabindex="-1">
+      <div class="intro">
+        <h1>Four ways to meet Cella.</h1>
+        <p>Four independently designed homepages for the same open-source spreadsheet. Open any design to explore the full page.</p>
+      </div>
+      <div class="options">
+        <article class="option">
+          <div class="plate" aria-hidden="true">
+            <span>Workbook Studio</span>
+            <iframe src="studio/index.html" sandbox="" inert tabindex="-1" loading="lazy" title="Workbook Studio preview"></iframe>
+          </div>
+          <h2><a href="studio/index.html">Workbook Studio <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13 13 3M5 3h8v8"/></svg></a></h2>
+          <p>Meet the app through its own interface, with a sales dashboard as the opening view.</p>
+        </article>
+        <article class="option">
+          <div class="plate plate--lab" aria-hidden="true">
+            <span>Cell Lab</span>
+            <iframe src="cell-lab/index.html" sandbox="" inert tabindex="-1" loading="lazy" title="Cell Lab preview"></iframe>
+          </div>
+          <h2><a href="cell-lab/index.html">Cell Lab <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13 13 3M5 3h8v8"/></svg></a></h2>
+          <p>Change one value in a miniature worksheet and follow its effect through the formulas.</p>
+        </article>
+        <article class="option">
+          <div class="plate plate--print" aria-hidden="true">
+            <span>Open Print</span>
+            <iframe src="open-print/index.html" sandbox="" inert tabindex="-1" loading="lazy" title="Open Print preview"></iframe>
+          </div>
+          <h2><a href="open-print/index.html">Open Print <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13 13 3M5 3h8v8"/></svg></a></h2>
+          <p>A red-and-ivory poster for an independent spreadsheet, with an original emblem and a focus on the source.</p>
+        </article>
+        <article class="option">
+          <div class="plate plate--cases" aria-hidden="true">
+            <span>Casebook</span>
+            <iframe src="casebook/index.html" sandbox="" inert tabindex="-1" loading="lazy" title="Casebook preview"></iframe>
+          </div>
+          <h2><a href="casebook/index.html">Casebook <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13 13 3M5 3h8v8"/></svg></a></h2>
+          <p>A gallery of real Cella workbooks, organized around the jobs they help people do.</p>
+        </article>
+      </div>
+    </main>
+    <footer>Workbook Studio is the selected Cella homepage. The other designs are kept here for comparison.</footer>
+  </div>
+</body>
+</html>

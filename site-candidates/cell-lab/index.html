@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Cella is an independent, open-source spreadsheet written in Rust. Explore formulas, XLSX support, and a command model shared by the desktop, CLI, and MCP.">
+  <meta name="theme-color" content="#1d171e">
+  <title>Cella — An open-source spreadsheet in Rust</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/app-icon/cella-small.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body id="top">
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="width head-inner">
+      <div class="identity">
+        <a class="wordmark" href="#top">
+          <img src="../../assets/app-icon/cella-small.svg" width="36" height="36" alt="">
+          Cella
+        </a>
+        <span class="stage">Alpha</span>
+      </div>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a class="wide-nav" href="#formulas">Formulas</a>
+        <a class="wide-nav" href="#files">Files</a>
+        <a class="wide-nav" href="#automation">Automation</a>
+        <a href="#docs">Docs</a>
+        <a class="language" href="https://github.com/Matt-qwq/cella/blob/main/README.zh-CN.md" lang="zh-CN">简体中文</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="width opening" aria-labelledby="intro-title">
+      <div class="intro">
+        <h1 id="intro-title">Change a cell.<br>See what moves<span class="period">.</span></h1>
+        <div class="intro-aside">
+          <p>Cella is an independent, open-source spreadsheet in Rust. Edit a sheet by hand or run the same commands from a script.</p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/Matt-qwq/cella/releases">
+              GitHub Releases
+              <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg>
+            </a>
+            <a class="button secondary" href="https://github.com/Matt-qwq/cella">Source</a>
+          </div>
+        </div>
+      </div>
+
+      <section class="bench" aria-labelledby="bench-title">
+        <div class="bench-head">
+          <div class="bench-title"><h2 id="bench-title">Cost a print run</h2><span class="bench-index">Cell Lab</span></div>
+          <p class="bench-note" id="lab-note">Precomputed example, not the spreadsheet engine.</p>
+        </div>
+        <div class="bench-body">
+          <div class="input-bay">
+            <fieldset class="presets" aria-describedby="lab-note" hidden>
+              <legend><code>B1</code> Run size</legend>
+              <div class="choices">
+                <label for="run-100">
+                  <input type="radio" name="run-size" id="run-100" value="100" aria-describedby="total-label total-100 price-label price-100" checked>
+                  <span>100 copies</span>
+                </label>
+                <label for="run-250">
+                  <input type="radio" name="run-size" id="run-250" value="250" aria-describedby="total-label total-250 price-label price-250">
+                  <span>250 copies</span>
+                </label>
+              </div>
+            </fieldset>
+            <p class="preset-fallback">Showing the 100-copy preset.</p>
+            <p class="input-hint" hidden>Choose a run size to change B1. The two charges stay fixed.</p>
+          </div>
+
+          <div class="worksheet">
+            <p class="formula-bar">
+              <span class="sr-only">Formula for </span><code class="address">B4</code>
+              <span aria-hidden="true" class="fx">fx</span>
+              <code>=SUM(B2,B1*B3)</code>
+              <span class="formula-result"><span class="sr-only">equals </span><span class="state-100">$80.00</span><span class="state-250" hidden>$110.00</span></span>
+            </p>
+            <table class="sheet">
+              <caption class="sr-only">Print run worksheet, in US dollars</caption>
+              <colgroup><col class="row-index"><col><col class="values"></colgroup>
+              <thead>
+                <tr><td class="corner" aria-hidden="true"></td><th scope="col">A</th><th scope="col">B</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="row-no" aria-hidden="true">1</td><th scope="row">Run size <small>(copies)</small></th><td class="input-cell"><span class="state-100">100</span><span class="state-250" hidden>250</span></td></tr>
+                <tr><td class="row-no" aria-hidden="true">2</td><th scope="row"><span class="sr-only">B2, </span>Setup charge</th><td>$60.00</td></tr>
+                <tr><td class="row-no" aria-hidden="true">3</td><th scope="row"><span class="sr-only">B3, </span>Print charge <small>(per copy)</small></th><td>$0.20</td></tr>
+                <tr><td class="row-no" aria-hidden="true">4</td><th scope="row" id="total-label">Total cost</th><td class="derived-cell"><span class="state-100" id="total-100">$80.00</span><span class="state-250" hidden id="total-250">$110.00</span></td></tr>
+                <tr><td class="row-no" aria-hidden="true">5</td><th scope="row" id="price-label">Cost per copy</th><td class="final-cell"><span class="state-100" id="price-100">$0.80</span><span class="state-250" hidden id="price-250">$0.44</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="readout">
+            <h3><code>B5</code> Cost per copy</h3>
+            <p class="measurement"><span class="state-100">$0.80</span><span class="state-250" hidden>$0.44</span></p>
+            <p class="result-formula"><code>=B4/B1</code></p>
+            <p class="readout-note"><span class="state-100">$80 total across 100 copies</span><span class="state-250" hidden>$110 total across 250 copies</span></p>
+          </div>
+        </div>
+        <div class="trace">
+          <ol role="list" aria-label="Cells in change order">
+            <li><code>B1</code> Run size</li>
+            <li>
+              <svg aria-hidden="true" viewBox="0 0 18 16" width="18" height="16" fill="none"><path d="M2 8h13m-4-4 4 4-4 4"/></svg>
+              <code>B4</code> Total cost
+            </li>
+            <li>
+              <svg aria-hidden="true" viewBox="0 0 18 16" width="18" height="16" fill="none"><path d="M2 8h13m-4-4 4 4-4 4"/></svg>
+              <code>B5</code> Cost per copy
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <nav class="branches" aria-label="Explore Cella’s capabilities">
+        <a href="#formulas">
+          <span class="branch-mark" aria-hidden="true"><i>fx</i></span>
+          <span><strong>Build the formula</strong><span>Functions &amp; dynamic arrays</span></span>
+          <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2.5v10m-4-4 4 4 4-4"/></svg>
+        </a>
+        <a href="#files">
+          <span class="branch-mark" aria-hidden="true">.xlsx</span>
+          <span><strong>Keep the workbook</strong><span>Files, charts &amp; PivotTables</span></span>
+          <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2.5v10m-4-4 4 4 4-4"/></svg>
+        </a>
+        <a href="#automation">
+          <span class="branch-mark" aria-hidden="true">{ }</span>
+          <span><strong>Make it repeatable</strong><span>CLI, MCP &amp; control</span></span>
+          <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2.5v10m-4-4 4 4 4-4"/></svg>
+        </a>
+      </nav>
+    </section>
+
+    <section id="formulas" class="width chapter formula-chapter" aria-labelledby="formula-title">
+      <div class="chapter-copy">
+        <h2 id="formula-title">One formula,<br>more than one cell.</h2>
+        <p>Cella has 500+ formula functions. An array formula can spill into adjacent cells, so one expression can generate a whole range. Use <code>LET</code> and <code>LAMBDA</code> to build reusable logic and structured references to work with table columns by name.</p>
+        <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/function-parity.md">Check function coverage<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a>
+      </div>
+      <figure class="spill">
+        <div class="spill-top">
+          <span>Generate three run sizes</span>
+          <span class="spill-range">C1:E1</span>
+        </div>
+        <div class="spill-formula"><span class="fx" aria-hidden="true">fx</span> <code>=SEQUENCE(1,3,100,75)</code></div>
+        <dl class="spill-cells">
+          <div><dt>C1<span class="sr-only"> (copies)</span></dt><dd>100</dd></div>
+          <div><dt>D1<span class="sr-only"> (copies)</span></dt><dd>175</dd></div>
+          <div><dt>E1<span class="sr-only"> (copies)</span></dt><dd>250</dd></div>
+        </dl>
+        <figcaption>Enter the formula in C1. It fills three cells across, starting at 100 and stepping by 75.</figcaption>
+      </figure>
+    </section>
+
+    <section id="files" class="files-section" aria-labelledby="files-title">
+      <div class="width chapter files-chapter">
+        <div class="chapter-copy">
+          <h2 id="files-title">Open the files<br>you’re sent.</h2>
+          <p>Read and write <code>.xlsx</code>, import Excel 97–2003 <code>.xls</code> files, and work with CSV or TSV. Turn rows into tables, summarize them in PivotTables, and chart the results.</p>
+          <p class="fit-note"><strong>Still in alpha.</strong> Excel compatibility is a work in progress. Try a copy of an important workbook and check its formulas and layout after saving.</p>
+          <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/file-format-parity.md">Check file format support<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a>
+        </div>
+        <figure class="app-view">
+          <div class="figure-top"><span>Cella desktop</span><span>Sales sample</span></div>
+          <img src="../../docs/images/dark-insert.png" width="2000" height="1250" loading="lazy" decoding="async" alt="Cella in dark mode, showing a quarterly sales table with conditional formatting and sparklines, a column chart, and a pie chart.">
+          <figcaption>
+            <span>The sample workbook uses a table with a totals row, sparklines, and two live charts.</span>
+            <a class="text-link" href="../../docs/images/dark-insert.png">Full-size render<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="automation" class="width chapter command-chapter" aria-labelledby="command-title">
+      <div class="chapter-copy">
+        <h2 id="command-title">The same sheet,<br>scriptable.</h2>
+        <p>The desktop app, CLI, MCP server, and control channel share the same workbook commands. Set a cell, fill a range, or save a workbook from another tool.</p>
+        <div class="command-example">
+          <p>From the source checkout, evaluate the 100-copy preset:</p>
+          <pre><code>cargo run -p cella-cli -- eval "=SUM(60,100*0.20)/100"</code></pre>
+        </div>
+      </div>
+      <dl class="command-list">
+        <div><dt><a href="https://github.com/Matt-qwq/cella/blob/main/docs/cli.md">CLI guide<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a></dt><dd>Evaluate a formula or run a sequence of edits and save the result.</dd></div>
+        <div><dt><a href="https://github.com/Matt-qwq/cella/blob/main/docs/mcp.md">MCP guide<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a></dt><dd>Give a compatible client access to workbook commands over standard I/O.</dd></div>
+        <div><dt><a href="https://github.com/Matt-qwq/cella/blob/main/docs/control-protocol.md">Control protocol<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a></dt><dd>Send JSON lines to a running desktop session, including edits and state queries.</dd></div>
+      </dl>
+    </section>
+
+    <section id="docs" class="start-section" aria-labelledby="start-title">
+      <div class="width start-inner">
+        <div class="start-intro">
+          <h2 id="start-title">Open your<br>first sheet.</h2>
+          <p>Cella runs natively on macOS, Windows, Linux, and BSD, and has a WebAssembly build.</p>
+          <a class="button primary" href="https://github.com/Matt-qwq/cella/releases">
+            GitHub Releases
+            <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg>
+          </a>
+        </div>
+        <div class="start-resources">
+          <h3>Run the desktop sample</h3>
+          <p>With Rust installed, run this from a checkout of the repository:</p>
+          <pre><code>cargo run --release -p cella -- --sample sales</code></pre>
+          <ul class="doc-list">
+            <li><a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/README.md#quick-start">README quick start<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a></li>
+            <li><a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/roadmap.md">Roadmap<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a></li>
+            <li><a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/performance.md">Performance notes<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3.5 12.5l9-9m-7 0h7v7"/></svg></a></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="width footer-inner">
+      <a class="wordmark" href="#top">
+        <img src="../../assets/app-icon/cella-small.svg" width="36" height="36" alt="">
+        Cella
+      </a>
+      <p>An independent project based on GridCraft by the ArtCraft team and GridCraft contributors. Its Excel compatibility work follows clean-room rules.</p>
+      <div class="footer-legal">
+        <p><a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-MIT">MIT</a> OR <a href="https://github.com/Matt-qwq/cella/blob/main/LICENSE-APACHE">Apache-2.0</a></p>
+        <a href="https://github.com/Matt-qwq/cella/blob/main/NOTICE">NOTICE &amp; credits</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

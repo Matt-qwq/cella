@@ -23,8 +23,11 @@ Third-party material
 This product bundles third-party material under its own licenses, listed below. The per-file
 list (author, source, license) is in ATTRIBUTION.md.
 
-None: every bundled asset is original to Cella. Builds made with craft-fonts
+The application assets are original to Cella. Builds made with craft-fonts
 (CRAFT_FONTS_DIR) embed the fonts listed in ATTRIBUTION.md under the SIL Open Font License 1.1.
+
+The project website uses the Lucide Cat pictogram (Lucide Contributors, ISC).
+The source and license are recorded in ATTRIBUTION.md and in the SVG itself.
 
 Vendored code
 
