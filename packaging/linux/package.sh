@@ -37,7 +37,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export CELLA_MAINTAINER="${CELLA_MAINTAINER:-Cella maintainers <cella@storyteller.ai>}"
+export CELLA_MAINTAINER="${CELLA_MAINTAINER:-Matt-qwq <Matt-qwq@users.noreply.github.com>}"
 BASENAME="cella-$VERSION-linux-$ARCH"
 
 echo "==> Cella $VERSION for Linux $ARCH ($FORMATS)"

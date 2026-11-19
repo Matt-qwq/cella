@@ -13,7 +13,7 @@ release: 1
 section: misc
 priority: optional
 maintainer: ${CELLA_MAINTAINER}
-vendor: Learning Machines LLC
+vendor: Matt-qwq
 homepage: https://github.com/Matt-qwq/cella
 license: MIT OR Apache-2.0
 description: |-

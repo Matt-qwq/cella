@@ -2,7 +2,7 @@
 //!
 //! Usage: `cella [--control <port>] [--sample <name>] [files…]`
 //!
-//! `--control <port>` (or `GRIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
+//! `--control <port>` (or `CELLA_CONTROL_PORT`) starts a localhost JSON-lines control
 //! server: `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
 //! See `cella_ui_egui::control` and `docs/control-protocol.md` for the methods.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
@@ -80,7 +80,7 @@ impl eframe::App for App {
         self.window.observe(maximized, inner);
         #[cfg(target_os = "macos")]
         {
-            if self.menu.is_none() && std::env::var_os("GRIDCRAFT_NO_NATIVE_MENU").is_none() {
+            if self.menu.is_none() && std::env::var_os("CELLA_NO_NATIVE_MENU").is_none() {
                 self.menu = Some(native_menu::NativeMenu::install(ctx));
             }
             if let Some(m) = &self.menu {
@@ -163,10 +163,10 @@ fn config_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Runs without preferences (`GRIDCRAFT_NO_PREFS`, agents' test runs) neither read nor write
+/// Runs without preferences (`CELLA_NO_PREFS`, agents' test runs) neither read nor write
 /// them, and keep no log file.
 fn prefs_enabled() -> bool {
-    std::env::var_os("GRIDCRAFT_NO_PREFS").is_none()
+    std::env::var_os("CELLA_NO_PREFS").is_none()
 }
 
 /// Where the log files live: `logs` in the settings folder, next to `ui.json` (see `logging`).
@@ -355,7 +355,7 @@ fn main() -> eframe::Result<()> {
         println!("Cella {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    let mut control_port: Option<u16> = std::env::var("GRIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
+    let mut control_port: Option<u16> = std::env::var("CELLA_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut sample: Option<String> = None;
     let mut files: Vec<String> = Vec::new();
     let mut i = 0;

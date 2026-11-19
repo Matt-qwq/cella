@@ -1,3 +1,6 @@
+// SUPERSEDED — `apps/cella/build.rs` is the file that builds, and this copy is kept only as
+// the setup instructions it used to carry. Do not edit both: change `apps/cella/build.rs`.
+//
 // TEMPLATE for apps/cella/build.rs (copied from DesignCraft by the release-tooling setup;
 // apps/cella didn't exist yet). Move it there and add to apps/cella/Cargo.toml:
 //
@@ -29,7 +32,7 @@ fn main() {
     res.set_icon("../../assets/app-icon/cella.ico")
         .set("ProductName", "Cella")
         .set("FileDescription", "Cella spreadsheet")
-        .set("CompanyName", "Learning Machines LLC")
+        .set("CompanyName", "Matt-qwq")
         .set("LegalCopyright", "Copyright (c) the Cella authors. MIT OR Apache-2.0.")
         .set("OriginalFilename", "cella.exe")
         .set("InternalName", "cella");

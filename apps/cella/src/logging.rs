@@ -6,7 +6,7 @@
 //! `<settings dir>/logs/cella.log`, next to `ui.json` and `prefs.json` (`config_dir` in
 //! `main.rs`). Each start moves the previous log to `cella.1.log` (and that one to `.2`), so
 //! the log of a run that crashed survives the next launch. Runs without preferences
-//! (`GRIDCRAFT_NO_PREFS`) log to standard error only.
+//! (`CELLA_NO_PREFS`) log to standard error only.
 //!
 //! Levels: `info` for Cella's own crates, `warn` for everything else (wgpu and naga are
 //! chatty). `RUST_LOG` replaces that with env_logger-style directives: `debug`,

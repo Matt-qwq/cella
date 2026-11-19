@@ -1,61 +1,74 @@
 # Releasing Cella
 
-**This tree has no release pipeline.** The upstream workflow that used to run on a push to the
-`release` branch called `storytold/craft-common-actions` and the ArtCraft signing secrets; it was
-removed when this repository stopped being a fork kept to propose changes upstream (the same change
-removed `docs/brand/`, the Sonar project and the store manifest). The packaging scripts under
-`packaging/` remain and build local installers; nothing publishes them.
+A release is a **manual, local run**. The repository publishes nothing by itself: the upstream
+workflow (`storytold/craft-common-actions` plus the ArtCraft signing secrets) was removed when this
+tree stopped being a fork kept to propose changes upstream. `.github/workflows/` still holds the
+packaging *checks* and the FreeBSD VM job; none of them build or upload a release.
 
-The identity values in the table below are **upstream's** and are being replaced — see
-[`roadmap.md`](roadmap.md) § Product position. Until that lands, a build still carries them, so
-**do not distribute a build**.
+Everything below is Cella's own identity. Change these values together if the product moves again.
 
 | App-specific value | Where |
 |---|---|
 | Display name `Cella`, binaries `cella` + `cella-cli` | every script and workflow |
 | Bundle / app id `io.github.matt-qwq.cella` | `packaging/macos/Info.plist.in`, `packaging/linux/*`, flatpak manifest |
-| WiX UpgradeCode `5511327B-F305-41BE-92D0-EB84944E7C4D` (fixed forever) | `packaging/windows/cella.wxs` |
+| Publisher `Matt-qwq` | WiX `Manufacturer` (`packaging/windows/cella.wxs`), `CompanyName` in `apps/cella/build.rs`, AppStream `<developer>`, nfpm `vendor` and `maintainer` |
+| WiX UpgradeCode `5410AC94-288D-44C6-BE25-D154F47331B6` (Cella's own, set 2026-11-18) | `packaging/windows/cella.wxs` |
 | File types `.xlsx` `.xlsm` `.xlsb` `.ods` `.csv` `.tsv` | Info.plist (`CFBundleDocumentTypes`), WiX (ProgIds/OpenWithProgids), `.desktop` `MimeType=`, `io.github.matt-qwq.cella.mime.xml`, metainfo |
 | Web app dir `apps/cella-web` | `packaging/web/package.sh` |
 | App colour `#1f9d55` (ink `#147a40`), **proposed** | `assets/app-icon/README.md`, metainfo `<branding>` |
 
-## Prerequisites still owned by the app crates
-
-The pipeline references crates that don't exist yet; the first release run fails until they do:
-
-- **`apps/cella`** (the GUI binary `cella`) and **`apps/cella-web`** (trunk
-  site) must be workspace members. `apps/cella-cli` exists and supports `--version`.
-- **Windows resources:** move `packaging/windows/app-build.rs.in` to `apps/cella/build.rs`
-  and add `winresource = "0.1"` under `[build-dependencies]` (instructions at the top of the
-  file). `package.ps1` sets `CELLA_REQUIRE_WINRES=1`, so a release build without the icon
-  fails, and it checks that `cella.exe` is a GUI-subsystem binary, so `main.rs` needs
-  `#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]`.
-- **Build info:** CI exports `CELLA_BUILD_SHA` and `CELLA_BUILD_DATE`; read them
-  with `option_env!` (fallback: "dev build") for `--version` and *Help › About Cella*.
-- **Runtime icon:** embed `assets/app-icon/cella-macos-512.png` (macOS Dock) and
-  `hicolor/256x256/apps/io.github.matt-qwq.cella.png` (Windows/Linux) as the window icon, and
-  use `io.github.matt-qwq.cella` as the Wayland app id / `StartupWMClass`.
-- **`cargo xtask` alias:** the docs use `cargo xtask …`, which needs
-  `.cargo/config.toml` with `[alias] xtask = "run --package xtask --"`. Until it exists, use
-  `cargo run -p xtask -- …`. The workflows already call `cargo run -p xtask` directly.
-
 ## Cutting a release
 
-There is no CI pipeline in this tree — the upstream one called ArtCraft's shared actions and
-signing secrets and was removed with the rest of the upstream identity surface. A release is a
-manual, local run of the packaging scripts:
+The checklist below is the process that produced 0.13.0, in order. Steps 2–4 are the gates; skip
+none of them "just this once".
 
-1. **Bump the version** (`cargo xtask version set 0.2.0` updates `Cargo.toml` and `Cargo.lock`).
-2. **Build the binaries**: `cargo build --release -p cella -p cella-cli` (add `--target` for a
-   platform you are not on).
-3. **Package** with the platform script (`packaging/*/package.sh`, `package.ps1`); they read
-   `packaging/env.sh` and write into `dist/release/`.
-4. **Sign** outside the repository: the Apple Developer ID and Windows Authenticode material
-   belong to whoever distributes the build.
-5. **Publish** wherever you publish; nothing here uploads.
+1. **Bump the version:** `cargo xtask version set X.Y.Z` (updates `Cargo.toml`,
+   `Cargo.lock` and `xtask/version`). One commit, message `X.Y.Z: release`.
+2. **Gate:** `cargo xtask ci` — fmt, `clippy --all-targets -D warnings`, the tests, `assets`
+   (every asset file has an `ATTRIBUTION.md` row), `layers`, `wasm`. It takes minutes; a green
+   run prints `9/9`.
+3. **Performance gate:** `cargo xtask perf` against `xtask/perf-budgets.txt` (release build,
+   100k and 1M rows). It is deliberately outside `ci`; a budget is 2× a quiet pass, so a failure
+   means a real regression, not noise.
+4. **Performance report:** `cargo xtask perf-report` rewrites `docs/performance-report.md` and
+   `docs/performance-report.zh-CN.md` (it embeds `docs/external-benchmark.md`), then commit them.
+   The docs link these pages, so a release with stale numbers ships a wrong comparison.
+5. **Build:** `cargo build --release -p cella -p cella-cli`.
+6. **Package:** the platform script — `packaging/windows/package.ps1 -Arch x64`,
+   `packaging/macos/package.sh [--arch aarch64]`, `packaging/linux/package.sh`. Output lands in
+   `dist/release/`. Signing is optional and belongs to the distributor; unsigned artifacts are
+   still checksummable and releasable.
+7. **Verify the Windows resources** before publishing anything (this shipped wrong once): the
+   packager sets `CELLA_REQUIRE_WINRES=1`, and the check is what the *built* exe carries —
+   `(Get-Item cella.exe).VersionInfo` must show `FileVersion X.Y.Z` and `CompanyName Matt-qwq`,
+   and the MSI must embed the icon (`CellaIcon`, reachable through `ARPPRODUCTICON`). An older
+   tree read a different variable name, so the guard passed while the exe came out iconless.
+8. **Checksums:** `sha256sum dist/release/*` (or `Get-FileHash`); keep sizes and hashes for the
+   release notes.
+9. **Tag, then publish:**
+   ```sh
+   git tag -a vX.Y.Z -m "Cella X.Y.Z" && git push origin vX.Y.Z
+   gh release create vX.Y.Z --repo Matt-qwq/cella dist/release/* --title "Cella X.Y.Z" \
+       --notes-file RELEASE-NOTES.md
+   ```
+   `--repo` is not optional: `origin` is `Matt-qwq/cella`, but a checkout with an upstream
+   remote configured resolves `gh` to `storytold/gridcraft`.
+10. **Verify the published page:** artifact names, sizes and hashes match step 8, and the notes
+    state what was **not** run (macOS/Linux gates, the pinned corpus, signing).
 
-The identity values in the table above are Cella's — change them all together if the product
-moves again.
+### Traps met so far
+
+- **A tag can already exist upstream.** `v0.13.0` was pushed to the upstream repository first and
+  the local tag pointed at that old commit. Delete the local tag, re-tag the release commit and
+  force-push the tag, otherwise the GitHub release points at upstream's tree.
+- **`gh` defaults to the other repository** when both remotes exist — every `gh` call in this
+  document carries `--repo Matt-qwq/cella`.
+- **A new UpgradeCode does not upgrade the old install.** Cella changed its UpgradeCode on
+  2026-11-18 (it had inherited GridCraft's `5511327B-…`); installations made with the old code
+  stay side by side, so the release notes say to uninstall them first.
+- **Release notes age fast.** The numbers in them (memory, timings) are that build's; when a later
+  round changes them, correct that release's notes rather than writing new numbers into an old
+  release.
 
 ## What gets built
 
@@ -132,12 +145,12 @@ the MSI, and zips a portable build.
   the separate silent lifecycle test verifies installation behavior. Normal full UI presents
   the shortcut choice and then completion; cancel/failure and files-in-use dialogs are support
   paths. To review on a maintainer branch, run **Packaging lint** with that branch selected
-  (or `gh workflow run packaging-lint.yml --repo storytold/gridcraft --ref BRANCH`). No release
+  (or `gh workflow run packaging-lint.yml --repo Matt-qwq/cella --ref BRANCH`). No release
   environment, signing credentials or Rust build is required. Interactive checkbox behavior
   still needs a Windows desktop check; previews alone do not establish that behavior.
 - **Signing:** `packaging/windows/sign.ps1` uses `signtool` with SHA-256 and an RFC 3161
   timestamp, from a `.pfx` (`WINDOWS_CERTIFICATE*`) if present, otherwise **Azure Trusted
-  Signing** (`AZURE_*`, the storytold setup). With neither it warns and leaves files unsigned.
+  Signing** (`AZURE_*`, if the distributor has such a subscription). With neither it warns and leaves files unsigned.
 
 Locally on Windows: `dotnet tool install -g wix --version 5.0.2`, then
 `pwsh packaging/windows/package.ps1 -Arch x64`.
@@ -152,7 +165,7 @@ binaries need glibc ≥ 2.35. X11/Wayland/xkbcommon/Vulkan/EGL are loaded at run
 packages declare them (see `nfpm.yaml`).
 
 Each AppImage embeds update information
-(`gh-releases-zsync|storytold|cella|latest|cella-*-linux-<arch>.AppImage.zsync`), and the
+(`gh-releases-zsync|Matt-qwq|cella|latest|cella-*-linux-<arch>.AppImage.zsync`), and the
 matching `.zsync` is published beside it, so AppImageUpdate and AppImageLauncher fetch only the
 changed blocks of the newest published release. appimagetool writes the `.zsync` when
 `zsyncmake` (the `zsync` package) is installed; without it the script warns and skips it.

@@ -7,8 +7,8 @@
   <project_license>MIT OR Apache-2.0</project_license>
   <name>Cella</name>
   <summary>Calculate, analyse and chart data in workbooks</summary>
-  <developer id="ai.storyteller">
-    <name>Learning Machines LLC</name>
+  <developer id="io.github.matt-qwq">
+    <name>Matt-qwq</name>
   </developer>
   <description>
     <p>
@@ -25,8 +25,8 @@
   <icon type="stock">io.github.matt-qwq.cella</icon>
   <!-- Only url types known to appstream 0.15 (Ubuntu 22.04, where CI validates): no vcs-browser. -->
   <url type="homepage">https://github.com/Matt-qwq/cella</url>
-  <url type="bugtracker">https://github.com/storytold/gridcraft/issues</url>
-  <url type="help">https://github.com/storytold/gridcraft</url>
+  <url type="bugtracker">https://github.com/Matt-qwq/cella/issues</url>
+  <url type="help">https://github.com/Matt-qwq/cella</url>
   <url type="contact">https://github.com/Matt-qwq/cella/issues</url>
   <categories>
     <category>Office</category>
