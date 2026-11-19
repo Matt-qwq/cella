@@ -56,6 +56,19 @@ none of them "just this once".
 10. **Verify the published page:** artifact names, sizes and hashes match step 8, and the notes
     state what was **not** run (macOS/Linux gates, the pinned corpus, signing).
 
+### Writing the notes
+
+`RELEASE-NOTES.md` is what `gh release create --notes-file` publishes. Keep it under one screen:
+
+- **A first paragraph a user can act on** — what this release is, and the one number that matters.
+- **At most five bullets**, each one line, each a change they can see or feel. No changelog dump,
+  no per-commit list; the history is in `git log`.
+- **One table** for numbers, if numbers are the story. Everything else links to `docs/`.
+- **`## Installing`** — artifact names and any upgrade step (an UpgradeCode change is one).
+- **`## Not verified in this build`** — the honest list. A release that says what it did not test
+  reads as trustworthy; one that implies it tested everything does not.
+- Say "unsupported"/"unsigned" where it applies rather than implying a support promise.
+
 ### Traps met so far
 
 - **A tag can already exist upstream.** `v0.13.0` was pushed to the upstream repository first and
