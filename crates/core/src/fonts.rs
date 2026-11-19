@@ -382,8 +382,9 @@ fn search_dirs() -> Vec<PathBuf> {
             dirs.push(PathBuf::from(p));
         }
         if let Some(home) = std::env::var_os("HOME") {
-            dirs.push(PathBuf::from(home).join(".fonts"));
-            dirs.push(PathBuf::from(home).join(".local").join("share").join("fonts"));
+            let home = PathBuf::from(home);
+            dirs.push(home.join(".fonts"));
+            dirs.push(home.join(".local").join("share").join("fonts"));
         }
     }
     dirs
