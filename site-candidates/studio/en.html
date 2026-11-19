@@ -288,79 +288,26 @@
           </figure>
           <div class="bench-notes">
             <h3>What was measured?</h3>
-            <p>The workbook had 1,000,000 rows, eight columns and 2,000,000 formulas. After setting <code>B1</code> to 3, all four products returned the same final value.</p>
-            <p>The bars compare open times without an additional full recalc. The upstream GridCraft result includes a full recalc, so it appears only in the table below.</p>
+            <p>The workbook had 1,000,000 rows, eight columns and 2,000,000 formulas. After setting <code>B1</code> to 3, all three applications returned the same final value.</p>
+            <p>The bars compare open times without an additional full recalc.</p>
           </div>
         </div>
         <p class="bench-scroll-hint" id="bench-scroll-note">Scroll the table horizontally to see every product.</p>
           <div class="bench-scroll" role="group" tabindex="0" aria-labelledby="bench-comparison-title" aria-describedby="bench-scroll-note">
             <table class="bench-table">
               <caption id="bench-comparison-title">The same workbook and edit</caption>
-              <thead><tr><th scope="col">Measurement</th><th scope="col" class="bench-cella">Cella <small>0.13.0</small></th><th scope="col">Excel <small>16.0.20527</small></th><th scope="col">WPS <small>12.1.0.25222</small></th><th scope="col">Upstream GridCraft <small>v0.19.1</small></th></tr></thead>
+              <thead><tr><th scope="col">Measurement</th><th scope="col" class="bench-cella">Cella <small>0.13.0</small></th><th scope="col">Excel <small>16.0.20527</small></th><th scope="col">WPS <small>12.1.0.25222</small></th></tr></thead>
               <tbody>
-                <tr><th scope="row">Open workbook</th><td class="bench-cella"><strong>3.1 s</strong></td><td>7.8 s</td><td>11.7 s</td><td>21.4 s incl. full recalculation</td></tr>
-                <tr><th scope="row">Recalculate all 2M formulas</th><td class="bench-cella">1.30 s</td><td><strong>0.31 s</strong></td><td>16.9 s</td><td>Included in open</td></tr>
-                <tr><th scope="row">Recalculate after editing B1</th><td class="bench-cella">0.36 s</td><td><strong>0.08 s</strong></td><td>16.9 s</td><td>3.64 s</td></tr>
-                <tr><th scope="row">Working set after open</th><td class="bench-cella">996 MB</td><td><strong>588 MB</strong></td><td>987 MB</td><td>Not measured (engine only)</td></tr>
-                <tr><th scope="row">Private memory after open¹</th><td class="bench-cella">1,341 MB</td><td><strong>468 MB</strong></td><td>864 MB</td><td>Not measured (engine only)</td></tr>
-                <tr><th scope="row">Idle working set</th><td class="bench-cella">196 MB</td><td><strong>~35 MB</strong></td><td>288 MB</td><td>Not measured (engine only)</td></tr>
+                <tr><th scope="row">Open workbook</th><td class="bench-cella"><strong>3.1 s</strong></td><td>7.8 s</td><td>11.7 s</td></tr>
+                <tr><th scope="row">Recalculate all 2M formulas</th><td class="bench-cella">1.30 s</td><td><strong>0.31 s</strong></td><td>16.9 s</td></tr>
+                <tr><th scope="row">Recalculate after editing B1</th><td class="bench-cella">0.36 s</td><td><strong>0.08 s</strong></td><td>16.9 s</td></tr>
+                <tr><th scope="row">Working set after open</th><td class="bench-cella">996 MB</td><td><strong>588 MB</strong></td><td>987 MB</td></tr>
+                <tr><th scope="row">Private memory after open¹</th><td class="bench-cella">1,341 MB</td><td><strong>468 MB</strong></td><td>864 MB</td></tr>
+                <tr><th scope="row">Idle working set</th><td class="bench-cella">196 MB</td><td><strong>~35 MB</strong></td><td>288 MB</td></tr>
               </tbody>
             </table>
           </div>
-        <p class="bench-footnote">Lower times are better. Cella took 3.33 s to open and then run a full recalc. Windows WMI supplied process memory. ¹ Private memory follows the source report’s measure; it is not the working set or live heap. These results describe one machine and workload.</p>
-        <details class="bench-details">
-          <summary>See engine timings and memory details</summary>
-          <div class="bench-details-body">
-            <p>Cella 0.13.0, commit <code>29a35f71</code> · <time datetime="2026-11-19">2026-11-19</time>. Single-pass release build; all 22 results are within budget. These are engine-gate timings, not the application comparison above.</p>
-          <div class="bench-scroll" role="group" tabindex="0" aria-labelledby="bench-engine-title">
-            <table class="bench-table">
-              <caption id="bench-engine-title">100k and 1M rows: measured time and budget</caption>
-              <thead><tr><th scope="col">Scenario</th><th scope="col">100k measured</th><th scope="col">100k budget</th><th scope="col">1M measured</th><th scope="col">1M budget</th></tr></thead>
-              <tbody>
-                <tr><th scope="row">Insert values <code>fill.values</code></th><td>202 ms</td><td class="bench-budget">400 ms</td><td>2.10 s</td><td class="bench-budget">4.10 s</td></tr>
-                <tr><th scope="row">Fill formulas <code>fill.formulas</code></th><td>150 ms</td><td class="bench-budget">380 ms</td><td>1.26 s</td><td class="bench-budget">3.55 s</td></tr>
-                <tr><th scope="row">Fill chained formulas <code>fill.chained</code></th><td>194 ms</td><td class="bench-budget">540 ms</td><td>1.86 s</td><td class="bench-budget">5.95 s</td></tr>
-                <tr><th scope="row">Aggregate and lookup <code>aggregate</code></th><td>71 ms</td><td class="bench-budget">200 ms</td><td>740 ms</td><td class="bench-budget">1.95 s</td></tr>
-                <tr><th scope="row">Edit and recalculate <code>edit.recalc</code></th><td>91 ms</td><td class="bench-budget">350 ms</td><td>851 ms</td><td class="bench-budget">3.65 s</td></tr>
-                <tr><th scope="row">Undo edit <code>edit.undo</code></th><td>2.1 ms</td><td class="bench-budget">4.0 ms</td><td>25 ms</td><td class="bench-budget">54 ms</td></tr>
-                <tr><th scope="row">Sort descending <code>sort.desc</code></th><td>385 ms</td><td class="bench-budget">1.05 s</td><td>4.26 s</td><td class="bench-budget">13.75 s</td></tr>
-                <tr><th scope="row">Save XLSX <code>save.xlsx</code></th><td>190 ms</td><td class="bench-budget">370 ms</td><td>1.76 s</td><td class="bench-budget">4.10 s</td></tr>
-                <tr><th scope="row">Open XLSX <code>open.xlsx</code></th><td>310 ms</td><td class="bench-budget">670 ms</td><td>2.90 s</td><td class="bench-budget">8.05 s</td></tr>
-                <tr><th scope="row">Rebuild dependency graph <code>rebuild.graph</code></th><td>56 ms</td><td class="bench-budget">170 ms</td><td>758 ms</td><td class="bench-budget">2.25 s</td></tr>
-                <tr><th scope="row">Open CSV <code>open.csv</code></th><td>67 ms</td><td class="bench-budget">140 ms</td><td>594 ms</td><td class="bench-budget">1.25 s</td></tr>
-              </tbody>
-            </table>
-          </div>
-            <div class="bench-memory">
-              <h3>Live heap</h3>
-              <p>The memory run used 1M rows × six source columns and 2M formulas. Live heap was 884.1 MB after building and 683.3 MB after saving and reopening. Reopening does not retain the 212.3 MB undo step, so this is not a change in the open process’s working set.</p>
-            </div>
-          <div class="bench-scroll" role="group" tabindex="0" aria-labelledby="bench-upstream-title">
-            <table class="bench-table">
-              <caption id="bench-upstream-title">Upstream engine comparison: 1M rows</caption>
-              <thead><tr><th scope="col">Operation</th><th scope="col">Upstream v0.19.1</th><th scope="col">Cella 0.13.0</th><th scope="col">Time ratio</th></tr></thead>
-              <tbody>
-                <tr><th scope="row">Fill row formulas</th><td>5.48 s</td><td class="bench-cella">1.43 s</td><td>3.8x</td></tr>
-                <tr><th scope="row">Fill running totals</th><td>5.21 s</td><td class="bench-cella">1.95 s</td><td>2.7x</td></tr>
-                <tr><th scope="row">Three aggregate/lookup calls</th><td>0.99 s</td><td class="bench-cella">0.77 s</td><td>1.3x</td></tr>
-                <tr><th scope="row">Recalculate after one edit</th><td>3.64 s</td><td class="bench-cella">0.95 s</td><td>3.8x</td></tr>
-                <tr><th scope="row">Sort 1,000,000 rows</th><td>11.19 s</td><td class="bench-cella">4.88 s</td><td>2.3x</td></tr>
-                <tr><th scope="row">Save XLSX</th><td>7.65 s (64.9 MB)</td><td class="bench-cella">1.91 s (70.4 MB)</td><td>4.0x</td></tr>
-              </tbody>
-            </table>
-          </div>
-            <p>The engines batch writes differently, so this is a comparison of scale, not a controlled head-to-head run. The report does not measure cold application startup or the equivalent workloads on macOS, Linux or WebAssembly.</p>
-            <div class="bench-repro">
-              <h3>Reproduce locally</h3>
-              <pre><code>cargo xtask perf
-cargo run --release -p cella-engine --example memory -- 1000000</code></pre>
-            </div>
-          </div>
-        </details>
-        <div class="bench-links">
-          <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/performance-report.md">Full report and raw output <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-external"></use></svg></a>
-          <a class="text-link" href="https://github.com/Matt-qwq/cella/blob/main/docs/external-benchmark.md">Comparison methodology <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-external"></use></svg></a>
-        </div>
+        <p class="bench-footnote">Lower times are better. Windows WMI supplied process memory. ¹ Private memory follows the source report’s measure; it is not the working set or live heap. These results describe one machine and workload.</p>
       </div>
     </section>
 

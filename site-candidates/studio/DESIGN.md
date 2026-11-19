@@ -38,8 +38,8 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
   it does not run a command or touch a file.
 - **Show measured performance.** A labelled chart compares like-for-like open
   times; the table keeps recalculation and memory visible, including results
-  where Cella trails Excel. Engine gates and heap measurements stay in a native
-  disclosure. These are dated snapshots of the repository reports: update both
+  where Cella trails Excel. The public comparison covers Cella, Excel and WPS.
+  These are dated snapshots of the repository reports: update both
   localized pages when replacing their measurements. On phones, wide tables
   scroll within their own region, keeping the measurement column in view.
 - **Connect the sections.** Native scroll timelines move the image inside the dark

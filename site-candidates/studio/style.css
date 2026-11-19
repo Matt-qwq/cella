@@ -876,7 +876,7 @@ html[lang="zh-Hans"] .bench-head h2 + p { max-inline-size: 36ic; }
   font-size: .75rem;
   font-variant-numeric: tabular-nums;
 }
-.bench-notes h3, .bench-memory h3, .bench-repro h3 { font-size: 1.12rem; }
+.bench-notes h3 { font-size: 1.12rem; }
 .bench-notes p { max-inline-size: 55ch; margin-block-start: .55rem; color: var(--secondary-ink); font-size: .95rem; text-wrap: pretty; }
 html[lang="zh-Hans"] .bench-notes p { max-inline-size: 31ic; }
 .bench-scroll {
@@ -886,7 +886,7 @@ html[lang="zh-Hans"] .bench-notes p { max-inline-size: 31ic; }
   scrollbar-color: var(--control-line) var(--paper);
 }
 .bench-scroll:focus-visible { outline-offset: 2px; }
-.bench-table { inline-size: 100%; min-inline-size: 46rem; border-collapse: collapse; font-size: .875rem; font-variant-numeric: tabular-nums; }
+.bench-table { inline-size: 100%; min-inline-size: 34rem; border-collapse: collapse; font-size: .875rem; font-variant-numeric: tabular-nums; }
 .bench-table caption { text-align: start; padding-block: 0 .6rem; color: var(--ink); font-size: 1rem; font-weight: 650; }
 .bench-table :is(th, td) {
   padding: .62rem .75rem;
@@ -897,32 +897,12 @@ html[lang="zh-Hans"] .bench-notes p { max-inline-size: 31ic; }
 .bench-table thead th { background: var(--cool-paper); border-block-start: 1px solid var(--line); }
 .bench-table th:first-child { text-align: start; }
 .bench-table tbody th { font-weight: 600; }
-.bench-table th small, .bench-table th code { display: block; color: var(--muted); font-size: .8em; font-weight: 400; }
+.bench-table th small { display: block; color: var(--muted); font-size: .8em; font-weight: 400; }
 .bench-table .bench-cella { background: var(--paper); }
 .bench-table thead .bench-cella { background: var(--stage); }
-.bench-budget { color: var(--muted); }
 .bench-scroll-hint { display: none; color: var(--muted); font-size: .8125rem; }
 .bench-footnote { max-inline-size: 82ch; margin-block-start: .85rem; color: var(--muted); font-size: .8125rem; text-wrap: pretty; }
 html[lang="zh-Hans"] .bench-footnote { max-inline-size: 63ic; }
-.bench-details { margin-block-start: clamp(1.35rem, 3.1vw, 2.2rem); border: 1px solid var(--line); border-radius: var(--radius-window); background: var(--paper); }
-.bench-details summary {
-  align-content: center;
-  min-block-size: 44px;
-  padding: .65rem clamp(.85rem, 2vw, 1.35rem);
-  font-size: .95rem;
-  font-weight: 650;
-  cursor: pointer;
-}
-.bench-details summary:hover { color: var(--focus); }
-.bench-details[open] summary { border-block-end: 1px solid var(--line); }
-.bench-details-body { display: grid; gap: 1.3rem; padding: clamp(.85rem, 2vw, 1.35rem); }
-.bench-details-body .bench-table thead th { background: var(--stage-top); }
-.bench-details-body .bench-table .bench-cella { background: var(--white); }
-.bench-details-body p { max-inline-size: 75ch; color: var(--secondary-ink); font-size: .9rem; text-wrap: pretty; }
-html[lang="zh-Hans"] .bench-details-body p { max-inline-size: 61ic; }
-.bench-memory p { margin-block-start: .4rem; }
-.bench-repro pre { margin-block-start: .6rem; padding: .8rem; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--white); font-size: .84rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.bench-links { display: flex; flex-wrap: wrap; gap: .1rem 1.3rem; margin-block-start: .65rem; font-size: .875rem; }
 
 @media (max-width: 46rem) {
   .bench-head, .bench-overview { grid-template-columns: minmax(0, 1fr); }
@@ -938,7 +918,6 @@ html[lang="zh-Hans"] .bench-details-body p { max-inline-size: 61ic; }
     box-shadow: 1px 0 var(--line);
   }
   .bench-table tbody th { background: var(--white); }
-  .bench-details-body .bench-table tbody th { background: var(--paper); }
 }
 @media (max-width: 35rem) {
   .bench-table { min-inline-size: 38rem; }
