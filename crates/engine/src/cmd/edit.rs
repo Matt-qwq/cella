@@ -342,27 +342,29 @@ pub(crate) fn json_to_input(v: &Json) -> String {
     }
 }
 
-/// Coarse attribution for `CELLA_PROFILE` on the import path: what a `range.setValues` spends
-/// building cells (dispatch, per-cell style reads, typed-input parsing) against what it spends
+/// Coarse attribution for `CELLA_PROFILE` on a bulk write path: what it spends building cells
+/// (dispatch, per-cell style reads, typed-input parsing, formula rewriting) against what it spends
 /// writing them to the store. The clock is read at row boundaries only — never per cell — and
-/// never on wasm, where it would trap. The rare row that mixes stored cells with a blank writes
-/// its tail through `set_cell` inside the dispatch segment; attribution stays coarse on purpose.
-struct SetValuesProfile {
-    dispatch_ms: f64,
+/// never on wasm, where it would trap. Attribution stays coarse on purpose: a row that mixes
+/// stored cells with a blank writes its tail through `set_cell` inside the build segment.
+struct WriteProfile {
+    /// How the line the profile prints is labelled (`setValues`, `paste`).
+    label: &'static str,
+    build_ms: f64,
     write_ms: f64,
     last: std::time::Instant,
 }
 
-impl SetValuesProfile {
+impl WriteProfile {
     #[allow(clippy::disallowed_methods)]
-    fn start() -> Option<Self> {
+    fn start(label: &'static str) -> Option<Self> {
         if cfg!(target_arch = "wasm32") || std::env::var_os("CELLA_PROFILE").is_none() {
             return None;
         }
-        Some(Self { dispatch_ms: 0.0, write_ms: 0.0, last: std::time::Instant::now() })
+        Some(Self { label, build_ms: 0.0, write_ms: 0.0, last: std::time::Instant::now() })
     }
 
-    /// A row begins; the next segment is cell dispatch.
+    /// A row begins; the next segment is building its cells.
     #[allow(clippy::disallowed_methods)]
     fn row_started(&mut self) {
         self.last = std::time::Instant::now();
@@ -372,7 +374,7 @@ impl SetValuesProfile {
     #[allow(clippy::disallowed_methods)]
     fn built(&mut self) {
         let now = std::time::Instant::now();
-        self.dispatch_ms += now.duration_since(self.last).as_secs_f64() * 1000.0;
+        self.build_ms += now.duration_since(self.last).as_secs_f64() * 1000.0;
         self.last = now;
     }
 
@@ -382,6 +384,10 @@ impl SetValuesProfile {
         let now = std::time::Instant::now();
         self.write_ms += now.duration_since(self.last).as_secs_f64() * 1000.0;
         self.last = now;
+    }
+
+    fn print(&self, rows: usize, cells: usize) {
+        eprintln!("{}: {rows} rows ({cells} cells), dispatch {:.1} ms, store write {:.1} ms", self.label, self.build_ms, self.write_ms);
     }
 }
 
@@ -406,7 +412,7 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     // while a cell at a time pays a row lookup, a band lookup and a growth step each. A sheet
     // holding a cell picture keeps the per-cell way, because set_cell owns that rule.
     let row_batches = cells >= 64;
-    let mut profile = SetValuesProfile::start();
+    let mut profile = WriteProfile::start("setValues");
     edit(s, |cx| {
         let mut batch: Vec<(u32, Cell)> = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
@@ -470,7 +476,7 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
         Ok(())
     })?;
     if let Some(prof) = profile {
-        eprintln!("setValues: {} rows ({} cells), dispatch {:.1} ms, store write {:.1} ms", rows.len(), count, prof.dispatch_ms, prof.write_ms);
+        prof.print(rows.len(), count);
     }
     Ok(json!({"cells": count}))
 }
@@ -1224,6 +1230,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     let src_wb = clip.wb.clone();
     let Some(src_sheet) = src_wb.sheet(clip.sheet) else { return Err(EngineError::Other("The copied sheet no longer exists.".into())) };
     let src_sheet_name = src_sheet.name.clone();
+    // A sheet with no spill has no cell whose displayed value could differ from the value the cell
+    // stores, so a paste need not read the same band twice for every cell.
+    let src_has_spills = !src_sheet.spill_ranges.is_empty() || !src_sheet.spill.is_empty();
     if cut_move && at.offset((tiles_r * h).saturating_sub(1) as i64, (tiles_c * w).saturating_sub(1) as i64).is_none() {
         // Check the whole footprint before the source is emptied, so a move that overflows the grid loses nothing.
         return Err(EngineError::Other("The cut area doesn't fit at this position; nothing was moved.".into()));
@@ -1256,15 +1265,23 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             }
             moved_formulas = taken.into_iter().collect();
         }
+        let mut profile = WriteProfile::start("paste");
         for tr in 0..tiles_r {
             for tc in 0..tiles_c {
                 for r in 0..src.height() {
+                    if let Some(prof) = profile.as_mut() {
+                        prof.row_started();
+                    }
                     for c in 0..src.width() {
                         let sc = CellRef::new(src.start.row + r, src.start.col + c);
                         let (dr, dc) = if transpose { (c, r) } else { (r, c) };
                         let Some(dest) = at.offset((tr * h + dr) as i64, (tc * w + dc) as i64) else { continue };
                         let src_cell = if cut_move { moved_formulas.get(&sc).cloned() } else { src_sheet.cell(sc) };
-                        let src_val = src_sheet.value(sc);
+                        // The value a paste takes is the displayed one: with no spill on the source
+                        // sheet that is the stored cell's own value, so the second read of the same
+                        // band — one per pasted cell — is skipped.
+                        let src_val =
+                            if src_has_spills { src_sheet.value(sc) } else { src_cell.as_ref().map_or(Value::Empty, |cell| cell.value.clone()) };
                         let src_picture = if cut_move { moved_pictures.get(&sc) } else { src_sheet.cell_pictures.get(&sc) }.cloned();
                         if skip_blanks && src_picture.is_none() && src_val.is_empty() && src_cell.as_ref().is_none_or(|x| x.formula.is_none()) {
                             continue;
@@ -1419,6 +1436,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 sh.validations.push(dv);
                             }
                         }
+                        if let Some(prof) = profile.as_mut() {
+                            prof.built();
+                        }
                         match what {
                             What::Comments => {
                                 if let Some(cm) = src_sheet.comments.get(&sc).cloned() {
@@ -1445,9 +1465,16 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             cx.sheet_mut(dest_sheet)?.cell_pictures.insert(dest, picture);
                         }
                         cx.touch(dest_sheet, dest);
+                        if let Some(prof) = profile.as_mut() {
+                            prof.written();
+                        }
                     }
                 }
             }
+        }
+        if let Some(prof) = profile {
+            let rows = (tiles_r as usize).saturating_mul(tiles_c as usize).saturating_mul(src.height() as usize);
+            prof.print(rows, rows.saturating_mul(src.width() as usize));
         }
         // Merged areas inside the copied block travel with it.
         if matches!(what, What::All | What::Formats) && !transpose {

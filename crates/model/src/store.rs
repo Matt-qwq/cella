@@ -638,6 +638,12 @@ struct Band {
     /// Sorted by row: 64 rows of 48 bytes each, where a `BTreeMap`'s leaves sit three quarters full
     /// and cost some forty bytes a row for the privilege.
     rows: Vec<BandRow>,
+    /// Which of the 64 row keys has a row, bit `key`. Finding a row used to be a binary search over
+    /// `rows`: six probes, each into a different 48-byte header, which is the largest single cost
+    /// of a cell read (measured 15 of its 60 ns). A band is at most 64 rows, so one word holds the
+    /// answer and `popcount` of the bits below it is the index — kept in step with `rows` by the
+    /// three places that change it, and derived after a decode.
+    row_bits: u64,
     /// The presence bitmaps, 64 columns a word, one slice per row.
     bits: Vec<u64>,
     /// The kind of each stored cell, in runs; one slice per row.
@@ -670,6 +676,7 @@ impl Clone for Band {
     fn clone(&self) -> Band {
         Band {
             rows: self.rows.clone(),
+            row_bits: self.row_bits,
             bits: self.bits.clone(),
             kinds: self.kinds.clone(),
             styles: self.styles.clone(),
@@ -690,6 +697,12 @@ impl Clone for Band {
 /// Kept as the pointer fast path of that rule.
 fn same_formula(a: &Arc<Formula>, b: &Arc<Formula>) -> bool {
     Arc::ptr_eq(a, b) || a == b
+}
+
+/// The bits a number is stored under. The tables keep one entry for zero, so `-0.0` — which
+/// equals `0.0` — is stored as `0.0`; a compare-then-write has to use the same rule.
+fn number_bits(n: f64) -> u64 {
+    if n == 0.0 { 0f64.to_bits() } else { n.to_bits() }
 }
 
 /// Mixes the bits of a double into a slot index.
@@ -917,7 +930,19 @@ impl Band {
     }
 
     fn row_index(&self, key: u32) -> Option<usize> {
+        if key < BAND {
+            let bit = 1u64 << key;
+            // The bit says whether the row is there; the ones below it say which row it is.
+            return (self.row_bits & bit != 0).then(|| (self.row_bits & (bit - 1)).count_ones() as usize);
+        }
+        // A row key outside the band: only a decoded page could carry one, and the sorted search
+        // still answers it (as missing, or as the row it names), never as a wrong row.
         self.rows.binary_search_by_key(&key, |r| r.key).ok()
+    }
+
+    /// The row bitmap a list of rows spells. Used where a band is built from bytes or checked.
+    fn rows_bits(rows: &[BandRow]) -> u64 {
+        rows.iter().fold(0u64, |bits, row| if row.key < BAND { bits | (1u64 << row.key) } else { bits })
     }
 
     fn row(&self, key: u32) -> Option<&BandRow> {
@@ -938,6 +963,9 @@ impl Band {
                     styles_at: self.styles.len() as u32,
                     ..Default::default()
                 };
+                if row.key < BAND {
+                    self.row_bits |= 1u64 << row.key;
+                }
                 self.rows.insert(i, row);
                 self.tag.rows_touched = true;
                 i
@@ -952,6 +980,9 @@ impl Band {
         }
         self.tag.rows_touched = true;
         let row = self.rows.remove(at);
+        if row.key < BAND {
+            self.row_bits &= !(1u64 << row.key);
+        }
         let (bits_at, words) = (row.bits_at as usize, row.words as usize);
         let (cells_at, cells) = (row.cells_at as usize, row.cells as usize);
         let (kinds_at, kinds) = (row.kinds_at as usize, row.kind_runs as usize);
@@ -1146,7 +1177,7 @@ impl Band {
     /// The band's slot for `v`, adding it when new — `None` once the band holds more numbers than
     /// a `u16` can index, which sends the cell to the row's wide table instead.
     fn number_slot(&mut self, v: f64) -> Option<u16> {
-        let bits = if v == 0.0 { 0f64.to_bits() } else { v.to_bits() };
+        let bits = number_bits(v);
         if self.number_slots.is_empty() {
             if self.numbers.is_empty() {
                 self.number_slots = vec![0; 16];
@@ -1231,7 +1262,7 @@ impl Band {
             }
             Value::Number(n) => match self.number_slot(*n) {
                 Some(slot) => (NUMBER, Payload::Small(slot)),
-                None => (NUMBER_WIDE, Payload::Wide(if *n == 0.0 { 0f64.to_bits() } else { n.to_bits() })),
+                None => (NUMBER_WIDE, Payload::Wide(number_bits(*n))),
             },
             Value::Bool(b) => (BOOL, Payload::Small(u16::from(*b))),
             Value::Error(e) => (ERROR, Payload::Small(error_code(*e) as u16)),
@@ -1344,9 +1375,11 @@ impl Band {
         }
     }
 
-    /// Stores `cell` at `col`; a blank cell is removed instead. Text and style slots are resolved
-    /// before the row is borrowed, because both live in the band.
-    fn put(&mut self, row_key: u32, col: u32, cell: Cell) {
+    /// Stores `cell` at `col`; a blank cell is removed instead. Returns whether a cell was stored
+    /// at that position before and whether one is stored there now, so a caller that keeps the
+    /// store's length does not have to probe the band twice more to learn it. Text and style slots
+    /// are resolved before the row is borrowed, because both live in the band.
+    fn put(&mut self, row_key: u32, col: u32, cell: Cell) -> (bool, bool) {
         let blank = cell.is_blank();
         let (kind, payload) = if blank { (EMPTY, Payload::Small(0)) } else { self.payload(&cell.value) };
         let style = if blank { 0 } else { self.style_slot(cell.style) };
@@ -1399,6 +1432,45 @@ impl Band {
         if self.rows[at].is_empty() {
             self.clear_row_at(at);
         }
+        (existing.is_some(), !blank)
+    }
+
+    /// Whether the cell stored at (`row_key`, `col`) already holds exactly `value`, as the packed
+    /// row sees it. `None` when no cell is stored there: a value write would have nowhere to go,
+    /// exactly as [`set_value`](Self::set_value) refuses it, so a compare-then-write can tell the
+    /// two apart without building a `Cell` or a new `Value`.
+    fn value_is(&self, row_key: u32, col: u32, value: &Value) -> Option<bool> {
+        let at = self.row_index(row_key)?;
+        let row = self.rows.get(at)?;
+        let i = row.index_of(self, col)?;
+        Some(self.value_matches(row, i, col, value))
+    }
+
+    /// Whether the `i`th stored cell of `row` holds `value`. The packed kind and payload are
+    /// compared against the incoming value's own bits: no `Cell`, no rebuilt `Value` — and for a
+    /// text the pointer first, so a value the band already holds costs one comparison.
+    fn value_matches(&self, row: &BandRow, i: usize, col: u32, value: &Value) -> bool {
+        let payload = row.payload_at(self, i);
+        match (row.kind_at(self, i), value) {
+            (NUMBER, Value::Number(n)) => self.number(payload).to_bits() == number_bits(*n),
+            (NUMBER_WIDE, Value::Number(n)) => row.wide_at(self, i) == number_bits(*n),
+            (TEXT, Value::Text(t)) => self.text_matches(u64::from(payload), t),
+            (TEXT_WIDE, Value::Text(t)) => self.text_matches(row.wide_at(self, i), t),
+            (BOOL, Value::Bool(b)) => (payload != 0) == *b,
+            (ERROR, Value::Error(e)) => payload == error_code(*e) as u16,
+            // An array value is charged once per band and rarely written back; the pointer is the
+            // test, so a deep-equal copy is a miss that writes, never a wrong skip.
+            (ARRAY, Value::Array(a)) => {
+                row.arrays().binary_search_by_key(&col, |(c, _)| *c).is_ok_and(|j| row.arrays().get(j).is_some_and(|(_, had)| Arc::ptr_eq(had, a)))
+            }
+            (EMPTY, Value::Empty) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether the text at `slot` is `text`: the same `Arc` first, then the characters.
+    fn text_matches(&self, slot: u64, text: &Arc<str>) -> bool {
+        self.texts.get(slot as usize).is_some_and(|stored| Arc::ptr_eq(stored, text) || stored.as_ref() == text.as_ref())
     }
 
     /// Replaces the value of a stored cell, keeping its formula and style. Returns false when no
@@ -1516,7 +1588,12 @@ impl Band {
         };
         match self.rows.binary_search_by_key(&row_key, |r| r.key) {
             Ok(i) => self.rows[i] = row,
-            Err(i) => self.rows.insert(i, row),
+            Err(i) => {
+                if row_key < BAND {
+                    self.row_bits |= 1u64 << row_key;
+                }
+                self.rows.insert(i, row);
+            }
         }
     }
 
@@ -2737,6 +2814,28 @@ impl Iterator for ScanWalk<'_> {
     }
 }
 
+/// Whether writing `values` into `band` would change anything it holds: the compare half of a
+/// compare-then-write. Reads only, so a worker can ask before it copies the band; the first
+/// difference ends the scan, so a band that does change pays one extra lookup, not a second pass.
+/// A value that lands on no stored cell is not a change either: a value write has nowhere to put
+/// it, exactly as [`Band::set_value`] refuses it. `at` maps a batch cell to its packed position
+/// (row key, column): a mapped store's logical rows are not its physical ones.
+fn band_slice_changes(band: &Band, values: &[(CellRef, Value)], at: impl Fn(&CellRef) -> Option<(u32, u32)>) -> bool {
+    values.iter().any(|(c, v)| match at(c) {
+        Some((row, col)) => band.value_is(row, col, v) == Some(false),
+        None => false,
+    })
+}
+
+/// What one value batch did to the bands it covers: how many it changed and how many it left
+/// alone because every value was already theirs. `CELLA_PROFILE` prints it (one line a batch), so
+/// the compare-then-write's effect on a recalculation's write phase is visible without a profiler.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WrittenBands {
+    changed: usize,
+    unchanged: usize,
+}
+
 /// One run of a value batch that lands in one band: `values[start..end]` all map to band `key`,
 /// and `base` is the physical row of `values[start]`. A band can be fed by several runs when the
 /// row map has a gap inside it, so a plan merges them into one task.
@@ -3332,13 +3431,18 @@ impl CellStore {
             return;
         }
         self.band_for_write(key);
-        let had = self.contains(c);
         if !self.array_anchors {
             self.array_anchors = cell_has_array(&cell);
         }
-        let band = Arc::make_mut(self.bands.entry(key).or_default());
-        band.put(row, col, cell);
-        match (had, self.contains(c)) {
+        // `put` answers both questions the length bookkeeping asks; two `contains` probes around it
+        // cost a band lookup, a row search and a rank each, which is what a paste of six million
+        // cells was paying per cell.
+        let (had, has, empty) = {
+            let band = Arc::make_mut(self.bands.entry(key).or_default());
+            let (had, has) = band.put(row, col, cell);
+            (had, has, band.rows.is_empty())
+        };
+        match (had, has) {
             (false, true) => {
                 self.len += 1;
                 // The only cell that can have entered the box: this one.
@@ -3351,7 +3455,7 @@ impl CellStore {
             }
             _ => {}
         }
-        if self.bands.get(&key).is_some_and(|b| b.rows.is_empty()) {
+        if empty {
             self.bands.remove(&key);
         }
     }
@@ -3440,8 +3544,21 @@ impl CellStore {
             return false;
         }
         self.band_for_write(key);
+        let Some(band) = self.bands.get(&key) else { return false };
+        // Already what it would write: no cell enters or leaves, so there is nothing to copy or
+        // repair. True is the answer a write that lands on a stored cell gives.
+        if band.value_is(physical % BAND, col, value) == Some(true) {
+            return true;
+        }
         let Some(band) = self.bands.get_mut(&key) else { return false };
         Arc::make_mut(band).set_value(physical % BAND, col, value)
+    }
+
+    /// Whether writing `values` into band `key` would change anything it holds; see
+    /// [`band_slice_changes`]. A band the store does not hold is unchanged: none of the values has
+    /// a cell to land in.
+    fn band_changes(&self, key: u32, values: &[(CellRef, Value)], at: impl Fn(&CellRef) -> Option<(u32, u32)>) -> bool {
+        self.bands.get(&key).is_some_and(|band| band_slice_changes(band, values, at))
     }
 
     /// Replaces the values of cells that already exist — like [`set_value`](Self::set_value), the
@@ -3457,11 +3574,34 @@ impl CellStore {
         if values.is_empty() {
             return;
         }
+        // `CELLA_PROFILE` timing: one clock read per batch — a recalculation's write-back — never
+        // per value, and never on wasm, where reading a clock traps (as `cmd::commit`).
+        #[allow(clippy::disallowed_methods)]
+        let started =
+            if cfg!(target_arch = "wasm32") || std::env::var_os("CELLA_PROFILE").is_none() { None } else { Some(std::time::Instant::now()) };
+        let count = values.len();
+        let outcome = self.write_values(values);
+        if let Some(started) = started
+            && let Some(outcome) = outcome
+        {
+            eprintln!(
+                "set values: {count} values, {} bands ({} unchanged) {:.1} ms",
+                outcome.changed.saturating_add(outcome.unchanged),
+                outcome.unchanged,
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+
+    /// The write [`set_values`](Self::set_values) makes, answering what it did to the bands when the
+    /// batch took a path that counts them (`None` for the per-value fallback, which is not a band
+    /// walk, and for the mapped parallel one, which counts nothing).
+    fn write_values(&mut self, values: &mut [(CellRef, Value)]) -> Option<WrittenBands> {
         if !values.windows(2).all(|w| (w[0].0.row, w[0].0.col) <= (w[1].0.row, w[1].0.col)) {
             for (c, v) in values.iter() {
                 self.set_value(*c, v);
             }
-            return;
+            return None;
         }
         if !self.row_map.is_identity() || !self.col_map.is_identity() {
             // The logical batch still arrives in row order, and inside one row segment physical
@@ -3472,11 +3612,10 @@ impl CellStore {
             if values.len() >= PARALLEL_WRITE_MIN && values.len() <= PARALLEL_WRITE_MAX_CELLS {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
                 if threads > 1 && self.set_values_mapped_parallel(values, threads) {
-                    return;
+                    return None;
                 }
             }
-            self.set_values_mapped(values);
-            return;
+            return Some(self.set_values_mapped(values));
         }
         // A paged band a result lands in has to come back before either write path looks at the
         // live map. Values are sorted by row, so the touched bands are a short run of keys.
@@ -3493,19 +3632,19 @@ impl CellStore {
         if values.len() >= PARALLEL_WRITE_MIN && values.len() <= PARALLEL_WRITE_MAX_CELLS {
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
             if threads > 1 {
-                self.set_values_parallel(values, threads);
-                return;
+                return Some(self.set_values_parallel(values, threads));
             }
         }
-        self.set_values_sequential(values);
+        Some(self.set_values_sequential(values))
     }
 
     /// The value write on a mapped store: walk the row map's segments in logical order and each
     /// segment's bands in physical order, taking one band borrow and one page materialize per run.
     /// Rows the map does not cover are gaps: a value there has nowhere to go, exactly as
     /// [`set_value`](Self::set_value) finds no cell, so no band is allocated for them.
-    fn set_values_mapped(&mut self, values: &[(CellRef, Value)]) {
-        let (Some(first), Some(last)) = (values.first(), values.last()) else { return };
+    fn set_values_mapped(&mut self, values: &[(CellRef, Value)]) -> WrittenBands {
+        let mut outcome = WrittenBands::default();
+        let (Some(first), Some(last)) = (values.first(), values.last()) else { return outcome };
         let mut i = 0;
         for segment in self.row_map.segments_in(first.0.row, last.0.row) {
             // The values before this segment start on logical rows the map does not cover.
@@ -3523,26 +3662,35 @@ impl CellStore {
                     continue;
                 }
                 let col_map = &self.col_map;
-                if let Some(band) = self.bands.get_mut(&key) {
-                    let band = Arc::make_mut(band);
-                    let first_row = values[i].0.row;
-                    let row0 = physical(first_row) % BAND;
-                    for (c, v) in &values[i..run_end] {
-                        if let Some(col) = col_map.map(c.col) {
-                            band.set_value(row0 + (c.row - first_row), col, v);
+                let first_row = values[i].0.row;
+                let row0 = physical(first_row) % BAND;
+                // The same compare-then-write as the identity path, through the two maps.
+                let changes = self.band_changes(key, &values[i..run_end], |c| col_map.map(c.col).map(|col| (row0 + (c.row - first_row), col)));
+                if changes {
+                    if let Some(band) = self.bands.get_mut(&key) {
+                        let band = Arc::make_mut(band);
+                        for (c, v) in &values[i..run_end] {
+                            if let Some(col) = col_map.map(c.col) {
+                                band.set_value(row0 + (c.row - first_row), col, v);
+                            }
                         }
                     }
+                    self.finish_band(key);
+                    outcome.changed += 1;
+                } else {
+                    outcome.unchanged += 1;
                 }
-                self.finish_band(key);
                 i = run_end;
             }
             if i >= values.len() {
                 break;
             }
         }
+        outcome
     }
 
-    fn set_values_sequential(&mut self, values: &[(CellRef, Value)]) {
+    fn set_values_sequential(&mut self, values: &[(CellRef, Value)]) -> WrittenBands {
+        let mut outcome = WrittenBands::default();
         let mut i = 0;
         while i < values.len() {
             let key = values[i].0.row / BAND;
@@ -3551,15 +3699,24 @@ impl CellStore {
                 i = end;
                 continue;
             }
-            if let Some(band) = self.bands.get_mut(&key) {
-                let band = Arc::make_mut(band);
-                for (c, v) in &values[i..end] {
-                    band.set_value(c.row % BAND, c.col, v);
+            // Compare before writing: a band where every value is already what it holds (or lands
+            // on no stored cell) is left alone, so the copy an undo snapshot makes the write pay
+            // for is not paid for a rewrite that changes nothing.
+            if self.band_changes(key, &values[i..end], |c| Some((c.row % BAND, c.col))) {
+                if let Some(band) = self.bands.get_mut(&key) {
+                    let band = Arc::make_mut(band);
+                    for (c, v) in &values[i..end] {
+                        band.set_value(c.row % BAND, c.col, v);
+                    }
                 }
+                self.finish_band(key);
+                outcome.changed += 1;
+            } else {
+                outcome.unchanged += 1;
             }
-            self.finish_band(key);
             i = end;
         }
+        outcome
     }
 
     /// The value-only write on a mapped store, split over threads. The plan is the list of band
@@ -3624,6 +3781,17 @@ impl CellStore {
                     let mut out = Vec::with_capacity(part.len());
                     for (key, list) in part {
                         let Some(old) = bands.get(key) else { continue };
+                        // A band every value of this task is already what it holds is left as it
+                        // is: the copy exists to be written into, and there is no write to make.
+                        let changes = list.iter().any(|run| {
+                            let Some((first_cell, _)) = values.get(run.start) else { return false };
+                            let Some(slice) = values.get(run.start..run.end) else { return false };
+                            let row0 = run.base % BAND;
+                            band_slice_changes(old, slice, |c| col_map.map(c.col).map(|col| (row0 + (c.row - first_cell.row), col)))
+                        });
+                        if !changes {
+                            continue;
+                        }
                         let mut band = (**old).clone();
                         for run in list {
                             let Some((first_cell, _)) = values.get(run.start) else { continue };
@@ -3663,7 +3831,7 @@ impl CellStore {
     /// was given, applies their values and hands the new bands back; the store replaces them only
     /// when every worker finished. The old bands stay with the undo snapshot.
     #[cfg(not(target_arch = "wasm32"))]
-    fn set_values_parallel(&mut self, values: &[(CellRef, Value)], threads: usize) {
+    fn set_values_parallel(&mut self, values: &[(CellRef, Value)], threads: usize) -> WrittenBands {
         let mut groups: Vec<(u32, usize, usize)> = Vec::new();
         let mut i = 0;
         while i < values.len() {
@@ -3674,40 +3842,55 @@ impl CellStore {
         }
         let bands = &self.bands;
         let chunk = groups.len().div_ceil(threads);
-        let results: Vec<std::thread::Result<Vec<(u32, Arc<Band>)>>> = std::thread::scope(|scope| {
+        let results: Vec<std::thread::Result<(Vec<(u32, Arc<Band>)>, usize)>> = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for part in groups.chunks(chunk) {
                 handles.push(scope.spawn(move || {
                     let mut out = Vec::with_capacity(part.len());
+                    let mut unchanged = 0usize;
                     for &(key, start, end) in part {
-                        let Some(old) = bands.get(&key) else { continue };
+                        let Some(slice) = values.get(start..end) else { continue };
+                        // The compare half of the write: a band whose values all match is left alone,
+                        // so the worker's copy — and the replacement of a band the snapshot shares —
+                        // is not paid for a write that changes nothing.
+                        let Some(old) = bands.get(&key) else {
+                            unchanged += 1;
+                            continue;
+                        };
+                        if !band_slice_changes(old, slice, |c| Some((c.row % BAND, c.col))) {
+                            unchanged += 1;
+                            continue;
+                        }
                         let mut band = (**old).clone();
-                        for (c, v) in &values[start..end] {
+                        for (c, v) in slice {
                             band.set_value(c.row % BAND, c.col, v);
                         }
                         band.finish();
                         out.push((key, Arc::new(band)));
                     }
-                    out
+                    (out, unchanged)
                 }));
             }
             handles.into_iter().map(|h| h.join()).collect()
         });
         let mut new_bands = Vec::with_capacity(groups.len());
+        let mut outcome = WrittenBands::default();
         for result in results {
             match result {
-                Ok(part) => new_bands.extend(part),
+                Ok((part, unchanged)) => {
+                    outcome.changed = outcome.changed.saturating_add(part.len());
+                    outcome.unchanged = outcome.unchanged.saturating_add(unchanged);
+                    new_bands.extend(part);
+                }
                 // A worker panicked: nothing has reached the store yet, so the sequential path can
                 // still do the whole batch.
-                Err(_) => {
-                    self.set_values_sequential(values);
-                    return;
-                }
+                Err(_) => return self.set_values_sequential(values),
             }
         }
         for (key, band) in new_bands {
             self.bands.insert(key, band);
         }
+        outcome
     }
 
     /// Stores a whole row at once: one band lookup and one row lookup instead of one per cell.
@@ -6368,8 +6551,10 @@ mod page {
         if !input.is_empty() {
             return None;
         }
+        let row_bits = Band::rows_bits(&rows);
         let band = Band {
             rows,
+            row_bits,
             bits,
             kinds,
             styles,
@@ -8217,6 +8402,14 @@ mod tests {
             ranges("kinds", band.kinds.len(), &|r| (r.kinds_at, r.kind_runs));
             ranges("styles", band.styles.len(), &|r| (r.styles_at, r.style_runs));
             assert!(band.rows.windows(2).all(|w| w[0].key < w[1].key), "band {bk}: rows out of order");
+            assert_eq!(band.row_bits, Band::rows_bits(&band.rows), "band {bk}: the row index disagrees with its rows");
+            for key in 0..BAND {
+                assert_eq!(
+                    band.row_index(key),
+                    band.rows.binary_search_by_key(&key, |r| r.key).ok(),
+                    "band {bk} row {key}: the row index and the sorted rows disagree"
+                );
+            }
             for row in &band.rows {
                 assert_eq!(runs_len(row.kind_runs(band)), row.cells as usize, "band {bk} row {}: kinds", row.key);
                 assert_eq!(runs_len(row.style_runs(band)), row.cells as usize, "band {bk} row {}: styles", row.key);
@@ -9125,5 +9318,259 @@ mod dictionary_audit {
         assert_eq!(slacked, 1, "only the band still being added to keeps its index and its slack");
         let exact = store.bands.values().filter(|band| band.numbers.capacity() == band.numbers.len()).count();
         assert!(exact >= 9, "nine bands finished, one is being built: {exact}");
+    }
+}
+
+#[cfg(test)]
+mod compare_then_write {
+    use super::*;
+    use crate::cell::Cell;
+
+    fn c(r: u32, col: u32) -> CellRef {
+        CellRef::new(r, col)
+    }
+
+    /// A store shaped like a recalculation's: a formula and a cached value in one column, a text in
+    /// another, over enough rows that a batch spans several bands.
+    fn sheet(rows: u32) -> CellStore {
+        let mut s = CellStore::new();
+        for r in 0..rows {
+            let mut cell = Cell::value(Value::Number(f64::from(r)));
+            cell.formula = Some(Arc::new(Formula::new(format!("=A{}+1", r + 1).as_str())));
+            s.set(c(r, 1), cell);
+            s.set(c(r, 3), Cell::value(Value::Text(Arc::from(format!("t{r}").as_str()))));
+        }
+        s
+    }
+
+    fn batch(rows: u32, delta: f64) -> Vec<(CellRef, Value)> {
+        (0..rows).map(|r| (c(r, 1), Value::Number(f64::from(r) + delta))).collect()
+    }
+
+    /// The write `set_values` makes with the compare switched off: every band in the batch is
+    /// copied and every value written, whatever the band already held. The reference a skipped
+    /// write must equal, cell for cell.
+    fn blind(s: &mut CellStore, values: &[(CellRef, Value)]) {
+        let mut i = 0;
+        while i < values.len() {
+            let key = values[i].0.row / BAND;
+            let end = values[i..].partition_point(|(x, _)| x.row / BAND == key) + i;
+            if let Some(band) = s.bands.get_mut(&key) {
+                let band = Arc::make_mut(band);
+                for (x, v) in &values[i..end] {
+                    band.set_value(x.row % BAND, x.col, v);
+                }
+            }
+            i = end;
+        }
+    }
+
+    /// The claim the skip rests on: a batch of values the store already holds leaves it exactly
+    /// what a blind write would leave — same cells, same bands, same length, same used box, no
+    /// diff — while the bands stay the snapshot's. A skipped copy must never look like ownership:
+    /// the next write that does change a cell still copies, and the snapshot keeps its value.
+    #[test]
+    fn an_unchanged_value_write_equals_a_blind_one_and_keeps_the_bands_shared() {
+        let rows = 300u32; // five bands, the last one partial
+        let mut skipped = sheet(rows);
+        let snapshot = skipped.clone();
+        let mut written = skipped.clone();
+        let values = batch(rows, 0.0);
+        let mut fast = values.clone();
+        skipped.set_values(&mut fast);
+        blind(&mut written, &values);
+        assert_eq!(skipped, written, "the store a skipped write leaves is the blind one's");
+        assert_eq!(skipped.len(), written.len());
+        assert_eq!(skipped.band_count(), written.band_count());
+        assert_eq!(skipped.used_range(), written.used_range());
+        for (key, band) in &skipped.bands {
+            assert!(written.bands.get(key).is_some_and(|other| band.same_as(other)), "band {key} holds the same cells");
+            let shared = snapshot.bands.get(key).expect("the snapshot keeps its band");
+            assert!(Arc::ptr_eq(band, shared), "a skipped write leaves band {key} shared with the snapshot");
+            assert!(Arc::strong_count(band) >= 2, "band {key} still has two owners");
+        }
+        assert!(skipped.diff(&snapshot).is_empty(), "and it changed nothing");
+
+        let mut changed = vec![(c(10, 1), Value::Number(999.0))];
+        skipped.set_values(&mut changed);
+        assert_eq!(skipped.value(c(10, 1)), Value::Number(999.0));
+        assert_eq!(snapshot.value(c(10, 1)), Value::Number(10.0), "the snapshot keeps the value it had");
+        let band = skipped.bands.get(&(10 / BAND)).expect("the band");
+        assert!(!Arc::ptr_eq(band, snapshot.bands.get(&(10 / BAND)).expect("the snapshot's band")), "the write that changes a cell copies it");
+    }
+
+    /// A batch that changes one band and not the next: the unchanged band is not copied, the changed
+    /// one is, and the store is the blind write's outside the sharing.
+    #[test]
+    fn a_mixed_batch_copies_only_the_band_that_changes() {
+        let rows = 128u32;
+        let mut skipped = sheet(rows);
+        let snapshot = skipped.clone();
+        let mut written = skipped.clone();
+        let values: Vec<(CellRef, Value)> =
+            (0..rows).map(|r| (c(r, 1), Value::Number(if r < BAND { f64::from(r) } else { f64::from(r) + 0.5 }))).collect();
+        let mut fast = values.clone();
+        skipped.set_values(&mut fast);
+        blind(&mut written, &values);
+        assert_eq!(skipped, written);
+        let b0 = skipped.bands.get(&0).expect("band 0");
+        let b1 = skipped.bands.get(&1).expect("band 1");
+        assert!(Arc::ptr_eq(b0, snapshot.bands.get(&0).expect("the snapshot's band 0")), "the unchanged band is not copied");
+        assert!(!Arc::ptr_eq(b1, snapshot.bands.get(&1).expect("the snapshot's band 1")), "the changed band is copied");
+        assert_eq!(skipped.diff(&snapshot).len(), BAND as usize, "only the changed band's cells are a diff");
+    }
+
+    /// The comparison the skip rests on: the packed row read against the incoming value, with no
+    /// `Cell` built — the same number bits (zero has one spelling in the store), the same text by
+    /// pointer or by content, a boolean, an error, a stored empty value, and "nothing stored" kept
+    /// apart from "an empty value stored".
+    #[test]
+    fn value_is_reads_the_packed_row() {
+        let text: Arc<str> = Arc::from("hello");
+        let mut s = CellStore::new();
+        s.set(c(0, 0), Cell::value(Value::Number(1.5)));
+        s.set(c(0, 1), Cell::value(Value::Text(text.clone())));
+        s.set(c(0, 2), Cell::value(Value::Bool(true)));
+        s.set(c(0, 3), Cell::value(Value::Error(CellError::Div0)));
+        s.set(c(0, 4), Cell { style: StyleId(2), ..Default::default() });
+        s.set(c(0, 5), Cell::value(Value::Number(0.0)));
+        let band = s.bands.get(&0).expect("band 0");
+        assert_eq!(band.value_is(0, 0, &Value::Number(1.5)), Some(true));
+        assert_eq!(band.value_is(0, 0, &Value::Number(1.25)), Some(false));
+        assert_eq!(band.value_is(0, 1, &Value::Text(Arc::from("hello"))), Some(true), "text is compared by content");
+        assert_eq!(band.value_is(0, 1, &Value::Text(text.clone())), Some(true), "and by pointer");
+        assert_eq!(band.value_is(0, 1, &Value::Text(Arc::from("hellp"))), Some(false));
+        assert_eq!(band.value_is(0, 2, &Value::Bool(true)), Some(true));
+        assert_eq!(band.value_is(0, 2, &Value::Bool(false)), Some(false));
+        assert_eq!(band.value_is(0, 3, &Value::Error(CellError::Div0)), Some(true));
+        assert_eq!(band.value_is(0, 3, &Value::Error(CellError::Value)), Some(false));
+        assert_eq!(band.value_is(0, 4, &Value::Empty), Some(true), "a stored empty value");
+        assert_eq!(band.value_is(0, 4, &Value::Number(0.0)), Some(false), "an empty value is not a stored zero");
+        assert_eq!(band.value_is(0, 5, &Value::Number(0.0)), Some(true));
+        assert_eq!(band.value_is(0, 5, &Value::Number(-0.0)), Some(true), "zero has one spelling in the store");
+        assert_eq!(band.value_is(0, 5, &Value::Empty), Some(false), "and a stored zero is not the empty value");
+        assert_eq!(band.value_is(0, 6, &Value::Number(0.0)), None, "nothing is stored there");
+        assert_eq!(band.value_is(9, 0, &Value::Number(1.0)), None, "no such row in the band");
+    }
+
+    /// A mapped store (a row insert above every cell, a column insert before them) skips an
+    /// unchanged batch through both maps: the batch's logical positions are not the packed ones.
+    #[test]
+    fn a_mapped_store_skips_an_unchanged_batch() {
+        let mut s = sheet(200);
+        s.shift_rows(1, 1);
+        s.shift_cols(1, 1);
+        let snapshot = s.clone();
+        let values: Vec<(CellRef, Value)> = (0..200u32).map(|r| (c(r + 1, 2), Value::Number(f64::from(r)))).collect();
+        let mut batch = values.clone();
+        s.set_values(&mut batch);
+        assert_eq!(s, snapshot, "an unchanged batch leaves a mapped store where it was");
+        assert!(s.diff(&snapshot).is_empty());
+        for (key, band) in &s.bands {
+            assert!(snapshot.bands.get(key).is_some_and(|other| Arc::ptr_eq(band, other)), "band {key} skipped, not copied");
+        }
+        // An insert at row 1 leaves logical row 1 a gap: the batch's value there lands nowhere,
+        // and row 0 keeps the value it had.
+        assert_eq!(s.value(c(1, 2)), Value::Empty, "the inserted gap still holds nothing");
+        assert_eq!(s.value(c(0, 2)), Value::Number(0.0));
+    }
+
+    /// The parallel value write (a batch above `PARALLEL_WRITE_MIN`) skips unchanged bands too: the
+    /// workers hand none back, so the snapshot keeps sharing them; a changed batch still replaces
+    /// every band it touches.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_parallel_batch_skips_unchanged_bands() {
+        let rows = 20_000u32;
+        let mut s = sheet(rows);
+        let snapshot = s.clone();
+        let mut fast = batch(rows, 0.0);
+        s.set_values(&mut fast);
+        assert_eq!(s, snapshot);
+        for (key, band) in &s.bands {
+            assert!(snapshot.bands.get(key).is_some_and(|other| Arc::ptr_eq(band, other)), "band {key} skipped");
+        }
+        let mut changed = batch(rows, 0.5);
+        s.set_values(&mut changed);
+        assert_eq!(s.value(c(rows - 1, 1)), Value::Number(f64::from(rows - 1) + 0.5));
+        assert!(!Arc::ptr_eq(&s.bands[&0], &snapshot.bands[&0]), "a changed batch replaces the band");
+        assert_eq!(snapshot.value(c(rows - 1, 1)), Value::Number(f64::from(rows - 1)), "the snapshot keeps its value");
+    }
+
+    /// A single value written over itself changes nothing; one that differs still writes, keeps the
+    /// formula and answers true.
+    #[test]
+    fn set_value_skips_an_identical_value() {
+        let mut s = sheet(4);
+        let snapshot = s.clone();
+        assert!(s.set_value(c(2, 1), &Value::Number(2.0)));
+        assert_eq!(s, snapshot);
+        for (key, band) in &s.bands {
+            assert!(snapshot.bands.get(key).is_some_and(|other| Arc::ptr_eq(band, other)), "band {key} untouched");
+        }
+        assert!(s.set_value(c(2, 1), &Value::Number(2.5)));
+        assert_eq!(s.value(c(2, 1)), Value::Number(2.5));
+        assert!(s.get(c(2, 1)).is_some_and(|cell| cell.formula.is_some()), "the formula stays");
+        assert!(!s.set_value(c(2, 6), &Value::Number(1.0)), "a value with no cell to land in is refused");
+    }
+
+    /// A cell written, overwritten and blanked keeps `len`, `contains` and the used box right:
+    /// `put` answers the two questions the length bookkeeping asks.
+    #[test]
+    fn a_cell_written_overwritten_and_blanked_keeps_the_books() {
+        let mut s = CellStore::new();
+        let cells = [(0u32, 0u32), (5, 3), (63, 64), (64, 0), (100, 10)];
+        for (i, (row, col)) in cells.into_iter().enumerate() {
+            s.set(c(row, col), Cell::value(Value::Number(i as f64)));
+            assert_eq!(s.len(), i + 1, "a new cell counts once");
+            assert!(s.contains(c(row, col)));
+        }
+        let before = (s.len(), s.used_range());
+        s.set(c(5, 3), Cell::value(Value::Number(7.0)));
+        assert_eq!(s.len(), before.0, "an overwrite changes no length");
+        assert_eq!(s.used_range(), before.1, "and no edge");
+        s.set(c(5, 3), Cell::default());
+        assert_eq!(s.len(), before.0 - 1, "a blank removes the cell");
+        assert!(!s.contains(c(5, 3)));
+        assert_eq!(s.used_range(), before.1, "the box is sized by the cells that remain");
+        s.set(c(300, 300), Cell::default());
+        assert_eq!(s.len(), before.0 - 1, "a blank on nothing adds nothing");
+        let before = s.len();
+        s.set(c(300, 300), Cell::value(Value::Number(1.0)));
+        s.set(c(300, 300), Cell::default());
+        assert_eq!(s.len(), before, "and a cell written then blanked nets out");
+        assert_eq!(s.iter().count(), s.len());
+    }
+
+    /// The row index answers exactly the rows the band holds, after rows are built one at a time,
+    /// in one go and dropped — a stale bitmap would read a row that is gone or miss one that is
+    /// there.
+    #[test]
+    fn the_row_index_agrees_with_the_rows_after_every_kind_of_edit() {
+        let mut s = CellStore::new();
+        for r in 0..BAND {
+            s.set(c(r, 0), Cell::value(Value::Number(f64::from(r))));
+        }
+        for r in [7u32, 40, 63] {
+            assert!(s.remove(c(r, 0)).is_some());
+        }
+        let mut row: Vec<(u32, Cell)> = (60..64).map(|col| (col, Cell::value(Value::Number(f64::from(col))))).collect();
+        s.set_row(3, &mut row);
+        let mut band: Vec<(u32, Cell)> = (0..BAND).map(|r| (r, Cell::value(Value::Number(f64::from(r))))).collect();
+        s.set_row(BAND + 2, &mut band);
+        s.remove(c(BAND + 2, 5));
+        for (key, band) in &s.bands {
+            assert_eq!(band.row_bits, Band::rows_bits(&band.rows), "band {key}: the row index disagrees with its rows");
+            for k in 0..BAND {
+                assert_eq!(band.row_index(k), band.rows.binary_search_by_key(&k, |r| r.key).ok(), "band {key} row {k}");
+            }
+        }
+        // The rows that were removed read as missing, and the ones around them still read.
+        let band = s.bands.get(&0).expect("band 0");
+        assert_eq!(band.value_is(7, 0, &Value::Number(7.0)), None);
+        assert_eq!(band.value_is(40, 0, &Value::Number(40.0)), None);
+        assert_eq!(band.value_is(63, 0, &Value::Number(63.0)), None);
+        assert_eq!(band.value_is(3, 62, &Value::Number(62.0)), Some(true), "the row built whole");
+        assert_eq!(band.value_is(0, 0, &Value::Number(0.0)), Some(true));
     }
 }
