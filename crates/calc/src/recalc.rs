@@ -91,6 +91,8 @@ pub struct Calc {
     /// check that M blocked arrays over N stored spills cost N + M, not N × M).
     #[cfg(test)]
     block_probes: u64,
+    #[cfg(test)]
+    pub(crate) rebuilds: usize,
 }
 
 impl Default for Calc {
@@ -114,6 +116,8 @@ impl Default for Calc {
             read_probes: 0,
             #[cfg(test)]
             block_probes: 0,
+            #[cfg(test)]
+            rebuilds: 0,
             #[cfg(test)]
             chains: 0,
             #[cfg(test)]
@@ -963,6 +967,10 @@ impl Calc {
 
     /// Rebuilds the graph from scratch.
     pub fn rebuild(&mut self, wb: &Workbook) {
+        #[cfg(test)]
+        {
+            self.rebuilds += 1;
+        }
         self.parallel_fallback = false;
         self.graph = Graph::default();
         self.unshared.clear();
@@ -1169,14 +1177,15 @@ impl Calc {
     /// and a legacy array formula's non-anchor cells are derived on open. Their dependents come
     /// along, so nothing is left reading a value the file does not hold.
     pub fn recalc_on_open(&mut self, wb: &mut Workbook) {
+        if wb.calc.full_calc_on_load {
+            // The full pass rebuilds its own graph; there is no need to build it twice.
+            self.recalc_all(wb);
+            return;
+        }
         let tp = prof_now();
         self.rebuild(wb);
         let rebuild_ms = prof_now() - tp;
         let ts = prof_now();
-        if wb.calc.full_calc_on_load {
-            self.recalc_all(wb);
-            return;
-        }
         // Spilled cells are derived state, never file content.
         let mut seeds: Vec<Key> = self.graph.dynamic.iter().copied().collect();
         for (si, sheet) in wb.sheets.iter().enumerate() {
@@ -1251,12 +1260,29 @@ impl Calc {
             let sheet = changed.first().map_or(0, |k| k.0);
             self.graph.reserve_more(sheet, changed.len().min(self.graph.len()));
         }
+        // A bulk edit of a workbook that holds no formula anywhere: the graph has no node to
+        // remove (it was built from the workbook before the edit), every spill map is empty, no
+        // used range moved, and the new workbook's `has_formulas` walk finds nothing — so every
+        // key below would read `None` and change nothing. That walk is band-level, one pass over
+        // the stored rows, and it is also the one thing that catches a formula the edit itself
+        // just wrote, whose node the per-key walk below would have to insert. Below the bulk
+        // threshold an ordinary edit keeps the exact per-key path.
+        if changed.len() >= BULK_EDIT
+            && used_changed.is_empty()
+            && self.graph.is_empty()
+            && self.graph.trim.is_empty()
+            && wb.sheets.iter().all(|s| s.spill_ranges.is_empty() && s.spill.is_empty())
+            && wb.sheets.iter().all(|s| !s.cells.has_formulas())
+        {
+            self.last_recalc_cells = 0;
+            return;
+        }
         // Whether the edit put a formula anywhere: when it did not, and the workbook has none
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
         let mut formulas = false;
         let mut shapes = cella_formula::ShapeTable::default();
         for &k in changed {
-            let formula = wb.sheet(k.0).and_then(|s| s.cell(k.1)).and_then(|c| c.formula.clone());
+            let formula = wb.sheet(k.0).and_then(|s| s.cells.formula(k.1));
             formulas |= formula.is_some();
             let parsed = formula.as_ref().and_then(|f| self.node_for(wb, k.0, k.1, f, &mut shapes));
             match parsed {
@@ -1277,8 +1303,9 @@ impl Calc {
                         }
                         cleared.push((k.0, r));
                     }
-                    // A formula that doesn't parse evaluates to #NAME?.
-                    if let Some(sheet) = wb.sheet_mut(k.0)
+                    // Only an unparseable formula needs its cached value replaced with #NAME?.
+                    if formula.is_some()
+                        && let Some(sheet) = wb.sheet_mut(k.0)
                         && let Some(mut cell) = sheet.cells.get(k.1)
                         && cell.formula.is_some()
                     {
@@ -2781,6 +2808,134 @@ pub(crate) mod tests {
         assert_eq!(host.value((0, CellRef::parse("A1").unwrap())), Some(&Value::Number(total + 63.0)));
         assert!(host.cycles.is_empty());
         assert!(host.suspensions <= 3, "{} suspensions", host.suspensions);
+    }
+
+    #[test]
+    fn sumifs_packed_numeric_columns_preserve_order_errors_and_fallback() {
+        let mut wb = Workbook::new();
+        let sh = wb.sheet_mut(0).unwrap();
+        let put = |sh: &mut cella_model::Sheet, at: &str, value| sh.cells.set(CellRef::parse(at).unwrap(), Cell::value(value));
+        for (at, value) in [
+            ("A1", Value::Error(CellError::NA)),
+            ("A2", Value::Number(1e16)),
+            ("A3", Value::Number(1.0)),
+            ("A4", Value::Number(-1e16)),
+            ("A5", Value::Bool(true)),
+            ("A6", Value::text("20")),
+            ("A7", Value::Error(CellError::Div0)),
+            ("A8", Value::Error(CellError::Ref)),
+            ("B2", Value::Number(0.1 + 0.2)),
+            ("B3", Value::text("9")),
+            ("B4", Value::Number(1.0)),
+            ("B5", Value::Number(1.0)),
+            ("B6", Value::Number(1.0)),
+            ("B7", Value::Number(1.0)),
+            ("B8", Value::Number(2.0)),
+            ("B9", Value::Number(3.0)),
+            ("B10", Value::Error(CellError::NA)),
+        ] {
+            put(sh, at, value);
+        }
+        let area = |text| crate::eval::Area { sheet: 0, range: RangeRef::parse(text).unwrap() };
+        let check = |wb: &Workbook, target, criteria, op| {
+            let trees = Trees::default();
+            let graph = Graph::default();
+            let legacy = HashMap::default();
+            let mut names = crate::eval::NameCache::default();
+            let mut rng = 1;
+            let host = PassHost::new(wb, &graph, &trees, &legacy, &mut names, &mut rng, 0.0);
+            let op = cella_functions::NumericOrderingCriterion::parse(&Value::text(op)).unwrap();
+            host.sumifs_numeric_columns(area(target), area(criteria), op)
+        };
+        assert_eq!(check(&wb, "A1:A10", "B1:B10", ">=0.3"), Some(Value::Error(CellError::Div0)));
+        // Shifted ranges align their first rows. Values 1e16, 1, -1e16 sum to 0 in row order.
+        assert_eq!(check(&wb, "A2:A4", "B4:B6", ">0"), Some(Value::Number(0.0)));
+        // Blanks and numeric text do not match a numeric ordering condition. 0.1+0.2 is not >0.3.
+        assert_eq!(check(&wb, "A1:A3", "B1:B3", ">0.3"), Some(Value::Number(0.0)));
+        assert_eq!(check(&wb, "A1:A3", "B1:B3", ">=0.3"), Some(Value::Number(1e16)));
+        let sh = wb.sheet_mut(0).unwrap();
+        sh.cells.set(CellRef::parse("A9").unwrap(), Cell::formula(Formula::new("=10")));
+        assert_eq!(check(&wb, "A1:A10", "B1:B10", ">=0.3"), None, "late formula after a matching error");
+        let sh = wb.sheet_mut(0).unwrap();
+        put(sh, "B2", Value::from(cella_core::Array::row(vec![Value::Number(1.0)])));
+        assert_eq!(check(&wb, "A1:A3", "B1:B3", ">=0.3"), None, "array criteria require scalarization");
+        let sh = wb.sheet_mut(0).unwrap();
+        sh.spill.insert(CellRef::parse("B1").unwrap(), Value::Number(1.0));
+        assert_eq!(check(&wb, "A1:A3", "B4:B6", ">0"), None, "existing spills decline without evaluating");
+    }
+
+    #[test]
+    fn packed_sum_formula_column_preserves_prepass_and_spill_fallback() {
+        use crate::eval::{Acc, Agg};
+
+        let col = RangeRef::parse("D1:D4096").unwrap();
+        let d2 = CellRef::parse("D2").unwrap();
+        let d5 = CellRef::parse("D5").unwrap();
+        for (input, expected) in [("=7", Some(Ok(()))), ("=1/0", Some(Err(CellError::Div0))), ("=SEQUENCE(3)", None)] {
+            let mut wb = Workbook::new();
+            let sh = wb.sheet_mut(0).unwrap();
+            sh.cells.set(col.start, Cell::value(Value::Number(42.0)));
+            sh.cells.set(d2, Cell::formula(Formula::new(input)));
+            sh.cells.set(d5, Cell::formula(Formula::new("=9")));
+            // A stored array is not a formula; ignore it without blocking the spill at D2:D4.
+            sh.cells.set(CellRef::parse("D6").unwrap(), Cell::value(Value::from(cella_core::Array::row(vec![Value::Number(99.0)]))));
+            let cached = Cell { value: Value::Number(5.0), ..Cell::formula(Formula::new("=5")) };
+            sh.cells.set(CellRef::parse("D7").unwrap(), cached);
+
+            let first = cella_formula::Shape::from_expr(cella_formula::parse(input.trim_start_matches('=')).unwrap(), d2);
+            let last = cella_formula::Shape::from_expr(cella_formula::parse("9").unwrap(), d5);
+            let mut trees = Trees::default();
+            trees.push_shape((0, d2), &first);
+            trees.push_shape((0, d5), &last);
+            let graph = Graph::default();
+            let legacy = HashMap::default();
+            let mut names = crate::eval::NameCache::default();
+            let mut rng = 1;
+            let mut host = PassHost::new(&wb, &graph, &trees, &legacy, &mut names, &mut rng, 0.0);
+            let mut acc = Acc::default();
+            acc.add_cell(Agg::Sum, &Value::Number(1.0)).unwrap();
+            assert_eq!(host.visit_aggregate(0, col, Agg::Sum, &mut acc), expected);
+            assert_eq!(host.value((0, d5)), Some(&Value::Number(9.0)), "the prepass still evaluates formulas after an earlier error or spill");
+            if expected == Some(Ok(())) {
+                assert_eq!(acc.finish(Agg::Sum), Value::Number(64.0), "reads live and cached formulas but ignores the stored array");
+            } else if expected.is_none() {
+                assert_eq!(acc.finish(Agg::Sum), Value::Number(1.0), "a new spill leaves the accumulator untouched for fallback");
+            }
+        }
+    }
+
+    #[test]
+    fn range_values_keeps_constants_and_materializes_old_and_new_spills() {
+        let mut wb = Workbook::new();
+        let sh = wb.sheet_mut(0).unwrap();
+        let range = RangeRef::parse("D1:D6").unwrap();
+        let d4 = CellRef::parse("D4").unwrap();
+        let d5 = CellRef::parse("D5").unwrap();
+        sh.cells.set(range.start, Cell::formula(Formula::new("=SEQUENCE(3)")));
+        sh.cells.set(d4, Cell::value(Value::text("constant")));
+        sh.cells.set(d5, Cell::value(Value::Error(CellError::Div0)));
+        sh.spill.insert(d5, Value::Number(-1.0));
+        sh.spill.insert(range.end, Value::Number(6.0));
+
+        let shape = cella_formula::Shape::from_expr(cella_formula::parse("SEQUENCE(3)").unwrap(), range.start);
+        let mut trees = Trees::default();
+        trees.push_shape((0, range.start), &shape);
+        let graph = Graph::default();
+        let legacy = HashMap::default();
+        let mut names = crate::eval::NameCache::default();
+        let mut rng = 1;
+        let mut host = PassHost::new(&wb, &graph, &trees, &legacy, &mut names, &mut rng, 0.0);
+        assert_eq!(
+            host.range_values(0, range),
+            vec![
+                Value::Number(1.0),
+                Value::Number(2.0),
+                Value::Number(3.0),
+                Value::text("constant"),
+                Value::Error(CellError::Div0),
+                Value::Number(6.0)
+            ]
+        );
     }
 
     /// For tests of `PassHost::visit_range`, which can't be reached from outside this module: the

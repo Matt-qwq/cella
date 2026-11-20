@@ -298,6 +298,11 @@ impl<'h> Evaluator<'h> {
         if let Some(kind) = Agg::of(spec.name) {
             return self.aggregate(kind, args);
         }
+        if spec.name == "SUMIFS"
+            && let Some(value) = self.sumifs_numeric_columns(args)
+        {
+            return Ev::V(value);
+        }
         let mut evaluated = Vec::with_capacity(args.len());
         // SUMIF/AVERAGEIF: the size of the criteria range (argument 1), which the sum range takes.
         let mut criteria_shape = None;
@@ -367,6 +372,43 @@ impl<'h> Evaluator<'h> {
             return err(CellError::Calc);
         }
         Ev::V(v)
+    }
+
+    /// Try the packed single-pair SUMIFS only when inspecting its arguments cannot calculate
+    /// anything. A decline leaves the original argument evaluation and budget untouched.
+    fn sumifs_numeric_columns(&mut self, args: &[Expr]) -> Option<Value> {
+        let [Expr::Ref(target), Expr::Ref(criteria), Expr::Text(text)] = args else { return None };
+        // These leaves normally enter eval once each. Near the stack/depth guard the generic
+        // path must retain its own ordering of errors and suspensions.
+        if self.depth >= super::MAX_DEPTH || super::stack_position().abs_diff(self.stack_top) > super::STACK_BUDGET - 16 * 1024 {
+            return None;
+        }
+        let criterion = cella_functions::NumericOrderingCriterion::parse(&Value::Text(text.clone()))?;
+        let target_areas = self.reference_areas(target).ok()?;
+        let criteria_areas = self.reference_areas(criteria).ok()?;
+        let ([target], [criteria]) = (target_areas.as_slice(), criteria_areas.as_slice()) else { return None };
+        let (mut target, mut criteria) = (*target, *criteria);
+        if target.sheet != criteria.sheet || target.range.width() != 1 || criteria.range.width() != 1 {
+            return None;
+        }
+        if trimmed(target.range) {
+            target.range = self.trim(&target);
+        }
+        if trimmed(criteria.range) {
+            criteria.range = self.trim(&criteria);
+        }
+        let rows = u64::from(target.range.height());
+        if rows <= 1 || rows > MAX_CELLS || rows != u64::from(criteria.range.height()) {
+            return None;
+        }
+        // Generic builtin: three leaf evaluations, two area reads, and both arrays plus the
+        // literal charged to the function call. Decline before any scan when budget is short.
+        let work = 4 * rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let value = self.host.sumifs_numeric_columns(target, criteria, criterion)?;
+        self.spend(work).then_some(value)
     }
 
     /// Performs aggregation operations without copying its ranges: blocks are folded over the stored

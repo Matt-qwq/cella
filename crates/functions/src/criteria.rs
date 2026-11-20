@@ -57,6 +57,27 @@ pub(crate) struct Criterion {
     bare_empty: bool,
 }
 
+/// A single-pair *IFS criterion that can only match a number, not a blank or other cell type.
+/// This lets the calculation host fold numeric ordering conditions from packed cells.
+#[derive(Clone, Copy, Debug)]
+pub struct NumericOrderingCriterion {
+    op: Op,
+    number: f64,
+}
+
+impl NumericOrderingCriterion {
+    /// Accepts only numeric <, <=, > and >= criteria. Other criteria need the full value matcher.
+    pub fn parse(value: &Value) -> Option<Self> {
+        let Criterion { op, operand: Operand::Number(number), .. } = Criterion::parse_arg(value).ok()? else { return None };
+        matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge).then_some(Self { op, number })
+    }
+
+    /// Excel compares numbers at 15 significant digits, not by raw `f64` order.
+    pub fn matches(self, number: f64) -> bool {
+        cmp_op(self.op, compare_numbers(number, self.number))
+    }
+}
+
 impl Criterion {
     /// Parses a criterion value the way COUNTIF does.
     pub(crate) fn parse(v: &Value) -> Criterion {

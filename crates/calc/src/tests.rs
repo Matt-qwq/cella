@@ -814,6 +814,34 @@ fn spills() {
 }
 
 #[test]
+fn changed_formula_lookup_clears_replaced_spills_and_marks_parse_errors() {
+    let mut t = T::new();
+    t.set("A1", "=SEQUENCE(3)");
+    t.set("C1", "=SUM(A1:A3)");
+    assert_eq!(t.num("C1"), 6.0);
+    t.set("A1", "10");
+    assert_eq!((t.get("A2"), t.get("A3"), t.num("C1")), (Value::Empty, Value::Empty, 10.0));
+    assert!(t.wb.sheet(0).unwrap().spill_ranges.is_empty());
+    t.set("A1", "=(");
+    assert_eq!(t.get("A1"), Value::Error(CellError::Name));
+    assert_eq!(t.get("C1"), Value::Error(CellError::Name));
+    t.set("A1", "4");
+    assert_eq!(t.num("C1"), 4.0);
+}
+
+#[test]
+fn changed_formula_lookup_in_manual_mode_calculates_only_edited_formulas() {
+    let mut t = T::new();
+    t.set("A1", "3");
+    t.set("B1", "=A1+1");
+    t.wb.calc.mode = cella_model::CalcMode::Manual;
+    t.set("A1", "8");
+    assert_eq!(t.num("B1"), 4.0);
+    t.set("B1", "=A1+2");
+    assert_eq!(t.num("B1"), 10.0);
+}
+
+#[test]
 fn an_anchor_given_a_formula_that_reads_its_old_spill_area_sees_it_empty() {
     // The new formula was evaluated while the old array was still laid out, and only the
     // anchor's dependents were evaluated again once it was gone.
@@ -1481,6 +1509,22 @@ fn sumif_sum_range_takes_the_criteria_size() {
 }
 
 #[test]
+fn sumifs_numeric_columns_keep_trimmed_shape_and_formula_spills() {
+    let mut t = T::new();
+    t.set("A1", "9");
+    t.set("A2", "4");
+    t.set("B1", "1");
+    t.set("B2", "2");
+    t.set("D1", r#"=SUMIFS(A:A,B:B,">1")"#);
+    t.set("D2", r#"=SUMIFS(A1:A2,B1:B3,">1")"#);
+    assert_eq!(t.num("D1"), 4.0);
+    assert_eq!(t.get("D2"), Value::Error(CellError::Value));
+    t.set("B1", "=SEQUENCE(2,1,2)");
+    t.set("B2", "");
+    assert_eq!(t.num("D1"), 13.0, "the spilled condition participates in the sum");
+}
+
+#[test]
 fn sumif_resized_sum_range_stops_at_the_sheet_edge() {
     let mut t = T::new();
     t.set("A1", "a");
@@ -1770,6 +1814,65 @@ fn visit_range_declines_when_a_formula_in_the_block_spills_into_it() {
     let walked = crate::recalc::tests::probe_visit_range(&wb, &[("D1", "=SEQUENCE(3)")], block);
 
     assert_eq!(walked, None, "walked a block holding a spill it can't see");
+}
+
+/// A bulk import of values into a workbook that holds no formula anywhere skips the per-key
+/// formula scan — but the same import into a workbook with a formula over the changed cells
+/// still recalculates that formula, and formulas the import itself writes are still inserted.
+/// 1,500 keys clears the bulk-edit threshold (BULK_EDIT, 1,024 in the graph module).
+#[test]
+fn a_values_only_bulk_edit_skips_the_formula_scan_but_not_its_dependents() {
+    let keys: Vec<(usize, CellRef)> = (0..1_500).map(|i| (0, CellRef::new(i, 0))).collect();
+
+    let mut t = T::new();
+    for &(_, at) in &keys {
+        t.wb.sheet_mut(0).unwrap().cells.set(at, Cell::value(Value::Number(3.0)));
+    }
+    t.calc.cells_changed(&mut t.wb, &keys);
+    assert_eq!(t.calc.last_recalc_cells, 0, "nothing can depend on a formula-free workbook");
+    // The skip leaves the graph machinery working: a formula added after the import still
+    // calculates against the imported value.
+    t.set("C1", "=A1+1");
+    assert_eq!(t.num("C1"), 4.0);
+
+    let mut t = T::new();
+    t.set("Z1", "=SUM(A1:A1500)");
+    for &(_, at) in &keys {
+        t.wb.sheet_mut(0).unwrap().cells.set(at, Cell::value(Value::Number(3.0)));
+    }
+    t.calc.cells_changed(&mut t.wb, &keys);
+    assert_eq!(t.num("Z1"), 4_500.0, "a formula over the imported cells is recalculated");
+
+    // The one case the flags alone cannot see: the bulk edit itself writes formulas, whose
+    // nodes are the per-key walk's whole job.
+    let mut t = T::new();
+    let written: Vec<(usize, CellRef)> = (0..1_500).map(|i| (0, CellRef::new(i, 1))).collect();
+    for (i, &(_, at)) in written.iter().enumerate() {
+        let input = format!("=A{}*2", i + 1);
+        t.wb.sheet_mut(0).unwrap().cells.set(at, Cell::formula(Formula::new(&input)));
+        t.wb.sheet_mut(0).unwrap().cells.set(CellRef::new(at.row, 0), Cell::value(Value::Number(7.0)));
+    }
+    t.calc.cells_changed(&mut t.wb, &written);
+    assert_eq!(t.num("B1"), 14.0, "formulas the bulk edit itself wrote are calculated");
+    assert!(t.calc.last_recalc_cells >= 1_500);
+}
+
+#[test]
+fn single_column_aggregate_uses_live_formula_results_in_logical_order() {
+    let mut t = T::new();
+    t.set("A1", "10000000000000000");
+    t.set("A2", "1");
+    t.set("A3", "-10000000000000000");
+    for (cell, input) in [("B1", "=A1"), ("B2", "=A2"), ("B3", "=A3"), ("C1", "=SUM(B1:B4)")] {
+        t.set(cell, input);
+    }
+    // This sum rounds differently when evaluated out of row order. Update a formula's precedent
+    // as well to check the fold sees the in-pass value rather than the old cached result.
+    assert_eq!(t.num("C1"), 0.0);
+    t.set("A2", "8");
+    assert_eq!(t.num("C1"), 8.0);
+    t.set("B4", "=1/0");
+    assert_eq!(t.get("C1"), Value::Error(CellError::Div0));
 }
 
 /// Trim references evaluate as `TRIMRANGE(range, code, code)`.
@@ -2273,6 +2376,31 @@ fn a_workbook_without_volatile_formulas_recalculates_nothing_on_open() {
     assert!(recalculated(&wb, &formulas).is_empty(), "recalculated on open: {:?}", recalculated(&wb, &formulas));
     assert_eq!(calc.last_recalc_cells, 0);
     assert_eq!(wb.sheet(0).unwrap().value(c("B1")), Value::Number(-1.0), "the value the file carried stands");
+}
+
+#[test]
+fn forced_open_rebuilds_once_and_refreshes_formulas_and_spills() {
+    let mut wb = Workbook::new();
+    wb.sheets.push(std::sync::Arc::new(cella_model::Sheet::new("Other")));
+    wb.calc.full_calc_on_load = true;
+    wb.sheet_mut(0).unwrap().cells.set(c("A1"), Cell::value(Value::Number(3.0)));
+    for (si, at, text) in
+        [(0, "B1", "=A1*2"), (0, "C1", "=B1+1"), (0, "D1", r#"=INDIRECT("C1")"#), (0, "E1", "=SEQUENCE(A1)"), (1, "A1", "=Sheet1!D1+Sheet1!E2")]
+    {
+        let cell = Cell { value: Value::Number(-1.0), formula: Some(std::sync::Arc::new(Formula::new(text))), style: Default::default() };
+        wb.sheet_mut(si).unwrap().cells.set(c(at), cell);
+    }
+    let mut calc = Calc::new();
+    calc.recalc_on_open(&mut wb);
+    assert_eq!(calc.rebuilds, 1);
+    for (si, at, value) in [(0, "B1", 6.0), (0, "C1", 7.0), (0, "D1", 7.0), (0, "E3", 3.0), (1, "A1", 9.0)] {
+        assert_eq!(wb.sheet(si).unwrap().value(c(at)), Value::Number(value), "{si}!{at}");
+    }
+
+    wb.sheet_mut(0).unwrap().cells.set(c("A1"), Cell::value(Value::Number(4.0)));
+    calc.cells_changed(&mut wb, &[(0, c("A1"))]);
+    assert_eq!(wb.sheet(1).unwrap().value(c("A1")), Value::Number(11.0));
+    assert_eq!(wb.sheet(0).unwrap().value(c("E4")), Value::Number(4.0));
 }
 
 /// A cached `NOW()`/`RAND()` is out of date by definition, so its cell — and what reads it — is

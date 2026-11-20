@@ -43,7 +43,7 @@ pub struct Acc {
 impl Acc {
     /// Takes a value found inside a reference: only numbers count. `Err` is an error value that
     /// ends `SUM` and `AVERAGE`; `COUNT` skips errors.
-    pub(super) fn add_cell(&mut self, kind: Agg, v: &Value) -> Result<(), CellError> {
+    pub(crate) fn add_cell(&mut self, kind: Agg, v: &Value) -> Result<(), CellError> {
         match v {
             Value::Number(n) => {
                 self.sum += n;
@@ -82,7 +82,7 @@ impl Acc {
         }
     }
 
-    pub(super) fn finish(&self, kind: Agg) -> Value {
+    pub(crate) fn finish(&self, kind: Agg) -> Value {
         match kind {
             Agg::Sum => Value::number(self.sum),
             Agg::Count => Value::number(self.count as f64),

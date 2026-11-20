@@ -1480,19 +1480,43 @@ impl Host for PassHost<'_> {
         if self.spill_index.has_sheet(sheet) || sh.spill.range(range.start..=range.end).any(|(c, _)| range.contains(*c)) {
             return None;
         }
-        // Decide before folding anything: a block with a formula in it is priced by `visit_range`,
-        // which evaluates those first, and folding half of it here would count the rest twice.
-        if sh.cells.has_owned_cells(range) {
-            return None;
+        let owned = sh.cells.has_owned_cells(range);
+        if owned {
+            // On a large formula column, avoid rebuilding its cells twice or staging formula
+            // coordinates. Keep the small/multi-column and iterative cases on the old path.
+            if kind != crate::eval::Agg::Sum || range.width() != 1 || range.height() < 4096 || self.iterate {
+                return None;
+            }
+            sh.cells.visit_packed(range, &mut |at, packed| {
+                if packed.is_none() {
+                    let key = (sheet, at);
+                    // Only dirty formulas can have evaluation side effects. A stored array or a
+                    // clean formula (neither has a slot) needs no read on this first walk.
+                    if let Some(slot) = self.trees.slot(key) {
+                        let _ = self.compute_at(key, slot);
+                    }
+                }
+                true
+            });
+            // Preserve visit_range's prepass order and do not touch Acc if it laid out a spill.
+            if self.spill_index.has_sheet(sheet) {
+                return None;
+            }
         }
         let mut needs_host = false;
         let mut error = None;
-        let done = sh.cells.visit_packed(range, &mut |_, packed| {
-            let Some(packed) = packed else {
-                needs_host = true;
-                return false;
+        sh.cells.visit_packed(range, &mut |at, packed| {
+            let result = match packed {
+                Some(v) => acc.add_packed(kind, v),
+                // Clean formulas read their cached workbook value; stored arrays and empty values
+                // are ignored by add_cell, as in the original fold. The spill check is now final.
+                None if owned => acc.add_cell(kind, &self.cell_value(sheet, at)),
+                None => {
+                    needs_host = true;
+                    return false;
+                }
             };
-            match acc.add_packed(kind, packed) {
+            match result {
                 Ok(()) => true,
                 Err(e) => {
                     error = Some(e);
@@ -1500,18 +1524,57 @@ impl Host for PassHost<'_> {
                 }
             }
         });
-        if needs_host {
+        (!needs_host).then_some(error.map_or(Ok(()), Err))
+    }
+    fn sumifs_numeric_columns(
+        &self,
+        target: crate::eval::Area,
+        criteria: crate::eval::Area,
+        criterion: cella_functions::NumericOrderingCriterion,
+    ) -> Option<Value> {
+        use cella_model::Packed;
+
+        let sh = self.wb.sheet(target.sheet)?;
+        if self.iterate || self.spill_index.has_sheet(target.sheet) || !sh.spill.is_empty() {
             return None;
         }
-        // A stop with no error is the closure's only other exit, so `!done` here means `error`.
-        Some(match error {
-            Some(e) => Err(e),
-            None => {
-                let _ = done;
-                Ok(())
+        let (target, criteria) = (target.range, criteria.range);
+        let rows = criteria.height() as usize;
+        let mut matches = vec![0u64; rows.div_ceil(64)];
+        let complete = sh.cells.visit_packed(criteria, &mut |at, packed| match packed {
+            Some(Packed::Number(n)) if criterion.matches(n) => {
+                let i = (at.row - criteria.start.row) as usize;
+                let Some(word) = matches.get_mut(i / 64) else { return false };
+                *word |= 1u64 << (i % 64);
+                true
             }
-        })
+            Some(_) => true,
+            // A formula or array may compute a matching value or lay out a spill.
+            None => false,
+        });
+        if !complete {
+            return None;
+        }
+        // Both walks are in logical row order. Keep scanning after the first matching error:
+        // a later formula/array still forces fallback so it is evaluated as in range_values.
+        let mut sum = -0.0f64;
+        let mut error = None;
+        let complete = sh.cells.visit_packed(target, &mut |at, packed| {
+            let Some(packed) = packed else { return false };
+            let i = (at.row - target.start.row) as usize;
+            let Some(word) = matches.get(i / 64) else { return false };
+            if error.is_none() && word & (1u64 << (i % 64)) != 0 {
+                match packed {
+                    Packed::Number(n) => sum += n,
+                    Packed::Error(e) => error = Some(e),
+                    _ => {}
+                }
+            }
+            true
+        });
+        complete.then(|| error.map_or_else(|| Value::number(sum), Value::Error))
     }
+
     fn visit_range(&mut self, sheet: usize, range: RangeRef, f: &mut dyn FnMut(&Value) -> bool) -> bool {
         let wb = self.wb;
         let Some(sh) = wb.sheet(sheet) else { return false };

@@ -151,6 +151,11 @@ pub trait Host {
     fn visit_aggregate(&mut self, _sheet: usize, _range: RangeRef, _kind: Agg, _acc: &mut Acc) -> Option<Result<(), CellError>> {
         None
     }
+    /// Fold one numeric ordering criterion over two constant single-column blocks, or decline
+    /// without evaluating cells if either block needs the general range path.
+    fn sumifs_numeric_columns(&self, _target: Area, _criteria: Area, _criterion: cella_functions::NumericOrderingCriterion) -> Option<Value> {
+        None
+    }
     /// While a formula is calculated on demand inside another one: [`stack_position`] where the
     /// outermost one started, which the stack budget is counted from.
     fn stack_top(&self) -> Option<usize> {
