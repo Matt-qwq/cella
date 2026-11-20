@@ -883,8 +883,11 @@ Gate after the merge: **25/25 within budget**, `mem_drift` 39,401 cycles flat wi
 Per-crate: model 170, calc 172, engine 620; fuzz gate 3/3; `cargo xtask wasm` ok; fmt and
 clippy -D warnings clean. The model micro-benchmark also moved: `value()` 82.6 → 38.4 ns,
 `set` 203.8 → 126.1 ns/cell, `set_values` 1M all-unchanged 49.5–85.0 → 26.9–40.0 ms (same-process
-interleaved A/B, direction only), and the paste of 6M cells measured 2,456 → 1,564 ms on the
-contended machine — the paste certification is still to run.
+interleaved A/B, direction only). The paste of 6M cells was then certified on its own paired
+gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`): **2,011 → 1,300 ms
+(−35.36 %, 8/8, p = 0.0039, t = −21.65)** — the largest number a person actually feels, since
+paste is one command they wait on. Its baseline binary had to be built from `90c4781` plus that
+one example file, because the harness is new.
 
 ## Interaction and long-run measurements (2026-11-20)
 
