@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** the value read inside a recalculated chain's eval (11-18, eleventh): `CellStore::value` reads the value off the packed row instead of rebuilding the `Cell` — no formula `Arc`, no live band `Arc`, so four atomics and a rebuild a read become none — the 1M chain's **eval 161 → 118 ms**, `edit.recalc` **461 → 428 ms**, the fills unchanged. Earlier: the recalculated chain again, two hot-path costs of the pass's build (11-18, tenth): the slot table borrows the graph's shapes instead of an `Arc` a cell and keeps keys and shapes in one `Vec` (32 B a slot), and a pass asks the graph's node table once for a sheet's run of cells instead of once a cell — the 1M build **66-74 → 41-45 ms**, `edit.recalc` **693 → 639 ms**. Earlier: the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** rounds 3–10: packed SUMIFS and SUM, formula-only graph synchronization, one rebuild on forced XLSX open, and sparse sorting validation. Earlier: isolated the three aggregations and added batched source-row reads for sort. added a four-case chained-edit benchmark and phase profiling for sort. the value read inside a recalculated chain's eval (11-18, eleventh): `CellStore::value` reads the value off the packed row instead of rebuilding the `Cell` — no formula `Arc`, no live band `Arc`, so four atomics and a rebuild a read become none — the 1M chain's **eval 161 → 118 ms**, `edit.recalc` **461 → 428 ms**, the fills unchanged. Earlier: the recalculated chain again, two hot-path costs of the pass's build (11-18, tenth): the slot table borrows the graph's shapes instead of an `Arc` a cell and keeps keys and shapes in one `Vec` (32 B a slot), and a pass asks the graph's node table once for a sheet's run of cells instead of once a cell — the 1M build **66-74 → 41-45 ms**, `edit.recalc` **693 → 639 ms**. Earlier: the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 **The one-page report is [performance-report.md](performance-report.md)** (and its Chinese
 companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xtask perf-report`
@@ -640,6 +640,179 @@ What is left, in the order the accounting ranks it:
   bounded.
 - `edit.recalc` over a single dependency chain stays sequential — its cost is per-formula lookups.
 
+## Isolating a chained edit and profiling sort
+
+The gate's `edit.recalc` runs after `aggregate`: the edit of B1 invalidates the two-million-formula
+workbook's running-total chain **and** the three formulas in J1:J3. A chain-only edit of a freshly
+opened reference file is not interchangeable with that number. To vary the two factors independently
+in the same binary, run:
+
+```text
+cargo run --release -p cella-engine --example recalc_compare -- --rows=1000000 --repeat=4 --warmup=1
+cargo run --release -p cella-engine --example recalc_compare -- --rows=2500 --check-full
+```
+
+Each case starts from a new session and reports the wall time of `cell.set`, number of recalculated
+cells, undo depth before editing, and, for reopened sessions, the number of cells calculated on
+open. Setup and the XLSX round trip are untimed. Kept samples are emitted as CSV; each case's median
+is printed separately. The timed gate-compatible B1 edit leaves G1's result unchanged because C1
+is zero. The optional check makes a second, untimed edit that must change the chain's final value,
+then compares the result with a full recalculation. This headless harness does not measure input to
+paint. Use `CELLA_PROFILE=1` in a separate run to inspect phase timings, not for wall-time A/B.
+
+On Windows (Ryzen 7 9700X, release, 1M rows, four interleaved samples per case after one warm-up
+round), the median edit times were:
+
+| Workbook before the edit | Chain only (1,000,001 recalculated) | With J1:J3 (1,000,004 recalculated) |
+| --- | ---: | ---: |
+| Built in memory | 408 ms | 908 ms |
+| Reopened from XLSX | 325 ms | 1,008 ms |
+
+No formulas recalculated on open in these samples. The different formula workload explains most of
+the gap; reopening does not uniformly speed up the command. These are headless timings, not a
+rerun of the desktop comparison with Excel.
+
+To isolate the three formulas, add `--aggregates=none,sum,sumifs,xlookup,all`. With three measured
+samples per case after one warm-up round (Windows, release, 1M rows), the first-round engine gave:
+
+| Before editing | None | `SUM` only | `SUMIFS` only | `XLOOKUP` only | All three |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Built in memory | 400 ms | 549 ms | 497 ms | 409 ms | 905 ms |
+| Reopened from XLSX | 304 ms | 613 ms | 550 ms | 461 ms | 1,000 ms |
+
+These are separate command timings, not additive per-formula costs. The full ten-case order is
+balanced over ten rounds; the three-round run was a hotspot screen, not a comparative product claim.
+A single-column prototype that pre-evaluated only formula coordinates barely moved the reopened
+all-aggregate case (~998 to ~984 ms across the two run batches) and added a temporary coordinate
+list proportional to the number of formulas. It was not kept. A more promising follow-up is to
+avoid redundant reads in the fold without building a coordinate list, or to reduce `SUMIFS` range
+materialization while preserving error and spill behavior.
+
+For sort, the same `CELLA_PROFILE=1` emits one native-only `sort:` summary per command, with
+separate milestones for key extraction, comparison, reading/moving cells, formula detection,
+writing cells and collecting changed coordinates. Read it alongside `commit:` and `recalc:`: the
+usual `sort.desc` orders A:F while the G/H formulas are outside the sorted range but still depend
+on values in it. A filtered gate run must include all setup scenarios listed here; `--scenario`
+does not run prerequisites automatically:
+
+```text
+cargo run --release -p cella-engine --example perf -- 1000000 --scenario=fill.values,fill.formulas,fill.chained,aggregate,edit.recalc,edit.undo,sort.desc
+```
+
+The first profile on this workload put source cell reads and movement at 1,521 ms, destination
+writes at 896 ms and comparison at 40 ms. Searching for the first formula used to collect and sort
+all formulas and took 105 ms in that sample. Formula presence now short-circuits without building
+that list, and `CellStore::get` borrows a live band while rebuilding the requested `Cell`. With both
+changes, the interleaved release median (four samples per variant, profiling disabled) went from
+**399.5 to 388.8 ms** at 100k and **4,726 to 4,553 ms** at 1M. These are combined gains, not a
+separate speedup claim for each change. Movement and recalculation remain larger targets than the
+comparator on this fixture.
+
+A second round introduced a prepared row reader: sort borrows or decodes one band per source row,
+reuses the column mapping and appends straight into the existing movement buffer (no per-row
+vector). Column sort keeps its original cell reads. In a new four-sample interleaved A/B, the
+median moved from **382.0 to 361.4 ms** at 100k and from **4,508 to 4,292 ms** at 1M. The candidate
+binary in this A/B also contained the rejected aggregation experiment, so the exact timing is for
+that combined build. A follow-up 1M-only A/B on the final binaries, without that experiment, gave
+**4,431 to 4,156 ms** (two samples per side). The process peak working sets across the complete
+setup/edit/sort sequence were 1,693–1,694 MiB before and 1,693–1,696 MiB after (rounded); this is
+not a sort-only allocation measurement.
+
+### Round 3: packed SUMIFS and sort bookkeeping
+
+A guarded `SUMIFS` path for equal-length, same-sheet single columns and one literal numeric
+ordering criterion uses a bit mask instead of materializing both value arrays. Formula/array
+inputs, spills and unsupported criteria still go through the general evaluator. Interleaved
+1M-row release samples (two per variant) put the reopened SUMIFS-only edit at **523 → 444 ms**
+and all three aggregates at **931 → 861 ms**. The combined-build sort measurements did not
+isolate a wall-time effect from used-range bookkeeping, but that check now collapses adjacent
+sheet IDs before sorting: the six-million-key sort supplies one ID rather than six million.
+
+### Round 4: sort row-write lookup experiment (rejected)
+
+Returning the presence change directly from the band's write removed two destination lookups per
+cell in an existing row. The targeted test covered offsetting insertion/removal and used-range
+invalidation, but the 1M-row interleaved release median was **3.58 → 3.63 s** and the 100k result
+was essentially flat. The candidate was reverted rather than kept on a microarchitectural hunch.
+
+### Round 5: packed single-column SUM over formulas
+
+A large single-column `SUM` can walk packed cells in logical row order: first settle its dirty
+formulas, then fold packed constants and live formula values without staging coordinates. A new
+spill leaves the accumulator untouched and sends the calculation to the general path. Two serial,
+interleaved 1M samples per variant put the reopened SUM-only edit at **589 → 468 ms** and all three
+aggregates at **862 → 752 ms**. These are command times, not input-to-paint timings.
+
+### Round 6: moving materialized constants (rejected)
+
+Moving a decoded constant into its output array rather than cloning it removed one text `Arc`
+clone/drop, but 1M XLOOKUP-only interleaved results were mixed: built **402 → 381 ms**, reopened
+**434 → 460 ms** (two samples each, one candidate reopened sample above 500 ms). No reliable gain
+was demonstrated. The value/spill precedence regression was retained; the production move was not.
+
+### Round 7: formula-only graph synchronization
+
+Changed-cell graph updates inspect the stored formula without rebuilding a full `Cell`. The
+invalid-formula write remains on the formula path; node and spill removal are unchanged. With
+aggregate formulas excluded to isolate the formula read from the new SUM fold, a 1M sort with
+outside G/H dependencies went from **3.73 to 3.24 s** (two interleaved samples per variant).
+
+### Round 8: one dependency graph build on forced-open XLSX
+
+`recalc_on_open` now lets the full recalculation build the graph itself when the XLSX requests
+`fullCalcOnLoad`. Ordinary cached opens take their existing path. With
+`recalc_compare --rows=1000000 --full-on-open`, two interleaved samples per variant put the forced
+open at **4.53 to 3.67 s**. The benchmark opens actual XLSX bytes and checks that it recalculated
+all 2M formulas; the cached file is checked for zero eager evaluations. A targeted test also
+checks the build count, spills, dynamic references and incremental edits after open.
+
+### Round 9: sorting with sparse rows and immediate undo/redo
+
+The `sort_roundtrip` example separately times sorting a 97-key stable permutation, undo, and redo
+with values only, formulas inside the sort body, or dependent formulas in the adjacent column.
+Its generated fixture checks sampled values, holes, styled blanks, formula addresses, and the
+restored states outside each timer. The sparse fixture found a bulk `range.setValues` bug: a blank
+would switch to per-cell writes without flushing the accumulated prefix. The command now flushes
+that prefix before clearing the blank.
+
+| 1M rows, three samples per case | Sort | Undo | Redo |
+| --- | ---: | ---: | ---: |
+| Values only | 1,659 ms | 22 ms | 21 ms |
+| Formulas inside the body | 3,331 ms | 126 ms | 134 ms |
+| Dependent formulas outside the body | 2,432 ms | 26 ms | 24 ms |
+
+The workload has a different fixture and dependency layout from `sort.desc`; compare modes
+within this table, not timings between fixtures. It does not measure UI interaction.
+
+```text
+cargo run --release -p cella-engine --example sort_roundtrip -- --rows=1000000 --repeat=3
+```
+
+## Interaction and long-run measurements (2026-11-20)
+
+Three harnesses close the gaps the gate does not cover. All run on the development machine's
+release build; the app runs on a hidden desktop so nothing appears on screen.
+
+- **Startup** (`plan/bench/startup_r14.ps1`): process start → control port accept → first
+  `ui.inspect`. Startup is a fixed **~1.02 s** block before the port binds, with or without a
+  document; `--sample sales` adds <20 ms; opening the 70 MB reference workbook then costs its
+  own reader time (~3.1–4.4 s depending on column count). Once the port accepts, the UI answers
+  within ~5–7 ms.
+- **Synthetic input → model/UI state** (`plan/bench/input_r16.ps1`): click a cell (its pointer
+  event queues and lands on a later frame — the script waits 200 ms), `ui.edit.begin`, then
+  time `ui.edit.commit` and poll `ui.inspect` for the closed editor. A control request's round
+  trip is **~40–45 ms** on the hidden desktop (frame-batched), a light edit commits in
+  **~46 ms**, and a `B1` edit dirtying ~1M cells in the reference workbook commits in
+  **~355 ms** (engine ~310–320 ms + channel). This is state observation, not physical paint;
+  `ui.screenshot` was rejected as a proxy (hidden-desktop artefacts), and true input-to-visible
+  needs DWM/PresentMon or a camera. The per-request channel floor is the number agent drivers
+  should know: a hundred sequential `cell.get`s pay ~4 s of frame waits.
+- **Long-run drift** (`cargo run --release -p cella-engine --example mem_drift -- --rows=100000
+  --seconds=240`): one session, ~45,900 edit/undo/redo cycles with periodic sorts and saves.
+  Steady state settles at **~44.7 MB** and stays flat within **0.02%** over the second half
+  (~23,000 cycles); the startup decline from 129 MB is the undo budget aging the large fill
+  steps out, by design. No leak found in the commit, journal, undo or graph paths.
+
 ## Adding a scenario
 
 1. Add a `fn` to `crates/engine/examples/perf.rs` and an entry to its `STEPS` table (id, what it
@@ -653,6 +826,62 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-20 (statistical recertification):** every kept gain was re-measured with a paired
+  sign-test A/B gate (8 pairs, rules fixed in advance). Certified: sort's formula-only graph
+  reads **−9.6%** (8/8), packed `SUMIFS` **−20.8%** (8/8), the three-aggregate chained edit
+  **−18.4%** (8/8), forced-open one-build **−15.6%** (8/8), bulk-import journal/scan **−8.2%**
+  (8/8), save streaming **direction certified** (7/8; steady-state −1.5% under best-of-6,
+  typical-pass −6~−8% under single-pass medians), sort presence/row reads direction certified
+  (4-vs-4 complete separation twice, magnitude −4~−6%). Packed `SUM` first failed at 6/8 on
+  interference (paired σ 435 ms) and was **re-certified in a quiet window: −20.0% (8/8, paired
+  σ 4.9 ms)**. Certifiable floor
+  per scenario comes from same-binary A/A runs: paired σ 3.3–7.9% of the median.
+- **2026-11-20 (rounds 11–20):** two measured wins kept — save streams worksheet windows into
+  the packer's one deflate stream (byte-identical archives; three independent measurements
+  **−7.8/−6.1/−3.6%**, same direction each time, point estimate **−4~−8%** — below the gate's
+  statistical certification floor, kept on its byte-identity guards and attribution; deflate is
+  now the pinned binding leg) and bulk imports drop the journal deep-clone plus the empty-graph
+  per-key scan (**`fill.values` −8.2%, sign-test certified at 8/8 pairs, p=0.004**). Two
+  candidates were implemented, measured slower or
+  flat, and reverted in full (a streaming formula walk for opens; row-batched formula reads for
+  sorts) — on identity-mapped stores the materialising walks they replaced are already
+  near-optimal. The previously unmeasured items now have numbers: startup **~1.02 s** fixed,
+  input-to-state **~40 ms** channel / **~355 ms** heavy Enter, and **no memory drift** over a
+  45.9k-cycle soak. A paired sign-test A/B gate (`plan/bench/ab_gate.ps1`) now calibrates the
+  machine's noise floor (A/A: paired σ 3.3–7.9% per scenario) and decides keeps. Final gates:
+  clippy clean, 1,596 lib tests, fuzz 12×100, wasm, perf 22/22 on unchanged budgets.
+- **2026-11-20 (rounds 14, 16, 17):** closed the unmeasured items. Startup is a fixed **~1.02 s**
+  (document-independent, hidden desktop); synthetic-input-to-state gives a **~40–45 ms**
+  control-channel round trip, **~46 ms** light edit commit and **~355 ms** for an edit dirtying
+  ~1M cells; a 240-second soak (**~45.9k edit/undo/redo cycles, ~917 sorts, ~229 saves, 100k
+  rows**) holds **~44.7 MB ±0.02%** in steady state — no drift. Round 15 (row-batched formula
+  reads) was rejected on measurement and reverted: the per-key reads it targeted are far cheaper
+  than estimated on cache-warm data, and the sort's recalc segment is graph work.
+- **2026-11-20 (round 12):** worksheet XML now streams window by window into the packer's one
+  incremental deflate stream (byte-identical: chunked==whole test plus every package golden), and
+  the shared-string pre-pass walks packed values instead of rebuilding every `Cell` (paged stores
+  keep the non-caching scanner). `save.xlsx` 1M **1.83 → 1.69 s (−8%)**; native attribution shows
+  the remaining binding leg is the deflate itself (strings 136 ms, rows 511 ms, streamed 1.22 s),
+  which the byte-stable output contract pins in place.
+- **2026-11-20 (round 11, rejected):** a streaming ordered formula walk (no materialized `Vec`,
+  no per-formula `Arc` clones, paged bands through the non-caching scan channel) passed its
+  equivalence tests but lost the release A/B: `rebuild.graph` 750 → 835 ms, forced-open and cached
+  opens worse by 100–230 ms. On the identity-mapped stores these paths run on, the materializing
+  walk is already near-optimal — the sort input is pre-ordered (nearly free), rebuild's second
+  collect moves without re-cloning — while 2M callback dispatches and the exact-count pass cost
+  more than they save. Reverted in full.
+- **2026-11-20 (rounds 3–10 gate):** the final tree passed clippy (`-D warnings`, four crates and
+  both benchmark examples), 1,116 lib tests, the command-sequence fuzz at 12 seeds × 100 steps, the
+  wasm check, and all 22 perf budgets. Against this session's starting release numbers, 1M rows:
+  `sort.desc` **4.86 → 3.64 s**, `edit.recalc` **0.90 → 0.73 s**, `aggregate`
+  **0.75 → 0.59 s**, forced-open XLSX **4.53 → 3.67 s**. A sparse-row workload found and fixed a
+  bulk `range.setValues` bug that dropped a row's prefix cells before a blank. Rounds 4 and 6 were
+  measured and rejected. Still not measured: startup, input-to-paint latency, non-Windows
+  platforms, long-run memory drift.
+- **2026-11-20:** measured `SUM`, `SUMIFS` and `XLOOKUP` independently; kept batched source-row
+  reads for sort, rejected the single-column formula-coordinate allocation experiment.
+- **2026-11-19:** separated chained-edit timing by workbook state and aggregate workload; added
+  native sort phase timings, a short-circuit formula-presence query, and borrowed live-band reads.
 - **2026-11-18 (eleventh):** the dense single-precedent dependents table, **rebuilt and kept**. The
   closure's 1M walk goes **190 -> 27 ms** (CELLA_PROFILE, 1,000,001 cells), and with the slot-table
   change below the command goes **589/596 -> 465/460 ms**. The ninth attempt's maintenance and sparse
