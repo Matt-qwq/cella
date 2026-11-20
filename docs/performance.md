@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** the evaluator round, refuted by measurement — per-shape bytecode built and equivalence-proven and sign-tested a no-win (the per-cell cost is kernel-bound, not traversal-bound); the attribution then found the real pool in undo bookkeeping, and an evicted undo step now releases on later cheap commands: the built-case edit −30 % (8/8 pairs, p=0.0039), the gate's aggregate 443 ms, edit.recalc unchanged (its sequence pays the eviction earlier). Earlier: budget lock (P2) — the gate's budgets re-recorded from the quiet 2026-11-20 pass (twice the current numbers, so a green run sits at ~50% of every budget) and the gate grew two scenarios: the `mem_drift` soak and the `save.repeat` best-of-6 micro-benchmark; startup and input-to-state stay with the plan/bench harnesses (reasoning in The gate). Earlier: rounds 3–10: packed SUMIFS and SUM, formula-only graph synchronization, one rebuild on forced XLSX open, and sparse sorting validation. Earlier: isolated the three aggregations and added batched source-row reads for sort. added a four-case chained-edit benchmark and phase profiling for sort. the value read inside a recalculated chain's eval (11-18, eleventh): `CellStore::value` reads the value off the packed row instead of rebuilding the `Cell` — no formula `Arc`, no live band `Arc`, so four atomics and a rebuild a read become none — the 1M chain's **eval 161 → 118 ms**, `edit.recalc` **461 → 428 ms**, the fills unchanged. Earlier: the recalculated chain again, two hot-path costs of the pass's build (11-18, tenth): the slot table borrows the graph's shapes instead of an `Arc` a cell and keeps keys and shapes in one `Vec` (32 B a slot), and a pass asks the graph's node table once for a sheet's run of cells instead of once a cell — the 1M build **66-74 → 41-45 ms**, `edit.recalc` **693 → 639 ms**. Earlier: the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** round 27, three knives certified on a quiet machine — a precedent two formulas read is a box (the 2M-dirty edit −18.4 %), a value-only edit is priced from a band copy tag instead of a per-row walk (−7.2 % built), and the store compares before it writes a band and finds a row with one bit probe (−20.1 % built, −21.4 % reopened). Earlier: the evaluator round, refuted by measurement — per-shape bytecode built and equivalence-proven and sign-tested a no-win (the per-cell cost is kernel-bound, not traversal-bound); the attribution then found the real pool in undo bookkeeping, and an evicted undo step now releases on later cheap commands: the built-case edit −30 % (8/8 pairs, p=0.0039), the gate's aggregate 443 ms, edit.recalc unchanged (its sequence pays the eviction earlier). Earlier: budget lock (P2) — the gate's budgets re-recorded from the quiet 2026-11-20 pass (twice the current numbers, so a green run sits at ~50% of every budget) and the gate grew two scenarios: the `mem_drift` soak and the `save.repeat` best-of-6 micro-benchmark; startup and input-to-state stay with the plan/bench harnesses (reasoning in The gate). Earlier: rounds 3–10: packed SUMIFS and SUM, formula-only graph synchronization, one rebuild on forced XLSX open, and sparse sorting validation. Earlier: isolated the three aggregations and added batched source-row reads for sort. added a four-case chained-edit benchmark and phase profiling for sort. the value read inside a recalculated chain's eval (11-18, eleventh): `CellStore::value` reads the value off the packed row instead of rebuilding the `Cell` — no formula `Arc`, no live band `Arc`, so four atomics and a rebuild a read become none — the 1M chain's **eval 161 → 118 ms**, `edit.recalc` **461 → 428 ms**, the fills unchanged. Earlier: the recalculated chain again, two hot-path costs of the pass's build (11-18, tenth): the slot table borrows the graph's shapes instead of an `Arc` a cell and keeps keys and shapes in one `Vec` (32 B a slot), and a pass asks the graph's node table once for a sheet's run of cells instead of once a cell — the 1M build **66-74 → 41-45 ms**, `edit.recalc` **693 → 639 ms**. Earlier: the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 **The one-page report is [performance-report.md](performance-report.md)** (and its Chinese
 companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xtask perf-report`
@@ -855,6 +855,36 @@ edit):
   walk (17–34 ms), the 2M-dirty closure (217–231 ms), and the model store's read/write kernel —
   the evaluator itself is measured now, not guessed at.
 
+## Round 27: three knives, all sign-tested (2026-11-21)
+
+Certified on an otherwise idle machine with the eight-pair interleaved sign test (a discarded prime
+run, odd/even alternating first side, 7/8 ⇒ p = 0.035). Baseline: `main` at `90c4781` plus the
+measurement-tool commit; candidates: one per branch. Reproduce with
+`plan/bench/ab_gate_recalc.ps1`; raw samples in `plan/ab-r27-*.csv`.
+
+| knife | case | base | cand | delta | fav | p | t | verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| closure: a two-formula precedent is a box of second dependents | reopened/ordinary | 866 ms | 707 ms | **−18.35 %** | 8/8 | 0.0039 | −7.38 | **GAIN** |
+| pricing: a band's copy tag answers the retained walk | built/no-aggregate | 320 ms | 297 ms | **−7.23 %** | 7/8 | 0.0352 | −2.98 | **GAIN** |
+| pricing (second case) | reopened/no-aggregate | 338 ms | 321 ms | −4.83 % | 6/8 | 0.1445 | −1.79 | direction agrees, not certified |
+| kernel: compare before writing a band | built/no-aggregate | 314 ms | 251 ms | **−20.08 %** | 8/8 | 0.0039 | −16.01 | **GAIN** |
+| kernel: same | reopened/no-aggregate | 353 ms | 277 ms | **−21.40 %** | 7/8 | 0.0352 | −3.15 | **GAIN** |
+
+What each knife is: the closure's per-sheet box now holds a precedent's **second** dependent (a
+cell two formulas read used to fall into the hash `many` list and pay a cold probe a cell); a
+`Band` carries a 24-byte copy tag (`id`, `parent`, `rows_touched`) so pricing a snapshot skips the
+per-row walk when the band is provably the same rows, with the tag's bytes subtracted from the
+stripe count so the charge is byte-for-byte what it was; and the store compares the packed row
+before it copies a band (four write paths), finds a row with one bit probe instead of a binary
+search over 48-byte headers, and stops double-probing in `set`.
+
+Gate after the merge: **25/25 within budget**, `mem_drift` 39,401 cycles flat within 0.12 %.
+Per-crate: model 170, calc 172, engine 620; fuzz gate 3/3; `cargo xtask wasm` ok; fmt and
+clippy -D warnings clean. The model micro-benchmark also moved: `value()` 82.6 → 38.4 ns,
+`set` 203.8 → 126.1 ns/cell, `set_values` 1M all-unchanged 49.5–85.0 → 26.9–40.0 ms (same-process
+interleaved A/B, direction only), and the paste of 6M cells measured 2,456 → 1,564 ms on the
+contended machine — the paste certification is still to run.
+
 ## Interaction and long-run measurements (2026-11-20)
 
 These harnesses close the gaps the gate does not cover (since 2026-11-20 the drift soak *is* one
@@ -905,7 +935,11 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-20 (the evaluator round):** refuted by measurement and recorded so it is never
+- **2026-11-21 (round 27, three certified knives):** closure second-dependent box (−18.35 %,
+  8/8, p=0.0039), band copy tag for retained pricing (−7.23 % built, 7/8; reopened 6/8 direction
+  only), store compare-before-write and one-bit row find (−20.08 % built 8/8, −21.40 % reopened
+  7/8). Gate 25/25; model 170 / calc 172 / engine 620; fuzz 3/3; wasm and lint clean. Raw:
+  plan/ab-r27-*.csv. Earlier: **2026-11-20 (the evaluator round):** refuted by measurement and recorded so it is never
   re-priced by guess: bytecode per shape (no-win, +10 %, kernel-bound per-cell cost), a
   monomorphized Host (≤5 ns a cell), compare-at-`Sheet::value`-to-skip-writes (costs more than
   the copy); the win was bookkeeping — an evicted undo step releases on later cheap commands
