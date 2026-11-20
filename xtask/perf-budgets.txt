@@ -16,6 +16,7 @@ mem_drift       100000  11
 open.csv        100000  130
 open.xlsx       100000  520
 rebuild.graph   100000  110
+save.repeat     100000  370
 save.xlsx       100000  300
 sort.desc       100000  580
 aggregate      1000000  1150
@@ -27,5 +28,6 @@ fill.values    1000000  3050
 open.csv       1000000  1250
 open.xlsx      1000000  5900
 rebuild.graph  1000000  1450
+save.repeat    1000000  3200
 save.xlsx      1000000  3400
 sort.desc      1000000  6700

@@ -16,12 +16,16 @@
 //! - `--budgets=PATH` — a different budget file; `--scale=F` (or `CELLA_PERF_SCALE`)
 //!   multiplies every budget, for a slower or shared machine
 //!
-//! One scenario the harness cannot express the gate runs itself, as its own release subprocess
-//! (the engine side stays a pure library consumer):
+//! Two scenarios the harness cannot express the gate runs itself, each as its own release
+//! subprocess (the engine side stays a pure library consumer):
 //! - `mem_drift` — the long-run soak of `crates/engine/examples/mem_drift.rs`, 100k rows for
 //!   240 s (edit/undo/redo cycles with a sort every 50 and a save every 200). Its budget line is
 //!   the soak's per-cycle cost; the leak assertion — the engine's own reported total flat within
 //!   ±2% over the second half — is part of this gate, not of the budget file.
+//! - `save.repeat` — the save micro-benchmark of `xtask/examples/save_bench.rs`: the reference
+//!   workbook (the exact state `save.xlsx` measures) saved six times in one process, best pass
+//!   kept. That repetition holds the ~1% noise floor at which a save change can be certified
+//!   instead of argued about.
 //!
 //! It is deliberately **not** part of `cargo xtask ci`: a release build of the engine is not part
 //! of the per-commit gate. See docs/performance.md.
@@ -53,6 +57,12 @@ const DRIFT_MAX_SHARE: f64 = 0.02;
 /// Second-half samples below which the flatness check refuses to pass: the soak prints one line
 /// every 25 cycles, so a healthy 240 s run has hundreds and a broken one must not slip by.
 const DRIFT_MIN_REPORTS: usize = 8;
+
+/// The save micro-benchmark: `xtask/examples/save_bench.rs` builds the workbook state
+/// `save.xlsx` measures, saves it six times in one process and keeps the best pass — the ~1%
+/// noise floor that makes a save change certifiable instead of arguable.
+const SAVE_SCENARIO: &str = "save.repeat";
+const SAVE_SAVES: usize = 6;
 
 /// One line of `xtask/perf-budgets.txt`.
 #[derive(Debug, Clone, PartialEq)]
@@ -271,12 +281,14 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         parse_budgets(&text)?
     };
     eprintln!("perf: measuring in release — this builds the engine and takes a few minutes");
-    // Two measurement legs: the harness scenarios, then the drift soak. Each is a release
-    // subprocess; each retries only itself.
+    // Three measurement legs: the harness scenarios, the save micro-benchmark, then the drift
+    // soak. Each is a release subprocess; each retries only itself.
     let mut measured = measure(&args, None)?;
+    let mut save = if wants(&args.only, SAVE_SCENARIO) { measure_save(&args, None)? } else { Vec::new() };
     let drift = if wants(&args.only, DRIFT_SCENARIO) { Some(measure_drift()?) } else { None };
     if args.update {
         let mut all: Vec<Measured> = measured.clone();
+        all.extend(save.iter().cloned());
         all.extend(drift.iter().cloned());
         if all.is_empty() {
             return Err("perf: the filter selected no scenarios — nothing to record".into());
@@ -314,6 +326,20 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         let again = measure(&args, Some(&suspects))?;
         keep_min(&mut measured, &again);
     }
+    let mut save_rows: Vec<usize> = Vec::new();
+    for m in &save {
+        if matches!(verdict(m, &budgets, args.scale), Verdict::Over(_)) && !save_rows.contains(&m.rows) {
+            save_rows.push(m.rows);
+        }
+    }
+    if !save_rows.is_empty() {
+        eprintln!(
+            "perf: {SAVE_SCENARIO} over budget — saving it once more at {} rows",
+            save_rows.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")
+        );
+        let again = measure_save(&args, Some(&save_rows))?;
+        keep_min(&mut save, &again);
+    }
     let mut drift = drift;
     if drift.as_ref().is_some_and(|d| matches!(verdict(d, &budgets, args.scale), Verdict::Over(_))) {
         eprintln!("perf: {DRIFT_SCENARIO} over budget — running the soak once more");
@@ -324,7 +350,8 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
             *d = again;
         }
     }
-    // The verdict table: the harness scenarios in run order, then the soak.
+    // The verdict table: the harness scenarios in run order, then the save bench, then the soak.
+    measured.extend(save);
     if let Some(d) = drift {
         measured.push(d);
     }
@@ -402,10 +429,11 @@ fn fmt_time(ms: f64) -> String {
 }
 
 /// Whether the perf harness has anything to do under this filter: no filter runs everything,
-/// and a filter that names only the scenarios the gate measures itself (`mem_drift`) leaves it
-/// nothing — the harness does not know those ids (its `--scenario` validation rejects them).
+/// and a filter that names only the scenarios the gate measures itself (`mem_drift`,
+/// `save.repeat`) leaves it nothing — the harness does not know those ids (its `--scenario`
+/// validation rejects them).
 fn harness_has_work(only: Option<&[String]>) -> bool {
-    only.is_none_or(|ids| ids.iter().any(|id| id.as_str() != DRIFT_SCENARIO))
+    only.is_none_or(|ids| ids.iter().any(|id| id.as_str() != DRIFT_SCENARIO && id.as_str() != SAVE_SCENARIO))
 }
 
 /// Whether this run's `--scenario` filter includes `id`. No filter means every scenario,
@@ -428,7 +456,7 @@ fn measure(args: &Args, only: Option<&[String]>) -> Result<Vec<Measured>, String
     cmd.arg(format!("--rows={}", args.rows.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
     if let Some(ids) = ids {
         // The gate's own ids are not the harness's: pass the filter without them.
-        let kept: Vec<String> = ids.iter().filter(|id| id.as_str() != DRIFT_SCENARIO).cloned().collect();
+        let kept: Vec<String> = ids.iter().filter(|id| id.as_str() != DRIFT_SCENARIO && id.as_str() != SAVE_SCENARIO).cloned().collect();
         cmd.arg(format!("--scenario={}", kept.join(",")));
     }
     // A re-measure is one pass: the min of the two is taken, so repeating inside it would only cost time.
@@ -522,6 +550,31 @@ fn parse_drift(text: &str) -> Result<Measured, String> {
     }
     eprintln!("perf: {DRIFT_SCENARIO} — {last_cycle} cycles in {DRIFT_SECONDS} s, second half flat within {:.2}%", band * 100.0);
     Ok(Measured { scenario: DRIFT_SCENARIO.to_string(), rows: DRIFT_ROWS, ms: last_elapsed * 1000.0 / last_cycle as f64 })
+}
+
+/// Run the save micro-benchmark in release and read its `--json` document — the same shape the
+/// harness prints, so the results parse identically. `only` narrows the re-measure to the row
+/// counts that came out over budget.
+fn measure_save(args: &Args, only: Option<&[usize]>) -> Result<Vec<Measured>, String> {
+    let mut rows = args.rows.clone();
+    if let Some(only) = only {
+        rows.retain(|r| only.contains(r));
+    }
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut cmd = crate::cargo();
+    cmd.args(["run", "--release", "-q", "-p", "xtask", "--example", "save_bench", "--"]);
+    cmd.arg(format!("--rows={}", rows.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
+    cmd.arg(format!("--saves={SAVE_SAVES}"));
+    cmd.arg("--json");
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
+    let out = cmd.output().map_err(|e| format!("cargo run --example save_bench: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("the save micro-benchmark failed ({}); its output is above", out.status));
+    }
+    parse_results(&String::from_utf8_lossy(&out.stdout))
 }
 
 #[cfg(test)]
@@ -635,13 +688,16 @@ mod tests {
         assert!(harness_has_work(None), "no filter: the harness runs everything");
         assert!(harness_has_work(Some(&["fill.values".into(), DRIFT_SCENARIO.into()])), "a mixed filter keeps the harness's share");
         assert!(!harness_has_work(Some(&[DRIFT_SCENARIO.into()])), "a drift-only run starts no harness");
+        assert!(!harness_has_work(Some(&[SAVE_SCENARIO.into(), DRIFT_SCENARIO.into()])), "the gate's own scenarios start no harness");
     }
 
     #[test]
     fn an_unfiltered_run_wants_every_scenario() {
         assert!(wants(&None, DRIFT_SCENARIO));
+        assert!(wants(&None, SAVE_SCENARIO));
         assert!(!wants(&Some(vec!["fill.values".into()]), DRIFT_SCENARIO));
         assert!(wants(&Some(vec!["fill.values".into(), DRIFT_SCENARIO.into()]), DRIFT_SCENARIO));
+        assert!(!wants(&Some(vec![SAVE_SCENARIO.into()]), DRIFT_SCENARIO), "a save-only run skips the soak");
     }
 
     #[test]
