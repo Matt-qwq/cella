@@ -1,6 +1,6 @@
 # Performance report
 
-> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `29a35f71` (2026-11-19).
+> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `8f54473` (2026-11-21).
 > Machine: windows x86_64; rustc 1.97.1 (8bab26f4f 2026-07-14). Every number is wall clock on one idle machine, and this
 > machine's run-to-run spread is about 10 %, which is why a gate budget is twice a quiet pass.
 > Method and caveats: [performance.md](performance.md).
@@ -13,30 +13,33 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      202 ms     400 ms     51%
-fill.formulas          100000      150 ms     380 ms     40%
-fill.chained           100000      194 ms     540 ms     36%
-aggregate              100000       71 ms     200 ms     36%
-edit.recalc            100000       91 ms     350 ms     26%
-edit.undo              100000      2.1 ms     4.0 ms     52%
-sort.desc              100000      385 ms     1.05 s     37%
-save.xlsx              100000      190 ms     370 ms     51%
-open.xlsx              100000      310 ms     670 ms     46%
-rebuild.graph          100000       56 ms     170 ms     33%
-open.csv               100000       67 ms     140 ms     48%
-fill.values           1000000      2.10 s     4.10 s     51%
-fill.formulas         1000000      1.26 s     3.55 s     35%
-fill.chained          1000000      1.86 s     5.95 s     31%
-aggregate             1000000      740 ms     1.95 s     38%
-edit.recalc           1000000      851 ms     3.65 s     23%
-edit.undo             1000000       25 ms      54 ms     46%
-sort.desc             1000000      4.26 s    13.75 s     31%
-save.xlsx             1000000      1.76 s     4.10 s     43%
-open.xlsx             1000000      2.90 s     8.05 s     36%
-rebuild.graph         1000000      758 ms     2.25 s     34%
-open.csv              1000000      594 ms     1.25 s     48%
+fill.values            100000      138 ms     250 ms     55%
+fill.formulas          100000      157 ms     290 ms     54%
+fill.chained           100000      224 ms     370 ms     61%
+aggregate              100000       65 ms     110 ms     59%
+edit.recalc            100000       86 ms     160 ms     54%
+edit.undo              100000      200 us     3.0 ms      7%
+sort.desc              100000      332 ms     580 ms     57%
+save.xlsx              100000      209 ms     300 ms     70%
+open.xlsx              100000      366 ms     520 ms     70%
+rebuild.graph          100000       70 ms     110 ms     64%
+open.csv               100000       71 ms     130 ms     55%
+fill.values           1000000      1.79 s     3.05 s     59%
+fill.formulas         1000000      1.42 s     2.55 s     56%
+fill.chained          1000000      2.17 s     3.55 s     61%
+aggregate             1000000      444 ms     1.15 s     39%
+edit.recalc           1000000      732 ms     1.45 s     51%
+edit.undo             1000000      1.6 ms      52 ms      3%
+sort.desc             1000000      3.51 s     6.70 s     52%
+save.xlsx             1000000      2.03 s     3.40 s     60%
+open.xlsx             1000000      3.66 s     5.90 s     62%
+rebuild.graph         1000000      877 ms     1.45 s     60%
+open.csv              1000000      724 ms     1.25 s     58%
+save.repeat            100000      177 ms     370 ms     48%
+save.repeat           1000000      1.94 s     3.20 s     61%
+mem_drift              100000      5.6 ms      11 ms     51%
 
-OK: all 22 scenarios within budget (xtask/perf-budgets.txt)
+OK: all 25 scenarios within budget (xtask/perf-budgets.txt)
 
 ```
 
@@ -50,27 +53,27 @@ as built (built by the perf scenario's three fills)
 
   part                                 bytes    share  size
   ---------------------------------------------------  ----------
-  sheet Sheet1 / cells             370636740    41.9%  370.6 MB
-    band headers + rows             51750000     5.9%  51.8 MB
+  sheet Sheet1 / cells             371136740    30.3%  371.1 MB
+    band headers + rows             52250000     4.3%  52.2 MB
     band index                        375168     0.0%  375.2 kB
-    bitmaps                          8000000     0.9%  8.0 MB
-    payloads                        16000000     1.8%  16.0 MB
-    kind runs                        8000000     0.9%  8.0 MB
-    style runs                       4000000     0.5%  4.0 MB
+    bitmaps                          8000000     0.7%  8.0 MB
+    payloads                        16000000     1.3%  16.0 MB
+    kind runs                        8000000     0.7%  8.0 MB
+    style runs                       4000000     0.3%  4.0 MB
     style ids                          62500     0.0%  62.5 kB
-    number tables                   33004944     3.7%  33.0 MB
-    text dictionaries               32000000     3.6%  32.0 MB
-    row side tables                 71999872     8.1%  72.0 MB
-    formula text                   133444256    15.1%  133.4 MB
-    formula trees                   12000000     1.4%  12.0 MB
+    number tables                   33004944     2.7%  33.0 MB
+    text dictionaries               32000000     2.6%  32.0 MB
+    row side tables                 71999872     5.9%  72.0 MB
+    formula text                   133444256    10.9%  133.4 MB
+    formula trees                   12000000     1.0%  12.0 MB
   sheet Sheet1 / lines                   192     0.0%  192 B
   sheet Sheet1 / objects                1598     0.0%  1.6 kB
   workbook / styles                     1990     0.0%  2.0 kB
   workbook / names                         0     0.0%  0 B
   workbook / other                       960     0.0%  960 B
-  calc / graph nodes               104857928    11.9%  104.9 MB
-  calc / precedent areas           124999960    14.1%  125.0 MB
-  calc / dependents map             56001160     6.3%  56.0 MB
+  calc / graph nodes               104857928     8.6%  104.9 MB
+  calc / precedent areas           124999960    10.2%  125.0 MB
+  calc / dependents map             56001416     4.6%  56.0 MB
   calc / range index                       0     0.0%  0 B
   calc / wide range index                  0     0.0%  0 B
   calc / legacy arrays                     0     0.0%  0 B
@@ -84,22 +87,22 @@ as built (built by the perf scenario's three fills)
   calc / pass (at rest)                    0     0.0%  0 B
     graph dependents lists                 0           many
   history / saved snapshot              2544     0.0%  2.5 kB
-  history / undo                   212319230    24.0%  212.3 MB
+  history / undo                   552829918    45.1%  552.8 MB
   history / redo                           0     0.0%  0 B
-  journal                           15251076     1.7%  15.3 MB
+  journal                           15251076     1.2%  15.3 MB
                             -------------------------
-  TOTAL                            884073538   100.0%  884.1 MB
+  TOTAL                           1225084482   100.0%  1.23 GB
   formula shapes                3 of 2000000  the trees the formulas share
-  undo stack (1 steps)             212319230           retained beyond the live workbook
-    AutoFill                       212319230           the newest first
-    Sheet1 / stripes        85750004           retained 212316686 · row tables 55999904 · texts 32000000
+  undo stack (1 steps)             212444230           retained beyond the live workbook
+    AutoFill                       212444230           the newest first
+    Sheet1 / stripes        86250004           retained 212441686 · row tables 55996928 · texts 32000000
 
 the same workbook saved as xlsx (70371330 bytes) and opened again
 
   part                                 bytes    share  size
   ---------------------------------------------------  ----------
-  sheet Sheet1 / cells             382181085    55.9%  382.2 MB
-    band headers + rows             51874608     7.6%  51.9 MB
+  sheet Sheet1 / cells             382681085    56.0%  382.7 MB
+    band headers + rows             52374608     7.7%  52.4 MB
     band index                        375168     0.1%  375.2 kB
     bitmaps                          8020768     1.2%  8.0 MB
     payloads                        16041536     2.3%  16.0 MB
@@ -118,7 +121,7 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
   workbook / other                       960     0.0%  960 B
   calc / graph nodes               104857928    15.3%  104.9 MB
   calc / precedent areas           124999960    18.3%  125.0 MB
-  calc / dependents map             56001160     8.2%  56.0 MB
+  calc / dependents map             56001416     8.2%  56.0 MB
   calc / range index                       0     0.0%  0 B
   calc / wide range index                  0     0.0%  0 B
   calc / legacy arrays                     0     0.0%  0 B
@@ -136,14 +139,14 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
   history / redo                           0     0.0%  0 B
   journal                           15251146     2.2%  15.3 MB
                             -------------------------
-  TOTAL                            683297131   100.0%  683.3 MB
+  TOTAL                            683797387   100.0%  683.8 MB
   formula shapes              181 of 2000000  the trees the formulas share
 
   saved and reopened against as built
 
   line                                      as built        reopened
   ------------------------------------------------------------------
-  cells                                     370.6 MB        382.2 MB  +11.5 MB
+  cells                                     371.1 MB        382.7 MB  +11.5 MB
   formula text                              133.4 MB        133.4 MB  +215 B
   formula trees                              12.0 MB         12.1 MB  +68.4 kB
   row side tables                            72.0 MB         72.0 MB  +128 B
@@ -151,10 +154,10 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
   graph nodes                               104.9 MB        104.9 MB  +0 B
   dependents map                             56.0 MB         56.0 MB  +0 B
   name cache                                     0 B             0 B  +0 B
-  undo                                      212.3 MB             0 B  -212.3 MB
+  undo                                      552.8 MB             0 B  -552.8 MB
   saved snapshot                              2.5 kB           952 B  -1.6 kB
   journal                                    15.3 MB         15.3 MB  +70 B
-  total                                     884.1 MB        683.3 MB  -200.8 MB
+  total                                      1.23 GB        683.8 MB  -541.3 MB
 
 
 ```
@@ -164,6 +167,23 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
 > **Measured** 2026-11-18 on the development machine (Windows 11, AMD Ryzen, 32 GB), release
 > builds. Every product ran the same file and the same edit; the answer cell is identical across
 > all four. Run-to-run spread on this machine is about 10 %.
+
+> **Update 2026-11-21 — this table predates rounds 26–27.** The Cella column was measured on
+> 2026-11-18 at 0.13.0. Two rounds since then changed the machinery under exactly these
+> operations, and every change was certified by an eight-pair sign test
+> (`plan/ab-r27-*.csv`, `plan/ab-r27-paste-*.csv`): an evicted undo step releases on later cheap
+> commands (round 26); the closure keeps a two-formula precedent in a box, so the 2M-dirty edit
+> went **866 → 707 ms (−18.4 %)**; a band prices a snapshot from its copy tag instead of a per-row
+> walk (**−7.2 % built**); the store compares the packed row before copying a band, finds a row
+> with one bit probe and stops double-probing in `set` (**−20.1 % built, −21.4 % reopened**); and
+> the same knife took **a 6M-cell paste from 2,011 to 1,300 ms (−35.4 %)**. In the gate's own
+> harness the 1M chained `edit.recalc` now runs **725 ms** against its 1.45 s budget.
+>
+> **What has not changed:** Excel's 0.08 s for this edit has not been beaten, and the external
+> columns — and the Cella column itself — have **not** been re-measured together since 2026-11-18.
+> The gate's synthetic 1M edit is now 251 ms on our side, but that is a different workload from
+> the reference file, so it is a direction, not a ratio. Until the whole table is re-run in one
+> session with Excel and WPS, read the numbers above as a dated measurement, not a current claim.
 
 The file is `plan/bench/ref-1m.xlsx`: 1,000,000 rows x 8 columns, 2,000,000 formulas
 (`G = B*C+D`, `H = H(n-1)+G(n)`), 70,371,330 bytes, written by Cella. The edit is `B1 = 3`, which

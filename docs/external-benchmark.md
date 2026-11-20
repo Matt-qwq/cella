@@ -4,6 +4,23 @@
 > builds. Every product ran the same file and the same edit; the answer cell is identical across
 > all four. Run-to-run spread on this machine is about 10 %.
 
+> **Update 2026-11-21 — this table predates rounds 26–27.** The Cella column was measured on
+> 2026-11-18 at 0.13.0. Two rounds since then changed the machinery under exactly these
+> operations, and every change was certified by an eight-pair sign test
+> (`plan/ab-r27-*.csv`, `plan/ab-r27-paste-*.csv`): an evicted undo step releases on later cheap
+> commands (round 26); the closure keeps a two-formula precedent in a box, so the 2M-dirty edit
+> went **866 → 707 ms (−18.4 %)**; a band prices a snapshot from its copy tag instead of a per-row
+> walk (**−7.2 % built**); the store compares the packed row before copying a band, finds a row
+> with one bit probe and stops double-probing in `set` (**−20.1 % built, −21.4 % reopened**); and
+> the same knife took **a 6M-cell paste from 2,011 to 1,300 ms (−35.4 %)**. In the gate's own
+> harness the 1M chained `edit.recalc` now runs **725 ms** against its 1.45 s budget.
+>
+> **What has not changed:** Excel's 0.08 s for this edit has not been beaten, and the external
+> columns — and the Cella column itself — have **not** been re-measured together since 2026-11-18.
+> The gate's synthetic 1M edit is now 251 ms on our side, but that is a different workload from
+> the reference file, so it is a direction, not a ratio. Until the whole table is re-run in one
+> session with Excel and WPS, read the numbers above as a dated measurement, not a current claim.
+
 The file is `plan/bench/ref-1m.xlsx`: 1,000,000 rows x 8 columns, 2,000,000 formulas
 (`G = B*C+D`, `H = H(n-1)+G(n)`), 70,371,330 bytes, written by Cella. The edit is `B1 = 3`, which
 dirties `G1` and the whole `H` chain (about 1,000,000 cells); every product had automatic
