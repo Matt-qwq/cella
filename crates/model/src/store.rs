@@ -28,6 +28,7 @@
 //! `NUMBER_WIDE`, which keeps the bits in the row's side table.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cella_core::{CellError, CellRef, RangeRef, Value};
@@ -593,9 +594,46 @@ impl BandRow {
     }
 }
 
+/// What a band remembers about the band it was copied from, so pricing a snapshot does not have to
+/// walk every row of the bands an edit copied for their values alone.
+///
+/// A band is immutable while any other owner holds it: `Arc::make_mut` copies it, and the copy
+/// starts as an exact copy of its parent. A value-only edit — what a recalculation writes — changes
+/// payloads, kinds and the number table but not one row, and every row's formula/array side table
+/// stays the parent's, pointer for pointer. `retained_bytes_against` reads that from the tag: when
+/// the newer store's band is an untouched copy of the older store's band, the rows add nothing to
+/// what the snapshot retains, and the price is the fixed part alone — no per-row walk.
+///
+/// `rows_touched` is set by every mutation that can add, drop or replace a row or its side table.
+/// It is a plain store, not an atomic, because it is written on the edit path; identities come from
+/// a process counter, so two bands that did not copy from one another never compare equal.
+#[derive(Clone, Copy, Debug)]
+struct BandTag {
+    /// Identity of this band object. Every band constructed takes a fresh one, so a parent's id
+    /// names that band alone.
+    id: u64,
+    /// `id` of the band this one was copied from; 0 for a band built from cells.
+    parent: u64,
+    /// A row was added, dropped, or had its side table replaced since this object was copied.
+    rows_touched: bool,
+}
+
+impl Default for BandTag {
+    /// A constructed band's identity: fresh, with no parent and no touched rows.
+    fn default() -> BandTag {
+        BandTag { id: next_band_id(), parent: 0, rows_touched: false }
+    }
+}
+
+/// A process-unique band identity (see [`BandTag`]): 64-bit so it never repeats in a session.
+fn next_band_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// The cells of one band, striped: the presence bitmaps, kinds, payloads and styles all live in one
 /// vector each, a row being a slice of all four.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct Band {
     /// Sorted by row: 64 rows of 48 bytes each, where a `BTreeMap`'s leaves sit three quarters full
     /// and cost some forty bytes a row for the privilege.
@@ -622,6 +660,28 @@ struct Band {
     text_index: Vec<(usize, u32)>,
     /// The distinct styles of this band; the `styles` stripe holds indexes into it.
     style_ids: Vec<StyleId>,
+    /// Who this band was copied from, for pricing without a row walk (see [`BandTag`]).
+    tag: BandTag,
+}
+
+impl Clone for Band {
+    /// A copy holds exactly this band, with its own identity and this band as its parent, and no
+    /// row touched yet — which is what lets pricing answer from the tag (see [`BandTag`]).
+    fn clone(&self) -> Band {
+        Band {
+            rows: self.rows.clone(),
+            bits: self.bits.clone(),
+            kinds: self.kinds.clone(),
+            styles: self.styles.clone(),
+            payloads: self.payloads.clone(),
+            numbers: self.numbers.clone(),
+            number_slots: self.number_slots.clone(),
+            texts: self.texts.clone(),
+            text_index: self.text_index.clone(),
+            style_ids: self.style_ids.clone(),
+            tag: BandTag { id: next_band_id(), parent: self.tag.id, rows_touched: false },
+        }
+    }
 }
 
 /// Whether two versions of one formula are the same formula: its text, its array range and the
@@ -703,7 +763,9 @@ impl Band {
     /// before the rows' headers, their extras and the text contents.
     fn stripe_bytes(&self) -> usize {
         use std::mem::size_of;
-        size_of::<Band>()
+        // The sharing tag is bookkeeping, not storage a snapshot is charged for: the price of a
+        // band must not move because the model remembers who copied it.
+        size_of::<Band>().saturating_sub(size_of::<BandTag>())
             + self.bits.capacity() * size_of::<u64>()
             + self.kinds.capacity() * size_of::<(u16, u16)>()
             + self.payloads.capacity() * size_of::<u16>()
@@ -741,6 +803,24 @@ impl Band {
     /// Heap bytes of one text: its characters plus the pointer that names them.
     fn text_bytes(text: &Arc<str>) -> usize {
         text.len().saturating_add(std::mem::size_of::<Arc<str>>())
+    }
+
+    /// Whether `next` is an untouched copy of this band, so both hold the same row keys with the
+    /// same formula/array side tables, pointer for pointer (see [`BandTag`]). A value-only edit
+    /// copies a band this way; nothing the copy did changed a row or a side table.
+    fn shares_rows_with(&self, next: &Band) -> bool {
+        !next.tag.rows_touched && next.tag.parent == self.tag.id
+    }
+
+    /// What this band costs a snapshot when every row it holds is also the newer band's: the
+    /// stripes, the row headers and the texts — every term of [`unshared_band_bytes`] but the
+    /// rows' side tables, which a shared row does not pay.
+    fn unshared_fixed_bytes(&self) -> usize {
+        let mut bytes = self.stripe_bytes().saturating_add(self.rows.len().saturating_mul(std::mem::size_of::<BandRow>()));
+        for text in &self.texts {
+            bytes = bytes.saturating_add(Self::text_bytes(text));
+        }
+        bytes
     }
 
     /// Heap bytes this band owns, by allocation class. O(rows + texts + formulas): every figure is
@@ -859,6 +939,7 @@ impl Band {
                     ..Default::default()
                 };
                 self.rows.insert(i, row);
+                self.tag.rows_touched = true;
                 i
             }
         }
@@ -869,6 +950,7 @@ impl Band {
         if at >= self.rows.len() {
             return;
         }
+        self.tag.rows_touched = true;
         let row = self.rows.remove(at);
         let (bits_at, words) = (row.bits_at as usize, row.words as usize);
         let (cells_at, cells) = (row.cells_at as usize, row.cells as usize);
@@ -1176,6 +1258,8 @@ impl Band {
 
     /// Puts a payload that does not fit `u16` in the row's side table and returns its index there.
     fn push_wide(&mut self, at: usize, value: u64) -> u16 {
+        // The row's side table takes a value: the band's rows are not its parent's any more.
+        self.tag.rows_touched = true;
         // A value write appends (it cannot tell which entry was the cell's own), so a band
         // rewritten many times — a recalculated row of formulas — walks past the 65,535 an index
         // can hold; `compact_wide` brings it back to one entry per value the row still uses.
@@ -1193,6 +1277,7 @@ impl Band {
     /// index a payload stores always fits a `u16`. A row holds at most
     /// [`cella_core::MAX_COLS`] cells, so the rebuilt table always fits.
     fn compact_wide(&mut self, at: usize) {
+        self.tag.rows_touched = true;
         let cells = self.rows[at].cells as usize;
         let len = self.rows[at].extras.as_ref().map_or(0, |e| e.wide().len());
         if len <= usize::from(u16::MAX) {
@@ -1271,6 +1356,11 @@ impl Band {
         };
         let formula = cell.formula.clone();
         let at = self.row_or_insert(row_key);
+        if formula.is_some() || array.is_some() || self.rows[at].extras.is_some() {
+            // A side table may be added, replaced or removed below: this band's rows are no
+            // longer its parent's, so pricing has to walk them.
+            self.tag.rows_touched = true;
+        }
         self.cover(at, col);
         let existing = self.rows[at].index_of(self, col);
         self.rows[at].set_formula(col, if blank { None } else { formula.as_ref() });
@@ -1335,8 +1425,14 @@ impl Band {
             self.rows[at].kind_runs = kind_runs as u32;
         }
         match value {
-            Value::Array(a) => self.rows[at].set_array(col, Some(a)),
-            _ if self.rows[at].arrays().iter().any(|(c, _)| *c == col) => self.rows[at].set_array(col, None),
+            Value::Array(a) => {
+                self.tag.rows_touched = true;
+                self.rows[at].set_array(col, Some(a));
+            }
+            _ if self.rows[at].arrays().iter().any(|(c, _)| *c == col) => {
+                self.tag.rows_touched = true;
+                self.rows[at].set_array(col, None);
+            }
             _ => {}
         }
         true
@@ -1346,6 +1442,8 @@ impl Band {
     /// appended to the band's stripes, so there is no growth slack to give back and no
     /// insert-per-cell shifting.
     fn put_row(&mut self, row_key: u32, cells: &mut Vec<(u32, Cell)>) {
+        // A whole row is replaced: whatever the parent's row held is not this band's any more.
+        self.tag.rows_touched = true;
         // One pass: the cells arrive sorted by column, so the bitmap can be sized from the first
         // and last non-blank ones and the row built as it is walked. This used to collect a
         // `Vec<(u32, u8, Payload, u16)>` first and walk that, which was one allocation and one
@@ -1425,6 +1523,8 @@ impl Band {
     fn take(&mut self, row_key: u32, col: u32) -> Option<Cell> {
         let at = self.row_index(row_key)?;
         let i = self.rows[at].index_of(self, col)?;
+        // The row's side tables are read and then cleared below.
+        self.tag.rows_touched = true;
         let cell = self.cell_at(&self.rows[at], i, col);
         self.rows[at].set_formula(col, None);
         self.rows[at].set_array(col, None);
@@ -3078,9 +3178,8 @@ impl CellStore {
     /// `newer` does not share and its texts — the terms [`retained_bytes_against`](Self::retained_bytes_against)
     /// sums, for one band.
     fn unshared_band_bytes(band: &Band, next: Option<&Arc<Band>>) -> usize {
-        let mut bytes = band.stripe_bytes();
+        let mut bytes = band.unshared_fixed_bytes();
         for row in &band.rows {
-            bytes = bytes.saturating_add(std::mem::size_of::<BandRow>());
             // A value edit copies the band but shares each row's extras with the newer store; those
             // formulas and arrays are live anyway, not storage the snapshot keeps.
             let shared = next.and_then(|band| band.row(row.key)).is_some_and(|other| match (&row.extras, &other.extras) {
@@ -3091,9 +3190,6 @@ impl CellStore {
             if !shared {
                 bytes = bytes.saturating_add(Band::extras_bytes(row));
             }
-        }
-        for text in &band.texts {
-            bytes = bytes.saturating_add(Band::text_bytes(text));
         }
         bytes
     }
@@ -4520,6 +4616,34 @@ impl CellStore {
             if next.is_some_and(|b| Arc::ptr_eq(b, band)) {
                 continue;
             }
+            // An untouched copy of this band keeps every row and side table: what the snapshot
+            // retains is the fixed part alone, which is the whole point of the tag — a
+            // recalculation copies the sheet's bands for their values and pays no row walk.
+            bytes = bytes.saturating_add(match next {
+                Some(next) if band.shares_rows_with(next) => band.unshared_fixed_bytes(),
+                _ => Self::unshared_band_bytes(band, next),
+            });
+        }
+        bytes
+    }
+
+    /// [`retained_bytes_against`](Self::retained_bytes_against) with nothing remembered: every
+    /// band `newer` does not share is walked. This is the price the cached form must reproduce
+    /// exactly, and what the equivalence tests compare it against; it is not the edit-path call.
+    #[doc(hidden)]
+    pub fn retained_bytes_against_full(&self, newer: &CellStore) -> usize {
+        let mut bytes = 0usize;
+        for (key, page) in &self.pages {
+            if newer.pages.get(key).is_some_and(|next| Arc::ptr_eq(next, page)) {
+                continue;
+            }
+            bytes += page.page_len();
+        }
+        for (key, band) in &self.bands {
+            let next = newer.bands.get(key);
+            if next.is_some_and(|b| Arc::ptr_eq(b, band)) {
+                continue;
+            }
             bytes = bytes.saturating_add(Self::unshared_band_bytes(band, next));
         }
         bytes
@@ -5161,7 +5285,7 @@ mod page {
 
     use cella_core::{CellError, CellRef, RangeRef, Value};
 
-    use super::{Band, BandRow, ERRORS, Formula, PageCacheStats, RareRow, RowExtras, StyleId, error_code};
+    use super::{Band, BandRow, BandTag, ERRORS, Formula, PageCacheStats, RareRow, RowExtras, StyleId, error_code};
 
     const MAGIC: u32 = 0x4750_4231; // "GPB1"
     const VERSION: u8 = 1;
@@ -6244,7 +6368,19 @@ mod page {
         if !input.is_empty() {
             return None;
         }
-        let band = Band { rows, bits, kinds, styles, payloads, numbers, number_slots: Vec::new(), texts, text_index: Vec::new(), style_ids };
+        let band = Band {
+            rows,
+            bits,
+            kinds,
+            styles,
+            payloads,
+            numbers,
+            number_slots: Vec::new(),
+            texts,
+            text_index: Vec::new(),
+            style_ids,
+            tag: BandTag::default(),
+        };
         let valid = band.rows.iter().all(|r| {
             let bits_end = (r.bits_at as usize).checked_add(r.words as usize).is_some_and(|end| end <= band.bits.len());
             let cells_end = (r.cells_at as usize).checked_add(r.cells as usize).is_some_and(|end| end <= band.payloads.len());
@@ -6890,6 +7026,160 @@ mod tests {
         assert_eq!(s.expand_pages(), pages);
         assert_eq!((s.paged_band_count(), s.bands.len()), (0, 4));
         assert_eq!(s.get(c(199, 0)), Some(plain(199)));
+    }
+
+    /// Pricing a snapshot must not depend on what the store remembers: the tagged walk and the
+    /// uncached one answer the same number for every pair a session can produce. This drives both
+    /// over a deterministic random edit sequence — values, texts, formulas, arrays, row writes,
+    /// removals and value-only batches (the recalculation path) — and re-prices every snapshot
+    /// kept against the store as it is after every step.
+    #[test]
+    fn tagged_retained_pricing_equals_the_full_walk_on_random_edits() {
+        // A tiny xorshift: a fixed sequence with no dependency, and the same one on every run.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |bound: u32| -> u32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(bound.max(1))) as u32
+        };
+        let mut store = CellStore::new();
+        for row in 0..BAND * 4 {
+            store.set(c(row, 0), plain(row));
+            store.set(c(row, 1), Cell::value(Value::Text(Arc::from(format!("r{row}").as_str()))));
+            if row % 3 == 0 {
+                store.set(
+                    c(row, 2),
+                    Cell {
+                        formula: Some(Arc::new(Formula::new(format!("=A{}+1", row + 1).as_str()))),
+                        value: Value::Number(f64::from(row)),
+                        ..Default::default()
+                    },
+                );
+            }
+            if row % 7 == 0 {
+                store.set(c(row, 3), Cell { style: StyleId(2), ..Default::default() });
+            }
+            if row % 11 == 0 {
+                store.set(c(row, 4), Cell::value(Value::Array(Arc::new(cella_core::Array::row(vec![Value::Number(1.0)])))));
+            }
+        }
+        store.set(c(3, 5), Cell::value(Value::Bool(true)));
+        let mut snapshots: Vec<(u32, CellStore)> = Vec::new();
+        for step in 0..240u32 {
+            if step % 20 == 0 {
+                snapshots.push((step, store.clone()));
+                if snapshots.len() > 6 {
+                    snapshots.remove(0);
+                }
+            }
+            let row = next(BAND * 4);
+            let col = next(6);
+            match next(12) {
+                0 => store.set(c(row, col), plain(row + col)),
+                1 => store.set(c(row, col), Cell::value(Value::Text(Arc::from(format!("t{step}").as_str())))),
+                2 => store
+                    .set(c(row, 2), Cell { formula: Some(Arc::new(Formula::new(format!("=A{}+{step}", row + 1).as_str()))), ..Default::default() }),
+                3 => {
+                    let _ = store.remove(c(row, col));
+                }
+                4 => {
+                    let _ = store.set_value(c(row, 2), &Value::Number(f64::from(step)));
+                }
+                5 => {
+                    let _ = store.set_value(c(row, 0), &Value::Number(f64::from(step)));
+                }
+                6 => {
+                    // The recalculation shape: a value-only batch over a whole column of formulas.
+                    let mut batch: Vec<(CellRef, Value)> = (0..BAND * 4).map(|r| (c(r, 2), Value::Number(f64::from(r + step)))).collect();
+                    store.set_values(&mut batch);
+                }
+                7 => {
+                    let mut cells = vec![(0u32, plain(row)), (1, Cell::value(Value::Text(Arc::from("row"))))];
+                    store.set_row(row, &mut cells);
+                }
+                8 => store.set(c(row, 4), Cell::value(Value::Array(Arc::new(cella_core::Array::row(vec![Value::Number(f64::from(step))]))))),
+                9 => {
+                    // A stated cell rewritten with itself: the copy is the same content.
+                    if let Some(cell) = store.get(c(row, col)) {
+                        store.set(c(row, col), cell);
+                    }
+                }
+                10 => store.set(c(row, 3), Cell { style: StyleId(step % 5), ..Default::default() }),
+                _ => {
+                    let _ = store.set_value(c(row, 1), &Value::Text(Arc::from(format!("v{step}").as_str())));
+                }
+            }
+            for (at, snapshot) in &snapshots {
+                assert_eq!(
+                    snapshot.retained_bytes_against(&store),
+                    snapshot.retained_bytes_against_full(&store),
+                    "after step {step}, the snapshot taken at step {at}"
+                );
+            }
+        }
+    }
+
+    /// A value-only edit (a recalculation) copies a band but keeps every row's formula table: the
+    /// tag says so, the price is the fixed part alone, and it equals the full walk. An edit that
+    /// rewrites a formula, drops a row or replaces an array must not make that claim.
+    #[test]
+    fn a_value_only_edit_keeps_the_rows_its_snapshot_keeps() {
+        let mut store = CellStore::new();
+        for row in 0..BAND * 3 {
+            store.set(
+                c(row, 2),
+                Cell {
+                    formula: Some(Arc::new(Formula::new(format!("=A{}+1", row + 1).as_str()))),
+                    value: Value::Number(f64::from(row)),
+                    ..Default::default()
+                },
+            );
+            store.set(c(row, 0), plain(row));
+        }
+        let snapshot = store.clone();
+        let mut values: Vec<(CellRef, Value)> = (0..BAND * 3).map(|row| (c(row, 2), Value::Number(f64::from(row) * 2.0))).collect();
+        store.set_values(&mut values);
+        for key in 0..3u32 {
+            let old = snapshot.bands.get(&key).expect("a band");
+            let new = store.bands.get(&key).expect("a band");
+            assert!(old.shares_rows_with(new), "band {key} was copied for its values only");
+        }
+        assert_eq!(snapshot.retained_bytes_against(&store), snapshot.retained_bytes_against_full(&store));
+
+        // A formula rewritten in one band: that band's rows are no longer the snapshot's.
+        let before = store.clone();
+        store.set(c(5, 2), Cell { formula: Some(Arc::new(Formula::new("=A6*2"))), ..Default::default() });
+        let old = before.bands.get(&0).expect("a band");
+        let new = store.bands.get(&0).expect("a band");
+        assert!(!old.shares_rows_with(new), "a formula edit rewrote the row's side table");
+        assert_eq!(before.retained_bytes_against(&store), before.retained_bytes_against_full(&store));
+
+        // A row dropped from the store: the snapshot's rows are not the newer band's any more.
+        let before = store.clone();
+        for col in 0..5u32 {
+            let _ = store.remove(c(5, col));
+        }
+        let old = before.bands.get(&0).expect("a band");
+        let new = store.bands.get(&0).expect("the band still holds other rows");
+        assert!(!old.shares_rows_with(new), "a removed row is not a shared row");
+        assert_eq!(before.retained_bytes_against(&store), before.retained_bytes_against_full(&store));
+
+        // Two stores built separately never shared a band, whatever their content.
+        let mut twin = CellStore::new();
+        for row in 0..BAND * 3 {
+            twin.set(
+                c(row, 2),
+                Cell {
+                    formula: Some(Arc::new(Formula::new(format!("=A{}+1", row + 1).as_str()))),
+                    value: Value::Number(f64::from(row) * 2.0),
+                    ..Default::default()
+                },
+            );
+            twin.set(c(row, 0), plain(row));
+        }
+        assert!(!snapshot.bands.get(&0).expect("a band").shares_rows_with(twin.bands.get(&0).expect("a band")));
+        assert_eq!(snapshot.retained_bytes_against(&twin), snapshot.retained_bytes_against_full(&twin));
     }
 
     /// A process-unique number for a test's temp directory name (the clock is not read: it traps on

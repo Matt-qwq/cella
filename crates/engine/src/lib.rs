@@ -275,6 +275,20 @@ fn journal_entry_size(e: &(String, Json)) -> usize {
 }
 
 fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
+    history_retained_bytes_with(older, newer, cella_model::CellStore::retained_bytes_against)
+}
+
+/// [`history_retained_bytes`] with every band walked rather than read from its copy tag: the
+/// price the tagged walk must reproduce, which the `compressed_history` equivalence test holds a
+/// real command's recorded step to. Test-only — the edit path never wants the row walk back.
+#[cfg(test)]
+pub(crate) fn history_retained_bytes_full(older: &Workbook, newer: &Workbook) -> usize {
+    history_retained_bytes_with(older, newer, cella_model::CellStore::retained_bytes_against_full)
+}
+
+/// The one walk both prices share: `price` decides how a cell store is sized against the newer
+/// one, and everything else (sheets, row and column metadata) is the same.
+fn history_retained_bytes_with(older: &Workbook, newer: &Workbook, price: fn(&cella_model::CellStore, &cella_model::CellStore) -> usize) -> usize {
     let mut bytes = std::mem::size_of::<Workbook>();
     for (index, sheet) in older.sheets.iter().enumerate() {
         // Moving or inserting sheets must not charge unchanged sheets at a new index.
@@ -284,7 +298,7 @@ fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
         bytes = bytes.saturating_add(std::mem::size_of::<cella_model::Sheet>());
         let empty = cella_model::CellStore::new();
         let next = newer.sheets.get(index).map_or(&empty, |next| &next.cells);
-        bytes = bytes.saturating_add(sheet.cells.retained_bytes_against(next));
+        bytes = bytes.saturating_add(price(&sheet.cells, next));
         // Line metadata is chunked the same way: a snapshot shares every chunk the next state did
         // not touch, and a sheet with a million formatted rows is charged its unshared chunks.
         let empty_rows = cella_model::LineMap::new(cella_model::LineAxis::Rows);

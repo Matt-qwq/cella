@@ -7328,6 +7328,42 @@ mod compressed_history {
         sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    /// Every step a command pushes is charged exactly what the uncached per-row walk charges.
+    /// The model's own equivalence test covers arbitrary store pairs; this holds the engine's use
+    /// of the tagged walk to a real sequence — value edits (the recalculation path, which copies
+    /// every band for its values alone), a range write, a formula rewrite, undo and redo.
+    #[test]
+    fn a_pushed_step_is_charged_what_the_uncached_walk_charges() {
+        fn check(s: &Session, after: &str) {
+            let d = s.doc().expect("a document");
+            let Some(entry) = d.undo.last() else { return };
+            if entry.compressed {
+                return;
+            }
+            let full = crate::history_retained_bytes_full(&entry.wb, &d.wb).saturating_add(crate::delta_bytes(entry.formula_delta.as_ref()));
+            assert_eq!(entry.retained_bytes, full, "after {after}: step `{}` is priced the cached way", entry.label);
+        }
+
+        let mut s = fresh();
+        fill(&mut s, 1, 400);
+        check(&s, "the fill");
+        formulas(&mut s, 1, 400);
+        check(&s, "the formula fill");
+        // A value edit: the recalculation rewrites values in every band and no row's side table.
+        s.execute("cell.set", json!({"cell": "B1", "input": "5"})).expect("a value edit");
+        check(&s, "a value edit");
+        s.execute("range.setValues", json!({"range": "A1:A8", "values": [["x"], ["y"], [1], [2], [3], [4], [5], [6]]})).expect("a range write");
+        check(&s, "a range write");
+        s.execute("cell.set", json!({"cell": "F3", "input": "=B3*100"})).expect("a formula rewrite");
+        check(&s, "a formula rewrite");
+        s.execute("edit.undo", json!({})).expect("an undo");
+        check(&s, "an undo");
+        s.execute("edit.redo", json!({})).expect("a redo");
+        check(&s, "a redo");
+        s.execute("cell.set", json!({"cell": "B1", "input": "7"})).expect("another value edit");
+        check(&s, "another value edit");
+    }
+
     /// A snapshot of a filled sheet costs its deflated pages, a fraction of the sheet: the ratchet
     /// the compressed history is held to.
     #[test]
