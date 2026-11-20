@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** rounds 3–10: packed SUMIFS and SUM, formula-only graph synchronization, one rebuild on forced XLSX open, and sparse sorting validation. Earlier: isolated the three aggregations and added batched source-row reads for sort. added a four-case chained-edit benchmark and phase profiling for sort. the value read inside a recalculated chain's eval (11-18, eleventh): `CellStore::value` reads the value off the packed row instead of rebuilding the `Cell` — no formula `Arc`, no live band `Arc`, so four atomics and a rebuild a read become none — the 1M chain's **eval 161 → 118 ms**, `edit.recalc` **461 → 428 ms**, the fills unchanged. Earlier: the recalculated chain again, two hot-path costs of the pass's build (11-18, tenth): the slot table borrows the graph's shapes instead of an `Arc` a cell and keeps keys and shapes in one `Vec` (32 B a slot), and a pass asks the graph's node table once for a sheet's run of cells instead of once a cell — the 1M build **66-74 → 41-45 ms**, `edit.recalc` **693 → 639 ms**. Earlier: the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** budget lock (P2) — the gate's budgets re-recorded from the quiet 2026-11-20 pass (twice the current numbers, so a green run sits at ~50% of every budget) and the gate grew two scenarios: the `mem_drift` soak and the `save.repeat` best-of-6 micro-benchmark; startup and input-to-state stay with the plan/bench harnesses (reasoning in The gate). Earlier: rounds 3–10: packed SUMIFS and SUM, formula-only graph synchronization, one rebuild on forced XLSX open, and sparse sorting validation. Earlier: isolated the three aggregations and added batched source-row reads for sort. added a four-case chained-edit benchmark and phase profiling for sort. the value read inside a recalculated chain's eval (11-18, eleventh): `CellStore::value` reads the value off the packed row instead of rebuilding the `Cell` — no formula `Arc`, no live band `Arc`, so four atomics and a rebuild a read become none — the 1M chain's **eval 161 → 118 ms**, `edit.recalc` **461 → 428 ms**, the fills unchanged. Earlier: the recalculated chain again, two hot-path costs of the pass's build (11-18, tenth): the slot table borrows the graph's shapes instead of an `Arc` a cell and keeps keys and shapes in one `Vec` (32 B a slot), and a pass asks the graph's node table once for a sheet's run of cells instead of once a cell — the 1M build **66-74 → 41-45 ms**, `edit.recalc` **693 → 639 ms**. Earlier: the memory and performance line closed (11-18): a 1M × 6 workbook is **2.90 → 0.971 GB** live (0.77 GB reopened) — row side tables 144 → 72 MB, the band's number index 66 → 33 MB, the journal 42 → 15 MB, after the audits of the calc graph's three tables and the one undo step found structure rather than slack; **measured against Excel 16.0.20527 and WPS 12.1.0.25222** on a 70 MB file (open 3.3 s against 7.9–8.2 / 10.7; recalculate 0.75 s against 0.31 / 15.3; idle 246 MB against ~35 / 288), with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); and two recalculation changes took the 1M chained edit **0.85 → 0.75 s**. Earlier: the memory round (§ The memory round of 2026-11-17): byte accounting per part, the dependency graph compacted twice, the save build parallelised, formula **shape sharing** (one interned tree per shape; the per-cell tree is gone — `Formula` 48 B, `calc::Node` 16 B), a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s), and an **undo that restores a paged store** (gated so it never costs the edit). A 1M × 6 workbook went **2.90 → 1.14 GB** live (reopened 0.95 GB) and no scenario is slower (save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, graph rebuild 1.7 → 1.12 s). Earlier rounds: grouping/filtering no longer rebuild the graph, `open.csv` is a scenario, and the graph build is four times cheaper · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 **The one-page report is [performance-report.md](performance-report.md)** (and its Chinese
 companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xtask perf-report`
@@ -34,6 +34,14 @@ Each reports one number: its own wall-clock time in ms.
 | `open.xlsx` | opens those bytes again | the read path, the dependency-graph build, and whatever recalculation the file asks for (a package with `calcId` and no `fullCalcOnLoad` asks for none, which is the normal case) |
 | `rebuild.graph` | `Calc::rebuild` over every formula of the workbook, and nothing evaluated | the dependency-graph build on its own: an open and a structural edit both pay it, and it used to be the larger half of an open |
 | `open.csv` | `file.exportCsv` to a temp path, then `file.open` of that file | the CSV import path — the daily action for a data or e-commerce user, so decode plus insertion is a feature of its own. It opens a workbook of its own (a CSV has no formulas), which is why it runs last |
+
+Two further scenarios the gate measures itself, outside the harness (each is its own release
+subprocess, so the engine side stays a pure library consumer):
+
+| id | what it does | why it is measured |
+|---|---|---|
+| `save.repeat` | `xtask/examples/save_bench.rs` builds the workbook state `save.xlsx` measures, saves it six times in one process, keeps the best pass | the save micro-benchmark: in-process repetition holds ~1% noise, the floor at which a save change can be certified (single-pass scenarios carry the machine's ~10%) |
+| `mem_drift` | `crates/engine/examples/mem_drift.rs` runs 100k rows for 240 s of edit/undo/redo cycles with a sort every 50 and a save every 200 | a leak in the commit, journal, undo or graph paths shows up as a rising total; the gate asserts flatness (±2% of the second-half median) and budgets the per-cycle cost |
 
 Run it yourself:
 
@@ -76,6 +84,38 @@ ignored. A budget is therefore a *regression* threshold — it catches the 2× a
 shows smaller deltas. Re-record with `--update` only when the new number is the one you mean to
 keep.
 
+**Re-recorded 2026-11-20** from a quiet best-of-three release pass. The previous table was the
+2026-11-16 one, and the 0.13.0 numbers filled only 23–52% of it — a regression had to be twice
+the *old* number before anything failed. The new table is twice the current quiet numbers, so a
+green run sits at ~50% of every budget: the ×2 rule applied to where the code actually is.
+
+The gate now covers **25 checks**: the 22 harness measurements at 100k and 1M rows, plus the two
+below that the harness cannot express and the gate runs as its own release subprocesses
+(`--scenario=mem_drift,save.repeat` runs them alone):
+
+- **`mem_drift`** — the long-run soak (100k rows, 240 s, ~44–48k edit/undo/redo cycles, a sort
+  every 50, a save every 200). Its budget line is the soak's per-cycle cost in ms — a fixed-time
+  soak has no wall-clock number of its own; a slower engine simply completes fewer cycles. The
+  leak assertion lives in the gate, not the budget file: the engine's own reported total must
+  stay within ±2% of its second-half median (the 2026-11-20 soaks held 0.13%; the first half is
+  warm-up and is not judged). A full gate run therefore costs ~6–7 minutes: ~30 s of scenarios,
+  ~40 s of save bench, a 240 s soak.
+- **`save.repeat`** — the save micro-benchmark (the R12 follow-up): `xtask/examples/save_bench.rs`
+  builds the workbook state `save.xlsx` measures, saves it six times in one process and keeps the
+  best pass. In-process repetition is what squeezes the machine's ~10% run-to-run spread to ~1%,
+  the floor at which a save change can be certified instead of argued about.
+
+**Deliberately not in the gate: startup and input-to-state.** The two numbers the interaction
+harnesses produced — startup-to-accept **~1.02 s** and synthetic-input-to-state **~40 ms** channel
+round trip / **~355 ms** heavy Enter — stay measured by `plan/bench/startup_r14.ps1` and
+`plan/bench/input_r16.ps1`. Putting them inside `cargo xtask perf` would make a Rust-only,
+cross-platform gate own GUI process orchestration: a hidden Win32 desktop (`CreateDesktop`, so
+nothing appears on the user's screen), the full GUI app built in release, a TCP control-channel
+client with frame-batched polling, and a Windows-only step in a gate that runs everywhere the app
+ships. That is harness machinery, not a budget — the numbers stay recorded (§ Interaction and
+long-run measurements) and are re-measured by the scripts whenever startup or input latency is
+touched. Nothing is half-wired into the gate.
+
 A scenario that comes out over budget is measured **once more** before the run fails: a build that
 started on the same machine is a slow pass, not a regression, and a real regression stays over
 budget twice. Missing budgets are never retried — that is a mistake in the file, not a timing
@@ -84,9 +124,9 @@ question.
 ```text
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      200 ms     400 ms     50%
-save.xlsx             1000000      1.97 s     3.95 s     50%
-edit.recalc           1000000      1.81 s     3.65 s     50%
+fill.values            100000      131 ms     250 ms     52%
+save.repeat           1000000      1.60 s     3.20 s     50%
+edit.recalc           1000000      703 ms     1.45 s     48%
 ```
 
 The `of` column is the share of the budget the run used; `142%!` marks an overrun.
@@ -790,8 +830,10 @@ cargo run --release -p cella-engine --example sort_roundtrip -- --rows=1000000 -
 
 ## Interaction and long-run measurements (2026-11-20)
 
-Three harnesses close the gaps the gate does not cover. All run on the development machine's
-release build; the app runs on a hidden desktop so nothing appears on screen.
+These harnesses close the gaps the gate does not cover (since 2026-11-20 the drift soak *is* one
+of the gate's scenarios; the other two remain outside it — see The gate for why). All run on the
+development machine's release build; the app runs on a hidden desktop so nothing appears on
+screen.
 
 - **Startup** (`plan/bench/startup_r14.ps1`): process start → control port accept → first
   `ui.inspect`. Startup is a fixed **~1.02 s** block before the port binds, with or without a
@@ -811,7 +853,9 @@ release build; the app runs on a hidden desktop so nothing appears on screen.
   --seconds=240`): one session, ~45,900 edit/undo/redo cycles with periodic sorts and saves.
   Steady state settles at **~44.7 MB** and stays flat within **0.02%** over the second half
   (~23,000 cycles); the startup decline from 129 MB is the undo budget aging the large fill
-  steps out, by design. No leak found in the commit, journal, undo or graph paths.
+  steps out, by design. No leak found in the commit, journal, undo or graph paths. The gate now
+  runs this same soak as its `mem_drift` scenario (re-measured 2026-11-20: 48,326 cycles, flat
+  within 0.13%).
 
 ## Adding a scenario
 
@@ -821,11 +865,30 @@ release build; the app runs on a hidden desktop so nothing appears on screen.
    it is.
 3. Add the row to the table above if it is one a reader should recognise.
 
+A scenario the harness cannot express — it needs another process, a long soak, or one repeated
+operation — belongs to the gate itself, in `xtask/src/perf.rs`: a `measure_*` leg that runs a
+release subprocess and returns the same `Measured` rows. The id must be excluded from the
+harness filter (`harness_has_work` and the `--scenario` pass-through in `measure`) and listed
+in `wants`, then `cargo xtask perf --update --scenario=<id>` records its budget the same way.
+`save.repeat` (its own example, `xtask/examples/save_bench.rs`) and `mem_drift` (an existing
+engine example, run as a subprocess) are the two patterns.
+
 The harness stays dependency-free (engine + serde_json only), opens no dialogs, and caps anything
 derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-20 (budget lock, P2):** the gate's budgets re-recorded from a quiet best-of-three
+  release pass — the 2026-11-16 table let the 0.13.0 numbers pass at 23–52% of budget, so a
+  regression only tripped at nearly 2× the old numbers; the new ones are twice the current quiet
+  numbers, verified 22/22 green. Two scenarios added to the gate: `mem_drift` (the 240 s soak at
+  100k rows; per-cycle budget 11 ms, flatness ±2% asserted in the gate itself; 43.9k–48.3k cycles
+  across the runs, held 0.13%) and `save.repeat` (in-process best-of-6 save micro-benchmark,
+  `xtask/examples/save_bench.rs`; budgets 100k 370 ms, 1M 3.20 s). The over-budget re-measure is
+  now keyed by (scenario, rows), fixing a positional-pairing hazard in `keep_min`. Startup and
+  input-to-state stay with the plan/bench harnesses: porting them needs hidden-desktop GUI
+  orchestration that does not belong in a cross-platform, Rust-only gate (reasoning in The gate).
+  Final gate: **25/25 green**.
 - **2026-11-20 (statistical recertification):** every kept gain was re-measured with a paired
   sign-test A/B gate (8 pairs, rules fixed in advance). Certified: sort's formula-only graph
   reads **−9.6%** (8/8), packed `SUMIFS` **−20.8%** (8/8), the three-aggregate chained edit
