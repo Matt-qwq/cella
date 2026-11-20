@@ -3123,17 +3123,11 @@ impl CellStore {
     /// there is no `Cell` to point at. A text cell shares its string, so the copy is a pointer
     /// bump, not a string copy.
     pub fn get(&self, c: CellRef) -> Option<Cell> {
-        let physical = self.physical_row(c.row)?;
-        let col = self.physical_col(c.col)?;
-        let band = self.band_arc(physical / BAND)?;
-        let row = band.row(physical % BAND)?;
-        let i = row.index_of(&band, col)?;
-        Some(band.cell_at(row, i, col))
+        self.read_cell(c, Band::cell_at)
     }
 
-    /// Reads `c` through `f` without rebuilding the cell. A live band is borrowed where it is —
-    /// no `Arc<Band>` clone, so no atomic — and only a paged band is decoded, into an `Arc` this
-    /// read holds alone. `None` when this store holds nothing at `c`.
+    /// Reads a stored cell through `f`. A live band is borrowed without cloning its `Arc`;
+    /// a paged band is read through the page cache. Returns `None` when the cell is absent.
     fn read_cell<R>(&self, c: CellRef, f: impl FnOnce(&Band, &BandRow, usize, u32) -> R) -> Option<R> {
         let physical = self.physical_row(c.row)?;
         let col = self.physical_col(c.col)?;
@@ -3149,10 +3143,8 @@ impl CellStore {
         Some(f(&band, row, i, col))
     }
 
-    /// The value stored at `c`, without rebuilding the cell: no `Cell`, no `Arc<Formula>` clone
-    /// and, for a live band, no `Arc<Band>` clone. A recalculation reads one value per cell, and
-    /// `get` charged each of those reads two atomics for a formula nobody wanted and two more for
-    /// the band. `Value::Empty` where nothing is stored, which is what `get` reads there.
+    /// The value stored at `c`, without rebuilding a `Cell` or cloning its formula. Like
+    /// `get`, this borrows live bands. Returns `Value::Empty` where nothing is stored.
     pub fn value(&self, c: CellRef) -> Value {
         self.read_cell(c, Band::value_at).unwrap_or(Value::Empty)
     }
@@ -3170,16 +3162,10 @@ impl CellStore {
         self.read_cell(c, |band, row, i, col| (band.value_at(row, i, col), row.formula_at(col).is_some()))
     }
 
-    /// The formula stored at `c`, without rebuilding the cell's value: what an undo reads for the
-    /// cells its step recorded as the ones whose formula differs (`formula_changes_against`). A
-    /// paged band is decoded for it, one band for a run of cells in the same band.
+    /// The formula stored at `c`, without rebuilding the cell's value or style. Like `get`,
+    /// this borrows live bands and uses the page cache for paged bands.
     pub fn formula(&self, c: CellRef) -> Option<Arc<Formula>> {
-        let physical = self.physical_row(c.row)?;
-        let col = self.physical_col(c.col)?;
-        let band = self.band_arc(physical / BAND)?;
-        let row = band.row(physical % BAND)?;
-        let (_, formula) = row.formulas().iter().find(|(at, _)| *at == col)?;
-        Some(Arc::clone(formula))
+        self.read_cell(c, |_, row, _, col| row.formula_at(col).cloned()).flatten()
     }
 
     /// The style of a stored cell, without reconstructing the `Cell` (and its value and formula).
@@ -4000,6 +3986,50 @@ impl CellStore {
         CellWalk::new(self, RangeRef::new(CellRef::new(0, 0), CellRef::new(u32::MAX, u32::MAX)))
     }
 
+    /// Prepares repeated reads of the same inclusive logical column range in arbitrary row order.
+    /// Each call appends one entry per column into a caller-owned buffer, with `None` for holes
+    /// (including unmapped columns), and keeps a styled blank as a cell. A row borrows one live
+    /// band or decodes one page; neither the column map nor an output vector is built per row.
+    pub fn row_reader(&self, c0: u32, c1: u32) -> impl Fn(u32, &mut Vec<Option<Cell>>) + '_ {
+        let end = c1.min(cella_core::MAX_COLS.saturating_sub(1)).saturating_add(1);
+        let identity = ColSegment { logical: c0, physical: c0, len: end.saturating_sub(c0) };
+        let mapped = (!self.col_map.identity && c0 < end).then(|| self.col_map.segments_in(c0, end - 1));
+        move |row, out| {
+            if c0 >= end {
+                return;
+            }
+            let mut next = c0;
+            if let Some(physical) = self.physical_row(row) {
+                let key = physical / BAND;
+                let decoded;
+                let band = if let Some(band) = self.bands.get(&key) {
+                    Some(band.as_ref())
+                } else {
+                    decoded = self.band_arc(key);
+                    decoded.as_deref()
+                };
+                if let Some(band) = band
+                    && let Some(cells) = band.row(physical % BAND)
+                {
+                    for columns in mapped.as_deref().unwrap_or_else(|| std::slice::from_ref(&identity)) {
+                        let last = columns.physical.saturating_add(columns.len - 1);
+                        for (at, cell) in packed_row(band, row, cells, columns.physical, last) {
+                            let logical = columns.logical + (at.col - columns.physical);
+                            if logical > next {
+                                out.resize_with(out.len() + (logical - next) as usize, || None);
+                            }
+                            out.push(Some(cell));
+                            next = logical + 1;
+                        }
+                    }
+                }
+            }
+            if end > next {
+                out.resize_with(out.len() + (end - next) as usize, || None);
+            }
+        }
+    }
+
     pub fn row(&self, row: u32, c0: u32, c1: u32) -> impl Iterator<Item = (u32, Cell)> + '_ {
         let mut out = Vec::new();
         let Some(physical) = self.physical_row(row) else { return out.into_iter() };
@@ -4196,6 +4226,25 @@ impl CellStore {
         }
         out.sort_unstable_by_key(|(c, _, _)| (c.row, c.col));
         out.into_iter()
+    }
+
+    /// Whether any logically reachable cell contains a formula, even without a cached result.
+    /// Unlike `Self::formulas`, this needs neither ordering nor a copy of each formula.
+    pub fn has_formulas(&self) -> bool {
+        let contains = |key: u32, band: &Band| {
+            band.rows.iter().any(|row| {
+                let formulas = row.formulas();
+                !formulas.is_empty()
+                    && self.row_map.inverse(key.saturating_mul(BAND).saturating_add(row.key)).is_some()
+                    && formulas.iter().any(|(col, _)| self.col_map.inverse(*col).is_some())
+            })
+        };
+        self.bands.iter().any(|(&key, band)| contains(key, band))
+            || self.pages.iter().any(|(&key, page)| {
+                // A positive page flag is not enough: a row/column deletion can leave only
+                // physically stored formulas with no logical inverse, and a page may be unreadable.
+                page.has_formulas() && self.load_page(key, page).is_some_and(|band| contains(key, &band))
+            })
     }
 
     /// The cells whose formula differs between this store and an older version of it, which an
@@ -6353,6 +6402,48 @@ mod tests {
         assert_eq!(s.value_with_formula(c(7, 7)), None);
     }
 
+    #[test]
+    fn row_reader_matches_cell_reads_for_live_and_paged_sparse_mapped_rows() {
+        let mut store = CellStore::new();
+        store.set(c(0, 2), Cell { style: StyleId(3), ..Default::default() });
+        store.set(c(0, 4), Cell { formula: Some(Arc::new(Formula::new("A1"))), ..Default::default() });
+        store.set(c(0, 70), Cell::value(Value::Number(18.0)));
+        store.set(c(0, 71), Cell { formula: Some(Arc::new(Formula::new("2+3"))), value: Value::Number(5.0), style: StyleId(4) });
+        store.set(c(BAND, 2), Cell::value(Value::Text(Arc::from("later"))));
+        store.set(c(BAND, 3), Cell::value(Value::Array(Arc::new(cella_core::Array::row(vec![Value::Number(4.0)])))));
+        for mapped in [false, true] {
+            let mut live = store.clone();
+            if mapped {
+                live.shift_cols(1, 2);
+                // The new logical column maps above the old physical columns.
+                live.set(c(0, 1), Cell::value(Value::Bool(true)));
+                live.shift_cols(5, -1);
+                live.shift_rows(0, 1);
+            }
+            let mut paged = live.clone();
+            assert!(paged.enable_paging_with_cache(64 << 20));
+            let pages = paged.paged_band_count();
+            assert!(pages > 0);
+            for source in [&live, &paged] {
+                for (c0, c1) in [(0, 75), (3, 7), (4, 4), (70, 73), (90, 92)] {
+                    let read = source.row_reader(c0, c1);
+                    for row in [0, 1, 3, BAND, BAND + 1] {
+                        let mut got = Vec::new();
+                        read(row, &mut got);
+                        let expected: Vec<_> = (c0..=c1).map(|col| live.get(c(row, col))).collect();
+                        assert_eq!(got, expected, "row={row}, columns={c0}..={c1}, mapped={mapped}");
+                        for col in c0..=c1 {
+                            let at = c(row, col);
+                            assert_eq!(source.formula(at), source.get(at).and_then(|cell| cell.formula), "{at:?}, mapped={mapped}");
+                        }
+                    }
+                }
+            }
+            assert_eq!(paged.paged_band_count(), pages);
+            assert!(paged.bands.is_empty(), "the reader must not materialize pages");
+        }
+    }
+
     /// A paged band is decoded for a value read: the value comes back as the live band gave it,
     /// and the read leaves the band on its page (nothing is installed in the live map).
     #[test]
@@ -6377,6 +6468,57 @@ mod tests {
         }
         assert!(s.bands.is_empty(), "a value read does not materialize the page");
         assert_eq!(s.paged_band_count(), paged);
+    }
+
+    #[test]
+    fn has_formulas_counts_uncalculated_and_cached_formulas() {
+        let mut s = CellStore::new();
+        assert!(!s.has_formulas());
+        s.set(c(0, 0), Cell::value(Value::Number(4.0)));
+        assert!(!s.has_formulas());
+        let at = c(2, 1);
+        let formula = Arc::new(Formula::new("=A1+1"));
+        s.set(at, Cell { formula: Some(formula.clone()), ..Default::default() });
+        assert!(s.has_formulas(), "the formula need not have a cached value");
+        s.set(at, Cell { value: Value::Number(5.0), formula: Some(formula), ..Default::default() });
+        assert!(s.has_formulas());
+        s.remove(at);
+        assert!(!s.has_formulas());
+    }
+
+    #[test]
+    fn has_formulas_skips_value_pages_and_excludes_deleted_rows_and_columns() {
+        let mut s = CellStore::new();
+        s.set(c(0, 0), Cell::value(Value::Number(4.0)));
+        assert!(s.enable_paging());
+        assert!(!s.has_formulas());
+        let cache = s.page_cache_stats().expect("paging is enabled");
+        assert_eq!((cache.hits, cache.misses), (0, 0), "value-only page needs no read");
+
+        for delete_row in [true, false] {
+            let mut s = CellStore::new();
+            s.set(c(0, 0), Cell::value(Value::Number(4.0)));
+            s.set(c(BAND, 1), Cell { formula: Some(Arc::new(Formula::new("=A1+1"))), ..Default::default() });
+            let mut paged = s.clone();
+            assert!(paged.enable_paging());
+            let pages = paged.paged_band_count();
+            assert_eq!(pages, 2);
+            assert!(paged.has_formulas());
+            let cache = paged.page_cache_stats().expect("paging is enabled");
+            assert_eq!(cache.misses, 1, "only the positive formula page was decoded");
+            assert_eq!(paged.paged_band_count(), pages, "the query does not materialize the page");
+
+            for store in [&mut s, &mut paged] {
+                if delete_row {
+                    store.shift_rows(BAND + 1, -1);
+                } else {
+                    store.shift_cols(2, -1);
+                }
+                assert!(!store.has_formulas(), "the only formula was deleted");
+                assert!(store.formulas().next().is_none());
+            }
+            assert!(paged.pages.get(&1).is_some_and(|page| page.has_formulas()), "the deleted formula remains physically on its page");
+        }
     }
 
     #[test]
