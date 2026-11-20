@@ -42,5 +42,5 @@ getrandom = { workspace = true }
 [dev-dependencies]
 # An independent Compound File Binary reader, used only to prove the encrypted container is valid
 # to software that isn't ours (a test oracle; it ships nowhere).
-cfb = "0.15"
+cfb = "0.16"
 
