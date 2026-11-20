@@ -182,6 +182,13 @@ pub struct DocState {
     pub selection: Selection,
     pub undo: Vec<HistoryEntry>,
     pub redo: Vec<HistoryEntry>,
+    /// Steps the byte budget has evicted, waiting to be released. Dropping a million-row
+    /// snapshot is a quarter of a second of `free()` the edit that evicted it used to pay
+    /// inline (the wave-3 probe measured 249-296 ms at 1M rows); they are released a little at
+    /// a time instead (see `defer_release` on `DocState`) and never outlive the document.
+    /// Bounded by `PENDING_RELEASE_MAX`; a step evicted while the queue is full releases the
+    /// cheapest waiting one inline, so no command ever pays more than one release.
+    pub(crate) pending_release: Vec<HistoryEntry>,
     pub path: Option<String>,
     pub saved: Arc<Workbook>,
     pub revision: u64,
@@ -230,6 +237,10 @@ const JOURNAL_MAX_ENTRIES: usize = 10_000;
 /// 42 MB at a million rows for a hundred bulk entries nobody was going to read back.
 pub(crate) const JOURNAL_MAX_BYTES: usize = 16 * 1024 * 1024;
 const UNDO_BYTES_LIMIT: usize = 128 * 1024 * 1024;
+/// The most evicted steps that may wait for release at once (see `DocState::pending_release`).
+/// Two: a multi-step eviction can defer its two, and a third arriving releases the cheapest
+/// waiting step inline — the worst a command pays is one release, never a backlog.
+pub(crate) const PENDING_RELEASE_MAX: usize = 2;
 /// The most bands a history step may spill to be offered its compressed chance. A band encodes in
 /// about 100 µs (the 15,625 bands of a million-row sheet took 1.2–1.6 s; the 1,563 of a hundred
 /// thousand took 70 ms), so six hundred is the 60 ms an edit may spend keeping a step it would
@@ -318,7 +329,13 @@ fn formula_delta(older: &Workbook, newer: &Workbook) -> Option<Vec<(usize, CellR
 /// restored (`Calc::restore`), which is exact and costs the bands the edit touched. Only a step
 /// that becomes pages records one — see [`compress_history_entry`] — so an edit pays for what its
 /// step costs, and not for what it might cost if the budget later makes pages of it.
-fn push_history(history: &mut Vec<HistoryEntry>, label: String, wb: Arc<Workbook>, next: &Workbook, selection: Selection) -> usize {
+fn push_history(
+    history: &mut Vec<HistoryEntry>,
+    label: String,
+    wb: Arc<Workbook>,
+    next: &Workbook,
+    selection: Selection,
+) -> (usize, Vec<HistoryEntry>) {
     push_history_with_budget(history, Step { label, wb, selection, delta: None, spill_newest: true }, next, UNDO_BYTES_LIMIT)
 }
 
@@ -338,7 +355,7 @@ fn push_restored(
     next: &Workbook,
     selection: Selection,
     delta: Option<Vec<(usize, CellRef)>>,
-) -> usize {
+) -> (usize, Vec<HistoryEntry>) {
     push_history_with_budget(history, Step { label, wb, selection, delta, spill_newest: false }, next, UNDO_BYTES_LIMIT)
 }
 
@@ -363,21 +380,31 @@ pub(crate) fn push_test_history(
     selection: Selection,
     byte_budget: usize,
 ) -> usize {
-    push_history_with_budget(history, Step { label, wb, selection, delta: None, spill_newest: true }, next, byte_budget)
+    // The budget tests drive the stack directly, with no document to hold a release queue:
+    // the evicted steps are released here, exactly as they were before the queue existed.
+    let (dropped, evicted) = push_history_with_budget(history, Step { label, wb, selection, delta: None, spill_newest: true }, next, byte_budget);
+    drop(evicted);
+    dropped
 }
 
-fn push_history_with_budget(history: &mut Vec<HistoryEntry>, step: Step, next: &Workbook, byte_budget: usize) -> usize {
+/// The evicted steps leave with the caller instead of being destroyed here: freeing a
+/// million-row snapshot is not work the evicting command should pay inline (see
+/// `DocState::defer_release`).
+fn push_history_with_budget(history: &mut Vec<HistoryEntry>, step: Step, next: &Workbook, byte_budget: usize) -> (usize, Vec<HistoryEntry>) {
     let Step { label, wb, selection, delta, spill_newest } = step;
     let retained_bytes = history_retained_bytes(&wb, next);
     history.push(HistoryEntry { label, wb, selection, retained_bytes, compressed: false, formula_delta: delta });
     let mut total = history.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
     let mut dropped = 0;
+    let mut evicted = Vec::new();
     // The latest action is always preserved, even if that one edit exceeds the budget: a stack of
     // one is never emptied. The loop still runs for a stack of one, because the step it holds can
     // be spilled when it alone outweighs the budget (see the newest-step rule below).
     while !history.is_empty() {
         if history.len() > UNDO_LIMIT {
-            total = total.saturating_sub(history.remove(0).retained_bytes);
+            let gone = history.remove(0);
+            total = total.saturating_sub(gone.retained_bytes);
+            evicted.push(gone);
             dropped += 1;
             continue;
         }
@@ -440,10 +467,12 @@ fn push_history_with_budget(history: &mut Vec<HistoryEntry>, step: Step, next: &
         if history.len() <= 1 {
             break;
         }
-        total = total.saturating_sub(history.remove(0).retained_bytes);
+        let gone = history.remove(0);
+        total = total.saturating_sub(gone.retained_bytes);
+        evicted.push(gone);
         dropped += 1;
     }
-    dropped
+    (dropped, evicted)
 }
 
 /// Whether a step that keeps `bands` of its own is worth its compressed chance: the encode must
@@ -571,6 +600,7 @@ impl DocState {
             selection: sel,
             undo: vec![],
             redo: vec![],
+            pending_release: vec![],
             path,
             revision: 1,
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -585,6 +615,41 @@ impl DocState {
             history_dropped: 0,
         }
     }
+    /// Takes the steps the byte budget evicted (see [`push_history_with_budget`]) into the
+    /// release queue instead of freeing them on the evicting command's path. A full queue
+    /// releases its cheapest waiting step inline first, so however many steps one command
+    /// evicts, the queue never holds more than [`PENDING_RELEASE_MAX`] and the command never
+    /// pays more than one release — the release it displaced, never a backlog.
+    pub(crate) fn defer_release(&mut self, evicted: Vec<HistoryEntry>) {
+        for entry in evicted {
+            if self.pending_release.len() >= PENDING_RELEASE_MAX {
+                self.release_cheapest_pending();
+            }
+            self.pending_release.push(entry);
+        }
+    }
+
+    /// Releases the cheapest step the queue holds, inline. The cheapest first is the point: a
+    /// release is a whole snapshot's `free()`, and whichever command pays one should pay the
+    /// cheap one — the expensive releases wait for a cheap command to take them or for the
+    /// document to close. Nothing here can be reached by undo or redo again: the budget's
+    /// decision to drop the step is the same one it always made; only the timing of the
+    /// `free()` moved.
+    fn release_cheapest_pending(&mut self) {
+        if self.pending_release.is_empty() {
+            return;
+        }
+        let cheapest = self.pending_release.iter().enumerate().min_by_key(|(_, entry)| entry.retained_bytes).map_or(0, |(at, _)| at);
+        self.pending_release.remove(cheapest);
+    }
+
+    /// Releases one waiting step — the cheapest — for a command that neither edits nor works
+    /// the history to pay (see [`Session::execute`]); `edit.undo` and `edit.redo` never do,
+    /// so undoing never pays for an edit's release.
+    pub(crate) fn drain_pending_one(&mut self) {
+        self.release_cheapest_pending();
+    }
+
     pub fn is_dirty(&self) -> bool {
         !Arc::ptr_eq(&self.wb, &self.saved)
     }
@@ -987,13 +1052,29 @@ impl Session {
                 #[allow(clippy::disallowed_methods)]
                 let history_started =
                     if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
-                d.history_dropped += push_history(&mut d.undo, spec.label.trim_end_matches('…').to_string(), wb, &d.wb, sel) as u64;
+                let (dropped, evicted) = push_history(&mut d.undo, spec.label.trim_end_matches('…').to_string(), wb, &d.wb, sel);
+                d.history_dropped += dropped as u64;
+                d.defer_release(evicted);
                 d.redo.clear();
                 d.revision += 1;
                 if let Some(started) = history_started {
                     eprintln!("execute: history {:?}", started.elapsed());
                 }
             }
+        }
+        // A command that neither edits nor works the history pays one deferred release here:
+        // the `free()` an evicting edit deferred leaves on the cheap commands a session runs
+        // between its edits, one step at a time — never on undo, redo, or an edit itself, whose
+        // latencies are the ones people feel and the gates measure. There is no thread and no
+        // timer to do this on: a command boundary is the one idle moment a single-threaded
+        // session (wasm included) has.
+        if outer
+            && !spec.undoable
+            && result.is_ok()
+            && !matches!(id, "edit.undo" | "edit.redo")
+            && let Some(d) = self.active_mut()
+        {
+            d.drain_pending_one();
         }
         result
     }
@@ -1063,7 +1144,9 @@ impl Session {
         d.undo.truncate(g.start);
         let changed = !Arc::ptr_eq(&d.wb, &g.wb);
         if changed && !outer {
-            d.history_dropped += push_history(&mut d.undo, g.label, g.wb, &d.wb, g.selection) as u64;
+            let (dropped, evicted) = push_history(&mut d.undo, g.label, g.wb, &d.wb, g.selection);
+            d.history_dropped += dropped as u64;
+            d.defer_release(evicted);
             d.redo.clear();
             d.revision += 1;
         }

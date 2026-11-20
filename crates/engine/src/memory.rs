@@ -90,7 +90,9 @@ pub struct MemoryReport {
     pub calc: CalcMemory,
     /// The last-saved workbook, as what it retains beyond the live one.
     pub saved: usize,
-    /// The undo stack, as what it retains beyond the live workbook.
+    /// The undo stack, as what it retains beyond the live workbook — plus the evicted steps
+    /// waiting for release, which are heap the document still holds (see
+    /// [`crate::DocState::defer_release`]).
     pub undo: usize,
     /// The redo stack, as what it retains beyond the live workbook.
     pub redo: usize,
@@ -128,7 +130,11 @@ fn report(doc: &DocState, journal: usize) -> MemoryReport {
     let workbook = WorkbookMemory { styles: wb.styles.memory(), names: names_bytes(wb), other: workbook_other(wb) };
     let calc = doc.calc.memory();
     let saved = history_retained_bytes(&doc.saved, wb);
-    let undo = retained(&doc.undo, wb);
+    // The release queue is counted with the undo stack it came from: the budget dropped those
+    // steps, but their bytes are heap the document still holds until a later command releases
+    // them (see `DocState::defer_release`), and a report that hid them would look flat while
+    // the memory is still there.
+    let undo = retained(&doc.undo, wb).saturating_add(retained(&doc.pending_release, wb));
     let redo = retained(&doc.redo, wb);
     let mut total =
         workbook.total().saturating_add(calc.total()).saturating_add(saved).saturating_add(undo).saturating_add(redo).saturating_add(journal);

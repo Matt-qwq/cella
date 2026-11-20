@@ -7882,3 +7882,117 @@ fn a_row_compacted_by_remove_duplicates_keeps_the_references_its_text_names() {
     cella_calc::recalc::Calc::new().recalc_all(&mut back);
     assert_eq!(before, read(&back), "the cell changed across a save and a reload");
 }
+
+/// The release queue behind the history budget (see `DocState::defer_release`): an evicted
+/// step leaves its stack the moment the budget decides to drop it — as it always did — and
+/// the `free()` of its snapshot moves off the evicting command onto later cheap commands.
+/// Nothing undo or redo can reach changes, the queue cannot grow without bound, and the
+/// memory report still counts the bytes that wait.
+mod deferred_release {
+    use cella_core::Value;
+    use serde_json::json;
+
+    use super::{s, v};
+    use crate::{PENDING_RELEASE_MAX, Session};
+
+    fn edits(s: &mut Session, n: usize) {
+        for i in 0..n {
+            s.execute("cell.set", json!({"cell": format!("A{}", i + 1), "input": (i + 1).to_string()})).unwrap();
+        }
+    }
+
+    fn pending(s: &Session) -> usize {
+        s.doc().expect("document").pending_release.len()
+    }
+
+    /// However many evicted steps arrive, at most `PENDING_RELEASE_MAX` wait, and the room for
+    /// a new one is made by releasing the cheapest — never by growing.
+    #[test]
+    fn the_release_queue_stays_bounded_however_many_steps_arrive() {
+        let mut s = s();
+        edits(&mut s, 6);
+        let mut arrived = 0;
+        {
+            let d = s.doc_mut().expect("document");
+            while let Some(entry) = d.undo.pop() {
+                d.defer_release(vec![entry]);
+                arrived += 1;
+            }
+        }
+        assert!(arrived > PENDING_RELEASE_MAX, "{arrived} steps arrived");
+        assert_eq!(pending(&s), PENDING_RELEASE_MAX, "the queue is bounded");
+    }
+
+    /// Undo, redo and the undoable edits never pay a deferred release; the cheap commands a
+    /// session runs between its edits take the waiting steps one at a time.
+    #[test]
+    fn only_cheap_commands_release_the_waiting_steps() {
+        let mut s = s();
+        edits(&mut s, 3);
+        {
+            let d = s.doc_mut().expect("document");
+            let evicted: Vec<_> = (0..2).map(|_| d.undo.pop().expect("a step")).collect();
+            d.defer_release(evicted);
+        }
+        assert_eq!(pending(&s), 2);
+        s.execute("cell.set", json!({"cell": "B9", "input": "1"})).unwrap();
+        assert_eq!(pending(&s), 2, "an edit pays no release");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(pending(&s), 2, "undo pays no release");
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(pending(&s), 2, "redo pays no release");
+        s.execute("selection.set", json!({"cell": "A1"})).unwrap();
+        assert_eq!(pending(&s), 1, "a cheap command releases one waiting step");
+        s.execute("cell.get", json!({"cell": "A1"})).unwrap();
+        assert_eq!(pending(&s), 0, "and the next one takes the rest");
+    }
+
+    /// A step the budget dropped is out of both stacks' reach whether its memory is gone or
+    /// waiting: undoing and redoing the steps that stayed is exact either way, and the
+    /// waiting step is never handed back by either command.
+    #[test]
+    fn undo_and_redo_are_exact_while_a_release_waits() {
+        let mut s = s();
+        edits(&mut s, 3);
+        {
+            let d = s.doc_mut().expect("document");
+            let oldest = d.undo.remove(0);
+            d.defer_release(vec![oldest]);
+        }
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!((v(&s, "A1"), v(&s, "A2"), v(&s, "A3")), (Value::from(1.0), Value::from(2.0), Value::Empty));
+        s.execute("edit.undo", json!({})).unwrap();
+        // The two steps that stayed undo exactly — and the dropped oldest stays behind the
+        // budget's decision, as it was before the queue existed: the start state, all empty,
+        // is no longer reachable, only the two edits that remained.
+        assert_eq!((v(&s, "A1"), v(&s, "A2"), v(&s, "A3")), (Value::from(1.0), Value::Empty, Value::Empty));
+        assert!(s.doc().expect("document").undo.is_empty());
+        assert_eq!(pending(&s), 1, "the waiting step was not released or restored");
+        s.execute("edit.redo", json!({})).unwrap();
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!((v(&s, "A1"), v(&s, "A2"), v(&s, "A3")), (Value::from(1.0), Value::from(2.0), Value::from(3.0)));
+        assert!(s.doc().expect("document").redo.is_empty());
+        assert_eq!(pending(&s), 1);
+    }
+
+    /// The memory report counts the waiting steps with the undo stack they came from: their
+    /// bytes are on the heap until a later command releases them, and hiding them would make
+    /// a held snapshot look freed.
+    #[test]
+    fn the_memory_report_counts_the_waiting_steps() {
+        let mut s = s();
+        edits(&mut s, 3);
+        let before = s.memory_report().undo;
+        {
+            // Two steps fit the queue; a third would be released inline, which the bounded
+            // test covers.
+            let d = s.doc_mut().expect("document");
+            let evicted: Vec<_> = (0..2).map(|_| d.undo.pop().expect("a step")).collect();
+            d.defer_release(evicted);
+        }
+        assert_eq!(s.memory_report().undo, before, "the same steps, measured the same, wherever they wait");
+        // A cheap command releases one, and the report follows it out.
+        s.execute("selection.set", json!({"cell": "A1"})).unwrap();
+        assert!(s.memory_report().undo < before, "one waiting step left the heap");
+    }
+}

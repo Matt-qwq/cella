@@ -836,7 +836,9 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
         }
         d.wb = e.wb;
         d.selection = e.selection;
-        d.history_dropped += crate::push_restored(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection, delta) as u64;
+        let (dropped, evicted) = crate::push_restored(&mut d.redo, label.clone(), cur_wb, &d.wb, cur_selection, delta);
+        d.history_dropped += dropped as u64;
+        d.defer_release(evicted);
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
     // The snapshot carries the values the undone edit replaced, so nothing is recalculated: only
@@ -867,7 +869,9 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
         }
         d.wb = e.wb;
         d.selection = e.selection;
-        d.history_dropped += crate::push_restored(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection, delta) as u64;
+        let (dropped, evicted) = crate::push_restored(&mut d.undo, label.clone(), cur_wb, &d.wb, cur_selection, delta);
+        d.history_dropped += dropped as u64;
+        d.defer_release(evicted);
     }
     super::extra::keep_watch_list(&now, &mut d.wb);
     match cells {
