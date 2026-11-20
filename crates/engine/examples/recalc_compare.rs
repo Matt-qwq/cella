@@ -4,6 +4,7 @@
 //! cargo run --release -p cella-engine --example recalc_compare -- --rows=100000 --repeat=4 --warmup=1
 //! cargo run --release -p cella-engine --example recalc_compare -- --rows=2500 --check-full
 //! cargo run --release -p cella-engine --example recalc_compare -- --rows=1000000 --aggregates=none,sum,sumifs,xlookup,all
+//! cargo run --release -p cella-engine --example recalc_compare -- --rows=1000000 --aggregates=ordinary
 //! cargo run --release -p cella-engine --example recalc_compare -- --rows=1000000 --repeat=4 --full-on-open
 //! ```
 //!
@@ -25,7 +26,7 @@ const LOOKUP_ROW_INDEX: usize = 77_777;
 const EDIT: &str = "5";
 const USAGE: &str = "usage: recalc_compare [--rows=N] [--repeat=N] [--warmup=N] [--aggregates=LIST] [--check-full] [--full-on-open]\n\
                     defaults: 100000 rows (3..=1000000), 1 measured round (1..=10), 0 discarded rounds (0..=2)\n\
-                    --aggregates selects none,sum,sumifs,xlookup,all (default: none,all); both workbook states run for each\n\
+                    --aggregates selects none,sum,sumifs,xlookup,all,ordinary (default: none,all); both workbook states run for each\n                    ordinary adds a K column of =H*2+B the B1 edit dirties through the chain: a million per-cell ordinary formulas, not chain-shaped\n\
                     --check-full adds an edit that changes the result, then verifies against full recalc, outside the timer\n\
                     --full-on-open measures cached and forced-recalc XLSX opens on the chain-only fixture";
 
@@ -36,6 +37,12 @@ enum Aggregates {
     Sumifs,
     Xlookup,
     All,
+    /// The ordinary-formula workload: a K column of `=Hn*2+Bn` that the B1 edit dirties through the
+    /// chain — a million per-cell ordinary formulas, recalculated serially (each reads a dirty cell,
+    /// so the parallel wave leaves them to the pass) and not chain-shaped (the fast chain run does
+    /// not take them). It is the workload that gives the graph a precedent with **two** dependents
+    /// (Hn is read by Hn+1 and by Kn), the shape the dense one-dependent box refuses.
+    Ordinary,
 }
 
 impl Aggregates {
@@ -45,7 +52,7 @@ impl Aggregates {
 
     fn count(self) -> usize {
         match self {
-            Self::None => 0,
+            Self::None | Self::Ordinary => 0,
             Self::All => 3,
             _ => 1,
         }
@@ -53,6 +60,7 @@ impl Aggregates {
 
     fn label(self) -> &'static str {
         match self {
+            Self::Ordinary => "ordinary",
             Self::None => "no-aggregate",
             Self::Sum => "sum",
             Self::Sumifs => "sumifs",
@@ -71,7 +79,8 @@ fn parse_aggregates(raw: &str) -> Result<Vec<Aggregates>, String> {
             "sumifs" => Aggregates::Sumifs,
             "xlookup" => Aggregates::Xlookup,
             "all" => Aggregates::All,
-            _ => return Err(format!("unknown aggregate {name:?}; use none,sum,sumifs,xlookup,all")),
+            "ordinary" => Aggregates::Ordinary,
+            _ => return Err(format!("unknown aggregate {name:?}; use none,sum,sumifs,xlookup,all,ordinary")),
         };
         if selected.contains(&aggregate) {
             return Err(format!("duplicate aggregate {name:?}"));
@@ -150,6 +159,9 @@ fn options() -> Result<Option<Options>, String> {
     }
     if opts.full_on_open && (opts.check_full || aggregates_given) {
         return Err("--full-on-open cannot be combined with --check-full or --aggregates".into());
+    }
+    if opts.check_full && opts.aggregates.contains(&Aggregates::Ordinary) {
+        return Err("--check-full cannot be combined with --aggregates=ordinary: the workload's full recalc covers three columns, not the chain fixture's two".into());
     }
     Ok(Some(opts))
 }
@@ -240,6 +252,13 @@ fn build(rows: usize, aggregates: Aggregates) -> Result<Session, String> {
     if aggregates.includes(Aggregates::Xlookup) {
         set(&mut session, "J3", "=XLOOKUP(\"Item 77777\",A:A,B:B)")?;
     }
+    if aggregates == Aggregates::Ordinary {
+        // The ordinary-formula column: each cell reads the chain beside it and its own row, so the
+        // B1 edit dirties all of it — a million per-cell ordinary formulas next to the chain, serial
+        // in the pass (not leaves) and not a chain shape (not the fast run).
+        set(&mut session, "K1", "=H1*2+B1")?;
+        exec(&mut session, "edit.autoFill", json!({"source": "K1", "target": format!("K1:K{rows}")}))?;
+    }
     Ok(session)
 }
 
@@ -319,6 +338,18 @@ impl Expected {
     }
 
     fn check(&self, session: &mut Session, rows: usize, aggregates: Aggregates, edited: bool, g1: f64) -> Result<(), String> {
+        if aggregates == Aggregates::Ordinary {
+            // The ordinary-formula workload adds a K column that answers 2*H + B in every row; the
+            // B1 edit (the same one every other case times) changes only K1, since C1 is zero and
+            // the chain never moves.
+            let b1 = if edited { 5.0 } else { 0.0 };
+            check_cell(session, "B1", &json!(b1))?;
+            check_cell(session, "G1", &json!(g1))?;
+            check_cell(session, &format!("H{rows}"), &json!(self.tail + g1))?;
+            check_cell(session, "K1", &json!(2.0 * g1 + b1))?;
+            check_cell(session, &format!("K{rows}"), &json!(2.0 * (self.tail + g1) + (rows - 1) as f64))?;
+            return Ok(());
+        }
         check_cell(session, "B1", &json!(if edited { 5.0 } else { 0.0 }))?;
         check_cell(session, "G1", &json!(g1))?;
         check_cell(session, &format!("H{rows}"), &json!(self.tail + g1))?;
@@ -366,7 +397,9 @@ fn measure(case: Case, opts: &Options, expected: &Expected, label: &str, name: &
     eprintln!("recalc_compare: {label} {name} timed edit end");
 
     let recalc_cells = session.doc().map_err(|e| e.to_string())?.calc.last_recalc_cells;
-    let wanted = opts.rows + 1 + case.aggregates.count();
+    // The ordinary workload's B1 edit dirties the chain plus the K column beside it; every other
+    // case's B1 edit dirties the chain and G1 only.
+    let wanted = if case.aggregates == Aggregates::Ordinary { 2 * opts.rows + 1 } else { opts.rows + 1 + case.aggregates.count() };
     if recalc_cells != wanted {
         return Err(format!("expected {wanted} recalculated cells, got {recalc_cells}"));
     }
@@ -399,6 +432,9 @@ mod tests {
         assert!(parse_aggregates("").is_err());
         assert!(parse_aggregates("sum,sum").is_err());
         assert!(parse_aggregates("all,").is_err());
+        let ordinary = parse_aggregates("ordinary").unwrap();
+        assert_eq!(ordinary.iter().map(|mode| mode.label()).collect::<Vec<_>>(), ["ordinary"]);
+        assert_eq!(ordinary.iter().map(|mode| mode.count()).collect::<Vec<_>>(), [0]);
     }
 
     #[test]
