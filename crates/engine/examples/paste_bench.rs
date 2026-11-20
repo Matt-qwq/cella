@@ -11,6 +11,8 @@
 //! which is what `bench/ab_gate.ps1`-style paired runs read. `CELLA_PROFILE=1` adds the coarse
 //! phase split the paste command prints (cells built against the store write).
 
+#![allow(clippy::disallowed_methods)] // native-only benchmark; the clock is the measurement
+
 use std::process::ExitCode;
 use std::time::Instant;
 
