@@ -302,8 +302,10 @@ enum Refused {
     TooBig,
 }
 
-/// The precedents of a sheet that exactly one formula reads, as one cell of a box instead of a
-/// hash entry.
+/// Dependents by arithmetic: one dependent a cell of a box instead of a hash entry.
+///
+/// A sheet's first dependent of every precedent one formula reads ([SheetDeps::dense]), and the
+/// second dependent of the precedents two formulas read, one box a column ([SheetDeps::second]).
 ///
 /// This is the index a workbook of ordinary formulas is: the reference workbook puts one
 /// precedent a row in it, and every probe of the edit closure is a cold cache line of a 34 MB hash
@@ -380,6 +382,17 @@ impl DenseOne {
             return Err(Refused::Sparse);
         }
         Ok(dense)
+    }
+
+    /// The box a table of second dependents starts from, holding one precedent and its dependent:
+    /// the way a sheet's first box starts from [`DenseOne::build`] once its entries are worth one.
+    fn at(c: CellRef, k: CellRef) -> Option<Self> {
+        let area = DenseBox { row: c.row, col: c.col, rows: 1, cols: 1 };
+        let mut slots: Vec<u64> = Vec::new();
+        slots.try_reserve_exact(1).ok()?;
+        slots.push(0);
+        let mut dense = DenseOne { area, slots, capacity: 1, len: 0 };
+        dense.put(c, k).then_some(dense)
     }
 
     /// The dependent of the precedent `c`, when the box holds one.
@@ -493,7 +506,12 @@ impl DenseOne {
 /// — a sheet is never rebuilt because one formula reads a cell far away. [`SheetDeps::trim`]
 /// gives a box back once deletes have left it much larger than the dependents it holds.
 ///
-/// The entries two or more formulas read are the same `Vec`-a-precedent table as before, and a
+/// The second dependent of a precedent two formulas read has a box of its own, one column at a
+/// time ([`SheetDeps::second`]): the first dependent stays in the sheet's box, so the shape the
+/// 2M-dirty edit makes — a column the chain and a per-cell formula both read — is answered without
+/// hashing either. A box that cannot cover a column's cells leaves its entries in the list.
+///
+/// The entries three or more formulas read are the same `Vec`-a-precedent table as before, and a
 /// precedent that all but one of them stop reading leaves that table for the single-dependent one
 /// (see [`Deps`]).
 #[derive(Clone, Debug, Default)]
@@ -505,6 +523,13 @@ pub(super) struct SheetDeps {
     many: HashMap<CellRef, Vec<CellRef>>,
     /// The one-dependent entries by arithmetic, when the box around them is worth it.
     dense: Option<DenseOne>,
+    /// The second dependent of the precedents two formulas read, by arithmetic, one box a column:
+    /// the first dependent stays in `dense`/`one` and the second here, so a column the chain and a
+    /// per-cell formula both read — the shape of the 2M-dirty edit — is answered without hashing
+    /// either. One box a column, because that is the shape the second dependents arrive in: a box
+    /// spanning the columns between two such runs would be mostly empty. It only ever grows from
+    /// [`SheetDeps::place_second`]; a second dependent a box refuses stays in `many`.
+    second: HashMap<u32, DenseOne>,
     /// The `one` entry count at the last attempt to build the box, so that attempt — a pass over
     /// every entry — is paid a logarithmic number of times; `usize::MAX` once the hash table has
     /// won for good.
@@ -517,7 +542,17 @@ pub(super) struct SheetDeps {
 
 impl SheetDeps {
     fn is_empty(&self) -> bool {
-        self.one.is_empty() && self.many.is_empty() && self.dense.as_ref().is_none_or(|d| d.len == 0)
+        self.one.is_empty() && self.many.is_empty() && self.dense.as_ref().is_none_or(|d| d.len == 0) && self.second.values().all(|d| d.len == 0)
+    }
+
+    /// The second dependent of the precedent `c`, when a column's box holds one. A workbook with
+    /// no such precedent — every one-dependent chain — asks a `len` and hashes nothing, the same
+    /// guard the two hash tables below take.
+    fn second_of(&self, c: CellRef) -> Option<CellRef> {
+        if self.second.is_empty() {
+            return None;
+        }
+        self.second.get(&c.col).and_then(|d| d.get(c))
     }
 
     /// Reserves room in the hash table for `entries` precedents: the box, if one is built, takes
@@ -535,22 +570,42 @@ impl SheetDeps {
             }
             return;
         }
-        if let Some(first) = self.dense.as_ref().and_then(|d| d.get(c)) {
-            if first == k {
+        // The first dependent is boxed or hashed; the second has a box of its own, in the column.
+        let first = self.dense.as_ref().and_then(|d| d.get(c)).or_else(|| self.one.get(&c).copied());
+        let second = self.second_of(c);
+        if let Some(first) = first {
+            if first == k || second == Some(k) {
                 return;
             }
+            if second.is_none() && self.place_second(c, k) {
+                return;
+            }
+            // A third dependent — or a second the box refused: the cell's dependents move to a
+            // list, and the slots the boxes held for it are given back.
             if let Some(dense) = self.dense.as_mut() {
                 dense.clear(c);
             }
-            self.many.insert(c, vec![first, k]);
+            self.one.remove(&c);
+            if let Some(second) = self.second.get_mut(&c.col) {
+                second.clear(c);
+            }
+            let mut v = Vec::with_capacity(3);
+            v.push(first);
+            v.extend(second);
+            v.push(k);
+            self.many.insert(c, v);
             return;
         }
-        if let Some(first) = self.one.get(&c).copied() {
-            if first == k {
+        if let Some(second) = second {
+            // The first dependent went away and the second one is all the cell still answers: a
+            // list from here, since a box holds one dependent a cell.
+            if second == k {
                 return;
             }
-            self.one.remove(&c);
-            self.many.insert(c, vec![first, k]);
+            if let Some(boxed) = self.second.get_mut(&c.col) {
+                boxed.clear(c);
+            }
+            self.many.insert(c, vec![second, k]);
             return;
         }
         // The first dependent of this precedent: in the box when it covers the cell (or can be
@@ -566,7 +621,11 @@ impl SheetDeps {
     /// more leaves the table it was in, so a query never walks an empty slot.
     fn unlink(&mut self, c: CellRef, k: CellRef) {
         let Some(v) = self.many.get_mut(&c) else {
-            if self.dense.as_ref().and_then(|d| d.get(c)) == Some(k) {
+            if self.second_of(c) == Some(k) {
+                if let Some(second) = self.second.get_mut(&c.col) {
+                    second.clear(c);
+                }
+            } else if self.dense.as_ref().and_then(|d| d.get(c)) == Some(k) {
                 if let Some(dense) = self.dense.as_mut() {
                     dense.clear(c);
                 }
@@ -613,6 +672,32 @@ impl SheetDeps {
         placed
     }
 
+    /// Stores the second dependent `k` of the precedent `c` in the second box, growing the box
+    /// around it when it is outside, and answers whether it could — `false` when the box is worth
+    /// neither the cells around `c` nor a new one at it, which leaves the entry to the hash table.
+    fn place_second(&mut self, c: CellRef, k: CellRef) -> bool {
+        if force_sparse() {
+            return false;
+        }
+        let Some(second) = self.second.get(&c.col) else {
+            let Some(boxed) = DenseOne::at(c, k) else { return false };
+            self.second.insert(c.col, boxed);
+            return true;
+        };
+        if second.area.index(c).is_some() {
+            let Some(second) = self.second.get_mut(&c.col) else { return false };
+            return second.put(c, k);
+        }
+        // The cells the column's box may cover count every second dependent it would hold, the ones
+        // the hash table still keeps included.
+        let entries = second.len.saturating_add(1);
+        let Some(mut grown) = second.grown(c, dense_budget(entries)) else { return false };
+        count_copy();
+        let placed = grown.put(c, k);
+        self.second.insert(c.col, grown);
+        placed
+    }
+
     /// Builds the dense box out of the hash table once the entries are numerous enough for it to
     /// be worth one, retried at twice the entries when the box around them was not worth having.
     fn promote(&mut self) {
@@ -646,6 +731,12 @@ impl SheetDeps {
     /// something to collect — a box that is neither short of its dependents nor holding any they
     /// were refused into answers in constant time, which is the state an ordinary edit leaves.
     fn trim(&mut self) {
+        self.trim_first();
+        self.trim_second();
+    }
+
+    /// The first box's share of [`SheetDeps::trim`].
+    fn trim_first(&mut self) {
         let Some(dense) = self.dense.take() else { return };
         let entries = dense.len.saturating_add(self.one.len());
         // The box covers more cells than its dependents justify — deletes left it that way, or a
@@ -687,6 +778,24 @@ impl SheetDeps {
         }
     }
 
+    /// The second box's share of [`SheetDeps::trim`]: gives its room back once deletes have left
+    /// it much larger than the dependents it holds, and drops it once it holds none. The box never
+    /// takes the second dependents the hash table kept, so this only ever shrinks.
+    fn trim_second(&mut self) {
+        self.second.retain(|_, second| second.len != 0);
+        for second in self.second.values_mut() {
+            if second.area.cells() <= dense_budget(second.len) {
+                continue;
+            }
+            let held: Vec<(CellRef, CellRef)> = second.entries().collect();
+            // The box it holds is bigger than its dependents justify, but they are too sparse for
+            // a tighter one: keep it rather than lose the entries it answers.
+            if let Ok(tight) = DenseOne::build(&held) {
+                *second = tight;
+            }
+        }
+    }
+
     /// Appends the dependents of `c` to `out`, as the keys of `sheet`.
     fn push_into(&self, c: CellRef, sheet: usize, out: &mut Vec<Key>) {
         self.for_each_of(c, &mut |k| out.push((sheet, k)));
@@ -701,6 +810,9 @@ impl SheetDeps {
         if let Some(dense) = &self.dense
             && let Some(k) = dense.get(c)
         {
+            f(k);
+        }
+        if let Some(k) = self.second_of(c) {
             f(k);
         }
         if !self.one.is_empty()
@@ -724,6 +836,11 @@ impl SheetDeps {
                 f(c, k);
             }
         }
+        for second in self.second.values() {
+            for (c, k) in second.entries() {
+                f(c, k);
+            }
+        }
         for (c, k) in &self.one {
             f(*c, *k);
         }
@@ -742,6 +859,9 @@ impl SheetDeps {
             .saturating_add(cella_model::hash_index_bytes(self.many.capacity(), size_of::<(CellRef, Vec<CellRef>)>()));
         if let Some(dense) = &self.dense {
             bytes = bytes.saturating_add(dense.bytes());
+        }
+        for second in self.second.values() {
+            bytes = bytes.saturating_add(second.bytes());
         }
         let mut lists = 0usize;
         for v in self.many.values() {
@@ -777,6 +897,12 @@ impl SheetDeps {
     #[cfg(test)]
     fn dense_cells(&self) -> (usize, usize) {
         self.dense.as_ref().map_or((0, 0), |d| (d.slots.len(), d.len))
+    }
+
+    /// The cells the second-dependent boxes cover, and the slots that hold a dependent.
+    #[cfg(test)]
+    fn second_cells(&self) -> (usize, usize) {
+        self.second.values().fold((0, 0), |(cells, held), d| (cells.saturating_add(d.slots.len()), held.saturating_add(d.len)))
     }
 }
 
@@ -1652,6 +1778,12 @@ impl Graph {
         self.cell_deps.same.get(&sheet).is_some_and(SheetDeps::is_dense)
     }
 
+    /// The second-dependent boxes' cells and dependents (the test that they were built at all).
+    #[cfg(test)]
+    pub(super) fn second_index_cells(&self, sheet: usize) -> (usize, usize) {
+        self.cell_deps.same.get(&sheet).map_or((0, 0), SheetDeps::second_cells)
+    }
+
     /// The cells `sheet`'s box covers, and how many of them hold a dependent.
     #[cfg(test)]
     pub(super) fn dense_index_cells(&self, sheet: usize) -> (usize, usize) {
@@ -2148,7 +2280,10 @@ mod tests {
     /// the assertion that a box and a hash table are the same index.
     fn assert_same_index(dense: &Graph, sparse: &Graph) {
         assert_eq!(dense.index_answers(), sparse.index_answers(), "the two indexes hold different entries");
-        assert_eq!(dense.memory().many_lists, sparse.memory().many_lists, "the multi-dependent lists differ");
+        // The boxed side can hold fewer lists than the hashed one: a precedent with exactly two
+        // dependents is a boxed pair there and a list here. What no side may do is answer a
+        // dependent the other does not (the per-precedent check below).
+        assert!(dense.memory().many_lists <= sparse.memory().many_lists, "the boxed index holds more multi-dependent lists than the hashed one");
         let mut held = dense.index_answers();
         held.extend(sparse.index_answers());
         for (sheet, at) in held.into_iter().map(|(precedent, _)| precedent) {
@@ -2249,6 +2384,66 @@ mod tests {
         assert!(cells <= held.saturating_mul(DENSE_ONE_FILL), "{cells} cells for {held} dependents");
         let (boxed, hashed) = (dense.memory().cell_deps, sparse.memory().cell_deps);
         assert!(boxed < hashed, "the box costs {boxed} bytes where the hash table costs {hashed}");
+    }
+
+    /// The 2M-dirty edit's shape: a column of precedents **two** formulas read — the chain's next
+    /// cell and the per-cell formula beside it. The first dependent is the sheet's box, the second
+    /// a box of its own, so a probe of either is arithmetic; the same graph on the hash tables holds
+    /// a map of two-slot lists instead. The two indexes must answer alike, before and after edits.
+    #[test]
+    fn a_column_of_two_dependent_precedents_is_boxed_and_answers_the_hash_table() {
+        // Row r's precedent (r, 7) is read by two formulas: (r, 10) and (r, 11).
+        let first = |g: &mut Graph| {
+            for row in 0..5_000u32 {
+                g.insert(key(0, row, 10), &[single(0, row, 7)], None, Node::new(false, false, false));
+            }
+        };
+        let second = |g: &mut Graph| {
+            for row in 0..5_000u32 {
+                g.insert(key(0, row, 11), &[single(0, row, 7)], None, Node::new(false, false, false));
+            }
+        };
+        let (dense, sparse) = two_ways(&[&first, &second]);
+        assert!(dense.has_dense_index(0), "the first dependent fills a box");
+        let (cells, held) = dense.second_index_cells(0);
+        assert_eq!(held, 5_000, "the second dependent is boxed for every precedent row");
+        assert!(cells <= held.saturating_mul(DENSE_ONE_FILL), "{cells} cells for {held} second dependents");
+        assert_eq!(dense.memory().many_lists, 0, "no two-slot list is left: both dependents are boxed");
+        assert_eq!(sparse.memory().many_lists, 5_000, "the hashed index holds one list a precedent");
+        let (boxed, hashed) = (dense.memory().cell_deps, sparse.memory().cell_deps);
+        assert!(boxed < hashed, "the boxes cost {boxed} bytes where the lists cost {hashed}");
+        assert_same_index(&dense, &sparse);
+        // The build copies a box once a doubling, never once a link (the O(n²) the first box died of).
+        reset_copies();
+        let mut grown = Graph::default();
+        first(&mut grown);
+        second(&mut grown);
+        grown.settle();
+        assert!(dense_copies() <= 64, "{} copies for two boxes of 5,000 precedents", dense_copies());
+        // Deletes: the second dependent of every fifth row and the first of every third. A pair that
+        // loses one keeps answering the other, and a box that empties gives its room back.
+        let edits = |g: &mut Graph| {
+            for row in (0..5_000u32).step_by(5) {
+                g.remove(key(0, row, 11));
+            }
+            for row in (0..5_000u32).step_by(3) {
+                g.remove(key(0, row, 10));
+            }
+            // One row that loses both dependents, and one that gains a third.
+            g.remove(key(0, 4, 11));
+            g.remove(key(0, 4, 10));
+            g.insert(key(0, 8, 12), &[single(0, 8, 7)], None, Node::new(false, false, false));
+        };
+        let (edited, hashed) = two_ways(&[&first, &second, &edits]);
+        assert_same_index(&edited, &hashed);
+        assert_eq!(edited.memory().many_lists, 1, "the row with three dependents is the one list");
+        let mut out = Vec::new();
+        edited.dependents(0, CellRef::new(4, 7), &mut out);
+        assert!(out.is_empty(), "a precedent whose two dependents went answers nobody: {out:?}");
+        out.clear();
+        edited.dependents(0, CellRef::new(8, 7), &mut out);
+        out.sort_unstable();
+        assert_eq!(out, vec![key(0, 8, 10), key(0, 8, 11), key(0, 8, 12)], "three dependents, one list");
     }
 
     /// The shape `fill.formulas` builds — a hundred thousand single precedents down one column —
@@ -2392,7 +2587,7 @@ mod tests {
             out.sort_unstable();
             let want: Vec<Key> = (0..n).map(|row| key(0, row, 6)).collect();
             assert_eq!(out, want, "{n} dependents");
-            assert_eq!(g.memory().many_lists, usize::from(n > 1), "{n} dependents is a list from two on");
+            assert_eq!(g.memory().many_lists, usize::from(n > 2), "{n} dependents: two are the second-dependent box, three are a list");
         }
         // A list walked back down: removing one of ten thousand leaves it a list…
         g.remove(key(0, 2, 6));
