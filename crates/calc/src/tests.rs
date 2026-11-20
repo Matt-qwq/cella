@@ -2647,6 +2647,47 @@ fn a_column_of_running_totals_is_one_run() {
     assert_eq!(wb.sheet(0).expect("sheet").value(CellRef::new(ROWS - 1, 1)), Value::Number(f64::from(ROWS) + 4.0));
 }
 
+/// A run's right-hand reads are streamed from the column it reads once the run is long — but only
+/// what the store holds: a column a stored spill covers shows the array's values, which the walk
+/// cannot answer. A run reading such a column keeps the per-row read, and this holds its values
+/// to the general path's cell for cell.
+#[test]
+fn a_run_reading_a_column_a_stored_spill_covers_matches_the_general_path() {
+    const ROWS: u32 = 300;
+    let book = || {
+        let mut wb = Workbook::new();
+        {
+            let sh = wb.sheet_mut(0).expect("sheet");
+            // `F1` spills one value a row over `F1:F300`; the chain beside it reads the column.
+            sh.cells.set(CellRef::new(0, 5), Cell::formula(Formula::new(&format!("=SEQUENCE({ROWS})"))));
+            for r in 0..ROWS {
+                let row = r + 1;
+                let body = if r == 0 { format!("=F{row}") } else { format!("=G{r}+F{row}") };
+                sh.cells.set(CellRef::new(r, 6), Cell::formula(Formula::new(&body)));
+            }
+        }
+        wb
+    };
+    let (mut fast_wb, mut general_wb) = (book(), book());
+    let (mut fast, mut general) = (Calc::new(), Calc::new());
+    general.chain_fast = false;
+    for (wb, calc) in [(&mut fast_wb, &mut fast), (&mut general_wb, &mut general)] {
+        // The first calculation lays the spill out and stores it; the edit dirties the chain
+        // alone, whose pass holds no array of its own and reads a stored spill.
+        calc.recalc_all(wb);
+        calc.chains = 0;
+        calc.chain_formulas = 0;
+        wb.sheet_mut(0).expect("sheet").cells.set(CellRef::new(0, 6), Cell::formula(Formula::new("=F1")));
+        calc.cells_changed(wb, &[(0, CellRef::new(0, 6))]);
+    }
+    assert_eq!(fast.chain_formulas, u64::from(ROWS) - 1, "rows 2.. of the chain, read through a stored spill");
+    assert_eq!(general.chain_formulas, 0, "the fast path was off");
+    assert_eq!(grid(&fast_wb, ROWS, 7), grid(&general_wb, ROWS, 7));
+    // The chain adds the spilled column's own numbers, 1 + 2 + … + `ROWS`.
+    let sum = f64::from(ROWS) * f64::from(ROWS + 1) / 2.0;
+    assert_eq!(fast_wb.sheet(0).expect("sheet").value(CellRef::new(ROWS - 1, 6)), Value::Number(sum));
+}
+
 /// A shape the run does not cover is left to the general evaluator, whatever it is: a link that
 /// reads another column, a `$` part, a function call. Each still calculates the value it always
 /// did.
