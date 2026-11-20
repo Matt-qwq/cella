@@ -2,9 +2,8 @@
 
 Workbook Studio is the selected GitHub Pages homepage for Cella. This is a
 product-first page for spreadsheet users deciding whether to try the alpha:
-see the actual workbook, check compatibility, then explore what sets Cella apart. The
-landing page keeps the product-first headline, blue-gray mount, and graphite
-workbook section. The amber hero action starts the guide; downloads live in Get Cella.
+see the working surface, understand what it can do, then decide whether to try it.
+The hero links directly to releases and build instructions in Get Cella.
 
 ## Design decisions
 
@@ -12,8 +11,8 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
 | --- | --- |
 | Page and content | Porcelain `#f8f9fa` with graphite `#17222d`. Headings use a Song-style serif (Noto Serif SC with local fallbacks) in Chinese and a corresponding local serif in English. Prose, navigation and data stay sans; monospace is reserved for commands and standalone file labels. |
 | Product surfaces | The dashboard sits on a cool mount (`#edf2f6` to `#e2eaf1`); the second cut stays in graphite (`#253443` to `#15202b`). Depth belongs to the mounted screenshots, not to every section. |
-| Actions | Amber `#f2b958` marks the primary guide and release actions. The top-right repository link spells out GitHub and reuses the original external-link arrow; it does not use a third-party mark. |
-| Motion | One Silk curve (`.22, .9, .24, 1`): 780ms opening, 460ms view changes, 980ms command trace, 200ms or less for feedback. Motion has a distinct job in each scene. |
+| Actions | Amber `#f2b958` marks the primary download and release actions. The top-right repository link spells out GitHub and reuses the original external-link arrow; it does not use a third-party mark. |
+| Motion | One Silk curve (`.22, .9, .24, 1`): 780ms opening, 460ms view changes, 200ms or less for feedback. Motion has a distinct job in each scene. |
 
 - **Set type by role.** The two-line Chinese headline adds the character of a
   printed report without turning its interface into one. Hero and section
@@ -31,23 +30,22 @@ workbook section. The amber hero action starts the guide; downloads live in Get 
   (240ms when motion is enabled) and return to the checked view on exit.
   Touch, click to keep a view, and native keyboard selection still work;
   keyboard focus takes precedence over the mouse. Reduced motion switches
-  instantly. The compatibility strip stays immediately below the workbook section.
-- **Show what sets Cella apart.** A short feature section points to automation,
-  measured performance, and build targets. The CLI example keeps the localized
-  sample CSV beside the command. Trace command illustrates read → summarize → write;
-  it does not run a command or touch a file.
-- **Show measured performance.** A labelled chart compares like-for-like open
-  times; the table keeps recalculation and memory visible, including results
-  where Cella trails Excel. The public comparison covers Cella, Excel and WPS.
-  These are dated snapshots of the repository reports: update both
-  localized pages when replacing their measurements. On phones, wide tables
-  scroll within their own region, keeping the measurement column in view.
+  instantly. The workbook section also sets expectations for file compatibility.
+- **Explain automation once.** The shared command model is introduced beside a
+  runnable CLI example and the localized sample CSV, with links to CLI, MCP and
+  control-protocol documentation.
+- **Show measured performance.** One table covers open time, recalculation and
+  memory for Cella, Excel and WPS. Keep the test conditions and limitations beside
+  the table, and update both languages together. On phones, the measurement
+  column stays in view as the table scrolls.
+- **Group getting started.** Supported platforms, releases, source builds and
+  project documentation are together at the end of the page.
 - **Connect the sections.** Native scroll timelines move the image inside the dark
   frame, settle the CLI example, and draw reading progress and the release divider.
   This does not intercept the wheel or touch. Browsers without native scroll
   timelines keep the complete content and local controls.
-- **Follow device motion preferences.** Reduced motion keeps all three
-  demonstrations usable as immediate state changes. Browsers without CSS `:has()`
+- **Follow device motion preferences.** Reduced motion keeps both
+  workbook demonstrations usable as immediate state changes. Browsers without CSS `:has()`
   see the static examples; the controls that depend on it are hidden. No loops,
   runtime scripts, third-party fonts, or tracking.
 
