@@ -12,6 +12,7 @@ edit.undo       100000  3
 fill.chained    100000  370
 fill.formulas   100000  290
 fill.values     100000  250
+mem_drift       100000  11
 open.csv        100000  130
 open.xlsx       100000  520
 rebuild.graph   100000  110

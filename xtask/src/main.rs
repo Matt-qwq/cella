@@ -52,7 +52,8 @@ commands:
   perf [--update] [--rows=N,N] [--scenario=ID,...] [--repeat=N] [--budgets=PATH] [--scale=F]
   perf-report     write docs/performance-report.md from the scenario gate and the live-heap example
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
-                  1M rows and compare it with xtask/perf-budgets.txt (--update records the current
+                  1M rows and compare it with xtask/perf-budgets.txt, plus the mem_drift soak as
+                  its own release subprocess (--update records the current
                   numbers; CELLA_PERF_SCALE slackens every budget for a slower machine).
                   NOT part of `ci` — run it before a release (see docs/performance.md)
   version [set X.Y.Z[-pre]]

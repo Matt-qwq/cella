@@ -16,6 +16,13 @@
 //! - `--budgets=PATH` — a different budget file; `--scale=F` (or `CELLA_PERF_SCALE`)
 //!   multiplies every budget, for a slower or shared machine
 //!
+//! One scenario the harness cannot express the gate runs itself, as its own release subprocess
+//! (the engine side stays a pure library consumer):
+//! - `mem_drift` — the long-run soak of `crates/engine/examples/mem_drift.rs`, 100k rows for
+//!   240 s (edit/undo/redo cycles with a sort every 50 and a save every 200). Its budget line is
+//!   the soak's per-cycle cost; the leak assertion — the engine's own reported total flat within
+//!   ±2% over the second half — is part of this gate, not of the budget file.
+//!
 //! It is deliberately **not** part of `cargo xtask ci`: a release build of the engine is not part
 //! of the per-commit gate. See docs/performance.md.
 
@@ -33,6 +40,19 @@ const HEADROOM: f64 = 2.0;
 const MIN_BUDGET_MS: f64 = 1.0;
 /// The rows the gate measures (the harness default).
 const DEFAULT_ROWS: [usize; 2] = [100_000, 1_000_000];
+
+/// The long-run drift soak the gate runs after the scenarios: the exact shape the 2026-11-20
+/// round measured (`crates/engine/examples/mem_drift.rs` at 100k rows for 240 s — ~45,900
+/// edit/undo/redo cycles, a sort every 50, a save every 200).
+const DRIFT_SCENARIO: &str = "mem_drift";
+const DRIFT_ROWS: usize = 100_000;
+const DRIFT_SECONDS: usize = 240;
+/// How flat the soak's second half must be: the largest share of its median the engine's own
+/// reported total may reach. The 2026-11-20 soak held 0.02%; a real leak rises by whole percents.
+const DRIFT_MAX_SHARE: f64 = 0.02;
+/// Second-half samples below which the flatness check refuses to pass: the soak prints one line
+/// every 25 cycles, so a healthy 240 s run has hundreds and a broken one must not slip by.
+const DRIFT_MIN_REPORTS: usize = 8;
 
 /// One line of `xtask/perf-budgets.txt`.
 #[derive(Debug, Clone, PartialEq)]
@@ -215,9 +235,14 @@ fn parse_args(args: &[&str]) -> Result<Args, String> {
     Ok(out)
 }
 
-/// Keep the faster of two measurements of the same scenario (every pass reports the same order).
+/// Keep the faster of two measurements of the same scenario. Keyed by (scenario, rows), not by
+/// position: a re-measure covers a subset of the table, and pairing by index could land a
+/// re-measured `sort.desc` on the wrong line.
 fn keep_min(measured: &mut [Measured], again: &[Measured]) {
-    for (m, a) in measured.iter_mut().zip(again) {
+    for a in again {
+        let Some(m) = measured.iter_mut().find(|m| m.scenario == a.scenario && m.rows == a.rows) else {
+            continue;
+        };
         if a.ms < m.ms {
             *m = a.clone();
         }
@@ -246,9 +271,17 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         parse_budgets(&text)?
     };
     eprintln!("perf: measuring in release — this builds the engine and takes a few minutes");
+    // Two measurement legs: the harness scenarios, then the drift soak. Each is a release
+    // subprocess; each retries only itself.
     let mut measured = measure(&args, None)?;
+    let drift = if wants(&args.only, DRIFT_SCENARIO) { Some(measure_drift()?) } else { None };
     if args.update {
-        let mut next: Vec<Budget> = measured.iter().map(|m| Budget { scenario: m.scenario.clone(), rows: m.rows, ms: budget_for(m.ms) }).collect();
+        let mut all: Vec<Measured> = measured.clone();
+        all.extend(drift.iter().cloned());
+        if all.is_empty() {
+            return Err("perf: the filter selected no scenarios — nothing to record".into());
+        }
+        let mut next: Vec<Budget> = all.iter().map(|m| Budget { scenario: m.scenario.clone(), rows: m.rows, ms: budget_for(m.ms) }).collect();
         // Entries for scenarios this run did not touch (a filtered `--update`) are kept as they are.
         for b in budgets {
             if !next.iter().any(|n| n.scenario == b.scenario && n.rows == b.rows) {
@@ -261,13 +294,15 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         }
         let text = crate::eol::for_write(&path, &render_budgets(&budgets));
         std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
-        print!("{}", render_check(&measured, &budgets, 1.0, false));
+        print!("{}", render_check(&all, &budgets, 1.0, false));
         println!("\nrecorded {} budgets in {}", budgets.len(), path.display());
         return Ok(());
     }
     // A scenario over budget is measured once more before it fails the run: a build that started
     // on the same machine is a slow pass, not a regression, and a real regression stays over budget
-    // twice. Missing budgets are a mistake in the file, not a timing question, so they never retry.
+    // twice. Missing budgets are a mistake in the file, not a timing question, so they never
+    // retry. The re-measure matches by (scenario, rows), so the harness's subset and the soak
+    // never cross wires.
     let mut suspects: Vec<String> = Vec::new();
     for m in &measured {
         if matches!(verdict(m, &budgets, args.scale), Verdict::Over(_)) && !suspects.contains(&m.scenario) {
@@ -278,6 +313,23 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         eprintln!("perf: {} scenario(s) over budget — measuring them once more: {}", suspects.len(), suspects.join(", "));
         let again = measure(&args, Some(&suspects))?;
         keep_min(&mut measured, &again);
+    }
+    let mut drift = drift;
+    if drift.as_ref().is_some_and(|d| matches!(verdict(d, &budgets, args.scale), Verdict::Over(_))) {
+        eprintln!("perf: {DRIFT_SCENARIO} over budget — running the soak once more");
+        let again = measure_drift()?;
+        if let Some(d) = drift.as_mut()
+            && again.ms < d.ms
+        {
+            *d = again;
+        }
+    }
+    // The verdict table: the harness scenarios in run order, then the soak.
+    if let Some(d) = drift {
+        measured.push(d);
+    }
+    if measured.is_empty() {
+        return Err("perf: the filter selected no scenarios — nothing was measured".into());
     }
     println!("\nbudgets {} (scale {:.2})", shown(root, &path), args.scale);
     print!("{}", render_check(&measured, &budgets, args.scale, true));
@@ -349,15 +401,35 @@ fn fmt_time(ms: f64) -> String {
     }
 }
 
+/// Whether the perf harness has anything to do under this filter: no filter runs everything,
+/// and a filter that names only the scenarios the gate measures itself (`mem_drift`) leaves it
+/// nothing — the harness does not know those ids (its `--scenario` validation rejects them).
+fn harness_has_work(only: Option<&[String]>) -> bool {
+    only.is_none_or(|ids| ids.iter().any(|id| id.as_str() != DRIFT_SCENARIO))
+}
+
+/// Whether this run's `--scenario` filter includes `id`. No filter means every scenario,
+/// including the ones the gate measures itself.
+fn wants(only: &Option<Vec<String>>, id: &str) -> bool {
+    only.as_deref().is_none_or(|ids| ids.iter().any(|want| want == id))
+}
+
 /// Run the harness in release and read its `--json` document. `only` overrides the command
 /// line's scenario filter (the re-measure of the scenarios that came out over budget).
 fn measure(args: &Args, only: Option<&[String]>) -> Result<Vec<Measured>, String> {
+    let ids = only.or(args.only.as_deref());
+    if !harness_has_work(ids) {
+        // A run filtered down to the gate's own scenarios: the harness has nothing to do.
+        return Ok(Vec::new());
+    }
     let retry = only.is_some();
     let mut cmd = crate::cargo();
     cmd.args(["run", "--release", "-q", "-p", "cella-engine", "--example", "perf", "--", "--json"]);
     cmd.arg(format!("--rows={}", args.rows.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
-    if let Some(ids) = only.or(args.only.as_deref()) {
-        cmd.arg(format!("--scenario={}", ids.join(",")));
+    if let Some(ids) = ids {
+        // The gate's own ids are not the harness's: pass the filter without them.
+        let kept: Vec<String> = ids.iter().filter(|id| id.as_str() != DRIFT_SCENARIO).cloned().collect();
+        cmd.arg(format!("--scenario={}", kept.join(",")));
     }
     // A re-measure is one pass: the min of the two is taken, so repeating inside it would only cost time.
     if let Some(n) = args.repeat.filter(|_| !retry) {
@@ -387,6 +459,69 @@ fn parse_results(text: &str) -> Result<Vec<Measured>, String> {
         return Err("the perf harness reported no results".into());
     }
     Ok(out)
+}
+
+/// Run the long-run memory soak in release and read its CSV — the exact shape the 2026-11-20
+/// round measured: 100k rows, 240 s of edit/undo/redo cycles with a sort every 50 and a save
+/// every 200.
+fn measure_drift() -> Result<Measured, String> {
+    eprintln!("perf: {DRIFT_SCENARIO} — a {DRIFT_SECONDS} s soak at {DRIFT_ROWS} rows; the engine's own total must stay flat");
+    let mut cmd = crate::cargo();
+    cmd.args(["run", "--release", "-q", "-p", "cella-engine", "--example", "mem_drift", "--"]);
+    cmd.arg(format!("--rows={DRIFT_ROWS}"));
+    cmd.arg(format!("--seconds={DRIFT_SECONDS}"));
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
+    let out = cmd.output().map_err(|e| format!("cargo run --example mem_drift: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("the mem_drift soak failed ({}); its output is above", out.status));
+    }
+    parse_drift(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The soak's CSV: `cycle,elapsed_s,total_bytes,undo_steps,last_recalc_cells`, a header line and
+/// then one sample every 25 cycles. The measurement is the per-cycle cost in ms — a fixed-time
+/// soak has no wall-clock number of its own; a slower engine simply completes fewer cycles. The
+/// leak assertion is the flatness: over the second half of the run the engine's own reported
+/// total must stay within `DRIFT_MAX_SHARE` of its median. The first half is warm-up (the undo
+/// budget ages the initial fills out, and the total declines by design), so it is not judged.
+fn parse_drift(text: &str) -> Result<Measured, String> {
+    let mut reports: Vec<(u64, f64, f64)> = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split(',');
+        let (Some(cycle), Some(elapsed), Some(total)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let (Ok(cycle), Ok(elapsed), Ok(total)) = (cycle.parse::<u64>(), elapsed.parse::<f64>(), total.parse::<f64>()) else {
+            continue;
+        };
+        if cycle > 0 && total > 0.0 {
+            reports.push((cycle, elapsed, total));
+        }
+    }
+    let Some((last_cycle, last_elapsed, _)) = reports.last().copied() else {
+        return Err("mem_drift reported no samples (it prints one every 25 cycles)".into());
+    };
+    let second_half: Vec<f64> = reports[reports.len() / 2..].iter().map(|r| r.2).collect();
+    if second_half.len() < DRIFT_MIN_REPORTS {
+        return Err(format!(
+            "mem_drift printed only {} second-half sample(s) in {DRIFT_SECONDS} s — not enough to judge flatness",
+            second_half.len()
+        ));
+    }
+    let mut sorted = second_half.clone();
+    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+    let median = sorted[sorted.len() / 2];
+    let band = second_half.iter().map(|t| (t - median).abs() / median).fold(0.0_f64, f64::max);
+    if band > DRIFT_MAX_SHARE {
+        return Err(format!(
+            "mem_drift drifted: the engine's total moved {:.1}% off its second-half median ({:.1} MB) — a leak, not noise",
+            band * 100.0,
+            median / 1_000_000.0
+        ));
+    }
+    eprintln!("perf: {DRIFT_SCENARIO} — {last_cycle} cycles in {DRIFT_SECONDS} s, second half flat within {:.2}%", band * 100.0);
+    Ok(Measured { scenario: DRIFT_SCENARIO.to_string(), rows: DRIFT_ROWS, ms: last_elapsed * 1000.0 / last_cycle as f64 })
 }
 
 #[cfg(test)]
@@ -460,6 +595,16 @@ mod tests {
     }
 
     #[test]
+    fn a_retry_never_lands_on_the_wrong_line() {
+        // Keyed by (scenario, rows), not by position: a re-measure covers a subset of the table.
+        let mut first = [m("a", 1_000, 20.0), m("b", 1_000, 30.0), m("a", 2_000, 40.0)];
+        keep_min(&mut first, &[m("b", 1_000, 10.0), m("a", 2_000, 50.0)]);
+        assert_eq!(first[0].ms, 20.0, "a @ 1000 was not re-measured");
+        assert_eq!(first[1].ms, 10.0, "the faster re-measure of b @ 1000 is kept");
+        assert_eq!(first[2].ms, 40.0, "the slower re-measure of a @ 2000 is ignored");
+    }
+
+    #[test]
     fn the_table_shows_over_budget_scenarios() {
         let budgets = [b("fill.values", 1_000, 10.0), b("sort.desc", 1_000, 100.0)];
         let measured = [m("fill.values", 1_000, 5.0), m("sort.desc", 1_000, 200.0)];
@@ -481,5 +626,58 @@ mod tests {
         assert!(parse_args(&["--repeat=99"]).is_err(), "capped");
         assert!(parse_args(&["--nope"]).is_err());
         assert!(parse_args(&["--scale=0"]).is_err());
+    }
+
+    #[test]
+    fn the_harness_skips_a_run_filtered_to_the_gate_own_scenarios() {
+        // No filter runs everything; a mixed filter runs the harness's share; a drift-only
+        // filter must not start the harness (its --scenario validation rejects mem_drift).
+        assert!(harness_has_work(None), "no filter: the harness runs everything");
+        assert!(harness_has_work(Some(&["fill.values".into(), DRIFT_SCENARIO.into()])), "a mixed filter keeps the harness's share");
+        assert!(!harness_has_work(Some(&[DRIFT_SCENARIO.into()])), "a drift-only run starts no harness");
+    }
+
+    #[test]
+    fn an_unfiltered_run_wants_every_scenario() {
+        assert!(wants(&None, DRIFT_SCENARIO));
+        assert!(!wants(&Some(vec!["fill.values".into()]), DRIFT_SCENARIO));
+        assert!(wants(&Some(vec!["fill.values".into(), DRIFT_SCENARIO.into()]), DRIFT_SCENARIO));
+    }
+
+    #[test]
+    fn the_drift_csv_parses_and_passes_a_flat_second_half() {
+        // The 2026-11-20 shape: the undo budget ages the initial fills out (the first half
+        // declines by design), then the total sits flat.
+        let mut csv = String::from("cycle,elapsed_s,total_bytes,undo_steps,last_recalc_cells\n");
+        for i in 1..=40u64 {
+            let (cycle, elapsed, total) = if i <= 20 {
+                (i * 25, i as f64 * 6.0, 129_000_000.0 - i as f64 * 4_000_000.0)
+            } else {
+                (i * 25, i as f64 * 6.0, 44_700_000.0 + (i % 2) as f64 * 900.0)
+            };
+            csv += &format!("{cycle},{elapsed:.1},{total},10,1\n");
+        }
+        let measured = parse_drift(&csv).expect("a flat second half passes");
+        assert_eq!(measured.scenario, DRIFT_SCENARIO);
+        assert_eq!(measured.rows, DRIFT_ROWS);
+        assert!((measured.ms - 240.0).abs() < 0.05, "{:?}", measured.ms); // 1,000 cycles in 240 s
+    }
+
+    #[test]
+    fn a_rising_second_half_fails_the_drift_check() {
+        let mut csv = String::from("cycle,elapsed_s,total_bytes,undo_steps,last_recalc_cells\n");
+        for i in 1..=40u64 {
+            let total = if i <= 20 { 44_700_000.0 } else { 44_700_000.0 + i as f64 * 2_000_000.0 };
+            csv += &format!("{},{}.0,{total},10,1\n", i * 25, i * 6);
+        }
+        let err = parse_drift(&csv).expect_err("a leak rises");
+        assert!(err.contains("drifted"), "{err}");
+    }
+
+    #[test]
+    fn a_drift_run_with_no_samples_or_too_few_is_an_error() {
+        assert!(parse_drift("").is_err());
+        let one = "cycle,elapsed_s,total_bytes,undo_steps,last_recalc_cells\n25,2.6,44700000,10,1\n";
+        assert!(parse_drift(one).is_err(), "one sample is not a flatness proof");
     }
 }
