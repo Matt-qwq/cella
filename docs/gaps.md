@@ -352,7 +352,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   compares the packed row before copying a band (all four write paths), finds a row with one bit
   probe instead of a search over 48-byte headers, and stops double-probing in `set`: **−20.08 %
   built (8/8), −21.40 % reopened (7/8)**; the same-process model A/B moved `value()` 82.6 →
-  38.4 ns and `set` 203.8 → 126.1 ns/cell. Gate 25/25 after the merge.
+  38.4 ns and `set` 203.8 → 126.1 ns/cell. The same knife was certified on the workload a person
+  waits on: **a 6M-cell paste 2,011 → 1,300 ms (−35.36 %, 8/8, p = 0.0039, t = −21.65)** in its
+  own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
+  baseline side needed that one example file replayed onto `90c4781` because the harness is new).
+  Gate 25/25 after the merge.
 - **Missing:** dependent chains that never become a wave of leaves remain sequential; whole-sheet
   clear/copy/paste still clone the stored cells (they scale with the data, not the file); the
   per-band value dictionaries still cost full price when values do not repeat;

@@ -869,6 +869,7 @@ measurement-tool commit; candidates: one per branch. Reproduce with
 | pricing (second case) | reopened/no-aggregate | 338 ms | 321 ms | −4.83 % | 6/8 | 0.1445 | −1.79 | direction agrees, not certified |
 | kernel: compare before writing a band | built/no-aggregate | 314 ms | 251 ms | **−20.08 %** | 8/8 | 0.0039 | −16.01 | **GAIN** |
 | kernel: same | reopened/no-aggregate | 353 ms | 277 ms | **−21.40 %** | 7/8 | 0.0352 | −3.15 | **GAIN** |
+| kernel: the 6M-cell paste | paste of 1M×6 | 2,011 ms | 1,300 ms | **−35.36 %** | 8/8 | 0.0039 | −21.65 | **GAIN** |
 
 What each knife is: the closure's per-sheet box now holds a precedent's **second** dependent (a
 cell two formulas read used to fall into the hash `many` list and pay a cold probe a cell); a
@@ -935,7 +936,9 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-21 (round 27, three certified knives):** closure second-dependent box (−18.35 %,
+- **2026-11-21 (round 27, three knives and a paste):** the 6M-cell paste **2,011 → 1,300 ms
+  (−35.36 %, 8/8, p=0.0039, t=−21.65)**, certified with a purpose-built paired gate
+  (plan/bench/ab_paste.ps1); closure second-dependent box closure second-dependent box (−18.35 %,
   8/8, p=0.0039), band copy tag for retained pricing (−7.23 % built, 7/8; reopened 6/8 direction
   only), store compare-before-write and one-bit row find (−20.08 % built 8/8, −21.40 % reopened
   7/8). Gate 25/25; model 170 / calc 172 / engine 620; fuzz 3/3; wasm and lint clean. Raw:
