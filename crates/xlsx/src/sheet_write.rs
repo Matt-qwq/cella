@@ -904,6 +904,72 @@ struct RowFlags {
     dynamic_arrays: bool,
 }
 
+/// Drops one row from inclusive spans, splitting the span that holds it, as the model's
+/// `Sheet::filter_row_ranges` drops a table's totals row.
+fn drop_row(spans: &mut Vec<(u32, u32)>, row: u32) {
+    let mut out = Vec::with_capacity(spans.len().saturating_add(1));
+    for (a, b) in spans.drain(..) {
+        if row < a || row > b {
+            out.push((a, b));
+            continue;
+        }
+        if a < row {
+            out.push((a, row.saturating_sub(1)));
+        }
+        if row < b {
+            out.push((row.saturating_add(1), b));
+        }
+    }
+    *spans = out;
+}
+
+/// The rows a save's filters can be read back onto: the ranges `Sheet::filter_row_ranges` names
+/// once the file is opened again. The sheet's AutoFilter reaches the file only when no table
+/// intersects it — a table containing its whole range folds its criteria into the table part,
+/// which reading promotes back to the sheet's filter — and each table's own filter travels in its
+/// part. A sheet filter that only partly overlaps a table is suppressed (there is no element for
+/// it), so a row it hides is not written as hidden: reading the row back would keep it
+/// hand-hidden, a state the model never held and Clear Filter cannot clear ("rows differ after
+/// reload", found by the command-sequence fuzzer: a sheet copied onto itself, a filter, a table
+/// inside its range, an autofill, a three-step undo and a second filter).
+///
+/// `None` when no AutoFilter with criteria is live, and every row the bitmap hides is written
+/// as it always was: a workbook built by hand can hide rows in the bitmap with no filter anywhere
+/// to own them.
+fn written_filter_ranges(sheet: &Sheet) -> Option<Vec<(u32, u32)>> {
+    let af = sheet.autofilter.as_ref()?;
+    if af.criteria.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    // The fold's own condition: a table that reaches the file, with its filter button, whose range
+    // contains the filter's whole range.
+    let folded = sheet
+        .tables
+        .iter()
+        .any(|t| table_is_written(t) && t.header_row && t.filter_button && t.filter.is_empty() && t.range.contains_range(&af.range));
+    if folded || !sheet.tables.iter().any(|t| t.range.intersects(&af.range)) {
+        let first = af.range.start.row.saturating_add(1);
+        if first <= af.range.end.row {
+            out.push((first, af.range.end.row));
+        }
+    }
+    for t in &sheet.tables {
+        if table_is_written(t)
+            && !t.filter.is_empty()
+            && let Some(d) = t.data_range()
+            && d.start.row <= d.end.row
+        {
+            out.push((d.start.row, d.end.row));
+        }
+        // A totals row is never a filter's, whatever range the sheet's AutoFilter spells.
+        if t.totals_row && t.range.end.row > t.range.start.row {
+            drop_row(&mut out, t.range.end.row);
+        }
+    }
+    Some(out)
+}
+
 /// One pass over a window of a sheet's rows in the order the file writes them: the store's cells
 /// merged with the sparse additions, the sheet's own line info, and the rows a filter hides. The
 /// shared-string pre-pass and the row builder are both this walk, so the table one fills is exactly
@@ -928,7 +994,16 @@ fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMa
     let mut store = sheet.cells.iter_scan(window).peekable();
     let mut sparse = additions.range(window.start.row..=window.end.row).peekable();
     let mut info_rows = sheet.rows.range(window.start.row..=window.end.row).peekable();
-    let mut filter_rows = sheet.filter_hidden.rows().skip_while(|r| *r < window.start.row).take_while(|r| *r <= window.end.row).peekable();
+    // Only a row the file's filters can own is written as one a filter hides; see
+    // `written_filter_ranges`.
+    let attributable = written_filter_ranges(sheet);
+    let mut filter_rows = sheet
+        .filter_hidden
+        .rows()
+        .skip_while(|r| *r < window.start.row)
+        .take_while(|r| *r <= window.end.row)
+        .filter(|r| attributable.as_ref().is_none_or(|a| a.iter().any(|&(x, y)| *r >= x && *r <= y)))
+        .peekable();
     loop {
         let next_store = store.peek().map(|(at, _)| at.row);
         let next_sparse = sparse.peek().map(|(r, _)| **r);

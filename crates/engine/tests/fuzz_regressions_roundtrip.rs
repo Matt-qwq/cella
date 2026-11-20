@@ -186,3 +186,28 @@ fn a_filter_hidden_row_that_also_has_a_height_comes_back_as_the_filters() {
     assert!(sheet.rows.iter().all(|(r, info)| !info.hidden || !(4..=9).contains(&r)), "no filtered row came back as a hand-hidden one");
     assert_eq!(kept_rows(before.active().expect("sheet"), &before.styles), kept_rows(sheet, &after.styles), "rows differ after reload");
 }
+
+#[test]
+fn a_sheet_copied_under_its_own_filter_keeps_its_rows_through_a_save() {
+    // Seed 173, as the shrinker reduced it: a sheet copied onto itself, a filter, a table, another
+    // sheet, an autofill, a second table, a three-step undo, and a second filter. The copy's
+    // filtered rows came back different: the copy had taken the filter's hidden-row state and the
+    // undo had restored line info over it, so what the file wrote for those rows was not what the
+    // sheet in memory said they were.
+    let mut s = session();
+    s.execute("file.new", json!({"sample": "grades"})).expect("the grades sample");
+    s.execute("sheet.move", json!({"copy": true, "sheet": 0, "to": 0})).ok();
+    s.execute("data.filter", json!({})).ok();
+    s.execute("insert.table", json!({"header": true, "name": "Data", "range": "D2:F7"})).ok();
+    s.execute("home.insertSheet", json!({"name": "Summary"})).ok();
+    s.execute("edit.autoFill", json!({"mode": "alternate", "source": "I21:L21", "target": "I21:M27"})).ok();
+    s.execute("insert.table", json!({"header": false, "range": "C23:C25"})).ok();
+    s.execute("edit.undo", json!({"steps": 3})).ok();
+    s.execute("data.filterBy", json!({"column": "G", "top": {"count": 2}})).ok();
+
+    let before = workbook(&s);
+    let after = reload(&before);
+    for (x, y) in before.sheets.iter().zip(&after.sheets) {
+        assert_eq!(kept_rows(x, &before.styles), kept_rows(y, &after.styles), "{}: rows differ after reload", x.name);
+    }
+}
