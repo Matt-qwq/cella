@@ -241,6 +241,28 @@ const COMPRESS_MAX_BANDS: usize = 600;
 /// rounded up to 5 kB so the projection errs towards dropping.
 const COMPRESS_BYTES_PER_BAND: usize = 5 * 1024;
 
+/// The serialized size of a journal entry — the same bytes `serde_json::to_vec` would produce,
+/// counted as they are written instead of collected into a Vec. A bulk import's entry is
+/// hundreds of kilobytes and the journal only ever reads the length back, so the buffer was
+/// the whole point of the measurement.
+fn journal_entry_size(e: &(String, Json)) -> usize {
+    struct Counter {
+        bytes: usize,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, std::io::Error> {
+            self.bytes = self.bytes.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::result::Result<(), std::io::Error> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter { bytes: 0 };
+    let _ = serde_json::to_writer(&mut counter, e);
+    counter.bytes
+}
+
 fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
     let mut bytes = std::mem::size_of::<Workbook>();
     for (index, sheet) in older.sheets.iter().enumerate() {
@@ -791,17 +813,16 @@ impl Session {
     /// Journals a command, then trims the oldest entries past either cap. A recording in progress
     /// keeps pointing at the same entry (the steps the trim dropped are lost).
     fn push_journal(&mut self, id: &str, params: Json) {
-        let size = |e: &(String, Json)| serde_json::to_vec(e).map_or(0, |v| v.len());
         // `journal` is public: if it was changed from outside, measure it again.
         if self.journal_sizes.len() != self.journal.len() {
-            self.journal_sizes = self.journal.iter().map(size).collect();
+            self.journal_sizes = self.journal.iter().map(journal_entry_size).collect();
             self.journal_bytes = self.journal_sizes.iter().sum();
         }
         let entry = (id.to_string(), params);
-        let entry_size = size(&entry);
+        let bytes = journal_entry_size(&entry);
         self.journal.push(entry);
-        self.journal_sizes.push(entry_size);
-        self.journal_bytes = self.journal_bytes.saturating_add(entry_size);
+        self.journal_sizes.push(bytes);
+        self.journal_bytes = self.journal_bytes.saturating_add(bytes);
         let len = self.journal.len();
         let mut n = if len > JOURNAL_MAX_ENTRIES { len - JOURNAL_MAX_ENTRIES / 2 } else { 0 };
         let mut kept = self.journal_bytes.saturating_sub(self.journal_sizes.iter().take(n).sum());
@@ -851,7 +872,9 @@ impl Session {
             sheet_name: wb.active().map(|sh| sh.name.clone()).unwrap_or_default(),
             selection: selection.clone(),
             id: id.to_string(),
-            params: cmd::journal_params(params),
+            // Only a running recording reaches here, so the copy this needs is paid by the
+            // recording — not by every command, the way the journal's clone used to be.
+            params: cmd::journal_params(params.clone()),
         });
     }
 
@@ -933,8 +956,18 @@ impl Session {
             self.rollback_groups_from(first_group);
         }
         if outer && spec.journal && result.is_ok() {
-            self.push_journal(id, cmd::journal_params(&params));
+            // One native-only phase mark, like `cmd::commit`'s: a bulk edit's journal entry is
+            // what it pays after its cells are written, and the mark shows that on its own.
+            #[allow(clippy::disallowed_methods)]
+            let journal_started =
+                if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
+            // The recording, while one runs, keeps a copy of its own; the journal entry takes
+            // the params themselves, so an ordinary command's tree moves instead of cloning.
             self.collect_recording(&before, id, &params);
+            self.push_journal(id, cmd::journal_params(params));
+            if let Some(started) = journal_started {
+                eprintln!("execute: journal {:?}", started.elapsed());
+            }
         }
         // Inside an undo group the group owns the step: the commands running there add none of
         // their own (the group makes one when it ends), and the redo history waits for it too.
@@ -951,9 +984,15 @@ impl Session {
             if grouped {
                 d.revision += 1;
             } else {
+                #[allow(clippy::disallowed_methods)]
+                let history_started =
+                    if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
                 d.history_dropped += push_history(&mut d.undo, spec.label.trim_end_matches('…').to_string(), wb, &d.wb, sel) as u64;
                 d.redo.clear();
                 d.revision += 1;
+                if let Some(started) = history_started {
+                    eprintln!("execute: history {:?}", started.elapsed());
+                }
             }
         }
         result

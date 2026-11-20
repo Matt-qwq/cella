@@ -96,22 +96,41 @@ pub const JOURNAL_MAX_STRING: usize = 64 * 1024;
 /// reaches the journal dialog, engine.journal or a recorded script (saved in the workbook),
 /// and a string longer than JOURNAL_MAX_STRING is replaced by a marker that keeps its length.
 /// Replaying such an entry runs the command without that param.
-pub fn journal_params(params: &Json) -> Json {
+///
+/// Takes the params by value — the journal entry owns them — so a tree with no secret key and
+/// no oversized string moves straight through instead of being rebuilt: a bulk import's params
+/// are tens of thousands of cells, and the per-command clone was the journal's largest cost.
+pub fn journal_params(params: Json) -> Json {
     let kept = match params {
-        Json::Object(o) => Json::Object(o.iter().filter(|(k, _)| !is_secret_param(k)).map(|(k, v)| (k.clone(), v.clone())).collect()),
-        other => other.clone(),
+        Json::Object(o) if o.iter().any(|(k, _)| is_secret_param(k)) => Json::Object(o.into_iter().filter(|(k, _)| !is_secret_param(k)).collect()),
+        other => other,
     };
     boxed_large_strings(kept)
 }
 
 /// Replaces every string longer than JOURNAL_MAX_STRING with "<omitted: N chars>", at any depth
-/// (the base64 of a file, the values of a paste). Everything else is returned untouched.
+/// (the base64 of a file, the values of a paste). Everything else is returned untouched — and
+/// when no string is oversized, the tree that came in is the tree that goes out.
 fn boxed_large_strings(v: Json) -> Json {
+    if !holds_oversized_string(&v) {
+        return v;
+    }
     match v {
         Json::String(s) if s.len() > JOURNAL_MAX_STRING => Json::String(format!("<omitted: {} chars>", s.chars().count())),
         Json::Array(items) => Json::Array(items.into_iter().map(boxed_large_strings).collect()),
         Json::Object(map) => Json::Object(map.into_iter().map(|(k, v)| (k, boxed_large_strings(v))).collect()),
         other => other,
+    }
+}
+
+/// Whether any string in the tree is longer than the journal keeps, so `boxed_large_strings`
+/// only rebuilds a tree it actually has to.
+fn holds_oversized_string(v: &Json) -> bool {
+    match v {
+        Json::String(s) => s.len() > JOURNAL_MAX_STRING,
+        Json::Array(items) => items.iter().any(holds_oversized_string),
+        Json::Object(map) => map.values().any(holds_oversized_string),
+        _ => false,
     }
 }
 
@@ -491,7 +510,13 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
         d.calc.recalc_all(&mut wb);
     } else {
         if !changed.is_empty() {
+            // One timestamp around used-range checks, only when the existing native probe is on.
+            #[allow(clippy::disallowed_methods)]
+            let used_started = t0.map(|_| std::time::Instant::now());
             let used = used_range_changes(&d.calc, &d.wb, &wb, &changed);
+            if let Some(started) = used_started {
+                eprintln!("commit: used range {:?} ({} sheets)", started.elapsed(), used.len());
+            }
             d.calc.cells_changed_with_used(&mut wb, &changed, &used);
         }
         if visibility {
@@ -613,7 +638,14 @@ fn displayed_updates(
 /// through it (a whole column or row): the formula has to be evaluated again even though none of
 /// the cells it names changed. Sheets without such a formula are skipped without walking the store.
 pub(crate) fn used_range_changes(calc: &cella_calc::Calc, before: &Workbook, after: &Workbook, changed: &[Key]) -> Vec<usize> {
-    let mut sheets: Vec<usize> = changed.iter().map(|(si, _)| *si).collect();
+    // Bulk edits usually emit one run of cells per sheet. Collapse each run before sorting so
+    // a million-row edit does not allocate a sheet index for every changed cell.
+    let mut sheets = Vec::new();
+    for &(si, _) in changed {
+        if sheets.last() != Some(&si) {
+            sheets.push(si);
+        }
+    }
     sheets.sort_unstable();
     sheets.dedup();
     sheets
@@ -621,6 +653,33 @@ pub(crate) fn used_range_changes(calc: &cella_calc::Calc, before: &Workbook, aft
         .filter(|si| calc.trims_used_range(*si))
         .filter(|si| before.sheet(*si).and_then(|s| s.used_range()) != after.sheet(*si).and_then(|s| s.used_range()))
         .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn used_range_changes_handles_same_sheet_runs_and_interleaved_sheets() {
+    use cella_core::Value;
+    use cella_model::{Cell, Formula, Sheet};
+    use std::sync::Arc;
+
+    let at = CellRef::new(0, 1);
+    let edge = CellRef::new(10, 0);
+    let mut before = Workbook::new();
+    before.sheets.extend(["Second", "NoTrim", "SameRange"].map(|name| Arc::new(Sheet::new(name))));
+    for si in [0, 1, 3] {
+        before.sheet_mut(si).unwrap().set_cell(at, Cell::formula(Formula::new("=SUM(A:A)")));
+    }
+    let mut calc = cella_calc::Calc::new();
+    calc.rebuild(&before);
+    let mut after = before.clone();
+    for si in [0, 1, 2] {
+        after.sheet_mut(si).unwrap().set_cell(edge, Cell::value(Value::Number(2.0)));
+    }
+
+    assert!(used_range_changes(&calc, &before, &after, &[]).is_empty());
+    assert_eq!(used_range_changes(&calc, &before, &after, &[(1, edge), (1, at), (1, edge)]), vec![1]);
+    let interleaved = [(1, edge), (2, edge), (0, edge), (1, at), (3, at), (0, at), (usize::MAX, edge)];
+    assert_eq!(used_range_changes(&calc, &before, &after, &interleaved), vec![0, 1]);
 }
 
 /// Excel's message for an edit of a locked cell on a protected sheet.

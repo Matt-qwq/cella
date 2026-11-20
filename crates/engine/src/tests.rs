@@ -1174,6 +1174,19 @@ fn fill_series_from_the_right_drag_menu_counts_a_lone_number() {
 }
 
 #[test]
+fn bulk_range_set_values_keeps_cells_before_and_after_blanks() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "C1", "input": "99"})).unwrap();
+    let rows: Vec<_> = (0..20).map(|n| json!([n, "=A1+1", null, n + 10])).collect();
+    s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+    assert_eq!([v(&s, "A1"), v(&s, "B1"), v(&s, "C1"), v(&s, "D1")], [Value::Number(0.0), Value::Number(1.0), Value::Empty, Value::Number(10.0)]);
+    assert_eq!([v(&s, "A20"), v(&s, "B20"), v(&s, "D20")], [Value::Number(19.0), Value::Number(1.0), Value::Number(29.0)]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::Number(99.0));
+    assert_eq!(v(&s, "A20"), Value::Empty);
+}
+
+#[test]
 fn fill_without_formatting_extends_the_series_and_keeps_the_target_formats() {
     let mut s = s();
     s.execute("range.setValues", json!({"range": "A1", "values": [[1], [2], [null], [9]]})).unwrap();
@@ -7814,15 +7827,30 @@ fn a_large_parameter_is_journalled_without_its_bytes() {
 #[test]
 fn journal_params_keep_short_strings_and_drop_only_the_huge_ones() {
     let small = json!({"path": "book.xlsx", "sheet": "Data", "rows": [["a", "b"], ["c", "d"]]});
-    assert_eq!(crate::cmd::journal_params(&small), small, "ordinary params are untouched");
+    assert_eq!(crate::cmd::journal_params(small.clone()), small, "ordinary params move through untouched");
     let long = "x".repeat(crate::cmd::JOURNAL_MAX_STRING + 1);
-    let p = crate::cmd::journal_params(&json!({"name": "big.xlsx", "base64": long, "nested": {"values": [long]}}));
+    let p = crate::cmd::journal_params(json!({"name": "big.xlsx", "base64": long, "nested": {"values": [long]}}));
     assert_eq!(p["name"], json!("big.xlsx"));
     assert!(p["base64"].as_str().expect("string").starts_with("<omitted: "));
     assert!(p["nested"]["values"][0].as_str().expect("string").starts_with("<omitted: "), "any depth");
     // A secret is still removed, not boxed.
-    let p = crate::cmd::journal_params(&json!({"password": "hunter2", "name": "a"}));
+    let p = crate::cmd::journal_params(json!({"password": "hunter2", "name": "a"}));
     assert!(p.get("password").is_none());
+}
+
+/// The journal entry for an ordinary bulk edit keeps its params intact: the by-value
+/// `journal_params` moves such a tree instead of rebuilding it, and the entry's byte count
+/// is still the serialization `to_vec` would have produced.
+#[test]
+fn the_journal_keeps_a_small_bulk_values_entry_intact() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2], [3, 4]]})).unwrap();
+    let (id, params) = s.journal.last().cloned().expect("the edit is journaled");
+    assert_eq!(id, "range.setValues");
+    assert_eq!(params["range"], json!("A1"));
+    assert_eq!(params["values"], json!([[1, 2], [3, 4]]), "nothing was dropped or boxed");
+    assert!(s.journal_bytes > 0, "the entry's bytes were counted as they were written");
+    assert_eq!(v(&s, "B2"), Value::Number(4.0));
 }
 /// The soak's four-step repro (CELLA_FUZZ_SEEDS=8 CELLA_FUZZ_STEPS=150, seed 2, shrunk): Remove
 /// Duplicates compacts the rows of its range, which moves the formulas that sit inside it. A moved

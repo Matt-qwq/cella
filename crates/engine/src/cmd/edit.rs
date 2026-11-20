@@ -342,6 +342,49 @@ pub(crate) fn json_to_input(v: &Json) -> String {
     }
 }
 
+/// Coarse attribution for `CELLA_PROFILE` on the import path: what a `range.setValues` spends
+/// building cells (dispatch, per-cell style reads, typed-input parsing) against what it spends
+/// writing them to the store. The clock is read at row boundaries only — never per cell — and
+/// never on wasm, where it would trap. The rare row that mixes stored cells with a blank writes
+/// its tail through `set_cell` inside the dispatch segment; attribution stays coarse on purpose.
+struct SetValuesProfile {
+    dispatch_ms: f64,
+    write_ms: f64,
+    last: std::time::Instant,
+}
+
+impl SetValuesProfile {
+    #[allow(clippy::disallowed_methods)]
+    fn start() -> Option<Self> {
+        if cfg!(target_arch = "wasm32") || std::env::var_os("CELLA_PROFILE").is_none() {
+            return None;
+        }
+        Some(Self { dispatch_ms: 0.0, write_ms: 0.0, last: std::time::Instant::now() })
+    }
+
+    /// A row begins; the next segment is cell dispatch.
+    #[allow(clippy::disallowed_methods)]
+    fn row_started(&mut self) {
+        self.last = std::time::Instant::now();
+    }
+
+    /// The row's cells are built; the next segment is the store write.
+    #[allow(clippy::disallowed_methods)]
+    fn built(&mut self) {
+        let now = std::time::Instant::now();
+        self.dispatch_ms += now.duration_since(self.last).as_secs_f64() * 1000.0;
+        self.last = now;
+    }
+
+    /// The row's cells are written.
+    #[allow(clippy::disallowed_methods)]
+    fn written(&mut self) {
+        let now = std::time::Instant::now();
+        self.write_ms += now.duration_since(self.last).as_secs_f64() * 1000.0;
+        self.last = now;
+    }
+}
+
 fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
     let start = target_range(s, p)?.start;
@@ -363,9 +406,13 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     // while a cell at a time pays a row lookup, a band lookup and a growth step each. A sheet
     // holding a cell picture keeps the per-cell way, because set_cell owns that rule.
     let row_batches = cells >= 64;
+    let mut profile = SetValuesProfile::start();
     edit(s, |cx| {
         let mut batch: Vec<(u32, Cell)> = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
+            if let Some(prof) = profile.as_mut() {
+                prof.row_started();
+            }
             let cols: &[Json] = match row.as_array() {
                 Some(a) => a,
                 None => std::slice::from_ref(row),
@@ -395,14 +442,20 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
                     Some(c) if bulk => batch.push((at.col, c)),
                     Some(c) => cx.sheet_mut(sheet)?.set_cell(at, c),
                     None => {
-                        // A blank input clears the cell, which the row batch would keep: from
-                        // here the row takes the cell at a time.
+                        // Flush the prefix before switching to individual writes for this row.
+                        let sh = cx.sheet_mut(sheet)?;
+                        if bulk && !batch.is_empty() {
+                            sh.set_row_cells(at.row, &mut batch);
+                        }
                         bulk = false;
-                        cx.sheet_mut(sheet)?.remove_cell(at);
+                        sh.remove_cell(at);
                     }
                 }
                 cx.touch(sheet, at);
                 count += 1;
+            }
+            if let Some(prof) = profile.as_mut() {
+                prof.built();
             }
             if bulk && !batch.is_empty() {
                 let mut batch = std::mem::take(&mut batch);
@@ -410,9 +463,15 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
                     cx.sheet_mut(sheet)?.set_row_cells(r, &mut batch);
                 }
             }
+            if let Some(prof) = profile.as_mut() {
+                prof.written();
+            }
         }
         Ok(())
     })?;
+    if let Some(prof) = profile {
+        eprintln!("setValues: {} rows ({} cells), dispatch {:.1} ms, store write {:.1} ms", rows.len(), count, prof.dispatch_ms, prof.write_ms);
+    }
     Ok(json!({"cells": count}))
 }
 

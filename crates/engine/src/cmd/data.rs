@@ -289,6 +289,38 @@ fn sort(s: &mut Session, p: &Json) -> Result<Json> {
     do_sort(s, sheet, r, header, keys, by_cols, case)
 }
 
+/// Coarse boundaries for CELLA_PROFILE; no clock reads inside comparisons or cell walks.
+struct SortProfile {
+    last: std::time::Instant,
+    phases: Vec<(&'static str, f64)>,
+}
+
+impl SortProfile {
+    #[allow(clippy::disallowed_methods)]
+    fn start() -> Option<Self> {
+        // Instant::now can trap on wasm, as in cmd::commit.
+        if cfg!(target_arch = "wasm32") || std::env::var_os("CELLA_PROFILE").is_none() {
+            return None;
+        }
+        Some(Self { last: std::time::Instant::now(), phases: Vec::with_capacity(12) })
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn mark(profile: &mut Option<Self>, phase: &'static str) {
+        if let Some(p) = profile {
+            let now = std::time::Instant::now();
+            p.phases.push((phase, now.duration_since(p.last).as_secs_f64() * 1000.0));
+            p.last = now;
+        }
+    }
+
+    fn report(profile: Option<Self>, n: u32, nk: usize, by_cols: bool, identity: bool) {
+        if let Some(p) = profile {
+            eprintln!("sort: {n} lines, {nk} keys, by_cols={by_cols}, identity={identity}, phases (ms) {:?}", p.phases);
+        }
+    }
+}
+
 fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<SortKey>, by_cols: bool, case: bool) -> Result<Json> {
     // Protect Sheet ▸ Sort. Both Sort… and the A-to-Z buttons come through here.
     super::refuse_unless_allowed(s, sheet, "Sorting", |p| p.sort)?;
@@ -301,6 +333,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
     };
     super::check_bulk(body.count())?;
     edit(s, |cx| {
+        let mut profile = SortProfile::start();
         // A store an undo handed back keeps its bands as pages and reads one at a time. A sort reads
         // the whole range in an order that has nothing to do with the bands (a permutation), so on a
         // paged store each line would decode the band it lands in and evict the one it just read:
@@ -323,6 +356,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         if sh.merges.iter().any(|m| m.intersects(&body) && !m.is_single()) {
             return Err(EngineError::Other("To do this, all the merged cells need to be the same size.".into()));
         }
+        SortProfile::mark(&mut profile, "page_and_validate");
         let n = if by_cols { body.width() } else { body.height() };
         let line = |i: u32, k: u32| if by_cols { CellRef::new(k, body.start.col + i) } else { CellRef::new(body.start.row + i, k) };
         let theme = cx.wb.theme.clone();
@@ -360,6 +394,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 keyed.push(SortCell { value, color, list });
             }
         }
+        SortProfile::mark(&mut profile, "extract_keys");
         let mut order: Vec<u32> = (0..n).collect();
         // A stable sort of the permutation: equal keys keep the order they were in, and the rows
         // themselves are moved once, afterwards.
@@ -386,7 +421,11 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
             }
             Ordering::Equal
         });
-        if order.iter().enumerate().all(|(i, &o)| i as u32 == o) {
+        SortProfile::mark(&mut profile, "compare");
+        let identity = order.iter().enumerate().all(|(i, &o)| i as u32 == o);
+        SortProfile::mark(&mut profile, "check_identity");
+        if identity {
+            SortProfile::report(profile, n, nk, by_cols, true);
             return Ok(Json::Null);
         }
         // Move whole lines (cells with formulas adjusted for relative references).
@@ -416,6 +455,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 .filter_map(|(src_i, dst_i, k)| sh.hyperlinks.get(&line(src_i, k)).map(|h| (line(dst_i, k), h.clone())))
                 .collect()
         };
+        SortProfile::mark(&mut profile, "gather_notes_links");
         // The body's cells in destination order (line by line, lane by lane). An absent cell stays
         // `None`: the destination is emptied rather than written as a blank.
         let mut moved: Vec<Option<Cell>> = Vec::with_capacity(body.count() as usize);
@@ -423,11 +463,16 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // A legacy array or a dynamic array re-spills from its new anchor, and the cells it spilled
         // are derived state the permutation does not move.
         let mut body_arrays = false;
+        let row_reader = (!by_cols).then(|| sh.cells.row_reader(body.start.col, body.end.col));
+        let has_pictures = !sh.cell_pictures.is_empty();
         for (dst_i, &src_i) in order.iter().enumerate() {
-            for &k in &lanes {
-                let src = line(src_i, k);
-                let dst = line(dst_i as u32, k);
-                let mut cell = sh.cell(src);
+            let start = moved.len();
+            if let Some(read) = &row_reader {
+                read(body.start.row + src_i, &mut moved);
+            } else {
+                moved.extend(lanes.iter().map(|&k| sh.cell(line(src_i, k))));
+            }
+            for (&k, cell) in lanes.iter().zip(moved.get_mut(start..).into_iter().flatten()) {
                 if let Some(c) = cell.as_mut()
                     && let Some(f) = &c.formula
                 {
@@ -436,18 +481,17 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     // row 1 says `=A2`, and the shape is the same one. Only a reference that
                     // would leave the sheet changes it, and only that cell materialises a private
                     // shape with the `#REF!` Excel shows (SHAPE-SHARING.md §4.9).
-                    if let Some(moved) = f.copied_to(src, dst) {
+                    if let Some(moved) = f.copied_to(line(src_i, k), line(dst_i as u32, k)) {
                         c.formula = Some(Arc::new(moved));
                     }
                 }
-                if !sh.cell_pictures.is_empty()
-                    && let Some(picture) = sh.cell_pictures.get(&src)
-                {
-                    pictures.push((dst, picture.clone()));
+                if has_pictures && let Some(picture) = sh.cell_pictures.get(&line(src_i, k)) {
+                    pictures.push((line(dst_i as u32, k), picture.clone()));
                 }
-                moved.push(cell);
             }
         }
+        drop(row_reader);
+        SortProfile::mark(&mut profile, "gather_cells_and_adjust_formulas");
         // Spilled cells and the ranges they come from are not part of the permutation either, so a
         // body that holds one gets the full recalculation that lays the spills out again. A legacy
         // array that merely overlaps the body counts too: an edit of part of an array is not
@@ -486,7 +530,9 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 (tc, tr, (x2 - sh.col_left(tc)) as f32, (y2 - sh.row_top(tr)) as f32)
             })
             .collect();
-        let any_formulas = cx.wb.sheets.iter().any(|s| s.cells.formulas().next().is_some());
+        SortProfile::mark(&mut profile, "prepare_metadata");
+        let any_formulas = cx.wb.sheets.iter().any(|s| s.cells.has_formulas());
+        SortProfile::mark(&mut profile, "detect_formulas");
         {
             let shm = cx.sheet_mut(sheet)?;
             // Written back a whole destination row at a time: the store packs cells by row, so that is
@@ -511,6 +557,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     shm.set_row_cells(body.start.row + dst_i, &mut buf);
                 }
             }
+            SortProfile::mark(&mut profile, "write_cells");
             // Every cell of the body is the destination of exactly one source cell, so clearing the
             // body and inserting the permuted entries is the same permutation the cells went through.
             for c in body.iter() {
@@ -569,6 +616,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 }
             }
         }
+        SortProfile::mark(&mut profile, "write_metadata");
         // Every cell of the body was rewritten, so every one of them changed. When no cell in the
         // workbook holds a formula there is nothing for that list to recalculate, and its only
         // other reader is row fitting, which a commit only takes up to 200k cells — so a big sort
@@ -580,6 +628,8 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // what the commit's recalculation walks, so only what depends on them is recomputed
         // instead of the whole workbook. Arrays and spills are the exception (see above).
         cx.structural = arrays || spilled;
+        SortProfile::mark(&mut profile, "collect_changes");
+        SortProfile::report(profile, n, nk, by_cols, false);
         Ok(Json::Null)
     })?;
     Ok(json!({"sorted": body.a1()}))
@@ -1888,6 +1938,45 @@ mod tests {
         assert!(crate::cmd::check_bulk(crate::cmd::MAX_BULK_CELLS).is_ok());
         let err = crate::cmd::check_bulk(crate::cmd::MAX_BULK_CELLS + 1).expect_err("one cell over the limit");
         assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn row_sort_keeps_holes_styled_blanks_and_formulas_after_paging() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1:D3", "values": [[2, 20, null, "=B1*2"], [1, 11], [1, 12, "text", "=B3*2"]]})).unwrap();
+        s.execute("home.bold", json!({"range": "C1", "on": true})).unwrap();
+        let d = s.doc_mut().unwrap();
+        let sh = Arc::make_mut(&mut d.wb).sheet_mut(0).unwrap();
+        let styled = sh.cell(CellRef::new(0, 2)).expect("the styled blank is a stored cell");
+        assert!(styled.value.is_empty());
+        assert!(sh.cells.enable_paging());
+        let before = d.wb.clone();
+
+        s.execute("data.sort", json!({"range": "A1:D3", "header": false, "keys": [{"column": "A"}]})).unwrap();
+        let sh = s.doc().unwrap().wb.sheet(0).unwrap();
+        assert_eq!(sh.value(CellRef::new(0, 1)), Value::Number(11.0), "the two 1s keep their order");
+        assert!(sh.cell(CellRef::new(0, 2)).is_none(), "the source hole cleared the old styled blank");
+        assert!(sh.cell(CellRef::new(0, 3)).is_none(), "the source hole cleared the old formula");
+        assert_eq!(sh.value(CellRef::new(1, 2)), Value::from("text"));
+        assert_eq!(sh.value(CellRef::new(1, 3)), Value::Number(24.0));
+        assert_eq!(sh.cell(CellRef::new(2, 2)), Some(styled));
+        assert_eq!(sh.value(CellRef::new(2, 3)), Value::Number(40.0));
+
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.doc().unwrap().wb, *before);
+    }
+
+    #[test]
+    fn column_sort_still_uses_column_lanes() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1:C2", "values": [[2, 3, 1], ["two", null, "one"]]})).unwrap();
+        s.execute("data.sort", json!({"range": "A1:C2", "header": false, "orientation": "columns", "keys": [{"row": 1}]})).unwrap();
+        let sh = s.doc().unwrap().wb.sheet(0).unwrap();
+        assert_eq!(sh.value(CellRef::new(1, 0)), Value::from("one"));
+        assert_eq!(sh.value(CellRef::new(1, 1)), Value::from("two"));
+        assert!(sh.cell(CellRef::new(1, 2)).is_none());
     }
 
     #[test]
