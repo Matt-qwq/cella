@@ -418,6 +418,60 @@ pub(crate) fn pack(name: String, data: Vec<u8>) -> Result<Packed, IoError> {
     Ok(Packed { name, body, crc, size })
 }
 
+/// One part's deflate stream, fed its bytes as they are produced (a worksheet's rows, window by
+/// window). The encoder is never flushed between pushes, so the body it finishes with is the one
+/// [`deflate`] would produce from the whole buffer — the test below holds a chunked stream to the
+/// one-shot bytes — and the CRC and size accumulate over exactly the bytes it took.
+pub(crate) struct PackStream {
+    name: String,
+    encoder: flate2::write::DeflateEncoder<Vec<u8>>,
+    crc: crc32fast::Hasher,
+    size: usize,
+    /// The first push that failed; `finish` reports it, because a part whose bytes were not all
+    /// taken cannot be written.
+    failed: Option<IoError>,
+}
+
+impl PackStream {
+    /// Opens the stream and takes `first`.
+    pub(crate) fn new(name: String, first: &[u8]) -> PackStream {
+        // The same starting capacity `deflate` gives a whole part.
+        let mut stream = PackStream {
+            name,
+            encoder: flate2::write::DeflateEncoder::new(Vec::with_capacity(first.len() / 6 + 64), flate2::Compression::new(DEFLATE_LEVEL)),
+            crc: crc32fast::Hasher::new(),
+            size: 0,
+            failed: None,
+        };
+        stream.push(first);
+        stream
+    }
+
+    /// Takes one chunk. The encoder writes into a `Vec`, so this cannot fail in practice; a
+    /// failure poisons the stream instead of being dropped on the floor.
+    pub(crate) fn push(&mut self, chunk: &[u8]) {
+        if self.failed.is_some() {
+            return;
+        }
+        if let Err(e) = std::io::Write::write_all(&mut self.encoder, chunk) {
+            self.failed = Some(IoError::Zip(format!("{}: {e}", self.name)));
+            return;
+        }
+        self.crc.update(chunk);
+        self.size = self.size.saturating_add(chunk.len());
+    }
+
+    /// Takes the last chunk and finishes the part.
+    pub(crate) fn finish(mut self, last: &[u8]) -> Result<Packed, IoError> {
+        self.push(last);
+        if let Some(e) = self.failed.take() {
+            return Err(e);
+        }
+        let body = self.encoder.finish().map_err(|e| IoError::Zip(format!("{}: {e}", self.name)))?;
+        Ok(Packed { name: self.name, body, crc: self.crc.finalize(), size: self.size })
+    }
+}
+
 /// The archive: local headers and data in order, then the central directory.
 fn write_zip(entries: Vec<(String, Part)>) -> Result<Vec<u8>, IoError> {
     // A part or an offset past 4 GB needs zip64, which this writer does not do.
@@ -655,5 +709,47 @@ mod tests {
         let mixed_general = write_zip_general(build(true)).unwrap();
         assert_eq!(mixed_general, raw_general, "the general writer changed a packed part");
         assert_eq!(read_zip(&mixed_general), content, "the general writer lost or reordered a part");
+    }
+
+    /// A deflate stream fed in chunks produces the bytes deflating the whole buffer produces.
+    /// This is what lets a worksheet's rows be packed window by window while they are built: no
+    /// flush between chunks, so the compressor sees one stream either way.
+    #[test]
+    fn chunked_deflate_matches_the_one_shot_bytes() {
+        // Bytes like a worksheet's XML: repeated markup with varying numbers inside.
+        let mut data = Vec::new();
+        for i in 0..150_000u32 {
+            if i.is_multiple_of(7) {
+                data.extend_from_slice(b"<row r=\"");
+                data.extend_from_slice(i.to_string().as_bytes());
+                data.extend_from_slice(b"\"><c t=\"n\"><v>");
+            }
+            data.extend_from_slice(format!("{}.{:03}", i * 31, i % 997).as_bytes());
+            if i.is_multiple_of(7) {
+                data.extend_from_slice(b"</v></c></row>");
+            }
+        }
+        let whole = deflate(&data).expect("one-shot deflate");
+        let crc = crc32fast::hash(&data);
+        let len = data.len();
+        for splits in [1usize, 2, 3, 7, 64, 4096] {
+            let mut stream = PackStream::new("sheetN.xml".into(), &[]);
+            let size = (len / splits).max(1);
+            let mut start = 0;
+            while start < len {
+                let end = (start + size).min(len);
+                stream.push(&data[start..end]);
+                start = end;
+            }
+            let packed = stream.finish(&[]).expect("the chunked stream finishes");
+            assert_eq!(packed.body, whole, "the body changed at a split of {splits}");
+            assert_eq!(packed.crc, crc, "the CRC changed at a split of {splits}");
+            assert_eq!(packed.size, len, "the size changed at a split of {splits}");
+        }
+        // The first chunk carried by `new` and the last by `finish` are part of the same stream.
+        let stream = PackStream::new("sheetN.xml".into(), &data[..len / 3]);
+        let packed = stream.finish(&data[len / 3..]).expect("the split stream finishes");
+        assert_eq!(packed.body, whole, "a head and tail chunk changed the body");
+        assert_eq!(packed.size, len, "a head and tail chunk changed the size");
     }
 }

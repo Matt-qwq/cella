@@ -128,13 +128,28 @@ impl Sst {
     }
 }
 
-/// The thread that deflates worksheet XML while the next sheet is written. One worker and a
-/// one-job queue are enough because a sheet takes longer to write than to deflate; if deflate does
-/// fall behind, `send` blocks the writer instead of letting raw XML pile up. Native only: wasm has
-/// no OS threads and deflates each sheet inline instead.
+/// A job for the compression thread. A whole part arrives in one message (a chart sheet); a
+/// worksheet's XML arrives as the stream [`Out::begin_stream`] opens, one chunk per finished row
+/// window, closed by the message that names the part slot it belongs in.
+#[cfg(not(target_arch = "wasm32"))]
+enum PackJob {
+    /// A part that arrives whole, deflated in one call.
+    Whole { index: usize, name: String, data: Vec<u8> },
+    /// The first bytes of a streamed part: opens the one stream the worker may hold.
+    Begin { name: String, data: Vec<u8> },
+    /// More bytes for the stream in progress.
+    Chunk { data: Vec<u8> },
+    /// The last bytes, and the part slot the finished body belongs in.
+    End { index: usize, data: Vec<u8> },
+}
+
+/// The thread that deflates worksheet XML while the rest of the workbook is written. One worker
+/// and a one-job queue are enough because a save produces bytes no faster than one thread packs
+/// them; if the writer does fall behind, `send` blocks it instead of letting raw XML pile up.
+/// Native only: wasm has no OS threads and deflates each sheet inline instead.
 #[cfg(not(target_arch = "wasm32"))]
 struct SheetPacker {
-    jobs: std::sync::mpsc::SyncSender<(usize, String, Vec<u8>)>,
+    jobs: std::sync::mpsc::SyncSender<PackJob>,
     results: std::sync::mpsc::Receiver<(usize, Result<Packed, IoError>)>,
     worker: std::thread::JoinHandle<()>,
 }
@@ -147,10 +162,35 @@ impl SheetPacker {
         let worker = std::thread::Builder::new()
             .name("cella-xlsx-sheet-pack".into())
             .spawn(move || {
-                for (index, name, data) in job_rx {
+                // One stream at a time: a save sends Begin..End strictly balanced, so a Begin while
+                // a stream is open, or a chunk with none, is a writer bug — the worker stops, and
+                // the save fails on the missing result rather than writing a part it cannot
+                // account for.
+                let mut stream: Option<crate::package::PackStream> = None;
+                for job in job_rx {
+                    let report = match job {
+                        PackJob::Whole { index, name, data } => Some((index, crate::package::pack(name, data))),
+                        PackJob::Begin { name, data } => {
+                            if stream.is_some() {
+                                break;
+                            }
+                            stream = Some(crate::package::PackStream::new(name, &data));
+                            None
+                        }
+                        PackJob::Chunk { data } => {
+                            let Some(open) = stream.as_mut() else { break };
+                            open.push(&data);
+                            None
+                        }
+                        PackJob::End { index, data } => match stream.take() {
+                            Some(open) => Some((index, open.finish(&data))),
+                            None => break,
+                        },
+                    };
+                    let Some(report) = report else { continue };
                     // A part that fails still travels back, so the save reports it instead of
                     // waiting for a result that never comes.
-                    if result_tx.send((index, crate::package::pack(name, data))).is_err() {
+                    if result_tx.send(report).is_err() {
                         break;
                     }
                 }
@@ -162,7 +202,8 @@ impl SheetPacker {
 
 /// Package being assembled. Each part's bytes are held once: they are built straight into
 /// [`Out::part`], kept for the package's layout, and then moved into the zip rather than copied.
-/// Worksheet XML is deflated as it is produced ([`Out::part_precompressed`]), because the sheets are
+/// Worksheet XML is deflated as it is produced ([`Out::begin_stream`] and the chunk calls that
+/// follow; a whole part can still take [`Out::part_precompressed`]), because the sheets are
 /// most of a large workbook and holding every sheet's XML until the archive is assembled is what
 /// made a 100-million-cell save peak at 6 GB. Native saves deflate it on a worker thread while the
 /// next sheet is written; wasm has no threads and deflates inline.
@@ -209,6 +250,10 @@ pub struct Out {
     pub cell_pictures: crate::richdata::PicturesOut,
     /// Kept (pass-through) parts written so far.
     pub kept: crate::passthrough::KeptOut,
+    /// The bytes of the worksheet part being streamed on wasm, where there is no compression
+    /// thread to feed: the chunks accumulate here and `end_stream` packs the whole.
+    #[cfg(target_arch = "wasm32")]
+    stream_buf: Option<Vec<u8>>,
 }
 
 impl Default for Out {
@@ -240,6 +285,8 @@ impl Default for Out {
             needs_calc: false,
             cell_pictures: Default::default(),
             kept: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            stream_buf: None,
         }
     }
 }
@@ -275,8 +322,84 @@ impl Out {
                 self.packer = Some(SheetPacker::start()?);
             }
             let packer = self.packer.as_ref().ok_or_else(|| IoError::Zip("the sheet compression thread is not running".into()))?;
-            packer.jobs.send((index, name.to_string(), data)).map_err(|_| IoError::Zip("the sheet compression thread stopped".into()))
+            packer
+                .jobs
+                .send(PackJob::Whole { index, name: name.to_string(), data })
+                .map_err(|_| IoError::Zip("the sheet compression thread stopped".into()))
         }
+    }
+
+    /// Opens a streamed worksheet part and takes `head`, everything through `<sheetData>`. The
+    /// rows follow as they are built ([`Out::stream_chunk`]); [`Out::end_stream`] closes the part
+    /// where a whole one would have been registered, so the package's part order is unchanged.
+    /// The compression thread starts on the head while the string pre-pass and the row windows
+    /// run, which is the overlap a streamed part exists for.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn begin_stream(&mut self, name: &str, head: Vec<u8>) -> Result<(), IoError> {
+        if self.packer.is_none() {
+            self.packer = Some(SheetPacker::start()?);
+        }
+        let packer = self.packer.as_ref().ok_or_else(|| IoError::Zip("the sheet compression thread is not running".into()))?;
+        packer
+            .jobs
+            .send(PackJob::Begin { name: name.to_string(), data: head })
+            .map_err(|_| IoError::Zip("the sheet compression thread stopped".into()))
+    }
+
+    /// One finished window of the open part's rows. The queue holds one job, so the raw XML of at
+    /// most a window waits behind the one being deflated.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stream_chunk(&mut self, chunk: Vec<u8>) -> Result<(), IoError> {
+        let packer = self.packer.as_ref().ok_or_else(|| IoError::Zip("a worksheet stream is not open".into()))?;
+        packer.jobs.send(PackJob::Chunk { data: chunk }).map_err(|_| IoError::Zip("the sheet compression thread stopped".into()))
+    }
+
+    /// Closes the streamed part: registers it exactly where a whole worksheet part is registered
+    /// (after the sheet's own parts and its pivot caches, before its relationships), takes the
+    /// tail, and waits for nothing — the worker keeps deflating while the rest of the workbook is
+    /// written. Byte for byte the result is [`Out::part_precompressed`] on the same XML: one
+    /// deflate stream, the bytes in order, no flush between.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn end_stream(&mut self, name: &str, content_type: Option<&str>, tail: Vec<u8>) -> Result<(), IoError> {
+        if let Some(ct) = content_type {
+            self.overrides.push((format!("/{name}"), ct.to_string()));
+        }
+        let index = self.parts.len();
+        // The place keeps the part in creation order; `finish_pending` fills it with the packed
+        // result. A save never lays out the parts without calling that first.
+        self.parts.push((name.to_string(), Part::Raw(Vec::new())));
+        self.pending_sheets += 1;
+        let packer = self.packer.as_ref().ok_or_else(|| IoError::Zip("the sheet compression thread is not running".into()))?;
+        packer.jobs.send(PackJob::End { index, data: tail }).map_err(|_| IoError::Zip("the sheet compression thread stopped".into()))
+    }
+
+    /// wasm has no compression thread: the chunks accumulate and `end_stream` packs the whole,
+    /// exactly as [`Out::part_precompressed`] does there.
+    #[cfg(target_arch = "wasm32")]
+    pub fn begin_stream(&mut self, _name: &str, head: Vec<u8>) -> Result<(), IoError> {
+        self.stream_buf = Some(head);
+        Ok(())
+    }
+
+    /// [`Out::stream_chunk`] for wasm: another chunk of the accumulating part.
+    #[cfg(target_arch = "wasm32")]
+    pub fn stream_chunk(&mut self, chunk: Vec<u8>) -> Result<(), IoError> {
+        if let Some(buf) = self.stream_buf.as_mut() {
+            buf.extend_from_slice(&chunk);
+        }
+        Ok(())
+    }
+
+    /// [`Out::end_stream`] for wasm: packs the accumulated bytes inline, keeping the packed part.
+    #[cfg(target_arch = "wasm32")]
+    pub fn end_stream(&mut self, name: &str, content_type: Option<&str>, tail: Vec<u8>) -> Result<(), IoError> {
+        let mut data = self.stream_buf.take().ok_or_else(|| IoError::Zip("a worksheet stream is not open".into()))?;
+        data.extend_from_slice(&tail);
+        if let Some(ct) = content_type {
+            self.overrides.push((format!("/{name}"), ct.to_string()));
+        }
+        self.parts.push((name.to_string(), Part::Packed(crate::package::pack(name.to_string(), data)?)));
+        Ok(())
     }
     /// Waits for every precompressed part to be deflated and puts it in its place. The worker runs
     /// while the later parts are built, so this is the only point a save waits for it.
@@ -467,6 +590,8 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
         needs_calc: false,
         cell_pictures: Default::default(),
         kept: Default::default(),
+        #[cfg(target_arch = "wasm32")]
+        stream_buf: None,
     };
     out.kept.reserve_vml_blocks(wb);
     out.kept.set_workbook_facts(wb);
@@ -525,13 +650,16 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
             sheet_id += 1;
             continue;
         }
-        let (xml, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers, workers)?;
-        pivots.add_sheet(wb, i, &mut out, &mut rels, &slicers);
         let name = format!("xl/worksheets/sheet{}.xml", i + 1);
+        // The worksheet's rows stream to the compression thread window by window (see
+        // `write_sheet`); what it returns is the tail, registered here — exactly where a whole
+        // part was — so the package's part order is unchanged.
+        let (owed, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers, workers, &name, precompress_sheets)?;
+        pivots.add_sheet(wb, i, &mut out, &mut rels, &slicers);
         if precompress_sheets {
-            out.part_precompressed(&name, Some(CT_WORKSHEET), xml.into_bytes())?;
+            out.end_stream(&name, Some(CT_WORKSHEET), owed.into_bytes())?;
         } else {
-            out.part(&name, Some(CT_WORKSHEET), xml.into_bytes());
+            out.part(&name, Some(CT_WORKSHEET), owed.into_bytes());
         }
         if !rels.is_empty() {
             out.part(&format!("xl/worksheets/_rels/sheet{}.xml.rels", i + 1), None, rels.xml().into_bytes());
@@ -795,7 +923,14 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
     };
     // Native: the sheets were deflated on their thread while everything above was written; wait
     // for them before the package is laid out. Wasm already deflated them inline.
+    // `CELLA_PROFILE` timing, read only when profiling and never on wasm (as `cmd::commit`): this
+    // wait is what the streamed windows did not overlap.
+    #[allow(clippy::disallowed_methods)]
+    let pending_started = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
     out.finish_pending()?;
+    if let Some(started) = pending_started {
+        eprintln!("save: pending sheets {:?}", started.elapsed());
+    }
     let mut parts = std::mem::take(&mut out.parts);
     parts.sort_by_key(|(n, _)| rank(n));
     // Each part is handed to the zip by value, which drops it once it is deflated (or immediately,

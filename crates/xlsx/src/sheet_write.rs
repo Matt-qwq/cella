@@ -187,6 +187,12 @@ pub fn write_chart_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out
 /// 2 and 8 to prove the row windows concatenate to exactly the bytes one walk writes). The only way
 /// it can fail is a text cell whose string the shared-string pre-pass never saw, which would be a
 /// writer bug, not a workbook one.
+///
+/// `name` is the part the rows belong to, and `stream` says how they reach it: streamed window by
+/// window into `out` (the head before the rows are built, each window as the walk joins it, the
+/// tail handed back to the caller to register the part with), or buffered into the returned
+/// `String` — the whole XML — for a caller that wants the part raw. Either way the bytes are the
+/// ones one buffer holds, in the same order.
 pub fn write_sheet(
     wb: &Workbook,
     si: usize,
@@ -194,6 +200,8 @@ pub fn write_sheet(
     out: &mut Out,
     slicers: &crate::slicer::SlicerWriter,
     workers: usize,
+    name: &str,
+    stream: bool,
 ) -> Result<(String, Rels), IoError> {
     let mut rels = Rels::default();
     let Some(sheet) = wb.sheet(si) else { return Ok((String::new(), rels)) };
@@ -444,18 +452,52 @@ pub fn write_sheet(
     }
 
     s.push_str("<sheetData>");
+    // The head is complete: hand it to the compression thread before the rows are built, so its
+    // deflate starts while the string pre-pass and the row windows run. `s` becomes the tail
+    // buffer; everything below `</sheetData>` accumulates into it as before.
+    if stream {
+        let head = std::mem::take(&mut s);
+        out.begin_stream(name, head.into_bytes())?;
+    }
+    // `CELLA_PROFILE` timing, read only when profiling and never on wasm (as `cmd::commit`).
+    #[allow(clippy::disallowed_methods)]
+    let profile = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
     // A text cell is a reference into the workbook's shared string table, and that table's order is
     // the file's first-use order: sheet by sheet, row by row, cell by cell. Only a walk in that
     // order can establish it, so the sheet's strings are counted and given their ids first (a
-    // pre-pass, `SstCollector`), and the row builder that follows only reads them (`Sst::id`).
+    // pre-pass, `SstBatch`), and the row builder that follows only reads them (`Sst::id`).
     // That is what lets a window of rows be built without the `Out` the save is assembling.
     let windows = window_plan(sheet, &additions, workers);
     let strings = collect_strings(sheet, &additions, &windows)?;
+    if let Some(t0) = profile {
+        eprintln!("sheet {name}: strings {:?}", t0.elapsed());
+    }
     out.sst.extend(strings.refs, &strings.strings);
-    let (rows_xml, flags) = build_rows(wb, si, sheet, &additions, &out.sst, styles, &windows)?;
+    let (row_windows, flags) = build_rows(wb, si, sheet, &additions, &out.sst, styles, &windows)?;
+    if let Some(t0) = profile {
+        eprintln!("sheet {name}: rows {:?}", t0.elapsed());
+    }
     out.needs_calc |= flags.needs_calc;
     out.dynamic_arrays |= flags.dynamic_arrays;
-    s.push_str(&rows_xml);
+    if stream {
+        // Each finished window goes to the compression thread as soon as the walk joins it: the
+        // bytes are the ones one buffer holds, in the same order, and the deflate of the early
+        // windows runs while the tail and the later parts are written. `send` holds one job, so
+        // the raw XML of at most a window waits behind the one being deflated.
+        for part in row_windows {
+            out.stream_chunk(part.into_bytes())?;
+        }
+        if let Some(t0) = profile {
+            eprintln!("sheet {name}: streamed {:?}", t0.elapsed());
+        }
+    } else {
+        let capacity = row_windows.iter().map(String::len).sum();
+        let mut rows = String::with_capacity(capacity);
+        for part in &row_windows {
+            rows.push_str(part);
+        }
+        s.push_str(&rows);
+    }
     s.push_str("</sheetData>");
 
     // sheetProtection
@@ -968,8 +1010,31 @@ impl SstBatch {
         self.refs = self.refs.saturating_add(other.refs);
         self.strings.extend(other.strings);
     }
+
+    /// A text counted from a borrowed string: the table owns one `Arc` of it (a cell's own, when
+    /// there is one, comes through `text_value`). A repeat costs a hash, not an allocation.
+    fn text(&mut self, t: &str) {
+        self.refs = self.refs.saturating_add(1);
+        if !self.seen.contains(t) {
+            let owned: std::sync::Arc<str> = std::sync::Arc::from(t);
+            if self.seen.insert(std::sync::Arc::clone(&owned)) {
+                self.strings.push(owned);
+            }
+        }
+    }
+
+    /// A text the value being written already owns: the `Arc` is kept, not copied.
+    fn text_value(&mut self, t: &std::sync::Arc<str>) {
+        self.refs = self.refs.saturating_add(1);
+        if self.seen.insert(std::sync::Arc::clone(t)) {
+            self.strings.push(std::sync::Arc::clone(t));
+        }
+    }
 }
 
+/// The pre-pass as the row walk sees it — every cell rebuilt. A paged store's only path (see
+/// [`collect_window`]), and the reference the parity test holds the packed collector to: on a
+/// live-band sheet the two must answer exactly the same `(refs, strings)`, cell for cell.
 impl RowVisitor for SstBatch {
     fn row_open(&mut self, _row: u32, _info: &LineInfo) {}
     fn row_empty(&mut self) {}
@@ -982,15 +1047,159 @@ impl RowVisitor for SstBatch {
             return Ok(());
         }
         if let Value::Text(t) = cell_value(cell, a.override_text, a.value) {
-            self.refs = self.refs.saturating_add(1);
-            // The cell's own `Arc<str>` is kept, not a copy: the string is already in memory beside
-            // the cell that holds it.
-            if self.seen.insert(t.clone()) {
-                self.strings.push(t);
-            }
+            self.text_value(&t);
         }
         Ok(())
     }
+}
+
+/// The pre-pass as the row walk sees it (see the `RowVisitor` above): a paged store's collector,
+/// and the reference the parity test runs against the packed one.
+fn collect_window_cells(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, rows: (u32, u32)) -> Result<SstBatch, IoError> {
+    let mut batch = SstBatch::default();
+    walk_rows(sheet, RangeRef::rows(rows.0, rows.1), additions, &mut batch)?;
+    Ok(batch)
+}
+
+/// The text a value writes after `cell_value`'s normalization: an array's first element, and a
+/// text — the errors a file cannot hold are coerced to a number and an error, never to a text.
+fn text_of(v: &Value) -> Option<&std::sync::Arc<str>> {
+    match v {
+        Value::Array(a) => match a.get(0, 0) {
+            Some(Value::Text(t)) => Some(t),
+            _ => None,
+        },
+        Value::Text(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// One cell's contribution to the shared string pre-pass, on the packed value the store hands over.
+/// The resolution is the one `cell_value` gives the row builder: an override replaces the cell
+/// (formula and all, so `formula_of` answers none), an extra value is the cell's own, and the
+/// stored value is what writes. The order is the visitor's with one liberty: an extra never sits
+/// on a formula cell (the spill collector refuses one), so taking the extra before deciding
+/// whether a packed `None` is a formula matches what the visitor sees on every sheet a save
+/// builds.
+fn count_packed(batch: &mut SstBatch, sheet: &Sheet, at: CellRef, packed: Option<cella_model::Packed<'_>>, a: &Additions<'_>) {
+    if a.picture_vm.is_some() {
+        return;
+    }
+    if let Some(text) = a.override_text {
+        batch.text(text.as_str());
+        return;
+    }
+    if let Some(value) = a.value {
+        if let Some(t) = text_of(value) {
+            batch.text_value(t);
+        }
+        return;
+    }
+    match packed {
+        // A stored text is the cell's own value; the other packed kinds are never a text.
+        Some(cella_model::Packed::Text(t)) => batch.text(t),
+        Some(_) => {}
+        None => {
+            // A packed `None` is a cell whose value the evaluator owns. A formula writes its
+            // result inline (`t="str"`), never into the shared strings — one cheap formula read
+            // says so, without rebuilding the cell. The rare cell that is neither a formula nor a
+            // blank is a stored array, whose first element is the value the cell writes
+            // (`cell_value` resolves it for the row builder, so the pre-pass must too): one
+            // rebuilt cell answers it.
+            if sheet.cells.formula(at).is_some() {
+                return;
+            }
+            if let Some(cell) = sheet.cells.get(at)
+                && let Some(t) = text_of(&cell.value)
+            {
+                batch.text_value(t);
+            }
+        }
+    }
+}
+
+/// One window's shared strings, collected on this thread. A paged store falls back to the cell
+/// walk ([`collect_window_cells`]): the packed read resolves a paged band through the page cache —
+/// filling and evicting it — where the save's own scan decodes one band at a time without touching
+/// the cache, and `a_paged_sheet_saves_to_the_same_bytes` holds a save to exactly that. On the live
+/// bands a normal save holds, the walk is the store's packed one: a cell's value arrives as the
+/// page holds it, with `None` for the cells whose value the evaluator owns, and no `Cell` is
+/// rebuilt for a cell that only needed its value — a formula's `Arc` bump and a number's payload
+/// decode were most of what the pre-pass used to pay. The additions are merged in the walk's
+/// order, so the table this fills is the table the row builder reads, cell for cell and in the
+/// same order.
+fn collect_window(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, rows: (u32, u32)) -> Result<SstBatch, IoError> {
+    if sheet.cells.paged_band_count() > 0 {
+        return collect_window_cells(sheet, additions, rows);
+    }
+    let mut batch = SstBatch::default();
+    let mut rest = additions.range(rows.0..=rows.1).peekable();
+    // The additions of the row the walk is in, at or after the last stored column: the ones
+    // before it were counted already.
+    let mut open: Option<(u32, std::iter::Peekable<std::vec::IntoIter<(u32, Additions<'_>)>>)> = None;
+    let _ = sheet.cells.visit_packed(RangeRef::rows(rows.0, rows.1), &mut |at, packed| {
+        // Additions strictly before this cell: whatever the row already open holds left of its
+        // column (all of it, if the walk has left that row), then whole addition rows above this
+        // cell's, then this row's columns below the stored one.
+        if let Some((row, mut cells)) = open.take() {
+            if row < at.row {
+                for (col, a) in cells {
+                    count_packed(&mut batch, sheet, CellRef::new(row, col), None, &a);
+                }
+            } else {
+                while cells.peek().is_some_and(|(col, _)| *col < at.col) {
+                    let (col, a) = cells.next().unwrap_or((0, Additions::default()));
+                    count_packed(&mut batch, sheet, CellRef::new(row, col), None, &a);
+                }
+                open = Some((row, cells));
+            }
+        }
+        while open.is_none() {
+            let Some(entry) = rest.peek() else { break };
+            let row = *entry.0;
+            if row > at.row {
+                break;
+            }
+            let cells = rest.next().map_or(Vec::new(), |(_, v)| v.clone());
+            let mut cells = cells.into_iter().peekable();
+            while let Some(&(col, _)) = cells.peek() {
+                if row == at.row && col >= at.col {
+                    break;
+                }
+                let (col, a) = cells.next().unwrap_or((0, Additions::default()));
+                count_packed(&mut batch, sheet, CellRef::new(row, col), None, &a);
+            }
+            if row == at.row {
+                open = Some((row, cells));
+                break;
+            }
+        }
+        // The addition at this cell's column, if the sheet put one there.
+        let a = open
+            .as_mut()
+            .and_then(|(row, cells)| {
+                (*row == at.row && cells.peek().is_some_and(|(col, _)| *col == at.col)).then(|| cells.next().map(|(_, a)| a)).flatten()
+            })
+            .unwrap_or_default();
+        count_packed(&mut batch, sheet, at, packed, &a);
+        true
+    });
+    // What the additions still hold, in the walk's order: the tail of the last row the walk was
+    // in, then the addition rows below the last stored cell — a spilled value under the data, a
+    // table header the store does not hold.
+    if let Some((row, cells)) = open.take() {
+        for (col, a) in cells {
+            count_packed(&mut batch, sheet, CellRef::new(row, col), None, &a);
+        }
+    }
+    while let Some(entry) = rest.peek() {
+        let row = *entry.0;
+        let cells = rest.next().map_or(Vec::new(), |(_, v)| v.clone());
+        for (col, a) in cells {
+            count_packed(&mut batch, sheet, CellRef::new(row, col), None, &a);
+        }
+    }
+    Ok(batch)
 }
 
 /// Builds one window of a sheet's rows: the `<row>` elements into `xml` and the flags the workbook
@@ -1136,13 +1345,6 @@ where
     })
 }
 
-/// One window's shared strings, collected on this thread.
-fn collect_window(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>, rows: (u32, u32)) -> Result<SstBatch, IoError> {
-    let mut batch = SstBatch::default();
-    walk_rows(sheet, RangeRef::rows(rows.0, rows.1), additions, &mut batch)?;
-    Ok(batch)
-}
-
 /// The texts a sheet writes, window by window and merged in row order: the shared string table's
 /// order is the file's first-use order, so the windows have to be put back in that order before
 /// their strings are interned.
@@ -1178,9 +1380,10 @@ fn build_window(
     Ok((builder.xml, builder.flags))
 }
 
-/// A sheet's `<sheetData>` content, and the flags the workbook assembly reads back. A sheet big
-/// enough is built in row windows, one per thread, and the windows are concatenated in row order:
-/// the XML is the one walk a single thread would have produced, byte for byte.
+/// A sheet's `<sheetData>` content, one `String` per window in row order, and the flags the
+/// workbook assembly reads back. A sheet big enough is built in row windows, one per thread; the
+/// caller either streams the windows to the compression thread as it joins them or concatenates
+/// them, and either way the bytes are the one walk a single thread would have produced.
 #[cfg(not(target_arch = "wasm32"))]
 fn build_rows(
     wb: &Workbook,
@@ -1190,19 +1393,20 @@ fn build_rows(
     sst: &Sst,
     styles: StyleIds,
     windows: &[(u32, u32)],
-) -> Result<(String, RowFlags), IoError> {
+) -> Result<(Vec<String>, RowFlags), IoError> {
     if windows.len() < 2 {
-        return build_window(wb, si, sheet, additions, sst, styles, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)));
+        let (xml, flags) =
+            build_window(wb, si, sheet, additions, sst, styles, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)))?;
+        return Ok((vec![xml], flags));
     }
     let built = in_windows(windows, "row builder", |rows| build_window(wb, si, sheet, additions, sst, styles, rows));
-    let capacity = built.iter().filter_map(|w| w.as_ref().ok()).map(|(xml, _)| xml.len()).sum();
-    let mut xml = String::with_capacity(capacity);
+    let mut xml = Vec::with_capacity(built.len());
     let mut flags = RowFlags::default();
     for window in built {
         let (part, window_flags) = window?;
         flags.needs_calc |= window_flags.needs_calc;
         flags.dynamic_arrays |= window_flags.dynamic_arrays;
-        xml.push_str(&part);
+        xml.push(part);
     }
     Ok((xml, flags))
 }
@@ -1217,8 +1421,10 @@ fn build_rows(
     sst: &Sst,
     styles: StyleIds,
     windows: &[(u32, u32)],
-) -> Result<(String, RowFlags), IoError> {
-    build_window(wb, si, sheet, additions, sst, styles, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)))
+) -> Result<(Vec<String>, RowFlags), IoError> {
+    let (xml, flags) =
+        build_window(wb, si, sheet, additions, sst, styles, windows.first().copied().unwrap_or_else(|| sole_window(sheet, additions)))?;
+    Ok((vec![xml], flags))
 }
 
 /// The formula a cell writes: an override (a table header's text, a spilled value) replaces the
@@ -1515,6 +1721,81 @@ mod tests {
         assert!(matches!(&results[0], Ok(0)), "the window that finished keeps its result");
         assert!(matches!(&results[1], Err(IoError::Zip(_))), "a panicked worker is an error");
     }
+
+    /// The packed string pre-pass answers exactly what the cell-by-cell walk answers, on a sheet
+    /// with every kind of cell and addition a save builds: values, texts (unique and repeated),
+    /// formulas with and without a cached result, stored value arrays (whose first element is the
+    /// value the cell writes), a legacy array formula, styled blanks, and the additions the
+    /// writer merges in — a table header's override text over a stored text and over a stored
+    /// formula, a spilled value over a blank and over a hole and below the data, a picture, a
+    /// dynamic anchor. The windows cut between the rows and inside them.
+    ///
+    /// The fixture also pins the flag the first version of the packed collector keyed on:
+    /// `array_anchors` is raised by a legacy array **formula** and not by a stored value array,
+    /// so the collector may not branch on it.
+    #[test]
+    fn packed_string_prepass_matches_the_cell_walk() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        let mut sheet = Sheet::new("Data");
+        for row in 0..40u32 {
+            for col in 0..8u32 {
+                let at = CellRef::new(row, col);
+                let kind = next() % 11;
+                let cell = match kind {
+                    0 => Cell::value(Value::Number(f64::from(next() % 1000))),
+                    1 => Cell::value(Value::text(format!("text {row}/{col}"))),
+                    2 => Cell::value(Value::Bool(next() % 2 == 0)),
+                    3 => Cell::value(Value::Error(CellError::Div0)),
+                    4 => Cell::formula(cella_model::Formula::new("=A1*2")),
+                    5 => Cell { value: Value::text("cached text result"), ..Cell::formula(cella_model::Formula::new("=A1&\" says\"")) },
+                    6 => Cell { style: cella_model::StyleId(1), ..Default::default() },
+                    7 => Cell::value(Value::Array(std::sync::Arc::new(cella_core::Array::row(vec![Value::text("array text")])))),
+                    8 => Cell::value(Value::Array(std::sync::Arc::new(cella_core::Array::row(vec![Value::Number(9.0)])))),
+                    9 => Cell::value(Value::text("repeated text")),
+                    _ => continue,
+                };
+                sheet.set_cell(at, cell);
+            }
+        }
+        // A legacy array formula (Ctrl+Shift+Enter): a multi-cell `f.array`, whose anchor the
+        // store keeps. Both collectors skip it by its formula, and it is what raises the flag.
+        let mut legacy = cella_model::Formula::new("=A1*2");
+        legacy.array = Some(Box::new(RangeRef::parse("C5:E5").expect("a range")));
+        sheet.set_cell(CellRef::new(4, 2), Cell::formula(legacy));
+        assert!(sheet.cells.has_array_anchors(), "the legacy array formula raises the anchor flag");
+        // ... and a stored value array does not: the flag names legacy formulas, not values, so a
+        // collector may not use it to decide whether a packed `None` needs resolving.
+        let mut values_only = Sheet::new("Values");
+        values_only
+            .set_cell(CellRef::new(0, 0), Cell::value(Value::Array(std::sync::Arc::new(cella_core::Array::row(vec![Value::text("array text")])))));
+        assert!(!values_only.cells.has_array_anchors(), "a stored value array is no legacy array formula");
+
+        // Additions the way `write_sheet` builds them, in the kinds it builds.
+        let header = String::from("Header");
+        let spilled_text = Value::text("spilled text");
+        let spilled_number = Value::Number(7.0);
+        let dynamic = RangeRef::parse("B2:D4").expect("a range");
+        let mut additions: BTreeMap<u32, Vec<(u32, Additions<'_>)>> = BTreeMap::new();
+        touch(&mut additions, CellRef::new(0, 1)).override_text = Some(&header);
+        touch(&mut additions, CellRef::new(5, 0)).override_text = Some(&header);
+        touch(&mut additions, CellRef::new(10, 3)).value = Some(&spilled_text);
+        touch(&mut additions, CellRef::new(20, 5)).value = Some(&spilled_number);
+        touch(&mut additions, CellRef::new(45, 0)).value = Some(&spilled_text);
+        touch(&mut additions, CellRef::new(15, 2)).picture_vm = Some(1);
+        touch(&mut additions, CellRef::new(25, 4)).dynamic = Some(dynamic);
+
+        for (a, b) in [(0u32, 60u32), (0, 0), (4, 6), (9, 12), (14, 15), (29, 60)] {
+            let packed = collect_window(&sheet, &additions, (a, b)).expect("the packed window collects");
+            let walked = collect_window_cells(&sheet, &additions, (a, b)).expect("the cell window collects");
+            assert_eq!(packed.refs, walked.refs, "refs, window {a}..={b}");
+            let same = packed.strings.iter().map(|s| &**s).eq(walked.strings.iter().map(|s| &**s));
+            assert!(same, "strings, window {a}..={b}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1575,8 +1856,10 @@ mod perf {
         let mut xml_bytes = 0usize;
         for (i, sheet) in wb.sheets.iter().enumerate() {
             let t = std::time::Instant::now();
+            let name = format!("xl/worksheets/sheet{}.xml", i + 1);
             let (xml, _) =
-                write_sheet(&wb, i, i == wb.active_sheet, &mut out, &crate::slicer::SlicerWriter::default(), default_workers()).expect("sheet");
+                write_sheet(&wb, i, i == wb.active_sheet, &mut out, &crate::slicer::SlicerWriter::default(), default_workers(), &name, false)
+                    .expect("sheet");
             build += t.elapsed();
             xml_bytes += xml.len();
             println!(
@@ -1614,6 +1897,8 @@ mod perf {
                 &mut out,
                 &crate::slicer::SlicerWriter::default(),
                 default_workers(),
+                "xl/worksheets/sheet.xml",
+                false,
             )
             .expect("sheet");
             let data = xml.as_bytes();
