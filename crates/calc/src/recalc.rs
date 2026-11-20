@@ -1468,6 +1468,25 @@ impl Calc {
         for (si, r) in &cleared {
             seeds.extend(r.iter().map(|c| (*si, c)));
         }
+        // The spill a replaced or cleared formula gave up may be what was blocking another
+        // formula's array, and an edit that overwrites the anchor (a paste over a spilled area's
+        // corner) is one more way that owner disappears. Seed the anchors that spilled nothing
+        // within reach of a freed area, as an emptied cell's are: one corner per sheet bounds the
+        // scan the same way the emptied loop's does.
+        let mut unblocked: Vec<(usize, CellRef)> = Vec::new();
+        for &(si, r) in &cleared {
+            match unblocked.iter_mut().find(|x| x.0 == si) {
+                Some(x) => x.1 = CellRef::new(x.1.row.max(r.end.row), x.1.col.max(r.end.col)),
+                None => unblocked.push((si, r.end)),
+            }
+        }
+        for (si, end) in unblocked {
+            for (s, c) in self.graph.node_keys() {
+                if s == si && c.row <= end.row && c.col <= end.col && wb.sheet(s).is_some_and(|sh| spilled_nothing(&sh.value(c))) {
+                    seeds.push((s, c));
+                }
+            }
+        }
         let t0 = prof_now();
         let dirty = self.dirty_closure(wb, &seeds);
         let t1 = prof_now();

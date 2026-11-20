@@ -723,22 +723,29 @@ fn spill_feeds_its_source(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) 
     false
 }
 
-/// Whether an array result at `k` can't spill: it is in a table, or its area runs off the sheet,
-/// overlaps merged cells, holds other cells, or another formula's spill (unless that formula is
-/// recalculated in this pass, and so may spill elsewhere now).
-fn spill_blocked(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
+/// Whether an array result at `k` can't spill for a reason of its own: it is in a table, or its
+/// area runs off the sheet, overlaps merged cells, or holds other cells' content.
+fn spill_blocked_by_cells(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
     let Some(sh) = host.wb.sheet(sheet) else { return false };
     let end =
         CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
     let range = RangeRef::new(anchor, end);
-    if end.row >= cella_core::MAX_ROWS
+    end.row >= cella_core::MAX_ROWS
         || end.col >= cella_core::MAX_COLS
         || sh.merges.iter().any(|m| m.intersects(&range))
         || sh.tables.iter().any(|t| t.range.contains(anchor))
         || sh.cells.iter_range(range).any(|(c, cell)| c != anchor && (!cell.value.is_empty() || cell.formula.is_some()))
-    {
-        return true;
-    }
+}
+
+/// Whether another formula's stored spill holds a cell of the array's area (unless that formula
+/// is recalculated in this pass, and so may spill elsewhere now). A full recalculation clears the
+/// spill maps before it starts, so this is never what a full pass answers an array with at compute
+/// time; its write-back's layout order decides a contested area there.
+fn spill_blocked_by_spill(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) -> bool {
+    let Some(sh) = host.wb.sheet(sheet) else { return false };
+    let end =
+        CellRef::new(anchor.row.saturating_add((a.rows as u32).saturating_sub(1)), anchor.col.saturating_add((a.cols as u32).saturating_sub(1)));
+    let range = RangeRef::new(anchor, end);
     // Only a cell that holds a spilled value can be one another formula's spill holds, so the
     // areas are looked for only when the array would cover one. Their index is built once a sheet
     // and pass: a cell inside it is a block lookup, where a walk over every stored range was one
@@ -1132,16 +1139,28 @@ impl PassHost<'_> {
                     }
                     Value::Error(CellError::Circ)
                 }
-                Some(a) if spill_blocked(self, k, a) => {
+                // The area's own obstacles first: they hold whatever this pass does.
+                Some(a) if spill_blocked_by_cells(self, k, a) => {
                     self.drop_spill(k);
                     Value::Error(CellError::Spill)
                 }
+                // A spill that feeds its own source is circular before a rival's stored area is
+                // consulted: a full pass computes every array with the sheets' spill maps empty,
+                // so this check is what answers there, and a later round of an incremental run
+                // must not turn the same array #SPILL! on the strength of a spill only that
+                // earlier round stored (found by the command-sequence fuzzer: a spill fight
+                // re-based by deleteCells/deleteRows/deleteColumns, where the incremental state
+                // said #SPILL! and a full recalculation said #CIRC!).
                 Some(a) if spill_feeds_its_source(self, k, a) => {
                     self.drop_spill(k);
                     if self.cycle_seen.insert(k) {
                         self.cycles.push(k);
                     }
                     Value::Error(CellError::Circ)
+                }
+                Some(a) if spill_blocked_by_spill(self, k, a) => {
+                    self.drop_spill(k);
+                    Value::Error(CellError::Spill)
                 }
                 _ => v,
             }

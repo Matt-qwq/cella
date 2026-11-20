@@ -256,3 +256,58 @@ fn seed_229_a_formula_that_reads_its_own_cell_is_circular_in_the_same_pass() {
 
     assert_eq!(value(&s, "K16"), Value::Number(212.8));
 }
+
+/// Seed 51. Thirty-five `=SEQUENCE(2,2)` anchors filled a block, seven row and column edits moved
+/// their spilled areas around each other, and a paste then partly covered one of the areas. The
+/// pass recalculated only the pasted cells, so the anchor whose area was partly replaced kept the
+/// `#SPILL!` the earlier layout had left it with, while a full recalculation lays the array out.
+#[test]
+fn seed_51_a_paste_partly_covering_a_spilled_area_lays_the_array_out_again() {
+    let mut s = session("sales");
+
+    s.execute("range.fill", json!({"input": "=SEQUENCE(2,2)", "range": "C18:G24"})).ok();
+    s.execute("home.insertColumns", json!({"cols": "E:F"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "2:3"})).ok();
+    s.execute("home.insertCells", json!({"range": "I21:K27", "shift": "column"})).ok();
+    s.execute("home.deleteColumns", json!({"cols": "D:E"})).ok();
+    s.execute("selection.set", json!({"range": "F2:I4"})).ok();
+    s.execute("cell.set", json!({"cell": "G12", "input": "=D11:E15"})).ok();
+    s.execute("home.insertRows", json!({"count": false})).ok();
+    s.execute("home.insertRows", json!({"count": 4, "rows": "18:19"})).ok();
+    s.execute("home.deleteColumns", json!({"cols": "C:C"})).ok();
+    s.execute("home.insertRows", json!({"count": 1, "rows": "10:10"})).ok();
+    s.execute("home.insertRows", json!({"rows": "11:13"})).ok();
+    s.execute("selection.set", json!({"range": "B23:E26"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "15:15"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "14:15"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "17:18"})).ok();
+    s.execute("edit.copy", json!({"range": "H6:L13"})).ok();
+    s.execute("edit.clearContents", json!({})).ok();
+    s.execute("edit.paste", json!({"at": "B10"})).ok();
+
+    assert_recalc_agrees(&s);
+
+    assert_eq!(formula(&s, "E22").as_deref(), Some("SEQUENCE(2,2)"));
+
+    assert_eq!(value(&s, "E22"), Value::Number(1.0));
+}
+
+/// Seed 247. Two written spill formulas fought the sample's own `=SORT` over one area, and the
+/// deleteCells/deleteRows/deleteColumns after them re-based all three. The pass left the `SORT`
+/// anchor with the `#SPILL!` of the old layout while a full recalculation finds it circular (its
+/// re-based range now reads the cells one of the new arrays spills): the two error codes disagreed.
+#[test]
+fn seed_247_a_rebased_fight_between_spills_agrees_with_a_full_recalc() {
+    let mut s = session("budget");
+
+    s.execute("cell.set", json!({"cell": "K12", "input": "=SORT(F16:I19)"})).ok();
+    s.execute("cell.set", json!({"cell": "I17", "input": "=TRANSPOSE(H13:L18)"})).ok();
+    s.execute("home.deleteCells", json!({"range": "K1:N5", "shift": "row"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "3:4"})).ok();
+    s.execute("home.deleteColumns", json!({"cols": "H:H"})).ok();
+    s.execute("cell.set", json!({"cell": "K3", "input": "=TRANSPOSE(H23:K30)"})).ok();
+
+    assert_recalc_agrees(&s);
+
+    assert_eq!(value(&s, "J5"), Value::Error(CellError::Circ));
+}
