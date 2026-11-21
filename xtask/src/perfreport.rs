@@ -48,7 +48,9 @@ pub fn run(root: &Path) -> Result<(), String> {
 
     eprintln!("perf-report: the scenario gate — this measures the release build and takes a few minutes");
     let mut perf = Command::new(&exe);
-    perf.arg("perf");
+    // Best of three: a single pass is one sample of a ~10 % spread, and round 33's report
+    // published a save number that was twice the measured truth because its one pass ran cold.
+    perf.args(["perf", "--repeat=3"]);
     let table = capture(perf, root)?;
 
     eprintln!("perf-report: the live heap at 1,000,000 x 6");
@@ -85,11 +87,11 @@ fn render_en(f: &Facts) -> String {
         r#"# Performance report
 
 > **Generated** by `cargo xtask perf-report` for Cella {version} at `{sha}` ({date}).
-> Machine: {os} {arch}; {rustc}. Every number is wall clock on one idle machine, and this
-> machine's run-to-run spread is about 10 %, which is why a gate budget is twice a quiet pass.
-> Method and caveats: [performance.md](performance.md).
+> Machine: {os} {arch}; {rustc}. Every number is wall clock on one idle machine, each
+> scenario's fastest of three passes (the machine's run-to-run spread is about 10 %, which is why
+> a gate budget is twice a quiet pass). Method and caveats: [performance.md](performance.md).
 
-## Scenarios, 100,000 and 1,000,000 rows (release, best of one pass)
+## Scenarios, 100,000 and 1,000,000 rows (release, best of three passes)
 
 ```text
 {table}
@@ -136,10 +138,11 @@ fn render_zh(f: &Facts) -> String {
         r#"# 性能报告
 
 > 由 `cargo xtask perf-report` 生成，对象是 Cella {version}，提交 `{sha}`（{date}）。
-> 机器：{os} {arch}；{rustc}。所有数字都是同一台空闲机器上的墙钟时间，本机跑动之间波动约 10%，
-> 这也是门禁预算取"安静一次的两倍"的原因。方法与口径见 [performance.md](performance.md)。
+> 机器：{os} {arch}；{rustc}。所有数字都是同一台空闲机器上的墙钟时间，每个场景取三次中最快的一次
+> （本机跑动之间波动约 10%，这也是门禁预算取"安静一次的两倍"的原因）。方法与口径见
+> [performance.md](performance.md)。
 
-## 场景：10 万行与 100 万行（release，单次最优）
+## 场景：10 万行与 100 万行（release，三次取最优）
 
 ```text
 {table}

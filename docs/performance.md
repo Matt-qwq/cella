@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 33, the fill — and the discovery that its metric was not the drag: `fill.values` was the gate's tightest budget (69 %) and attribution showed only ~45 % of it moves values (16 % is the harness's own JSON, 34 % a command's fixed cost paid a hundred times), while a real fill handle drags one value down 1M rows in **157 ms**. A one-way `wrote_formula` flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write refits only rows whose height can change (autofit 243 → 1.2 ms): **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %; the gate grew `fill.autofill` so the drag itself has a number, and stands at **29/29**. Earlier in the same day: the closure's seeds (541 → 213 ms), the formula-body sort (4.19 → 2.93 s), the sort's kernels (3.80 → 1.91 s values), a memory regression found by re-measuring and fixed (1.23 GB → 884.7 MB), three certified knives plus a 6M-cell paste halved, the evaluator refuted by measurement, and the budget lock. Earlier still: rounds 3–10.
+> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 34 opens P5.1 — the generated report now takes **best of three** (round 33's page had `save.xlsx` at 1M at 3.39 s, 100 % of its budget, where the same commit measures **1.52 s**), and a probe prices the formula text: 2M formulas hold **133.4 MB** (a 48 B struct + 18.7 B of text each) and printing one back from its shape costs **106 ns** with 0 mismatches. Earlier: round 33, the fill — and the discovery that its metric was not the drag: `fill.values` was the gate's tightest budget (69 %) and attribution showed only ~45 % of it moves values (16 % is the harness's own JSON, 34 % a command's fixed cost paid a hundred times), while a real fill handle drags one value down 1M rows in **157 ms**. A one-way `wrote_formula` flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write refits only rows whose height can change (autofit 243 → 1.2 ms): **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %; the gate grew `fill.autofill` so the drag itself has a number, and stands at **29/29**. Earlier in the same day: the closure's seeds (541 → 213 ms), the formula-body sort (4.19 → 2.93 s), the sort's kernels (3.80 → 1.91 s values), a memory regression found by re-measuring and fixed (1.23 GB → 884.7 MB), three certified knives plus a 6M-cell paste halved, the evaluator refuted by measurement, and the budget lock. Earlier still: rounds 3–10.
 
 **The one-page report is [performance-report.md](performance-report.md)** (and its Chinese
 companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xtask perf-report`
@@ -124,6 +124,12 @@ A scenario that comes out over budget is measured **once more** before the run f
 started on the same machine is a slow pass, not a regression, and a real regression stays over
 budget twice. Missing budgets are never retried — that is a mistake in the file, not a timing
 question.
+
+**The generated report takes best of three (2026-11-21).** `cargo xtask perf-report` ran the gate
+once and published that pass. Round 33's page showed `save.xlsx` at 1M as 3.39 s — 100 % of its
+3.40 s budget — while the same commit measures **1.52 s (45 %)** best of three: the single pass had
+run cold behind a 1M formula sort. A page that publishes a 2× phantom is worse than no page, so the
+generator passes `--repeat=3` and its header says so. The gate itself is unchanged.
 
 ```text
 scenario                 rows    measured     budget      of
@@ -1243,6 +1249,12 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-21 (round 34 opens P5.1):** the report generator now takes best of three. Round 33's
+  page had `save.xlsx` at 1M at 3.39 s (100 % of its budget) where the same commit measures
+  **1.52 s (45 %)** best of three — a single cold pass behind a 1M formula sort. And a probe prices
+  the formula text (`cargo run --release -p cella-model --example formula_text_probe`): 2M formulas
+  hold **133.4 MB** (48 B `Formula` + 18.7 B text each), and printing one back from its shape costs
+  **106 ns** with 0 mismatches — the number the formula-text round (`plan/ROUND-34.md`) turns on.
 - **2026-11-21 (round 33, the fill):** `fill.values` was the tightest budget and turned out to be
   a metric rather than a drag — a hundred `range.setValues` calls pay 34 % of their time in
   per-command overhead and 16 % in the harness's own JSON, while a real fill handle costs
