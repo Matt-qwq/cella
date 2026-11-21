@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** **round 33 found the fill's number was a metric, not the drag** (34 % of `fill.values`
+> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** **round 33 found the fill's number was a metric, not the drag** (34 % of `fill.values`
 is per-command overhead and 16 % the harness's JSON; a real fill handle costs 157 ms at 1M) and
 took the overhead −27.14 % (1M 1,464 → 1,067 ms, 8/8); the gate grew `fill.autofill` to protect
 the drag itself. Earlier: **round 32 took the closure −13.3 % more** (a sort tells the recalculation which
