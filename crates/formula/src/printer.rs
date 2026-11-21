@@ -45,7 +45,32 @@ fn push_anchor_a1(s: &mut String, a: &Anchor, base: CellRef) {
     if a.row_abs {
         s.push('$');
     }
-    let _ = write!(s, "{}", u64::from(resolved(a.row, a.row_abs, base.row)) + 1);
+    push_row(s, u64::from(resolved(a.row, a.row_abs, base.row)) + 1);
+}
+
+/// Appends a 1-based row number without going through `core::fmt`: a formula text is a reference or
+/// three, and `write!`'s formatter is a good share of printing one. A structural edit prints a
+/// million of them, and a sort prints one text for every formula it moves.
+fn push_row(s: &mut String, row: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut n = row;
+    while n > 0 && at > 0 {
+        at -= 1;
+        if let Some(d) = digits.get_mut(at) {
+            *d = b'0' + (n % 10) as u8;
+        }
+        n /= 10;
+    }
+    // A row number is never 0 (it is one-based), and nothing past `u64::MAX` reaches here; the
+    // guard keeps a caller that breaks that from printing nothing at all.
+    if at == digits.len() {
+        s.push('0');
+        return;
+    }
+    for &d in digits.get(at..).unwrap_or_default() {
+        s.push(char::from(d));
+    }
 }
 
 /// Appends [`cella_core::col_to_letters`]`(col)` without allocating.
@@ -259,10 +284,16 @@ pub fn print_r1c1(e: &Expr, at: CellRef) -> String {
 /// The caller checks that the shape fits at `at` ([crate::Shape::fits]): one that does not would
 /// clamp a reference to `#REF!`, and a clamp mid-print is not a text.
 pub fn print_at(tree: &Expr, at: CellRef) -> String {
-    let mut s = String::new();
+    // A short formula fits one allocation instead of the three a growing `String` would take: a
+    // sort prints a million of them, one for every formula it moves.
+    let mut s = String::with_capacity(PRINT_RESERVE);
     write_expr(&mut s, tree, Mode::At(at));
     s
 }
+
+/// Capacity a print starts with — enough for the ordinary formula (`B1234*C1234+D1234` and the
+/// arithmetic around it) to be one allocation. A longer text grows as it always did.
+const PRINT_RESERVE: usize = 24;
 
 /// How the printer reads a reference: as the absolute tree it is, as the R1C1 spelling a shape is
 /// keyed by, or as the A1 text a shape spells at a cell.
