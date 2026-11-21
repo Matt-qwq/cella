@@ -952,6 +952,11 @@ impl Band {
     /// The index of the row's entry, adding an empty row — its slices at the end of each stripe —
     /// when it isn't there yet.
     fn row_or_insert(&mut self, key: u32) -> usize {
+        // A row that is there is one popcount away (a band is at most 64 rows); the sorted
+        // search is only needed to find where a new row goes, which is the cold half.
+        if let Some(i) = self.row_index(key) {
+            return i;
+        }
         match self.rows.binary_search_by_key(&key, |r| r.key) {
             Ok(i) => i,
             Err(i) => {
@@ -3900,7 +3905,11 @@ impl CellStore {
         if cells.is_empty() {
             return;
         }
-        cells.sort_unstable_by_key(|(c, _)| *c);
+        // A reader hands its rows over in column order and a sort writes its lanes that way too,
+        // so the sort usually has nothing to do; checking costs one compare a cell.
+        if !cells.is_sorted_by_key(|(c, _)| *c) {
+            cells.sort_unstable_by_key(|(c, _)| *c);
+        }
         cells.dedup_by(|a, b| {
             a.0 == b.0 && {
                 b.1 = a.1.clone();
@@ -3952,9 +3961,10 @@ impl CellStore {
             shrank = after < before;
         } else {
             for (col, cell) in cells.drain(..) {
-                let had = band.row(band_row).is_some_and(|r| r.index_of(band, col).is_some());
-                band.put(band_row, col, cell);
-                let has = band.row(band_row).is_some_and(|r| r.index_of(band, col).is_some());
+                // put() answers whether the cell was stored before and is stored after: asking it
+                // instead of probing the row twice more drops two rank computations a cell, which
+                // is most of what a row of the sort's write-back costs.
+                let (had, has) = band.put(band_row, col, cell);
                 match (had, has) {
                     (false, true) => self.len += 1,
                     (true, false) => {
