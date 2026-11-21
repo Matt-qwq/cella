@@ -35,6 +35,18 @@ fn index_spills<'a>(batch: usize, on_sheet: usize, areas: impl ExactSizeIterator
     batch > INDEX_SPILLS_FROM && areas.len() > 0 && indexing_pays(areas, on_sheet)
 }
 
+/// Which of a bulk edit's changed cells can hold a different formula than the one their address
+/// held before — which of them need their graph node replaced (see [`Calc::cells_moved`]).
+#[derive(Clone, Copy)]
+enum Relabel<'a> {
+    /// None of them: the graph's nodes are exactly what they were.
+    None,
+    /// All of them (the generic case).
+    All,
+    /// These, and only these.
+    These(&'a [Key]),
+}
+
 /// Calculation state kept beside a workbook.
 #[derive(Clone, Debug)]
 pub struct Calc {
@@ -45,6 +57,11 @@ pub struct Calc {
     /// Cells whose formulas have errors from cycles.
     pub circular: Vec<Key>,
     pub last_recalc_cells: usize,
+    /// Cells whose formula the last edit re-indexed in the dependency graph — the graph work a bulk
+    /// edit pays, and zero for one that left the graph as it was. Diagnostics, like
+    /// [`Calc::last_recalc_cells`]: a sort of a million formulas whose block holds one shape per
+    /// column relabels nothing, and a test says so.
+    pub last_graph_updates: usize,
     /// Formula cells the last [`Calc::restore`] re-inserted into the graph, or `None` when it
     /// could not and rebuilt instead. Diagnostics, like `last_recalc_cells`: what Undo and Redo
     /// cost on a sheet with a million formulas.
@@ -103,6 +120,7 @@ impl Default for Calc {
             fixed_now: None,
             circular: vec![],
             last_recalc_cells: 0,
+            last_graph_updates: 0,
             last_restore_cells: None,
             parallel_fallback: false,
             names: crate::eval::NameCache::default(),
@@ -1245,7 +1263,7 @@ impl Calc {
     /// column or row, `SUM(A:A)`, `=23:26`) are evaluated again, because the cells they read
     /// changed without any of them being named as a precedent.
     pub fn cells_changed_with_used(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
-        self.cells_changed_impl(wb, changed, used_changed, false);
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::All);
     }
 
     /// [`cells_changed_with_used`](Self::cells_changed_with_used) for an edit that neither added
@@ -1254,11 +1272,38 @@ impl Calc {
     /// are the only work skipped: the cells are still seeds, and their dependents are still
     /// recalculated.
     pub fn cells_changed_values_only(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
-        self.cells_changed_impl(wb, changed, used_changed, true);
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::None);
     }
 
-    fn cells_changed_impl(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], values_only: bool) {
+    /// [`cells_changed_with_used`](Self::cells_changed_with_used) for an edit that **permuted** its
+    /// cells and can name the addresses whose formula it actually replaced.
+    ///
+    /// A graph node is (the shape a formula holds, the address it sits at): the cells a formula
+    /// reads are its offsets resolved at the cell it lives in. So an edit that gives an address
+    /// back the shape it already held leaves that node exactly as it was, and a sort of a block
+    /// whose lines hold the same formula shapes gives every address its old node back — a million
+    /// formulas whose graph moved at two cells re-index two cells, not a million. `relabelled` is
+    /// those cells (a superset is always correct): every other changed cell is a seed of the
+    /// recalculation exactly as before, so its dependents are still evaluated.
+    ///
+    /// An empty `relabelled` is [`cells_changed_values_only`](Self::cells_changed_values_only); a
+    /// caller that cannot name the cells would pass all of them and use `cells_changed_with_used`
+    /// instead.
+    pub fn cells_moved(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], relabelled: &[Key]) {
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::These(relabelled));
+    }
+
+    fn cells_changed_impl(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], relabel: Relabel<'_>) {
         self.parallel_fallback = false;
+        // Which changed cells can hold a different formula than the one their address held before:
+        // all of them in the generic case, none for a values-only edit, and the handful a
+        // permutation re-shaped (see `Calc::cells_moved`).
+        let updated: &[Key] = match relabel {
+            Relabel::None => &[],
+            Relabel::All => changed,
+            Relabel::These(cells) => cells,
+        };
+        self.last_graph_updates = updated.len();
         let mut cleared: Vec<(usize, RangeRef)> = Vec::new();
         // A bulk edit — a fill, a paste of a column of formulas — inserts many nodes at once, and
         // the tables grow a dozen times as it fills, each growth rehashing or copying everything
@@ -1294,8 +1339,8 @@ impl Calc {
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
         let mut formulas = false;
         let mut shapes = cella_formula::ShapeTable::default();
-        if !values_only {
-            for &k in changed {
+        if !updated.is_empty() {
+            for &k in updated {
                 let formula = wb.sheet(k.0).and_then(|s| s.cells.formula(k.1));
                 formulas |= formula.is_some();
                 let parsed = formula.as_ref().and_then(|f| self.node_for(wb, k.0, k.1, f, &mut shapes));

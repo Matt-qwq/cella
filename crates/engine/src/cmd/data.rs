@@ -321,6 +321,124 @@ impl SortProfile {
     }
 }
 
+/// How many distinct formula-shape patterns a sort's block may hold before the bookkeeping that
+/// says whether the permutation moved the dependency graph stops paying for itself. A block of one
+/// table holds one or two — its first line's chain, say, and every other line's; a patchwork of
+/// many means the cell-by-cell relabel is the right answer anyway.
+const MAX_LINE_PATTERNS: usize = 8;
+
+/// The two states of a cell's formula that a shape pointer cannot name, for [`LineShapes`]: a cell
+/// that holds no formula at all, and one whose formula carries no shape (a text-only cell, whose
+/// tree comes from parsing its text). Neither can collide with a real identity — a `Shape` is an
+/// allocation, so its address is aligned and at least a word past zero.
+const NO_FORMULA: usize = 0;
+const NO_SHAPE: usize = 1;
+
+/// A cell's formula identity for [`LineShapes`]: the interned shape it holds — one shape is one
+/// tree, so one pointer says "the same formula" at the same address.
+fn shape_identity(cell: Option<&Cell>) -> usize {
+    cell.and_then(|c| c.formula.as_ref()).map_or(NO_FORMULA, |f| shape_of(f))
+}
+
+/// [shape_identity] of a formula alone.
+fn shape_of(f: &Formula) -> usize {
+    f.shape.as_ref().map_or(NO_SHAPE, |s| Arc::as_ptr(s) as usize)
+}
+
+/// The formula shapes a sort's block holds, line by line: what makes "did the permutation move the
+/// dependency graph" a question a sort answers in a constant per line.
+///
+/// A graph node is (the shape a formula holds, the address it sits at) — the cells a formula reads
+/// are its offsets resolved at the cell it lives in — so a permutation that gives an address back
+/// the shape it held leaves that node exactly as it was. A block whose lines all hold the same
+/// shapes on every line (a table of `=B*C+D` down G and the chained one down H) moves no node at
+/// all, and one whose lines hold different shapes moves only the ones where two shapes traded
+/// places — see [`Calc::cells_moved`](cella_calc::Calc::cells_moved).
+///
+/// A line's pattern is the shape identity of each of its lanes, interned so two lines holding the
+/// same formula in the same columns compare equal; the sort records the pattern each source line
+/// had *before* the move and the one it has *after* it, and compares the line landing on a
+/// destination with the line it displaces.
+#[derive(Default)]
+struct LineShapes {
+    /// One id per source line: the pattern it held, and the pattern the move gives it.
+    before: Vec<u32>,
+    after: Vec<u32>,
+    /// The distinct patterns seen, by id (see [`MAX_LINE_PATTERNS`]).
+    patterns: Vec<Vec<usize>>,
+    /// The line being read: its shape identities as the store holds them, and after the move.
+    lane_before: Vec<usize>,
+    lane_after: Vec<usize>,
+    /// Set when a line carries a formula with no shape, or when the block holds more patterns than
+    /// [`MAX_LINE_PATTERNS`]: the question has no constant answer then, and the caller re-indexes
+    /// every changed cell as it always did.
+    gave_up: bool,
+}
+
+impl LineShapes {
+    /// Starts reading a line.
+    fn begin(&mut self) {
+        self.lane_before.clear();
+        self.lane_after.clear();
+    }
+
+    /// Closes the line just read, giving it the ids of its two patterns.
+    fn end(&mut self) {
+        match (Self::intern(&mut self.patterns, &self.lane_before), Self::intern(&mut self.patterns, &self.lane_after)) {
+            (Some(before), Some(after)) => {
+                self.before.push(before);
+                self.after.push(after);
+            }
+            _ => self.gave_up = true,
+        }
+    }
+
+    /// The id of a pattern among the ones seen, adding it when it is new. `None` once the block
+    /// holds more than [`MAX_LINE_PATTERNS`].
+    fn intern(patterns: &mut Vec<Vec<usize>>, lanes: &[usize]) -> Option<u32> {
+        if let Some(id) = patterns.iter().position(|known| known.as_slice() == lanes) {
+            return u32::try_from(id).ok();
+        }
+        if patterns.len() >= MAX_LINE_PATTERNS {
+            return None;
+        }
+        patterns.push(lanes.to_vec());
+        u32::try_from(patterns.len().saturating_sub(1)).ok()
+    }
+
+    /// The addresses whose formula the permutation replaced: every destination whose line lands
+    /// with a different shape in some lane than the line it displaces held there. `None` when the
+    /// block could not be described (see [`LineShapes::gave_up`]).
+    ///
+    /// `order` is the sort's permutation — `order[dst]` is the source line that lands on `dst` —
+    /// and `lanes` the columns (or rows, for a column sort) the block spans.
+    fn relabelled(&self, order: &[u32], lanes: &[u32], sheet: usize, line: impl Fn(u32, u32) -> CellRef) -> Option<Vec<Key>> {
+        if self.gave_up || self.before.len() != order.len() || self.after.len() != order.len() {
+            return None;
+        }
+        let mut out = Vec::new();
+        for (dst, &src) in order.iter().enumerate() {
+            let (Some(&new_id), Some(&old_id)) = (self.after.get(src as usize), self.before.get(dst)) else { return None };
+            // The usual answer: the line landing here holds the shapes the line it displaces held,
+            // in every lane. Nothing about this address changed but the value.
+            if new_id == old_id {
+                continue;
+            }
+            let (Some(new), Some(old)) = (self.patterns.get(new_id as usize), self.patterns.get(old_id as usize)) else { return None };
+            if new.len() != lanes.len() || old.len() != lanes.len() {
+                return None;
+            }
+            let dst = u32::try_from(dst).ok()?;
+            for (at, &k) in lanes.iter().enumerate() {
+                if new.get(at) != old.get(at) {
+                    out.push((sheet, line(dst, k)));
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
 fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<SortKey>, by_cols: bool, case: bool) -> Result<Json> {
     // Protect Sheet ▸ Sort. Both Sort… and the A-to-Z buttons come through here.
     super::refuse_unless_allowed(s, sheet, "Sorting", |p| p.sort)?;
@@ -477,6 +595,9 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // only and the recalculation can skip the graph update every changed cell would pay for
         // (see Calc::cells_changed_values_only).
         let mut body_had_formula = false;
+        // The formula shapes the block holds, line by line — what decides whether the permutation
+        // moves the dependency graph at all (see `LineShapes`).
+        let mut shapes = LineShapes::default();
         let row_reader = (!by_cols).then(|| sh.cells.row_reader(body.start.col, body.end.col));
         let has_pictures = !sh.cell_pictures.is_empty();
         if let Some(read) = &row_reader {
@@ -493,8 +614,15 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 read(body.start.row + src_i, &mut scratch);
                 let dst_i = dst_of.get(src_i as usize).copied().unwrap_or(src_i);
                 let base = dst_i as usize * stride;
+                shapes.begin();
                 for (j, (&k, slot)) in lanes.iter().zip(scratch.iter_mut()).enumerate() {
                     let mut cell = slot.take();
+                    // What this lane held before the move, for the pattern comparison below.
+                    let held = shape_identity(cell.as_ref());
+                    shapes.lane_before.push(held);
+                    // A formula that carries no shape has no identity a pointer can compare; the
+                    // block takes the cell-by-cell path.
+                    shapes.gave_up |= held == NO_SHAPE;
                     body_had_formula |= cell.as_ref().is_some_and(|c| c.formula.is_some());
                     if let Some(c) = cell.as_mut()
                         && let Some(f) = &c.formula
@@ -504,9 +632,20 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                         // row 1 says `=A2`, and the shape is the same one. Only a reference that
                         // would leave the sheet changes it, and only that cell materialises a
                         // private shape with the `#REF!` Excel shows (SHAPE-SHARING.md §4.9).
-                        if let Some(moved) = f.copied_to(line(src_i, k), line(dst_i, k)) {
-                            c.formula = Some(Arc::new(moved));
+                        match f.copied_to(line(src_i, k), line(dst_i, k)) {
+                            Some(moved) => {
+                                shapes.lane_after.push(shape_of(&moved));
+                                c.formula = Some(Arc::new(moved));
+                            }
+                            // The formula cannot be moved at all (its text does not parse): the
+                            // cell keeps the one it has, which this path cannot describe.
+                            None => {
+                                shapes.gave_up = true;
+                                shapes.lane_after.push(held);
+                            }
                         }
+                    } else {
+                        shapes.lane_after.push(NO_FORMULA);
                     }
                     if has_pictures && let Some(picture) = sh.cell_pictures.get(&line(src_i, k)) {
                         pictures.push((line(dst_i, k), picture.clone()));
@@ -515,6 +654,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                         *slot = cell;
                     }
                 }
+                shapes.end();
             }
         } else {
             // A column sort moves whole columns; there is no row reader, and the cells go in one
@@ -539,6 +679,11 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
             }
         }
         drop(row_reader);
+        // Which addresses the permutation re-shaped — usually none, and the two lines where a
+        // block's first formula (a chain's head, say) trades places with another's. None when the
+        // block cannot be described in these terms, and the recalculation then re-indexes every
+        // changed cell as it always did.
+        let relabelled = if body_had_formula { shapes.relabelled(&order, &lanes, sheet, line) } else { None };
         SortProfile::mark(&mut profile, "gather_cells_and_adjust_formulas");
         // Spilled cells and the ranges they come from are not part of the permutation either, so a
         // body that holds one gets the full recalculation that lays the spills out again. A legacy
@@ -661,6 +806,9 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // other reader is row fitting, which a commit only takes up to 200k cells — so a big sort
         // of plain data skips building six million entries nothing reads.
         cx.formulas_unchanged = !body_had_formula;
+        // A block that holds formulas moves the graph only where the permutation traded one shape
+        // for another (see `LineShapes`); everything a values-only block does above still applies.
+        cx.relabelled = relabelled;
         if body.count() <= 200_000 || any_formulas {
             cx.changed.extend(body.iter().map(|c| (sheet, c)));
         }

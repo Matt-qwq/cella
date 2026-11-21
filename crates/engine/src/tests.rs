@@ -1678,6 +1678,90 @@ fn sort_leaves_the_cells_beside_the_block_in_their_rows() {
     assert_eq!(v(&s, "A1"), Value::from("c"));
 }
 
+/// A graph node is (the shape a formula holds, the address it sits at): the addresses a formula
+/// reads are its offsets resolved at the cell it lives in. A sort therefore hands every address the
+/// node it already had whenever the block holds one formula shape per column — a table of `=B*2`
+/// down C and `=C+1` down D — and the recalculation must not re-index a million nodes it did not
+/// change. It still has to recalculate them all, and the graph must still answer for the addresses
+/// the formulas landed on: the edits after the sort are what proves that.
+#[test]
+fn a_sort_of_one_formula_shape_per_column_leaves_the_graph_alone() {
+    let mut s = s();
+    let rows: Vec<serde_json::Value> = (1..=6).map(|r| json!([format!("r{r}"), r * 10, format!("=B{r}*2"), format!("=C{r}+1")])).collect();
+    s.execute("range.setValues", json!({"range": "A1:D6", "values": rows})).unwrap();
+    s.execute("cell.set", json!({"cell": "F1", "input": "=SUM(C1:C6)"})).unwrap();
+    assert_eq!(v(&s, "F1"), Value::Number(420.0));
+    s.execute("data.sort", json!({"range": "A1:D6", "header": false, "keys": [{"column": "B", "order": "desc"}]})).unwrap();
+    // The rows moved, their values went with them, and the dependents were recalculated.
+    assert_eq!(v(&s, "B1"), Value::Number(60.0));
+    assert_eq!(v(&s, "C1"), Value::Number(120.0));
+    assert_eq!(v(&s, "D6"), Value::Number(21.0));
+    assert_eq!(v(&s, "F1"), Value::Number(420.0));
+    assert_eq!(s.doc().unwrap().calc.last_graph_updates, 0, "one shape per column: no node changed, so none was re-indexed");
+    // The node at a *new* address answers the edit: B1 is the row that came from row 6.
+    s.execute("cell.set", json!({"cell": "B1", "input": "7"})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::Number(14.0));
+    assert_eq!(v(&s, "D1"), Value::Number(15.0));
+    assert_eq!(v(&s, "D2"), Value::Number(101.0));
+    assert_eq!(v(&s, "F1"), Value::Number(314.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "B1"), Value::Number(60.0));
+    assert_eq!(v(&s, "D1"), Value::Number(121.0));
+}
+
+/// Two shapes on one column trade places: rows 1-3 double their B where rows 4-6 treble it, and the
+/// sort puts every one of them on the other half. All six addresses then hold a different formula
+/// than the one they held, so all six are re-indexed — and the values prove that the node at each
+/// address is the shape that actually landed there.
+#[test]
+fn a_sort_relabels_every_address_whose_formula_shape_changed() {
+    let mut s = s();
+    // Rows 1-3 double (=B*2), rows 4-6 treble (=B*3): two shapes on one column.
+    let rows: Vec<serde_json::Value> =
+        (1..=6u32).map(|r| json!([format!("r{r}"), r * 10, format!("=B{r}*{}", if r <= 3 { 2 } else { 3 }), format!("=C{r}*2")])).collect();
+    s.execute("range.setValues", json!({"range": "A1:D6", "values": rows})).unwrap();
+    s.execute("data.sort", json!({"range": "A1:D6", "header": false, "keys": [{"column": "B", "order": "desc"}]})).unwrap();
+    let c: Vec<Value> = (1..=6).map(|r| v(&s, &format!("C{r}"))).collect();
+    assert_eq!(c, [180.0, 150.0, 120.0, 60.0, 40.0, 20.0].map(Value::Number), "each row kept its own multiplier");
+    assert_eq!(s.doc().unwrap().calc.last_graph_updates, 6, "every address changed shape");
+    // The trebling shape is at C1 now and the doubling one at C4: an edit of either row's B reaches
+    // the right formula, and D (one shape down the block) is recalculated through it.
+    s.execute("cell.set", json!({"cell": "B1", "input": "1"})).unwrap();
+    assert_eq!(v(&s, "C1"), Value::Number(3.0), "=B1*3, the shape that landed at C1");
+    assert_eq!(v(&s, "D1"), Value::Number(6.0));
+    s.execute("cell.set", json!({"cell": "B4", "input": "1"})).unwrap();
+    assert_eq!(v(&s, "C4"), Value::Number(2.0), "=B4*2, the shape that landed at C4");
+    assert_eq!(v(&s, "D4"), Value::Number(4.0));
+}
+
+/// The performance gate's block: a chain whose first cell is `=C1` and whose every other cell is
+/// `=D(n-1)+C(n)`. Sorting it puts a chain formula in row 1, where its reference to the row above
+/// leaves the sheet — the cell materialises a private shape with Excel's `#REF!` — so the graph
+/// changes at exactly those two addresses and nowhere else in a six-cell chain. Both of them have
+/// to be reachable afterwards: the head that landed at the bottom answers an edit, and the
+/// `#REF!` that landed at the top stays one.
+#[test]
+fn a_sort_relabels_the_chain_head_and_the_cell_it_swaps_with() {
+    let mut s = s();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for r in 1..=6u32 {
+        let d = if r == 1 { "=C1".to_string() } else { format!("=D{}+C{r}", r - 1) };
+        rows.push(json!([format!("r{r}"), r * 10, format!("=B{r}*2"), d]));
+    }
+    s.execute("range.setValues", json!({"range": "A1:D6", "values": rows})).unwrap();
+    s.execute("data.sort", json!({"range": "A1:D6", "header": false, "keys": [{"column": "B", "order": "desc"}]})).unwrap();
+    assert_eq!(s.doc().unwrap().calc.last_graph_updates, 2, "the head and the line it swapped with");
+    // The head `=C1` landed on row 6 (B=10) and is still `=C6`.
+    assert_eq!(v(&s, "C6"), Value::Number(20.0));
+    assert_eq!(v(&s, "D6"), Value::Number(20.0));
+    // A chain cell landed on row 1, and the row above row 1 does not exist.
+    assert_eq!(v(&s, "D1"), Value::Error(cella_core::CellError::Ref));
+    // The head's node answers an edit at the address it landed on.
+    s.execute("cell.set", json!({"cell": "B6", "input": "1"})).unwrap();
+    assert_eq!(v(&s, "C6"), Value::Number(2.0));
+    assert_eq!(v(&s, "D6"), Value::Number(2.0));
+}
+
 /// A sort moves its block by rewriting its rows in place, so a block with fixed points, several
 /// cycles, absent cells, formulas, styles and notes must come through the move, undo, redo and a
 /// save/reopen exact — no row may be read after the move has overwritten it.

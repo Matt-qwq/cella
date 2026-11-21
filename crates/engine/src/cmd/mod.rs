@@ -466,6 +466,13 @@ pub struct Ctx<'a> {
     /// carries values only): the dependency graph's nodes are exactly what they were, so the
     /// recalculation has to find the dependents of the changed cells but has nothing to re-index.
     pub formulas_unchanged: bool,
+    /// The changed cells whose formula the edit actually replaced, when it can name them: a graph
+    /// node is (the formula's shape, the address it sits at), so a permutation that gives an
+    /// address back the shape it held leaves that node exactly as it was, and a sort of a million
+    /// formulas re-indexes the two lines where two shapes traded places instead of every cell it
+    /// rewrote (see [`cella_calc::Calc::cells_moved`]). `None` is the generic case: any changed
+    /// cell may hold a different formula.
+    pub relabelled: Option<Vec<Key>>,
 }
 
 pub(crate) fn edit<R>(s: &mut Session, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
@@ -492,9 +499,10 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
         fit_rows: Vec::new(),
         protection_checked: false,
         formulas_unchanged: false,
+        relabelled: None,
     };
     let r = f(&mut ctx)?;
-    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, formulas_unchanged, .. } = ctx;
+    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, formulas_unchanged, relabelled, .. } = ctx;
     check_chart_sheets(&d.wb, &wb)?;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
@@ -524,6 +532,8 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
             }
             if formulas_unchanged {
                 d.calc.cells_changed_values_only(&mut wb, &changed, &used);
+            } else if let Some(relabelled) = relabelled {
+                d.calc.cells_moved(&mut wb, &changed, &used, &relabelled);
             } else {
                 d.calc.cells_changed_with_used(&mut wb, &changed, &used);
             }
