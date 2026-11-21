@@ -1418,13 +1418,19 @@ impl Band {
                 if let Some(p) = self.payloads.get_mut(slot) {
                     *p = payload;
                 }
-                self.shift_offsets(
-                    at,
-                    (0, 0),
-                    (0, 0),
-                    (kinds_at, kind_runs as i32 - old_kinds as i32),
-                    (styles_at, style_runs as i32 - old_styles as i32),
-                );
+                // shift_offsets walks every other row of the band and re-points the slices that
+                // start past the change. Replacing a cell whose kind and style land in the runs
+                // already there moves no slice, and that is the common case: a sort replacing a
+                // row cell for cell would otherwise walk 64 rows six times a row.
+                if kind_runs != old_kinds as usize || style_runs != old_styles as usize {
+                    self.shift_offsets(
+                        at,
+                        (0, 0),
+                        (0, 0),
+                        (kinds_at, kind_runs as i32 - old_kinds as i32),
+                        (styles_at, style_runs as i32 - old_styles as i32),
+                    );
+                }
                 self.rows[at].kind_runs = kind_runs as u32;
                 self.rows[at].style_runs = style_runs as u32;
             }
@@ -4418,6 +4424,13 @@ impl CellStore {
     /// cost of a write that only adds.
     fn grow_used(&mut self, row: u32, col: u32) {
         let cache = self.used_mut();
+        Self::grow_used_box(&mut *cache, row, col);
+    }
+
+    /// [`grow_used`](Self::grow_used) against a box the caller already holds the lock for: a row
+    /// write absorbs both ends of its span, and taking the lock twice more per row was a
+    /// measurable part of a sort's write-back.
+    fn grow_used_box(cache: &mut UsedBox, row: u32, col: u32) {
         if cache.stale {
             // The walk that clears the flag rebuilds the box from nothing; growing a stale one is
             // wasted work, and only a mutation that removed something writes while stale.
@@ -4458,15 +4471,16 @@ impl CellStore {
     /// columns span `c0..=c1`, mapped to logical positions. Rows and columns the maps do not cover
     /// are skipped, exactly as `walk_used` skips them.
     fn absorb_used_stored(&mut self, r0: u32, r1: u32, c0: u32, c1: u32) {
-        if self.used_mut().stale {
-            return;
-        }
         // A band, and so a page, spans at most `BAND` physical rows. A wider span is not something
         // a store can hold; walk instead of trusting that it is bounded.
         if r1.saturating_sub(r0) >= BAND {
             self.mark_used_stale();
             return;
         }
+        // The mapping comes first and the lock is taken once: a row write absorbs its span for
+        // every row, and three uncontended locks a row were a measurable part of a sort's
+        // write-back. A stale box skips the growth either way, so doing this before the check
+        // only wastes the mapping.
         let (mut lo, mut hi) = (u32::MAX, 0u32);
         let mut row = r0;
         loop {
@@ -4483,8 +4497,12 @@ impl CellStore {
             return;
         }
         let Some((first, last)) = self.logical_col_span(c0, c1) else { return };
-        self.grow_used(lo, first);
-        self.grow_used(hi, last);
+        let cache = self.used_mut();
+        if cache.stale {
+            return;
+        }
+        Self::grow_used_box(&mut *cache, lo, first);
+        Self::grow_used_box(&mut *cache, hi, last);
     }
 
     /// Every formula in the store with the position it sits at and whether a cached value came
@@ -9332,6 +9350,67 @@ mod dictionary_audit {
 }
 
 #[cfg(test)]
+mod rewrite_in_place_tests {
+    use super::*;
+    use crate::cell::Cell;
+
+    fn c(r: u32, col: u32) -> CellRef {
+        CellRef::new(r, col)
+    }
+
+    /// Overwriting a cell whose kind and style land in the runs already there moves no stripe slice —
+    /// the fast path a sort's write-back takes when it rewrites a row cell for cell — and the band that
+    /// comes out must be exactly the one a fresh write of the same cells builds.
+    #[test]
+    fn rewriting_cells_in_place_equals_building_them_again() {
+        fn cells(seed: u32, row: u32) -> Vec<(u32, Cell)> {
+            (0..8u32)
+                .map(|col| {
+                    let n = seed.wrapping_mul(31).wrapping_add(row.wrapping_mul(8)).wrapping_add(col);
+                    let value = match n % 5 {
+                        0 => Value::Number(f64::from(n)),
+                        1 => Value::Text(Arc::from(format!("text {n}").as_str())),
+                        2 => Value::Bool(n % 2 == 0),
+                        3 => Value::Error(cella_core::CellError::Div0),
+                        _ => Value::Empty,
+                    };
+                    (col, Cell { value, formula: None, style: StyleId(n % 3) })
+                })
+                .collect()
+        }
+        // Two versions of the same five rows: one built cell by cell into empty rows, one written over
+        // rows that already held cells of other kinds (which is the replacement branch of put, where
+        // a run layout change has to move the band's stripe offsets).
+        let mut built = CellStore::new();
+        let mut rewritten = CellStore::new();
+        for row in 0..5u32 {
+            rewritten.set_row(row, &mut cells(0, row));
+        }
+        for row in 0..5u32 {
+            built.set_row(row, &mut cells(1, row));
+            rewritten.set_row(row, &mut cells(1, row));
+        }
+        assert_eq!(rewritten, built);
+        assert_eq!(rewritten.len(), built.len());
+        assert_eq!(rewritten.used_range(), built.used_range());
+        for row in 0..5u32 {
+            for col in 0..8u32 {
+                assert_eq!(rewritten.get(c(row, col)), built.get(c(row, col)), "cell {row},{col}");
+            }
+        }
+        // A row that loses a cell and one that gains one: the runs and the payload stripe change
+        // length, and the rows laid out after them must still be found.
+        for store in [&mut rewritten, &mut built] {
+            let _ = store.remove(c(2, 3));
+            let _ = store.remove(c(2, 4));
+            store.set(c(4, 10), Cell { value: Value::Number(99.0), formula: None, style: StyleId(2) });
+        }
+        assert_eq!(rewritten, built, "after a row shrinks and another grows");
+        assert_eq!(rewritten.len(), built.len());
+    }
+}
+
+#[cfg(test)]
 mod compare_then_write {
     use super::*;
     use crate::cell::Cell;
@@ -9509,6 +9588,7 @@ mod compare_then_write {
 
     /// A single value written over itself changes nothing; one that differs still writes, keeps the
     /// formula and answers true.
+
     #[test]
     fn set_value_skips_an_identical_value() {
         let mut s = sheet(4);
