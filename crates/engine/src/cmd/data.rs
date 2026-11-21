@@ -598,6 +598,13 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // The formula shapes the block holds, line by line — what decides whether the permutation
         // moves the dependency graph at all (see `LineShapes`).
         let mut shapes = LineShapes::default();
+        // The destination cells that hold a formula, in destination (row-major) order: the
+        // recalculation's seed hint, so it does not probe the dependency graph for the six values
+        // that share a row with every formula the sort moved (see `Ctx::formula_seeds`).
+        let mut moved_formulas: Vec<Key> = Vec::new();
+        // How many of them the block holds: the buffer below is reserved for them once, so it does
+        // not grow and copy its way to two million keys on the write-back.
+        let mut formulas_in_body = 0usize;
         let row_reader = (!by_cols).then(|| sh.cells.row_reader(body.start.col, body.end.col));
         let has_pictures = !sh.cell_pictures.is_empty();
         if let Some(read) = &row_reader {
@@ -623,7 +630,11 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     // A formula that carries no shape has no identity a pointer can compare; the
                     // block takes the cell-by-cell path.
                     shapes.gave_up |= held == NO_SHAPE;
-                    body_had_formula |= cell.as_ref().is_some_and(|c| c.formula.is_some());
+                    let had_formula = cell.as_ref().is_some_and(|c| c.formula.is_some());
+                    body_had_formula |= had_formula;
+                    if had_formula {
+                        formulas_in_body += 1;
+                    }
                     if let Some(c) = cell.as_mut()
                         && let Some(f) = &c.formula
                     {
@@ -719,6 +730,9 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         SortProfile::mark(&mut profile, "detect_formulas");
         {
             let shm = cx.sheet_mut(sheet)?;
+            // The hint buffer is filled below, once per formula the block holds: reserved here so it
+            // never grows and copies its way to two million keys.
+            moved_formulas.reserve(formulas_in_body);
             // Written back a whole destination row at a time: the store packs cells by row, so that is
             // one band and row lookup instead of one per cell, and the write-back was most of the
             // sort's own time. A column sort's destinations are columns, so its cells go one at a time.
@@ -730,7 +744,16 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     let dst = line(dst_i, k);
                     match moved.get_mut(i).and_then(Option::take) {
                         Some(cell) if by_cols => shm.set_cell(dst, cell),
-                        Some(cell) => buf.push((dst.col, cell)),
+                        Some(cell) => {
+                            if cell.formula.is_some() {
+                                // Destination order: the list is row-major, the order the closure
+                                // walks best — a list in the source order the gather reads scatters
+                                // its 2M probes over the graph and costs more than the values'
+                                // probes it saves (see `Ctx::formula_seeds`).
+                                moved_formulas.push((sheet, dst));
+                            }
+                            buf.push((dst.col, cell));
+                        }
                         None => {
                             shm.remove_cell(dst);
                         }
@@ -805,10 +828,19 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // workbook holds a formula there is nothing for that list to recalculate, and its only
         // other reader is row fitting, which a commit only takes up to 200k cells — so a big sort
         // of plain data skips building six million entries nothing reads.
+        // The seed hint the recalculation gets: the list the write-back filled, exactly, when
+        // this path described the block's formulas. A block that held no formula names none of
+        // them; one whose formulas this path could not describe (a column sort, a text that does not
+        // parse, more patterns than the table holds) names no list at all, and the recalculation
+        // probes every changed cell as it always did.
+        let formula_seeds = if body_had_formula { (!by_cols && !shapes.gave_up).then_some(moved_formulas) } else { Some(Vec::new()) };
         cx.formulas_unchanged = !body_had_formula;
         // A block that holds formulas moves the graph only where the permutation traded one shape
         // for another (see `LineShapes`); everything a values-only block does above still applies.
         cx.relabelled = relabelled;
+        // The changed cells that hold a formula: the recalculation's shortcut past the graph probe
+        // for every value the sort moved (see `Ctx::formula_seeds`).
+        cx.formula_seeds = formula_seeds;
         if body.count() <= 200_000 || any_formulas {
             cx.changed.extend(body.iter().map(|c| (sheet, c)));
         }
@@ -2153,6 +2185,85 @@ mod tests {
 
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(*s.doc().unwrap().wb, *before);
+    }
+
+    /// A sort's recalculation is told which of the changed cells hold a formula (see
+    /// `Ctx::formula_seeds`), so it does not probe the graph for the values it moved. The values
+    /// are still seeds: a formula outside the block that reads one still recalculates, and every
+    /// formula the sort moved is still evaluated — the hint shortens the probe, never the work.
+    #[test]
+    fn a_sort_of_a_formula_block_recalculates_what_moved_and_what_reads_it() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute(
+            "range.setValues",
+            json!({"range": "A1", "values": [
+                [1, "=A1*10", null],
+                [2, "=A2*10", null],
+                [3, "=A3*10", null],
+            ]}),
+        )
+        .unwrap();
+        // E1 reads a value the sort moves; E2 a formula it moves.
+        s.execute("cell.set", json!({"cell": "E1", "input": "=A3+100"})).unwrap();
+        s.execute("cell.set", json!({"cell": "E2", "input": "=B3+200"})).unwrap();
+        s.execute("data.sortDescending", json!({"range": "A1:C3", "column": "A"})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        let at = |a: &str| CellRef::parse(a).unwrap();
+        assert_eq!(sh.value(at("A1")), Value::Number(3.0), "the block is sorted descending");
+        assert_eq!(sh.value(at("A3")), Value::Number(1.0));
+        assert_eq!(sh.value(at("B1")), Value::Number(30.0), "the formulas moved with their rows");
+        assert_eq!(sh.value(at("B3")), Value::Number(10.0));
+        assert_eq!(sh.value(at("E1")), Value::Number(101.0), "a formula reading a moved value recalculated");
+        assert_eq!(sh.value(at("E2")), Value::Number(210.0), "a formula reading a moved formula recalculated");
+        // Every formula of the block was queued, the values beside them were not.
+        assert!(d.calc.last_recalc_cells >= 5, "{} cells recalculated", d.calc.last_recalc_cells);
+    }
+
+    /// A formula the sort moved is queued even when no changed cell feeds it — a hint that named
+    /// only the reachable formulas would silently stop evaluating these. `=$Z$1` reads a cell the
+    /// sort did not touch, so its value is right either way; only the recalculation count says
+    /// whether it was evaluated at all.
+    #[test]
+    fn a_sort_still_evaluates_a_moved_formula_that_no_changed_cell_feeds() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("cell.set", json!({"cell": "Z1", "input": "7"})).unwrap();
+        s.execute(
+            "range.setValues",
+            json!({"range": "A1", "values": [
+                [1, "=$Z$1", null],
+                [2, "=$Z$1", null],
+                [3, "=$Z$1", null],
+            ]}),
+        )
+        .unwrap();
+        s.execute("data.sortDescending", json!({"range": "A1:C3", "column": "A"})).unwrap();
+        let d = s.doc().unwrap();
+        assert_eq!(d.wb.sheet(0).unwrap().value(CellRef::parse("A1").unwrap()), Value::Number(3.0));
+        for row in 1..=3u32 {
+            assert_eq!(d.wb.sheet(0).unwrap().value(CellRef::new(row - 1, 1)), Value::Number(7.0), "B{row} is right from the move alone");
+        }
+        assert_eq!(d.calc.last_recalc_cells, 3, "the three formulas the sort moved were evaluated");
+    }
+
+    /// The same for a block of values: the hint names no formula at all, and the formulas outside
+    /// the block that read what it moved are still found through the values' dependents.
+    #[test]
+    fn a_sort_of_a_values_block_recalculates_the_formulas_that_read_it() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1", "values": [[1, 10], [2, 20], [3, 30]]})).unwrap();
+        s.execute("cell.set", json!({"cell": "D1", "input": "=A3+100"})).unwrap();
+        s.execute("cell.set", json!({"cell": "D2", "input": "=B3*2"})).unwrap();
+        s.execute("data.sortDescending", json!({"range": "A1:B3", "column": "A"})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        let at = |a: &str| CellRef::parse(a).unwrap();
+        assert_eq!(sh.value(at("A3")), Value::Number(1.0), "the block is sorted descending");
+        assert_eq!(sh.value(at("D1")), Value::Number(101.0), "a formula reading a moved value recalculated");
+        assert_eq!(sh.value(at("D2")), Value::Number(20.0), "a formula reading a moved value recalculated");
     }
 
     #[test]

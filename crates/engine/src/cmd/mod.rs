@@ -473,6 +473,13 @@ pub struct Ctx<'a> {
     /// rewrote (see [`cella_calc::Calc::cells_moved`]). `None` is the generic case: any changed
     /// cell may hold a different formula.
     pub relabelled: Option<Vec<Key>>,
+    /// The changed cells that hold a formula, when the edit can name them — a sort has just read
+    /// every cell it moved, so it knows which of them carry one. The recalculation queues those as
+    /// formulas without probing the dependency graph for each, and every other changed cell is
+    /// still a seed, so a formula reading a value the edit moved still recalculates (see
+    /// [`cella_calc::Calc::cells_moved_seeded`]). `None` is the generic case: every changed cell is
+    /// probed, and an empty list says none of them can be a node.
+    pub formula_seeds: Option<Vec<Key>>,
 }
 
 pub(crate) fn edit<R>(s: &mut Session, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
@@ -500,9 +507,11 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
         protection_checked: false,
         formulas_unchanged: false,
         relabelled: None,
+        formula_seeds: None,
     };
     let r = f(&mut ctx)?;
-    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, formulas_unchanged, relabelled, .. } = ctx;
+    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, formulas_unchanged, relabelled, formula_seeds, .. } =
+        ctx;
     check_chart_sheets(&d.wb, &wb)?;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
@@ -530,7 +539,13 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
             if let Some(started) = used_started {
                 eprintln!("commit: used range {:?} ({} sheets)", started.elapsed(), used.len());
             }
-            if formulas_unchanged {
+            if let Some(formula_seeds) = formula_seeds {
+                // The edit named every changed cell that holds a formula, so the recalculation
+                // need not probe the graph for the ones that cannot be nodes (see
+                // [`cella_calc::Calc::cells_moved_seeded`]). An empty `relabelled` is a values-only
+                // edit: no changed cell may hold a different formula than its address held.
+                d.calc.cells_moved_seeded(&mut wb, &changed, &used, relabelled.as_deref().unwrap_or(&[]), &formula_seeds);
+            } else if formulas_unchanged {
                 d.calc.cells_changed_values_only(&mut wb, &changed, &used);
             } else if let Some(relabelled) = relabelled {
                 d.calc.cells_moved(&mut wb, &changed, &used, &relabelled);

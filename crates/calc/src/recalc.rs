@@ -47,6 +47,35 @@ enum Relabel<'a> {
     These(&'a [Key]),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many seeds the closure asked the graph about, so a test can hold the seed hint to
+    /// skipping the probe for the cells that cannot be nodes (see [`Calc::dirty_closure`]).
+    static NODE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a seed the closure asked the graph about (only a test reads the count).
+#[cfg(test)]
+fn count_node_probe() {
+    NODE_PROBES.with(|n| n.set(n.get().saturating_add(1)));
+}
+
+/// Counts nothing: the product probes the graph and only a test counts the probes.
+#[cfg(not(test))]
+fn count_node_probe() {}
+
+/// The seeds the closure has probed the graph for since [`reset_node_probes`].
+#[cfg(test)]
+fn node_probes() -> usize {
+    NODE_PROBES.with(std::cell::Cell::get)
+}
+
+/// Starts counting node probes from zero (see [`node_probes`]).
+#[cfg(test)]
+fn reset_node_probes() {
+    NODE_PROBES.with(|n| n.set(0));
+}
+
 /// Calculation state kept beside a workbook.
 #[derive(Clone, Debug)]
 pub struct Calc {
@@ -1225,7 +1254,7 @@ impl Calc {
             }
             return;
         }
-        let stale = self.dirty_closure(wb, &seeds);
+        let stale = self.dirty_closure(wb, &seeds, None);
         if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("  open: rebuild {rebuild_ms:.1} ms, {} seeds, {} stale ({} ms)", seeds.len(), stale.len(), prof_now() - ts);
         }
@@ -1249,7 +1278,7 @@ impl Calc {
             return;
         }
         let seeds: Vec<Key> = self.graph.visibility.iter().copied().collect();
-        let dirty = self.dirty_closure(wb, &seeds);
+        let dirty = self.dirty_closure(wb, &seeds, None);
         self.run(wb, dirty, false, &HashSet::default());
     }
 
@@ -1263,7 +1292,7 @@ impl Calc {
     /// column or row, `SUM(A:A)`, `=23:26`) are evaluated again, because the cells they read
     /// changed without any of them being named as a precedent.
     pub fn cells_changed_with_used(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
-        self.cells_changed_impl(wb, changed, used_changed, Relabel::All);
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::All, None);
     }
 
     /// [`cells_changed_with_used`](Self::cells_changed_with_used) for an edit that neither added
@@ -1272,7 +1301,7 @@ impl Calc {
     /// are the only work skipped: the cells are still seeds, and their dependents are still
     /// recalculated.
     pub fn cells_changed_values_only(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
-        self.cells_changed_impl(wb, changed, used_changed, Relabel::None);
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::None, None);
     }
 
     /// [`cells_changed_with_used`](Self::cells_changed_with_used) for an edit that **permuted** its
@@ -1290,10 +1319,32 @@ impl Calc {
     /// caller that cannot name the cells would pass all of them and use `cells_changed_with_used`
     /// instead.
     pub fn cells_moved(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], relabelled: &[Key]) {
-        self.cells_changed_impl(wb, changed, used_changed, Relabel::These(relabelled));
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::These(relabelled), None);
     }
 
-    fn cells_changed_impl(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], relabel: Relabel<'_>) {
+    /// [`cells_moved`](Self::cells_moved) for a caller that can also name **every changed cell that
+    /// holds a formula** — the sort, whose gather has just read each cell it moved, so the answer is
+    /// in its hand (the engine hands it over in `Ctx::formula_seeds`).
+    ///
+    /// The recalculation has two jobs over the changed cells: queue each formula among them for
+    /// evaluation, and find the formulas that read each of them. The second job needs every changed
+    /// cell, values included — a total outside the sorted block still reads them. The first needs a
+    /// node, which a value cell never has, and asking the graph which of eight million changed cells
+    /// holds a node is a probe into a table of two million entries for each: most of the closure's
+    /// price on a million-row sort. `formula_seeds` saves those probes.
+    ///
+    /// `formula_seeds` must be **exact** (a superset is safe, a subset drops a formula from the
+    /// recalculation): every cell of it that has no node costs the pass one dirty key it skips. An
+    /// empty `relabelled` is [`cells_changed_values_only`](Self::cells_changed_values_only), as it is
+    /// for [`cells_moved`](Self::cells_moved).
+    pub fn cells_moved_seeded(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], relabelled: &[Key], formula_seeds: &[Key]) {
+        self.cells_changed_impl(wb, changed, used_changed, Relabel::These(relabelled), Some(formula_seeds));
+    }
+
+    /// [`cells_changed_impl`] with `node_hint`: the caller's exact list of the changed cells that
+    /// hold a formula, when it can name it (see [`cells_moved_seeded`](Self::cells_moved_seeded));
+    /// seeds the edit adds beyond `changed` are probed as they always were.
+    fn cells_changed_impl(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], relabel: Relabel<'_>, node_hint: Option<&[Key]>) {
         self.parallel_fallback = false;
         // Which changed cells can hold a different formula than the one their address held before:
         // all of them in the generic case, none for a values-only edit, and the handful a
@@ -1396,6 +1447,11 @@ impl Calc {
             return;
         }
         let mut seeds: Vec<Key> = changed.to_vec();
+        // The changed cells that hold a formula, when the caller named them: the closure queues
+        // those without asking the graph and walks every other seed for its dependents (see
+        // [`cells_moved_seeded`](Self::cells_moved_seeded)). The hint speaks for `changed` only —
+        // the seeds appended below are probed as they always were.
+        let mut node_seeds: Option<Vec<Key>> = node_hint.map(|hint| hint.to_vec());
         for &si in used_changed {
             seeds.extend(self.graph.trim.iter().filter(|k| k.0 == si).copied());
         }
@@ -1547,8 +1603,17 @@ impl Calc {
                 }
             }
         }
+        // A seed beyond `changed` — a used-range formula, a spill area, a cleared array — may hold a
+        // node too: the hint does not speak for it, so the graph is asked, as it always was.
+        if let Some(nodes) = node_seeds.as_mut() {
+            for &k in seeds.get(changed.len()..).unwrap_or(&[]) {
+                if self.graph.has_node(k) {
+                    nodes.push(k);
+                }
+            }
+        }
         let t0 = prof_now();
-        let dirty = self.dirty_closure(wb, &seeds);
+        let dirty = self.dirty_closure(wb, &seeds, node_seeds.as_deref());
         let t1 = prof_now();
         let n = dirty.len();
         self.run(wb, dirty, false, &HashSet::default());
@@ -1560,18 +1625,38 @@ impl Calc {
     /// The cells an edit reaches: the seeds, the formulas that read them, and so on out to the last
     /// formula of the chain.
     ///
-    /// One probe a cell. The seen-set is the sheet's bits ([`SeenCells`]), the queue is a vector, and
+    /// One probe a seed, unless the caller names the ones that hold a formula (`node_seeds`). The
+    /// seen-set is the sheet's bits ([`SeenCells`]), the queue is a vector, and
     /// the tables a workbook of ordinary formulas leaves empty — cross-sheet, whole column, wide
     /// range — are skipped once per walk instead of once per cell ([`graph::Walker`]).
-    fn dirty_closure(&self, _wb: &Workbook, seeds: &[Key]) -> Vec<Key> {
+    ///
+    /// `node_seeds` is the caller's **exact** list of the seeds that hold a formula — what a sort
+    /// knows, because it has just read every cell it moved (see [`Calc::cells_moved_seeded`]). Those
+    /// are queued as formulas without asking the graph, and every other seed is still walked for its
+    /// dependents, so a formula that reads a value cell a sort moved recalculates exactly as it did.
+    /// `None` probes every seed, which is what every caller that cannot name them passes.
+    fn dirty_closure(&self, _wb: &Workbook, seeds: &[Key], node_seeds: Option<&[Key]>) -> Vec<Key> {
         let mut seen = SeenCells::default();
         // Found but not walked yet. A seed can name a million dependents (the cell every formula
         // reads), so the front moves along the vector instead of shifting it.
         let mut queue: Vec<Key> = Vec::new();
         let mut walk = self.graph.walker();
+        if let Some(nodes) = node_seeds {
+            // The cells the caller knows hold a formula: a sort's body names two million of them,
+            // and the six million values beside them are seeds with no node to find — probing the
+            // node table for each of those was a third of the closure's price on a million-row sort.
+            for &k in nodes {
+                if seen.mark(k) {
+                    queue.push(k);
+                }
+            }
+        }
         for &k in seeds {
-            if self.graph.has_node(k) && seen.mark(k) {
-                queue.push(k);
+            if node_seeds.is_none() {
+                count_node_probe();
+                if self.graph.has_node(k) && seen.mark(k) {
+                    queue.push(k);
+                }
             }
             walk.dependents_of(k.0, k.1, &mut |d| {
                 if seen.mark(d) {
@@ -1898,7 +1983,7 @@ impl Calc {
             if spill_changes.is_empty() {
                 break;
             }
-            let mut next = self.dirty_closure(wb, &spill_changes);
+            let mut next = self.dirty_closure(wb, &spill_changes, None);
             next.retain(|k| !cyclic.contains(k));
             dirty = next;
         }
@@ -1957,7 +2042,7 @@ pub(crate) mod tests {
     use crate::eval::Host;
 
     use super::graph::{Intervals, without_dense};
-    use super::{Calc, Graph, HashMap, Key, PassHost, SeenCells, Trees};
+    use super::{Calc, Graph, HashMap, Key, PassHost, SeenCells, Trees, node_probes, reset_node_probes};
 
     /// xorshift64 for repeatable pseudo-random cases.
     fn rng(state: &mut u64) -> u64 {
@@ -2373,7 +2458,7 @@ pub(crate) mod tests {
         let mut calc = Calc::new();
         calc.rebuild(&wb);
         // A1 is a value, so it is no node of the graph and the closure starts at what reads it.
-        let closure = calc.dirty_closure(&wb, &[(0, at("A1"))]);
+        let closure = calc.dirty_closure(&wb, &[(0, at("A1"))], None);
         let mut sorted = closure.clone();
         sorted.sort_unstable();
         let mut once = sorted.clone();
@@ -2395,6 +2480,65 @@ pub(crate) mod tests {
         deps.clear();
         calc.graph.dependents(0, at("D1"), &mut deps);
         assert_eq!(deps, vec![(0, at("E1")), (1, at("A1"))], "the cross-sheet dependent is found");
+    }
+
+    /// A seed hint that names no formula — an edit whose changed cells are all values — stops the
+    /// closure probing the graph for them and leaves its answer exactly what it was without one.
+    /// This is the sort's values-only block: every changed cell is a seed, none can be a node.
+    #[test]
+    fn an_empty_seed_hint_probes_no_cell_and_finds_the_same_dependents() {
+        let mut wb = Workbook::new();
+        let at = |s: &str| CellRef::parse(s).unwrap();
+        if let Some(sh) = wb.sheet_mut(0) {
+            sh.cells.set(at("A1"), Cell::value(Value::Number(3.0)));
+            sh.cells.set(at("A2"), Cell::value(Value::Number(4.0)));
+            sh.cells.set(at("B1"), Cell::formula(Formula::new("=A1*2")));
+            sh.cells.set(at("C1"), Cell::formula(Formula::new("=B1+A2")));
+        }
+        let mut calc = Calc::new();
+        calc.rebuild(&wb);
+        let seeds: Vec<Key> = vec![(0, at("A1")), (0, at("A2"))];
+        reset_node_probes();
+        let probed = calc.dirty_closure(&wb, &seeds, None);
+        assert_eq!(node_probes(), seeds.len(), "without a hint every seed is probed");
+        assert_eq!(probed, vec![(0, at("B1")), (0, at("C1"))], "A1 feeds B1, A2 feeds C1, B1 feeds C1");
+
+        reset_node_probes();
+        let hinted = calc.dirty_closure(&wb, &seeds, Some(&[]));
+        assert_eq!(node_probes(), 0, "an empty hint asks the graph about nothing");
+        assert_eq!(hinted, probed, "the same dependents, in the same order");
+    }
+
+    /// A hint that names the formulas among the changed cells queues them as formulas, and the
+    /// cells it leaves out are still walked: a formula that reads a moved value is still found.
+    #[test]
+    fn a_seed_hint_keeps_every_dependent_of_the_cells_it_leaves_out() {
+        let mut wb = Workbook::new();
+        let at = |s: &str| CellRef::parse(s).unwrap();
+        if let Some(sh) = wb.sheet_mut(0) {
+            // A1 and B1 both changed; B1 is the only formula among them. D1 is outside the edit and
+            // reads the value, so only A1's dependents walk can reach it.
+            sh.cells.set(at("A1"), Cell::value(Value::Number(3.0)));
+            sh.cells.set(at("B1"), Cell::formula(Formula::new("=A1*2")));
+            sh.cells.set(at("D1"), Cell::formula(Formula::new("=A1+1")));
+            sh.cells.set(at("E1"), Cell::formula(Formula::new("=D1+B1")));
+        }
+        let mut calc = Calc::new();
+        calc.rebuild(&wb);
+        let seeds: Vec<Key> = vec![(0, at("A1")), (0, at("B1"))];
+        let full = calc.dirty_closure(&wb, &seeds, None);
+        reset_node_probes();
+        let hinted = calc.dirty_closure(&wb, &seeds, Some(&[(0, at("B1"))]));
+        assert_eq!(node_probes(), 0, "the hint covers the only seed that could be a node");
+        let (mut sorted_full, mut sorted_hint) = (full.clone(), hinted.clone());
+        sorted_full.sort_unstable();
+        sorted_hint.sort_unstable();
+        assert_eq!(sorted_hint, sorted_full, "the same cells, whichever way the walk reached them");
+        for wanted in ["B1", "D1", "E1"] {
+            assert!(sorted_hint.contains(&(0, at(wanted))), "{wanted} missing: {hinted:?}");
+        }
+        // The order does differ: the hint queues its formulas before it walks the seeds.
+        assert_eq!(hinted.first(), Some(&(0, at("B1"))), "{hinted:?}");
     }
 
     /// The seen-set the closure relies on: a bit each while the cells of a sheet fit a box, the box
@@ -3212,11 +3356,11 @@ pub(crate) mod tests {
         let mut dense = Calc::new();
         dense.rebuild(&wb);
         assert!(dense.graph.has_dense_index(0), "2,000 precedents fill a box");
-        let dense_dirty = dense.dirty_closure(&wb, &seeds);
+        let dense_dirty = dense.dirty_closure(&wb, &seeds, None);
         assert!(dense_dirty.len() > 1_900, "the whole chain is behind B1: {}", dense_dirty.len());
 
         let mut sparse = sparse_twin(&wb);
-        let sparse_dirty = sparse.dirty_closure(&wb, &seeds);
+        let sparse_dirty = sparse.dirty_closure(&wb, &seeds, None);
         assert_eq!(dense_dirty, sparse_dirty, "the same cells, in the same order");
         assert_same_index(&dense, &sparse);
 
