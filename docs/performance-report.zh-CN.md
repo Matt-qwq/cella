@@ -1,6 +1,6 @@
 # 性能报告
 
-> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `ccce92d`（2026-11-21）。
+> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `9608d53`（2026-11-21）。
 > 机器：windows x86_64；rustc 1.97.1 (8bab26f4f 2026-07-14)。所有数字都是同一台空闲机器上的墙钟时间，本机跑动之间波动约 10%，
 > 这也是门禁预算取"安静一次的两倍"的原因。方法与口径见 [performance.md](performance.md)。
 
@@ -12,31 +12,31 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      143 ms     250 ms     57%
-fill.formulas          100000      166 ms     290 ms     57%
-fill.chained           100000      263 ms     370 ms     71%
-aggregate              100000       66 ms     110 ms     60%
-edit.recalc            100000       88 ms     160 ms     55%
-edit.undo              100000      100 us     3.0 ms      3%
-sort.desc              100000      294 ms     580 ms     51%
-save.xlsx              100000      181 ms     300 ms     60%
-open.xlsx              100000      341 ms     520 ms     66%
-rebuild.graph          100000       60 ms     110 ms     55%
-open.csv               100000       66 ms     130 ms     51%
-fill.values           1000000      1.64 s     3.05 s     54%
-fill.formulas         1000000      1.36 s     2.55 s     53%
-fill.chained          1000000      2.02 s     3.55 s     57%
-aggregate             1000000      438 ms     1.15 s     38%
-edit.recalc           1000000      710 ms     1.45 s     49%
-edit.undo             1000000      1.5 ms      52 ms      3%
-sort.desc             1000000      2.97 s     6.70 s     44%
-save.xlsx             1000000      1.83 s     3.40 s     54%
-open.xlsx             1000000      3.33 s     5.90 s     56%
-rebuild.graph         1000000      794 ms     1.45 s     55%
-open.csv              1000000      730 ms     1.25 s     58%
-save.repeat            100000      149 ms     370 ms     40%
-save.repeat           1000000      1.76 s     3.20 s     55%
-mem_drift              100000      4.6 ms      11 ms     42%
+fill.values            100000      114 ms     250 ms     45%
+fill.formulas          100000      127 ms     290 ms     44%
+fill.chained           100000      177 ms     370 ms     48%
+aggregate              100000       48 ms     110 ms     44%
+edit.recalc            100000       61 ms     160 ms     38%
+edit.undo              100000      200 us     3.0 ms      7%
+sort.desc              100000      181 ms     580 ms     31%
+save.xlsx              100000      147 ms     300 ms     49%
+open.xlsx              100000      244 ms     520 ms     47%
+rebuild.graph          100000       49 ms     110 ms     44%
+open.csv               100000       62 ms     130 ms     47%
+fill.values           1000000      1.34 s     3.05 s     44%
+fill.formulas         1000000      1.13 s     2.55 s     44%
+fill.chained          1000000      1.56 s     3.55 s     44%
+aggregate             1000000      336 ms     1.15 s     29%
+edit.recalc           1000000      550 ms     1.45 s     38%
+edit.undo             1000000      1.4 ms      52 ms      3%
+sort.desc             1000000      1.89 s     6.70 s     28%
+save.xlsx             1000000      1.67 s     3.40 s     49%
+open.xlsx             1000000      2.69 s     5.90 s     46%
+rebuild.graph         1000000      683 ms     1.45 s     47%
+open.csv              1000000      574 ms     1.25 s     46%
+save.repeat            100000      141 ms     370 ms     38%
+save.repeat           1000000      1.59 s     3.20 s     50%
+mem_drift              100000      3.3 ms      11 ms     30%
 
 OK: all 25 scenarios within budget (xtask/perf-budgets.txt)
 
