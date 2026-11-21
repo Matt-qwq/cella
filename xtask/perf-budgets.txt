@@ -19,6 +19,7 @@ rebuild.graph   100000  110
 save.repeat     100000  370
 save.xlsx       100000  300
 sort.desc       100000  580
+sort.formulas   100000  760
 aggregate      1000000  1150
 edit.recalc    1000000  1450
 edit.undo      1000000  52
@@ -31,3 +32,4 @@ rebuild.graph  1000000  1450
 save.repeat    1000000  3200
 save.xlsx      1000000  3400
 sort.desc      1000000  6700
+sort.formulas  1000000  8650

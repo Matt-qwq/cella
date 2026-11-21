@@ -44,6 +44,7 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("edit.recalc", "edit one cell and recalculate what depends on it", edit_recalc),
     ("edit.undo", "undo that edit", edit_undo),
     ("sort.desc", "sort rows by one column, descending", sort_desc),
+    ("sort.formulas", "sort a body that holds formulas, so they move with their rows", sort_formulas),
     ("save.xlsx", "save the workbook as xlsx", save_xlsx),
     ("open.xlsx", "open those bytes again (full recalc)", open_xlsx),
     ("rebuild.graph", "rebuild the dependency graph from the workbook (no recalculation)", rebuild_graph),
@@ -344,6 +345,19 @@ fn edit_undo(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
 fn sort_desc(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
     let ((), ms) = timed(|| b.exec("data.sortDescending", json!({"range": format!("A1:F{rows}"), "column": "C"})).map(|_| ()))?;
     Ok((format!("{rows} rows by column C, descending"), ms))
+}
+
+/// Sorting a body that *holds* formulas: \`G\` and the chained \`H\` move with their rows, so the
+/// recalculation re-points every formula's precedents instead of leaving the graph alone. The
+/// values-only sort above cannot see this — its body is A:F — and a real table has formulas in it,
+/// so this is the shape whose cost the gate has to keep.
+fn sort_formulas(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| {
+        // Column B, not C: `sort.desc` above has just ordered the sheet by C, and a sort over
+        // already-ordered keys measures nothing. B carries the same rows in a different order.
+        b.exec("data.sortDescending", json!({ "range": format!("A1:H{rows}"), "column": "B" })).map(|_| ())
+    })?;
+    Ok((format!("{rows} rows with formulas by column B, descending"), ms))
 }
 
 fn save_xlsx(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
