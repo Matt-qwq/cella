@@ -931,6 +931,47 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 30: the sort's two remaining kernels (2026-11-21)
+
+Round 28 took the sort −12.6 %; the attribution said the money was in gather (789 ms) and write
+(819 ms) of a 1M-row sort, and two more knives took them to 228–281 and 445–469 ms. Eight-pair
+sign test on a quiet machine (`target/r30-ab/plan/ab-r30-*.csv`):
+
+| case | base | cand | delta | fav | p | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| `sort.desc` 1M | 2,656 ms | **1,931 ms** | **−27.30 %** | 8/8 | 0.0039 | **GAIN** (t = −40.19) |
+| `sort.desc` 100k | 250 ms | **203 ms** | **−18.85 %** | 8/8 | 0.0039 | **GAIN** |
+| `fill.values` / `edit.recalc` 1M | 1,516 / 593 | 1,503 / 581 | −0.9 % / −2.1 % | 5/8, 6/8 | 0.36, 0.15 | no regression |
+
+1. **A rewritten cell whose runs did not move stops re-walking the band's stripe offsets**
+   (`a5a7c86`, model): `Band::put` called `shift_offsets` unconditionally, and that walks all 64
+   rows of the band — 6M cells × 64 = 384M row visits in one sort. Only a cell whose kind/style run
+   length actually changed needs them. The row write-back's used-box also took three exclusive
+   locks a row; one. Write 819 → 445–469 ms (−45 %).
+2. **A sort reads its body in source order and scatters each line into its destination slot**
+   (`f581cc7`, engine): it used to read the source rows *in destination order*, which is one
+   random band hop a row (the store packs cells into bands) — 1M random stripe visits. Reading in
+   source order walks the bands once, and each line writes its six cells into the destination
+   buffer. The write-back stays in destination order and band-local, which is the red line the
+   rejected cycle permutation broke. Gather 789 → 228–281 ms (−65 %).
+
+**Rejected on measurement:** rebuilding whole rows at band level instead of putting cells one at a
+time, in two shapes (re-serialize the band: 750 ms; splice lanes in place: 478–580 ms) — both
+slower than the 455 ms per-cell path, because band copies are shared with undo snapshots, row
+extras get rebuilt, and the columns outside the sorted block have to be laid down again. Reverted
+uncommitted.
+
+Gate after the merge: **25/25**, `sort.desc` 1M **2.06 s** (31 % of budget) and 100k **226 ms**
+(39 %). model 171, engine 625, the fuzz gate 3/3, wasm ok, fmt and clippy clean;
+`sort_roundtrip`'s three modes agree at 1M (values 641–643 ms, embedded 2,130–2,349, outside
+1,092–1,166) and the package checksums match. Two rounds of sort work took the gate's 1M number
+from **3.80 s to 2.06 s**.
+
+**Still open:** a formula-bearing body's moved-formula relabel (embedded 2.13–2.35 s against
+values 0.64 s — about 1.5 s of node re-insertion, and the gate never sees it), and the write
+back's remaining ~450 ms (undo-shared band copies ~45, per-cell value dictionaries ~36, the rest
+is `put`'s bookkeeping).
+
 ## Round 29: the memory a performance win had quietly borrowed (2026-11-21)
 
 Re-measuring the live heap after round 28 caught a **regression nothing else would have caught**:
@@ -1021,7 +1062,12 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-21 (round 29, the borrowed memory):** the heap re-measured 1.23 GB against the 884 MB
+- **2026-11-21 (round 30, the sort's kernels):** `Band::put` stops re-walking stripe offsets
+  when a cell's runs did not move (384M row visits a sort) and the sort reads its body in source
+  order instead of destination order (one random band hop a row): **1M sort 2,656 → 1,931 ms
+  (−27.30 %, 8/8, p=0.0039, t=−40.19)**, 100k −18.85 % (8/8); band-level row rebuild was built
+  and reverted (750 / 478–580 ms against 455). Gate 25/25, `sort.desc` 1M at 2.06 s — 3.80 → 2.06
+  across two rounds. Earlier: **2026-11-21 (round 29, the borrowed memory):** the heap re-measured 1.23 GB against the 884 MB
   record and the difference was round 26's deferred release holding two evicted snapshots for a
   user who never issues a later command. An idle frame now drains them
   (`Session::release_deferred`, `SheetApp::release_idle`), the report grew a `pending_release`

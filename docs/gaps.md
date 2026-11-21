@@ -357,6 +357,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 30): the sort's gather and write, −27.3 % more.** Reading the body in
+  **source order** instead of destination order removed one random band hop a row (gather 789 →
+  228–281 ms), and `Band::put` stopped re-walking a band's stripe offsets (384M row visits a sort)
+  when a cell's run lengths did not change (write 819 → 445–469 ms): **1M `sort.desc` 2,656 →
+  1,931 ms (−27.30 %, 8/8, p = 0.0039, t = −40.19)**, 100k 250 → 203 (−18.85 %, 8/8), bystanders
+  in the noise. Rejected on measurement: rebuilding whole rows at band level (750 ms and
+  478–580 ms against the 455 ms per-cell path). With round 28 the gate's 1M sort went **3.80 s →
+  2.06 s**; gate 25/25. Still open: the moved-formula relabel for a formula body (embedded
+  2.13–2.35 s against values 0.64 s, invisible to the gate), and the write's remaining ~450 ms.
 - **Landed (11-21, round 29): a memory regression a performance win had borrowed, found by
   re-measuring.** The live heap reported **1.23 GB** against the 884 MB record and the whole
   difference was the `history / undo` line, because round 26's deferred release keeps up to two
