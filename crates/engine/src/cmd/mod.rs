@@ -462,6 +462,10 @@ pub struct Ctx<'a> {
     /// The command applied sheet protection itself (row/column inserts and deletes the
     /// protection allows), so cells it shifts aren't refused as edits of locked cells.
     pub protection_checked: bool,
+    /// The edit held no formula at any changed cell and left none there (a sort of a block that
+    /// carries values only): the dependency graph's nodes are exactly what they were, so the
+    /// recalculation has to find the dependents of the changed cells but has nothing to re-index.
+    pub formulas_unchanged: bool,
 }
 
 pub(crate) fn edit<R>(s: &mut Session, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
@@ -487,9 +491,10 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
         sel: &mut sel,
         fit_rows: Vec::new(),
         protection_checked: false,
+        formulas_unchanged: false,
     };
     let r = f(&mut ctx)?;
-    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, .. } = ctx;
+    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, formulas_unchanged, .. } = ctx;
     check_chart_sheets(&d.wb, &wb)?;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
@@ -517,7 +522,11 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
             if let Some(started) = used_started {
                 eprintln!("commit: used range {:?} ({} sheets)", started.elapsed(), used.len());
             }
-            d.calc.cells_changed_with_used(&mut wb, &changed, &used);
+            if formulas_unchanged {
+                d.calc.cells_changed_values_only(&mut wb, &changed, &used);
+            } else {
+                d.calc.cells_changed_with_used(&mut wb, &changed, &used);
+            }
         }
         if visibility {
             d.calc.visibility_changed(&mut wb);

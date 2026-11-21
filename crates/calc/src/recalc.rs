@@ -1245,6 +1245,19 @@ impl Calc {
     /// column or row, `SUM(A:A)`, `=23:26`) are evaluated again, because the cells they read
     /// changed without any of them being named as a precedent.
     pub fn cells_changed_with_used(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
+        self.cells_changed_impl(wb, changed, used_changed, false);
+    }
+
+    /// [`cells_changed_with_used`](Self::cells_changed_with_used) for an edit that neither added
+    /// nor removed a formula at any changed cell — a sort of a block that carries values only. The
+    /// graph's nodes are exactly what they were, so the per-cell formula probe and the graph update
+    /// are the only work skipped: the cells are still seeds, and their dependents are still
+    /// recalculated.
+    pub fn cells_changed_values_only(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize]) {
+        self.cells_changed_impl(wb, changed, used_changed, true);
+    }
+
+    fn cells_changed_impl(&mut self, wb: &mut Workbook, changed: &[Key], used_changed: &[usize], values_only: bool) {
         self.parallel_fallback = false;
         let mut cleared: Vec<(usize, RangeRef)> = Vec::new();
         // A bulk edit — a fill, a paste of a column of formulas — inserts many nodes at once, and
@@ -1281,36 +1294,38 @@ impl Calc {
         // stored either, no cell can depend on the change and the pass below has nothing to plan.
         let mut formulas = false;
         let mut shapes = cella_formula::ShapeTable::default();
-        for &k in changed {
-            let formula = wb.sheet(k.0).and_then(|s| s.cells.formula(k.1));
-            formulas |= formula.is_some();
-            let parsed = formula.as_ref().and_then(|f| self.node_for(wb, k.0, k.1, f, &mut shapes));
-            match parsed {
-                Some((node, _keep)) => {
-                    let legacy = formula.as_ref().and_then(|f| f.array.as_deref().copied());
-                    let areas = std::mem::take(&mut self.scratch_areas);
-                    self.graph.insert(k, &areas, legacy, node);
-                    self.scratch_areas = areas;
-                }
-                None => {
-                    self.graph.remove(k);
-                    // A formula replaced by a constant (or cleared) takes its spilled values with it.
-                    if let Some(sh) = wb.sheet_mut(k.0)
-                        && let Some(r) = sh.spill_ranges.remove(&k.1)
-                    {
-                        for c in r.iter() {
-                            sh.spill.remove(&c);
-                        }
-                        cleared.push((k.0, r));
+        if !values_only {
+            for &k in changed {
+                let formula = wb.sheet(k.0).and_then(|s| s.cells.formula(k.1));
+                formulas |= formula.is_some();
+                let parsed = formula.as_ref().and_then(|f| self.node_for(wb, k.0, k.1, f, &mut shapes));
+                match parsed {
+                    Some((node, _keep)) => {
+                        let legacy = formula.as_ref().and_then(|f| f.array.as_deref().copied());
+                        let areas = std::mem::take(&mut self.scratch_areas);
+                        self.graph.insert(k, &areas, legacy, node);
+                        self.scratch_areas = areas;
                     }
-                    // Only an unparseable formula needs its cached value replaced with #NAME?.
-                    if formula.is_some()
-                        && let Some(sheet) = wb.sheet_mut(k.0)
-                        && let Some(mut cell) = sheet.cells.get(k.1)
-                        && cell.formula.is_some()
-                    {
-                        cell.value = Value::Error(CellError::Name);
-                        sheet.cells.set(k.1, cell);
+                    None => {
+                        self.graph.remove(k);
+                        // A formula replaced by a constant (or cleared) takes its spilled values with it.
+                        if let Some(sh) = wb.sheet_mut(k.0)
+                            && let Some(r) = sh.spill_ranges.remove(&k.1)
+                        {
+                            for c in r.iter() {
+                                sh.spill.remove(&c);
+                            }
+                            cleared.push((k.0, r));
+                        }
+                        // Only an unparseable formula needs its cached value replaced with #NAME?.
+                        if formula.is_some()
+                            && let Some(sheet) = wb.sheet_mut(k.0)
+                            && let Some(mut cell) = sheet.cells.get(k.1)
+                            && cell.formula.is_some()
+                        {
+                            cell.value = Value::Error(CellError::Name);
+                            sheet.cells.set(k.1, cell);
+                        }
                     }
                 }
             }

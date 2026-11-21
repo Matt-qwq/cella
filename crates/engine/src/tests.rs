@@ -1638,6 +1638,120 @@ fn sort_recalculates_the_rows_it_moved() {
     assert_eq!(v(&s, "E3"), Value::Number(3.0));
 }
 
+/// A sort moves its block by rewriting its rows in place, so a block with fixed points, several
+/// cycles, absent cells, formulas, styles and notes must come through the move, undo, redo and a
+/// save/reopen exact — no row may be read after the move has overwritten it.
+#[test]
+fn sort_permutes_rows_in_place_with_holes_formulas_styles_and_notes() {
+    // Keys 3,0,2,1,3,0,2,1 sorted descending are dst [row0, row4, row2, row6, row3, row7, row1,
+    // row5]: rows 0 and 2 stay put, 4->1->6->3->4 and 7->5->7 are cycles, and B is absent on
+    // source row 4, which lands on row 1 (a destination whose B still holds a value).
+    let keys = [3, 0, 2, 1, 3, 0, 2, 1];
+    let numbers = [10, 20, 30, 40, 50, 60, 70, 80];
+    let order = [0usize, 4, 2, 6, 3, 7, 1, 5];
+    let mut s = s();
+    let rows: Vec<serde_json::Value> = (0..8)
+        .map(|r| {
+            let b = if r == 4 { serde_json::Value::Null } else { json!(numbers[r]) };
+            json!([keys[r], b, format!("=B{}*2", r + 1), format!("label {r}")])
+        })
+        .collect();
+    s.execute("range.setValues", json!({"range": "A1:D8", "values": rows})).unwrap();
+    s.execute("home.bold", json!({"range": "A6:D6", "on": true})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "D1:D8", "code": "@"})).unwrap();
+    s.execute("review.newNote", json!({"cell": "B2", "text": "row 2", "author": "Example"})).unwrap();
+    s.execute("cell.set", json!({"cell": "F1", "input": "=SUM(B1:B8)"})).unwrap();
+    s.execute("cell.set", json!({"cell": "F2", "input": "=C2+1"})).unwrap();
+
+    let snapshot = |s: &Session| {
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        let cells: Vec<(Value, Option<String>, bool)> = (0..8)
+            .map(|r| {
+                let c = CellRef::new(r, 1);
+                let cell = sh.cell(c);
+                let bold = d.wb.styles.get(sh.style_id(c)).font.bold;
+                let text = sh.cell(CellRef::new(r, 2)).and_then(|x| x.formula.map(|f| f.text.clone()));
+                (cell.map_or(Value::Empty, |x| x.value), text, bold)
+            })
+            .collect();
+        let note = sh.comments.get(&CellRef::new(1, 1)).map(|c| c.text.clone());
+        (cells, note)
+    };
+    let before = snapshot(&s);
+
+    let r = s.execute("data.sort", json!({"range": "A1:D8", "keys": [{"column": "A", "order": "desc"}]})).unwrap();
+    assert_eq!(r["sorted"], "A1:D8");
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    for (dst, &src) in order.iter().enumerate() {
+        let row = dst as u32;
+        assert_eq!(sh.value(CellRef::new(row, 0)), Value::Number(f64::from(keys[src])), "A of destination {dst}");
+        let b = sh.cell(CellRef::new(row, 1));
+        if src == 4 {
+            assert!(b.is_none(), "the hole in B moved with its row: {b:?}");
+        } else {
+            assert_eq!(b.map(|x| x.value), Some(Value::Number(f64::from(numbers[src]))), "B of destination {dst}");
+        }
+        let c = sh.cell(CellRef::new(row, 2)).expect("the formula moved with its row");
+        let expected_text = format!("B{}*2", dst + 1);
+        assert_eq!(c.formula.as_ref().map(|f| f.text.as_str()), Some(expected_text.as_str()), "C text of destination {dst}");
+        let expected = if src == 4 { Value::Number(0.0) } else { Value::Number(f64::from(numbers[src]) * 2.0) };
+        assert_eq!(c.value, expected, "C value of destination {dst}");
+        assert_eq!(d.wb.styles.get(sh.style_id(CellRef::new(row, 1))).font.bold, src == 5, "bold follows source row 5 to destination 7");
+        assert_eq!(
+            sh.comments.get(&CellRef::new(row, 1)).map(|m| m.text.as_str()),
+            (dst == 6).then_some("row 2"),
+            "the note follows source row 1 to destination 6"
+        );
+    }
+    assert_eq!(sh.value(CellRef::parse("F1").unwrap()), Value::Number(310.0), "the dependent outside recalculated");
+    assert_eq!(sh.value(CellRef::parse("F2").unwrap()), Value::Number(1.0), "the chain outside recalculated");
+
+    // Undo puts every row (and the hole, style and note) back, and redo returns the sorted state.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(snapshot(&s), before, "undo restores the block exactly");
+    s.execute("edit.redo", json!({})).unwrap();
+
+    // Saving the sorted workbook and opening it again keeps the values and the formulas' text.
+    let bytes = crate::io::save_bytes(&s.doc().unwrap().wb, "book.xlsx").unwrap();
+    let (back, _) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
+    let reopened = back.active().unwrap();
+    for (dst, &src) in order.iter().enumerate() {
+        let row = dst as u32;
+        let b = reopened.cell(CellRef::new(row, 1));
+        if src == 4 {
+            assert!(b.is_none(), "the hole survives save/reopen");
+        } else {
+            assert_eq!(b.map(|x| x.value), Some(Value::Number(f64::from(numbers[src]))));
+        }
+        let expected_text = format!("B{}*2", dst + 1);
+        assert_eq!(reopened.cell(CellRef::new(row, 2)).and_then(|x| x.formula).as_ref().map(|f| f.text.as_str()), Some(expected_text.as_str()));
+    }
+}
+
+/// A sort of a block that carries no formula tells the commit nothing in the graph moved, so
+/// the recalculation skips the per-cell graph update: the formulas that read the block must still
+/// be found (and recalculated), and a later edit of a sorted cell must still reach them.
+#[test]
+fn a_values_only_sort_leaves_the_graph_working() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:B4", "values": [[3, 10], [1, 20], [4, 30], [2, 40]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "D1", "input": "=SUM(B1:B4)"})).unwrap();
+    s.execute("cell.set", json!({"cell": "E1", "input": "=B1+1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "E2", "input": "=E1*2"})).unwrap();
+    s.execute("data.sort", json!({"range": "A1:B4", "keys": [{"column": "A"}]})).unwrap();
+    // B is [20, 40, 10, 30] after the ascending sort, and the dependents outside saw it.
+    assert_eq!(v(&s, "D1"), Value::Number(100.0), "the sum was recalculated");
+    assert_eq!(v(&s, "E1"), Value::Number(21.0), "a per-cell dependent was recalculated");
+    assert_eq!(v(&s, "E2"), Value::Number(42.0), "and its chain was");
+    // The graph still links the block to its readers: an edit of a sorted cell reaches them.
+    s.execute("cell.set", json!({"cell": "B1", "input": "5"})).unwrap();
+    assert_eq!(v(&s, "D1"), Value::Number(85.0));
+    assert_eq!(v(&s, "E1"), Value::Number(6.0));
+    assert_eq!(v(&s, "E2"), Value::Number(12.0));
+}
+
 #[test]
 fn remove_duplicates_compares_shown_text() {
     let mut s = s();

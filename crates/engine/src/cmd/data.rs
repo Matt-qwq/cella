@@ -463,6 +463,10 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // A legacy array or a dynamic array re-spills from its new anchor, and the cells it spilled
         // are derived state the permutation does not move.
         let mut body_arrays = false;
+        // Whether the block held a formula at all: when it did not, the permutation carries values
+        // only and the recalculation can skip the graph update every changed cell would pay for
+        // (see Calc::cells_changed_values_only).
+        let mut body_had_formula = false;
         let row_reader = (!by_cols).then(|| sh.cells.row_reader(body.start.col, body.end.col));
         let has_pictures = !sh.cell_pictures.is_empty();
         for (dst_i, &src_i) in order.iter().enumerate() {
@@ -473,6 +477,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 moved.extend(lanes.iter().map(|&k| sh.cell(line(src_i, k))));
             }
             for (&k, cell) in lanes.iter().zip(moved.get_mut(start..).into_iter().flatten()) {
+                body_had_formula |= cell.as_ref().is_some_and(|c| c.formula.is_some());
                 if let Some(c) = cell.as_mut()
                     && let Some(f) = &c.formula
                 {
@@ -621,6 +626,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // workbook holds a formula there is nothing for that list to recalculate, and its only
         // other reader is row fitting, which a commit only takes up to 200k cells — so a big sort
         // of plain data skips building six million entries nothing reads.
+        cx.formulas_unchanged = !body_had_formula;
         if body.count() <= 200_000 || any_formulas {
             cx.changed.extend(body.iter().map(|c| (sheet, c)));
         }
