@@ -912,9 +912,10 @@ Two knives, both certified by the eight-pair sign test on a quiet machine
    write, `row_or_insert` asks the O(1) `row_bits` popcount before the binary search, and a batch
    already in column order is not sorted again. Write phase 738 → 652 ms.
 2. **A values-only sort tells the recalculation the graph did not move** (`d760296`): when the
-   sorted body holds no formulas the commit goes through `Calc::cells_changed_values_only`, which
-   skips 6M per-cell `formula()` probes and the matching graph removals while keeping the same
-   seeds and the same dependents. The per-cell segment 282 → 12 ms.
+   sorted body holds no formulas the commit skips the 6M per-cell `formula()` probes and the
+   matching graph removals while keeping the same seeds and the same dependents (round 31 widened
+   this into `Calc::cells_moved`, which also takes the handful of addresses whose formula shape
+   really did change; a values-only sort passes an empty list). The per-cell segment 282 → 12 ms.
 
 **Rejected on measurement:** an in-place cycle permutation (save the rows about to be overwritten,
 walk the permutation) looked like it would remove the 288 MB scratch buffer; it made the write
