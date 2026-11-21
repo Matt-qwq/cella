@@ -1,6 +1,6 @@
 # 性能报告
 
-> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `d89389b`（2026-11-21）。
+> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `65bcef4`（2026-11-21）。
 > 机器：windows x86_64；rustc 1.97.1 (8bab26f4f 2026-07-14)。所有数字都是同一台空闲机器上的墙钟时间，本机跑动之间波动约 10%，
 > 这也是门禁预算取"安静一次的两倍"的原因。方法与口径见 [performance.md](performance.md)。
 
@@ -12,35 +12,37 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      120 ms     250 ms     48%
-fill.formulas          100000      128 ms     290 ms     44%
-fill.chained           100000      177 ms     370 ms     48%
-aggregate              100000       57 ms     110 ms     52%
-edit.recalc            100000       78 ms     160 ms     49%
-edit.undo              100000      100 us     3.0 ms      3%
-sort.desc              100000      201 ms     580 ms     35%
-sort.formulas          100000      293 ms     760 ms     38%
-save.xlsx              100000      152 ms     300 ms     50%
-open.xlsx              100000      285 ms     520 ms     55%
-rebuild.graph          100000       57 ms     110 ms     52%
-open.csv               100000       72 ms     130 ms     55%
-fill.values           1000000      2.10 s     3.05 s     69%
-fill.formulas         1000000      1.23 s     2.55 s     48%
-fill.chained          1000000      1.69 s     3.55 s     48%
-aggregate             1000000      379 ms     1.15 s     33%
-edit.recalc           1000000      582 ms     1.45 s     40%
-edit.undo             1000000      1.4 ms      52 ms      3%
-sort.desc             1000000      1.92 s     6.70 s     29%
-sort.formulas         1000000      2.98 s     8.65 s     35%
-save.xlsx             1000000      1.65 s     3.40 s     49%
-open.xlsx             1000000      3.43 s     5.90 s     58%
-rebuild.graph         1000000      840 ms     1.45 s     58%
-open.csv              1000000      779 ms     1.25 s     62%
-save.repeat            100000      159 ms     370 ms     43%
-save.repeat           1000000      1.89 s     3.20 s     59%
-mem_drift              100000      3.8 ms      11 ms     34%
+fill.values            100000      159 ms     250 ms     64%
+fill.formulas          100000      170 ms     290 ms     59%
+fill.chained           100000      219 ms     370 ms     59%
+fill.autofill          100000       98 ms     190 ms     52%
+aggregate              100000       68 ms     110 ms     62%
+edit.recalc            100000       95 ms     160 ms     59%
+edit.undo              100000      200 us     3.0 ms      7%
+sort.desc              100000      256 ms     580 ms     44%
+sort.formulas          100000      392 ms     760 ms     52%
+save.xlsx              100000      195 ms     300 ms     65%
+open.xlsx              100000      407 ms     520 ms     78%
+rebuild.graph          100000       68 ms     110 ms     62%
+open.csv               100000       90 ms     130 ms     69%
+fill.values           1000000      1.51 s     3.05 s     50%
+fill.formulas         1000000      1.39 s     2.55 s     55%
+fill.chained          1000000      1.96 s     3.55 s     55%
+fill.autofill         1000000      422 ms     885 ms     48%
+aggregate             1000000      414 ms     1.15 s     36%
+edit.recalc           1000000      663 ms     1.45 s     46%
+edit.undo             1000000      2.1 ms      52 ms      4%
+sort.desc             1000000      2.27 s     6.70 s     34%
+sort.formulas         1000000      3.88 s     8.65 s     45%
+save.xlsx             1000000      3.39 s     3.40 s    100%
+open.xlsx             1000000      4.41 s     5.90 s     75%
+rebuild.graph         1000000      940 ms     1.45 s     65%
+open.csv              1000000      775 ms     1.25 s     62%
+save.repeat            100000      189 ms     370 ms     51%
+save.repeat           1000000      2.28 s     3.20 s     71%
+mem_drift              100000      4.0 ms      11 ms     36%
 
-OK: all 27 scenarios within budget (xtask/perf-budgets.txt)
+OK: all 29 scenarios within budget (xtask/perf-budgets.txt)
 
 ```
 
