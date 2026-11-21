@@ -357,6 +357,19 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 31): the sort's formula side, −28.94 %.** The gate only saw a values
+  sort, so a new scenario (`sort.formulas`, sorting `A1:H` by column B with the `G`/`H` formulas in
+  the block) was added before the work: **4.19 s at 1M** against 1.91 for the values sort, and the
+  attribution put **1.66 s of that 2.64 s difference into bookkeeping** (graph re-index 1,170 ms,
+  re-printing 487) and 0.36 into real recalculation. A sort now re-indexes **only the addresses
+  whose formula shape changed** — a permutation that hands an address back the same shape needs no
+  node work at all (pointer identity per row, at most eight patterns, per-cell fallback;
+  `Calc::cells_moved`) — and `print_at` stops paying `core::fmt` a reference. **1M `sort.formulas`
+  4,613 → 3,278 ms (−28.94 %, 8/8), 100k 421 → 316 (−24.94 %)**, values sort and `edit.recalc` in
+  the noise; gate **27/27**, `sort.formulas` at 3.44 s (40 %), embedded 2.13–2.35 → 1.66 s. Left:
+  the dirty closure over 8M seeds (591 ms; it cannot tell which changed cells hold no formula),
+  `write_cells` (854 ms at the values path's per-cell price), and ~140 ns a formula of `String` +
+  `Arc` churn that the one-text-a-cell model implies.
 - **Landed (11-21, round 30): the sort's gather and write, −27.3 % more.** Reading the body in
   **source order** instead of destination order removed one random band hop a row (gather 789 →
   228–281 ms), and `Band::put` stopped re-walking a band's stripe offsets (384M row visits a sort)

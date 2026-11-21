@@ -931,6 +931,55 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 31: the sort's formula side, now that the gate can see it (2026-11-21)
+
+The gate only measured a **values** sort (`A1:F`), and a real table's sorted block holds formulas.
+`sort.formulas` sorts `A1:H` by column B — `G = B*C+D` and the chained `H` move with their rows —
+and it cost **4.19 s at 1M** against the values sort's 1.91 s.
+
+Attribution first (1M, 8M rewritten cells of which 2M are formulas):
+
+| stage | ms | |
+|---|---:|---|
+| gather (source-order read + `Formula::copied_to`) | 789 | of which **487 ms is re-printing** 2M texts at 243 ns each |
+| write cells | 854 | 110 ns a cell — the same price the values sort pays; the extra is 8 columns, not formulas |
+| **the sort itself** | **1,816** | |
+| graph update loop (8M per-cell visits) | **1,114** | `node_for` 164, insert/remove 496, and ~450 of `formula()` probes that miss |
+| graph settle (arena compaction) | 56 | garbage left by 2M node unlinks |
+| dirty closure (8M seeds → 2M dirty) | 591 | |
+| run (2M formulas really evaluated) | 858 | eval 690 + write 172 |
+
+So the formula body costs **2.64 s more** than the values body, and only 0.36 s of that is real
+work: **1.66 s is bookkeeping for rows having moved** (1.17 graph, 0.49 printing).
+
+**Knife A — a sort re-indexes only the addresses whose formula shape changed** (`eaf8480`). A graph
+node is *(shape, address)*: what a formula reads is its relative offsets resolved at its cell. A
+permutation that hands an address back **the same shape** needs no work at all — not a translated
+node, none. Gather now records, per row, the shape identity before and after the move (pointer
+equality; a dedup table of up to eight patterns, falling back to the per-cell path beyond that),
+and only the addresses whose pattern changed are handed to the new
+`Calc::cells_moved(wb, changed, used, relabelled)`; the other 8M cells are still seeds, so every
+dependent still recalculates. In the gate's block **two addresses** change shape (the chain head
+moved, and one chain cell landed on row 1, whose relative reference crosses the top and becomes
+Excel's `#REF!` private shape). Graph update 1,114 + 56 → **0 ms**; 1M 4,613 → 3,368 (−26.99 %,
+8/8), 100k 421 → 331 (−21.34 %, 8/8).
+
+**Knife B — printing a moved formula stops paying `core::fmt` a reference** (`90e73d4`). Each
+reference's row number went through `write!`; it now appends digits into a stack buffer the way the
+column letters already did, and `print_at` reserves 24 bytes instead of growing a `String` from
+zero three times. Gather 870 → 717 ms; 1M 3,456 → 3,278 (−5.15 %, 8/8), 100k −4.84 % (7/8).
+
+**Together: 1M `sort.formulas` 4,613 → 3,278 ms (−28.94 %), 100k 421 → 316 (−24.94 %)**; the values
+sort and `edit.recalc` stay in the noise. The gate's `sort.formulas` now sits at **3.44 s** (40 % of
+budget) and `sort.desc` at 2.09 s; **27/27**. `sort_roundtrip`'s embedded mode went 2.13–2.35 s →
+**1.66 s** and the three modes still agree. model 171 / calc 172 / engine 628, the fuzz gate 3/3
+(twice at 120×120), wasm ok, `clippy --workspace --all-targets` clean.
+
+**Still open in a sort:** the dirty closure over 8M seeds (591 ms — it does not know which changed
+cells have no formula at all, worth an estimated 150–200 ms), `write_cells` (854 ms at the same
+per-cell price as the values path; the band-level rebuild was rejected twice in round 30), and the
+per-formula ~140 ns of `String` + `Arc` churn that a "one text per cell" model implies.
+
 ## Round 30: the sort's two remaining kernels (2026-11-21)
 
 Round 28 took the sort −12.6 %; the attribution said the money was in gather (789 ms) and write
@@ -1062,7 +1111,13 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-21 (round 30, the sort's kernels):** `Band::put` stops re-walking stripe offsets
+- **2026-11-21 (round 31, the sort's formula side):** the gate grew `sort.formulas` (a body that
+  holds formulas; 4.19 s at 1M against the values sort's 1.91). Attribution put 1.66 s of the
+  2.64 s difference into bookkeeping (graph re-index 1.17, re-printing 0.49) and 0.36 into real
+  work. A sort now re-indexes **only the addresses whose formula shape changed** (pointer identity
+  per row, eight patterns, per-cell fallback) and printing stops paying `core::fmt` a reference:
+  **1M 4,613 → 3,278 ms (−28.94 %, 8/8), 100k −24.94 %**; gate **27/27**, embedded 2.13–2.35 →
+  1.66 s. Earlier: **2026-11-21 (round 30, the sort's kernels):** `Band::put` stops re-walking stripe offsets
   when a cell's runs did not move (384M row visits a sort) and the sort reads its body in source
   order instead of destination order (one random band hop a row): **1M sort 2,656 → 1,931 ms
   (−27.30 %, 8/8, p=0.0039, t=−40.19)**, 100k −18.85 % (8/8); band-level row rebuild was built
