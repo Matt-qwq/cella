@@ -890,6 +890,47 @@ gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`): **2,0
 paste is one command they wait on. Its baseline binary had to be built from `90c4781` plus that
 one example file, because the harness is new.
 
+## Round 28: the sort (2026-11-21)
+
+A 1M-row sort is the largest wait left after the chained edit, and it was measured before it was
+touched (gate, 1M, six value columns): extract keys 67 ms, compare 37, **gather 626**, **write
+738**, metadata 35 — then the recalculation's per-cell graph update **282 ms** on a body that
+holds no formulas at all, the closure 200, and the run 792 (of which the H chain's eval is 465).
+
+Two knives, both certified by the eight-pair sign test on a quiet machine
+(`plan/ab-r28-sort-1m-*.csv`, `plan/ab-r28-sort-100k-*.csv`):
+
+| case | base | cand | delta | fav | p | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| `sort.desc` 1M | 3,013 ms | **2,633 ms** | **−12.62 %** | 8/8 | 0.0039 | **GAIN** |
+| `sort.desc` 100k | 278 ms | **247 ms** | **−11.42 %** | 7/8 | 0.035 | **GAIN** |
+| `edit.recalc` 1M (bystander) | 582 ms | 595 ms | +2.30 % | 3/8 | 0.86 | noise |
+| `fill.values` 1M (bystander) | 1,526 ms | 1,509 ms | −1.10 % | 3/8 | 0.86 | noise |
+
+1. **The store's row write probes its band once a cell, not three times** (`b8ad983`):
+   `set_row` takes `Band::put`'s "had / has" answer instead of a rank probe before and after each
+   write, `row_or_insert` asks the O(1) `row_bits` popcount before the binary search, and a batch
+   already in column order is not sorted again. Write phase 738 → 652 ms.
+2. **A values-only sort tells the recalculation the graph did not move** (`d760296`): when the
+   sorted body holds no formulas the commit goes through `Calc::cells_changed_values_only`, which
+   skips 6M per-cell `formula()` probes and the matching graph removals while keeping the same
+   seeds and the same dependents. The per-cell segment 282 → 12 ms.
+
+**Rejected on measurement:** an in-place cycle permutation (save the rows about to be overwritten,
+walk the permutation) looked like it would remove the 288 MB scratch buffer; it made the write
+order jump across bands and measured **2,989 → 3,877 ms**, so it was reverted uncommitted. Band
+locality is worth more than the allocation.
+
+Gate after the merge: **25/25 within budget**, `sort.desc` 1M **2.71 s** (40 %) and 100k
+**248 ms** (43 %), `mem_drift` 60,301 cycles flat within 0.12 %. model 170, calc 172, engine 622,
+the fuzz gate 3/3, wasm ok, fmt and clippy clean; `sort_roundtrip`'s three modes agree and undo /
+redo recalculate nothing.
+
+**What is left in a sort:** the moved-formula graph relabel for a body that *does* hold formulas
+(embedded measures it at 0.29–0.37 s; it needs a precedents template on each `Shape` so a node can
+be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
+(652 ms), whose next step is a band-level row-replacement kernel.
+
 ## Interaction and long-run measurements (2026-11-20)
 
 These harnesses close the gaps the gate does not cover (since 2026-11-20 the drift soak *is* one
@@ -940,7 +981,11 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-21 (round 27, three knives and a paste):** the 6M-cell paste **2,011 → 1,300 ms
+- **2026-11-21 (round 28, the sort):** the store's row write probes its band once a cell and a
+  values-only sort skips the per-cell graph update — **1M sort 3,013 → 2,633 ms (−12.62 %, 8/8,
+  p=0.0039)**, 100k 278 → 247 (−11.42 %, 7/8); bystanders in the noise; gate 25/25 with
+  `sort.desc` at 2.71 s. An in-place cycle permutation was built and reverted (write order lost
+  band locality, 2,989 → 3,877 ms). Earlier: **2026-11-21 (round 27, three knives and a paste):** the 6M-cell paste **2,011 → 1,300 ms
   (−35.36 %, 8/8, p=0.0039, t=−21.65)**, certified with a purpose-built paired gate
   (plan/bench/ab_paste.ps1); closure second-dependent box closure second-dependent box (−18.35 %,
   8/8, p=0.0039), band copy tag for retained pricing (−7.23 % built, 7/8; reopened 6/8 direction

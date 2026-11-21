@@ -357,6 +357,16 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 28): the 1M sort, −12.6 % certified.** The gate's `sort.desc` went
+  **3,013 → 2,633 ms (8/8, p = 0.0039)** at 1M and 278 → 247 at 100k (7/8) in the eight-pair sign
+  test: the store's row write takes `Band::put`'s answer instead of ranking the row before and
+  after every cell, `row_or_insert` asks the O(1) `row_bits` bit before the binary search, a batch
+  already in column order is not re-sorted (write 738 → 652 ms); and a sort whose body holds no
+  formulas tells the recalculation the graph did not move, skipping 6M per-cell `formula()`
+  probes and graph removals (282 → 12 ms). An in-place cycle permutation was built and **reverted
+  on measurement** (write order jumped across bands: 2,989 → 3,877 ms). What is left: the
+  moved-formula relabel for a body that does hold formulas (0.29–0.37 s; needs a precedents
+  template on each `Shape`), and gather 706 / write 652 ms (a band-level row-replacement kernel).
 - **Missing:** dependent chains that never become a wave of leaves remain sequential; whole-sheet
   clear/copy/paste still clone the stored cells (they scale with the data, not the file); the
   per-band value dictionaries still cost full price when values do not repeat;
