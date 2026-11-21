@@ -16,6 +16,13 @@
 //! The report counts live heap bytes by allocation class (see [MemoryReport]); it is arithmetic on
 //! capacities and layouts, not a heap census, and allocator slack is not visible from inside the
 //! program.
+//!
+//! The report is a *steady state*: before it is taken, the deferred-release queue is drained
+//! (`Session::release_deferred`). An eviction does not free its snapshot on the edit's path, and a
+//! harness stops right after its last fill, so without the drain the queue would still hold those
+//! snapshots through the measurement — memory the document kept only because no command had come
+//! after the edit. The bytes released are printed, and the report's `pending_release` line then
+//! reads zero, so the queue is visible as something that existed rather than as work still owed.
 
 use std::process::ExitCode;
 
@@ -75,10 +82,18 @@ fn run() -> Result<(), String> {
 fn measure(rows: usize) -> Result<(), String> {
     eprintln!("memory: {rows} rows — building");
     let mut session = build(rows)?;
+    // Steady state: the build's last command was an edit, so whatever its history budget evicted
+    // is still waiting for a free(). Drain it first, and say so, rather than report memory the
+    // document would give back on its next cheap command.
+    let released = session.release_deferred();
     let live = session.memory_report();
     println!();
     println!("Cella memory — {rows} rows x 6 columns{}", if cfg!(debug_assertions) { " (debug build)" } else { "" });
-    print_report("as built (built by the perf scenario's three fills)", &live);
+    println!();
+    println!("  deferred release queue: {} released before the report below", human(released));
+    println!("  (an evicted history step waits for a later cheap command or the host's idle drain; a session");
+    println!("   that stops after a bulk edit would keep it, so the queue line below is zero by construction)");
+    print_report("as built (built by the perf scenario's three fills, its release queue drained)", &live);
     print_shapes(&session);
     print_undo(&session);
 
@@ -193,6 +208,7 @@ fn print_report(title: &str, report: &MemoryReport) {
     print_calc(report, total);
     row("history / saved snapshot", report.saved, total);
     row("history / undo", report.undo, total);
+    row("history / deferred release", report.pending_release, total);
     row("history / redo", report.redo, total);
     row("journal", report.journal, total);
     println!("  {:<26}{:>16}{:>9}", "", "----------------", "---------");
@@ -275,7 +291,7 @@ fn print_difference(live: &MemoryReport, reopened: &MemoryReport) {
     println!();
     println!("  {:<34}{:>16}{:>16}", "line", "as built", "reopened");
     println!("  {:<34}{:>16}{:>16}", "----------------------------------", "----------------", "----------------");
-    let fields: [(&str, fn(&MemoryReport) -> usize); 12] = [
+    let fields: [(&str, fn(&MemoryReport) -> usize); 13] = [
         ("cells", |r| r.sheets.iter().map(|s| s.cells.total()).sum()),
         ("formula text", |r| r.sheets.iter().map(|s| s.cells.formula_text).sum()),
         ("formula trees", |r| r.sheets.iter().map(|s| s.cells.formula_exprs).sum()),
@@ -285,6 +301,7 @@ fn print_difference(live: &MemoryReport, reopened: &MemoryReport) {
         ("dependents map", |r| r.calc.graph.cell_deps),
         ("name cache", |r| r.calc.names),
         ("undo", |r| r.undo),
+        ("deferred release", |r| r.pending_release),
         ("saved snapshot", |r| r.saved),
         ("journal", |r| r.journal),
         ("total", |r| r.total),

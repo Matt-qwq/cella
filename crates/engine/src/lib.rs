@@ -187,7 +187,9 @@ pub struct DocState {
     /// inline (the wave-3 probe measured 249-296 ms at 1M rows); they are released a little at
     /// a time instead (see `defer_release` on `DocState`) and never outlive the document.
     /// Bounded by `PENDING_RELEASE_MAX`; a step evicted while the queue is full releases the
-    /// cheapest waiting one inline, so no command ever pays more than one release.
+    /// cheapest waiting one inline, so no command ever pays more than one release. What waits is
+    /// freed by a later cheap command, by the idle drain (`Session::release_deferred`) a host with
+    /// a frame loop calls, or by the document closing.
     pub(crate) pending_release: Vec<HistoryEntry>,
     pub path: Option<String>,
     pub saved: Arc<Workbook>,
@@ -239,7 +241,10 @@ pub(crate) const JOURNAL_MAX_BYTES: usize = 16 * 1024 * 1024;
 const UNDO_BYTES_LIMIT: usize = 128 * 1024 * 1024;
 /// The most evicted steps that may wait for release at once (see `DocState::pending_release`).
 /// Two: a multi-step eviction can defer its two, and a third arriving releases the cheapest
-/// waiting step inline — the worst a command pays is one release, never a backlog.
+/// waiting step inline — the worst a command pays is one release, never a backlog. A session
+/// that stops after its edit has no next command to pay, so the host's idle drain takes what
+/// waits (see `Session::release_deferred`); the bound is about command latency, not about the
+/// idle drain.
 pub(crate) const PENDING_RELEASE_MAX: usize = 2;
 /// The most bands a history step may spill to be offered its compressed chance. A band encodes in
 /// about 100 µs (the 15,625 bands of a million-row sheet took 1.2–1.6 s; the 1,563 of a hundred
@@ -633,7 +638,9 @@ impl DocState {
     /// release queue instead of freeing them on the evicting command's path. A full queue
     /// releases its cheapest waiting step inline first, so however many steps one command
     /// evicts, the queue never holds more than [`PENDING_RELEASE_MAX`] and the command never
-    /// pays more than one release — the release it displaced, never a backlog.
+    /// pays more than one release — the release it displaced, never a backlog. The queue is
+    /// emptied by cheap commands (one a command, `drain_pending_one`), by the host's idle drain
+    /// between frames (`Session::release_deferred`), or when the document closes.
     pub(crate) fn defer_release(&mut self, evicted: Vec<HistoryEntry>) {
         for entry in evicted {
             if self.pending_release.len() >= PENDING_RELEASE_MAX {
@@ -645,8 +652,9 @@ impl DocState {
 
     /// Releases the cheapest step the queue holds, inline. The cheapest first is the point: a
     /// release is a whole snapshot's `free()`, and whichever command pays one should pay the
-    /// cheap one — the expensive releases wait for a cheap command to take them or for the
-    /// document to close. Nothing here can be reached by undo or redo again: the budget's
+    /// cheap one — the expensive releases wait for a cheap command to take them, for the host's
+    /// idle drain between frames (`Session::release_deferred`), or for the document to close.
+    /// Nothing here can be reached by undo or redo again: the budget's
     /// decision to drop the step is the same one it always made; only the timing of the
     /// `free()` moved.
     fn release_cheapest_pending(&mut self) {
@@ -659,7 +667,9 @@ impl DocState {
 
     /// Releases one waiting step — the cheapest — for a command that neither edits nor works
     /// the history to pay (see [`Session::execute`]); `edit.undo` and `edit.redo` never do,
-    /// so undoing never pays for an edit's release.
+    /// so undoing never pays for an edit's release. A command boundary is the only idle moment
+    /// `execute` itself has; a host that owns a frame loop drains the whole queue between frames
+    /// instead (see [`Session::release_deferred`]).
     pub(crate) fn drain_pending_one(&mut self) {
         self.release_cheapest_pending();
     }
@@ -875,6 +885,45 @@ impl Session {
             }
         }
     }
+    /// Whether any open document holds a history step the byte budget evicted whose `free()`
+    /// has not happened yet (see [`DocState::defer_release`]). One `Vec::is_empty` per document:
+    /// a frame loop asks this every frame, and a session with nothing waiting pays nothing for
+    /// asking.
+    pub fn has_pending_release(&self) -> bool {
+        self.docs.iter().any(|d| !d.pending_release.is_empty())
+    }
+
+    /// Frees every history step waiting in the eviction queue and returns the bytes that were
+    /// released: what those snapshots retained beyond the live workbook, measured at the release
+    /// (the same convention [`MemoryReport::pending_release`] uses, so the two agree).
+    ///
+    /// The evicting command defers these `free()`s so an edit never pays them inline (see
+    /// [`DocState::defer_release`]); until a later *cheap* command runs, or the document closes,
+    /// the heap still holds them. A session that stops after a bulk edit has no later command,
+    /// which is the memory a user never gets back (measured on the 1M-row reference workbook:
+    /// two waiting snapshots, about 340 MB). A host with a frame loop calls this on its idle
+    /// moment — the UI does, once a frame, after [`Session::has_pending_release`] says there is
+    /// something to do. A host without one — a CLI process that exits, an MCP server between
+    /// requests, a wasm worker with no UI — can call it explicitly; nothing here depends on a
+    /// clock, a thread or a timer, so the same call is safe on every target, wasm32 included.
+    ///
+    /// This cannot change what undo or redo can reach: the budget had already dropped those
+    /// steps, and only the timing of their `free()` moves. It touches neither the workbook, the
+    /// history stacks, the selection, the revision, nor the journal. It does walk the waiting
+    /// snapshots' band headers to measure what they hold, which is why it is called when the
+    /// queue is non-empty rather than on a hot path.
+    pub fn release_deferred(&mut self) -> usize {
+        let mut released = 0usize;
+        for doc in &mut self.docs {
+            let waiting = std::mem::take(&mut doc.pending_release);
+            for entry in &waiting {
+                released = released.saturating_add(crate::history_retained_bytes(&entry.wb, &doc.wb));
+            }
+            drop(waiting);
+        }
+        released
+    }
+
     /// A new blank workbook titled `BookN`, its Normal style in the default font from the
     /// preferences (File ▸ Options ▸ when creating new workbooks).
     pub fn new_workbook(&mut self) -> usize {
@@ -1081,7 +1130,9 @@ impl Session {
         // between its edits, one step at a time — never on undo, redo, or an edit itself, whose
         // latencies are the ones people feel and the gates measure. There is no thread and no
         // timer to do this on: a command boundary is the one idle moment a single-threaded
-        // session (wasm included) has.
+        // session (wasm included) has. A host with a frame loop drains the rest of the queue
+        // between frames (`Session::release_deferred`), so a session that stops after a bulk
+        // edit does not keep those bytes until its next command.
         if outer
             && !spec.undoable
             && result.is_ok()

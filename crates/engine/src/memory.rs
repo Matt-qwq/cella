@@ -65,6 +65,8 @@ impl WorkbookMemory {
 /// * [`calc`](Self::calc): the dependency graph and the calculation state.
 /// * [`saved`](Self::saved): the snapshot Save compares the workbook with.
 /// * [`undo`](Self::undo) and [`redo`](Self::redo): the history stacks.
+/// * [`pending_release`](Self::pending_release): the evicted steps whose `free()` is still
+///   waiting for a later command or the host's idle drain.
 /// * [`journal`](Self::journal): the serialized command params the journal keeps for replay.
 ///
 /// The snapshot and the history stacks are reported as their own lines, and each is measured *as
@@ -90,10 +92,21 @@ pub struct MemoryReport {
     pub calc: CalcMemory,
     /// The last-saved workbook, as what it retains beyond the live one.
     pub saved: usize,
-    /// The undo stack, as what it retains beyond the live workbook — plus the evicted steps
-    /// waiting for release, which are heap the document still holds (see
-    /// [`crate::DocState::defer_release`]).
+    /// The undo stack, as what it retains beyond the live workbook.
     pub undo: usize,
+    /// Steps the byte budget evicted whose `free()` is still waiting (see
+    /// [`crate::DocState::defer_release`]), as what they retain beyond the live workbook. They
+    /// are heap the document holds, but no stack can reach them any more.
+    ///
+    /// They were once charged to [`undo`](Self::undo) rather than given a line of their own,
+    /// because a report that hid them would look flat while the memory was still there. The cost
+    /// of that was not that they vanished: the undo line then moved with a queue that is not
+    /// undo, and a full queue looked like an undo stack bigger than the budget it was given. The
+    /// line is separate now so "the history the user can step back through" and "the heap waiting
+    /// for a `free()`" are two numbers; both count towards [`total`](Self::total), so nothing
+    /// is hidden. A host that drains the queue when idle (`Session::release_deferred`)
+    /// reports zero here.
+    pub pending_release: usize,
     /// The redo stack, as what it retains beyond the live workbook.
     pub redo: usize,
     /// The journal's serialized params (`engine.journal`), which a replay needs.
@@ -130,18 +143,26 @@ fn report(doc: &DocState, journal: usize) -> MemoryReport {
     let workbook = WorkbookMemory { styles: wb.styles.memory(), names: names_bytes(wb), other: workbook_other(wb) };
     let calc = doc.calc.memory();
     let saved = history_retained_bytes(&doc.saved, wb);
-    // The release queue is counted with the undo stack it came from: the budget dropped those
-    // steps, but their bytes are heap the document still holds until a later command releases
-    // them (see `DocState::defer_release`), and a report that hid them would look flat while
-    // the memory is still there.
-    let undo = retained(&doc.undo, wb).saturating_add(retained(&doc.pending_release, wb));
+    // The release queue gets its own line instead of riding on the undo stack it came from (it
+    // was added there so the bytes would not be hidden; it is split out so the undo line stops
+    // moving with a queue that is not undo). It still counts towards the total:
+    // those bytes are heap the document holds until a later command, or the host's idle drain,
+    // frees them (see `DocState::defer_release` and `Session::release_deferred`).
+    let undo = retained(&doc.undo, wb);
+    let pending_release = retained(&doc.pending_release, wb);
     let redo = retained(&doc.redo, wb);
-    let mut total =
-        workbook.total().saturating_add(calc.total()).saturating_add(saved).saturating_add(undo).saturating_add(redo).saturating_add(journal);
+    let mut total = workbook
+        .total()
+        .saturating_add(calc.total())
+        .saturating_add(saved)
+        .saturating_add(undo)
+        .saturating_add(pending_release)
+        .saturating_add(redo)
+        .saturating_add(journal);
     for sheet in &sheets {
         total = total.saturating_add(sheet.total());
     }
-    MemoryReport { sheets, workbook, calc, saved, undo, redo, journal, total }
+    MemoryReport { sheets, workbook, calc, saved, undo, pending_release, redo, journal, total }
 }
 
 /// What one history stack retains beyond the live workbook. Entries are measured against the live
@@ -257,6 +278,7 @@ mod tests {
         assert!(report.total < 256 * 1024, "{} bytes for a new workbook", report.total);
         assert_eq!(report.calc.graph.nodes, 0, "an empty graph");
         assert_eq!(report.undo, 0);
+        assert_eq!(report.pending_release, 0);
         assert_eq!(report.redo, 0);
         assert!(report.workbook.styles > 0, "the style table is charged");
         assert!(report.sheets[0].total() > 0);
@@ -277,6 +299,7 @@ mod tests {
             .saturating_add(report.calc.total())
             .saturating_add(report.saved)
             .saturating_add(report.undo)
+            .saturating_add(report.pending_release)
             .saturating_add(report.redo)
             .saturating_add(report.journal);
         assert_eq!(report.total, parts, "the total is the sum of the lines");

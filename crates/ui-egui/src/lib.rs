@@ -1288,8 +1288,25 @@ impl SheetApp {
         }
     }
 
+    /// The idle work a frame does before that frame's commands run: a history step the byte
+    /// budget evicted waits for a `free()` an edit does not pay (see
+    /// [`Session::release_deferred`]), and a session that stopped after a bulk edit has no later
+    /// command to pay it. The check costs one `Vec::is_empty` per document, so a frame with
+    /// nothing waiting pays nothing for asking; draining touches no command path, no workbook
+    /// state and no history the user can reach. Returns the bytes freed.
+    pub(crate) fn release_idle(&mut self) -> usize {
+        if !self.session.has_pending_release() {
+            return 0;
+        }
+        self.session.release_deferred()
+    }
+
     /// Per-frame logic (control channel, screenshots). Call before `ui`.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        // A step an edit's eviction deferred is freed here, on the frame's idle moment: never on
+        // the command path (the edit does not pay the `free()`), and never left waiting for a
+        // next command a user who stopped will not send (see `SheetApp::release_idle`).
+        self.release_idle();
         if self.session.text_width.is_none() {
             let ctx = ctx.clone();
             let text = std::sync::Arc::clone(&self.text);
@@ -1809,5 +1826,41 @@ mod name_box_tests {
         // One cell keeps showing its address: the shorthand is for a dragged range only.
         app.session.run("selection.set", json!({"cell": "B2"})).expect("the selection is set");
         assert_eq!(app.name_box_text(), "B2");
+    }
+}
+
+#[cfg(test)]
+mod idle_release_tests {
+    use super::*;
+    use cella_engine::core::Value;
+
+    /// A frame with nothing waiting in the eviction queue is free and changes nothing: the idle
+    /// release a host's loop calls every frame must not move the revision, a history step, a cell
+    /// or a memory line. Five frames stand in for a running loop.
+    #[test]
+    fn a_frame_with_nothing_waiting_is_free_and_changes_nothing() {
+        let mut session = Session::new();
+        session.new_workbook();
+        session.run("cell.set", json!({"cell": "A1", "input": "1"})).expect("the edit lands");
+        let mut app = SheetApp::new(session, Default::default());
+        // Warm the report once so the comparison below is one steady state against another.
+        let before = app.session.memory_report();
+        let revision = app.session.doc().expect("a document").revision;
+        let undo = app.session.doc().expect("a document").undo.len();
+        for frame in 0..5 {
+            assert_eq!(app.release_idle(), 0, "frame {frame}: nothing waits, so the frame is free");
+        }
+        let doc = app.session.doc().expect("a document");
+        assert_eq!(doc.revision, revision, "no revision moved");
+        assert_eq!(doc.undo.len(), undo, "no history step moved");
+        assert_eq!(
+            doc.wb.sheets.first().and_then(|sheet| sheet.cells.get(cell(0, 0))).map(|c| c.value),
+            Some(Value::from(1.0)),
+            "the sheet is untouched"
+        );
+        let after = app.session.memory_report();
+        assert_eq!(after.total, before.total, "no memory line moved");
+        assert_eq!(after.undo, before.undo);
+        assert_eq!(after.pending_release, 0, "and the queue line stays zero");
     }
 }

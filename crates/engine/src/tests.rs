@@ -8035,9 +8035,10 @@ fn a_row_compacted_by_remove_duplicates_keeps_the_references_its_text_names() {
 
 /// The release queue behind the history budget (see `DocState::defer_release`): an evicted
 /// step leaves its stack the moment the budget decides to drop it — as it always did — and
-/// the `free()` of its snapshot moves off the evicting command onto later cheap commands.
-/// Nothing undo or redo can reach changes, the queue cannot grow without bound, and the
-/// memory report still counts the bytes that wait.
+/// the `free()` of its snapshot moves off the evicting command onto later cheap commands (one
+/// a command), the host's idle drain (`Session::release_deferred`), or the document closing.
+/// Nothing undo or redo can reach changes, the queue cannot grow without bound, and the memory
+/// report gives the bytes that wait their own line.
 mod deferred_release {
     use cella_core::Value;
     use serde_json::json;
@@ -8125,14 +8126,15 @@ mod deferred_release {
         assert_eq!(pending(&s), 1);
     }
 
-    /// The memory report counts the waiting steps with the undo stack they came from: their
-    /// bytes are on the heap until a later command releases them, and hiding them would make
-    /// a held snapshot look freed.
+    /// The memory report gives the waiting steps their own line: the same steps are still
+    /// counted (heap the document holds is never hidden), but the undo line no longer moves
+    /// with a queue that is not undo.
     #[test]
-    fn the_memory_report_counts_the_waiting_steps() {
+    fn the_memory_report_gives_the_waiting_steps_their_own_line() {
         let mut s = s();
         edits(&mut s, 3);
-        let before = s.memory_report().undo;
+        let before = s.memory_report();
+        assert_eq!(before.pending_release, 0, "nothing waits yet");
         {
             // Two steps fit the queue; a third would be released inline, which the bounded
             // test covers.
@@ -8140,9 +8142,69 @@ mod deferred_release {
             let evicted: Vec<_> = (0..2).map(|_| d.undo.pop().expect("a step")).collect();
             d.defer_release(evicted);
         }
-        assert_eq!(s.memory_report().undo, before, "the same steps, measured the same, wherever they wait");
-        // A cheap command releases one, and the report follows it out.
+        let waiting = s.memory_report();
+        assert!(waiting.pending_release > 0, "the waiting steps are on the heap and counted");
+        assert!(waiting.undo < before.undo, "they left the undo stack");
+        assert_eq!(waiting.undo.saturating_add(waiting.pending_release), before.undo, "the same steps, measured the same, on a line of their own");
+        assert_eq!(waiting.total, before.total, "the total still counts them");
+        // A cheap command releases one, and the report follows it out of the queue.
         s.execute("selection.set", json!({"cell": "A1"})).unwrap();
-        assert!(s.memory_report().undo < before, "one waiting step left the heap");
+        assert!(s.memory_report().pending_release < waiting.pending_release, "one waiting step left the heap");
+    }
+
+    /// The idle drain empties the queue, returns what the report showed waiting, and is free to
+    /// call again: that is what a frame loop does every frame it has something to do.
+    #[test]
+    fn the_idle_drain_empties_the_queue_and_returns_its_bytes() {
+        let mut s = s();
+        edits(&mut s, 3);
+        let charged: usize = {
+            let d = s.doc_mut().expect("document");
+            let evicted: Vec<_> = (0..2).map(|_| d.undo.pop().expect("a step")).collect();
+            let charged = evicted.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
+            d.defer_release(evicted);
+            charged
+        };
+        assert!(s.has_pending_release());
+        let before = s.memory_report();
+        assert!(before.pending_release > 0);
+        // The budget's charge was measured when the step was pushed; the queue line is measured
+        // against the live workbook now, and the drain returns that second figure.
+        assert!(charged > 0, "the budget charged the evicted steps");
+        assert_eq!(s.release_deferred(), before.pending_release, "the bytes the report showed waiting come back");
+        assert!(!s.has_pending_release(), "the queue is empty");
+        assert_eq!(pending(&s), 0);
+        let after = s.memory_report();
+        assert_eq!(after.pending_release, 0, "the report's queue line is zero");
+        assert_eq!(before.total, after.total.saturating_add(before.pending_release), "the total drops by exactly the queue line");
+        assert_eq!(s.release_deferred(), 0, "nothing waits any more, and asking is free");
+        assert_eq!(Session::new().release_deferred(), 0, "a session with no document is safe to drain");
+        assert!(!Session::new().has_pending_release());
+    }
+
+    /// Releasing the waiting memory changes nothing undo or redo can reach: the dropped step
+    /// was already behind the budget, and what stayed still steps back and forward exactly.
+    #[test]
+    fn undo_and_redo_are_exact_after_an_idle_release() {
+        let mut s = s();
+        edits(&mut s, 3);
+        {
+            let d = s.doc_mut().expect("document");
+            let oldest = d.undo.remove(0);
+            d.defer_release(vec![oldest]);
+        }
+        assert!(s.release_deferred() > 0);
+        assert!(!s.has_pending_release());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!((v(&s, "A1"), v(&s, "A2"), v(&s, "A3")), (Value::from(1.0), Value::from(2.0), Value::Empty));
+        s.execute("edit.undo", json!({})).unwrap();
+        // As while it was only waiting: the two steps that stayed undo exactly, and the dropped
+        // oldest stays dropped — the release decided nothing, it only freed bytes.
+        assert_eq!((v(&s, "A1"), v(&s, "A2"), v(&s, "A3")), (Value::from(1.0), Value::Empty, Value::Empty));
+        assert!(s.doc().expect("document").undo.is_empty());
+        s.execute("edit.redo", json!({})).unwrap();
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!((v(&s, "A1"), v(&s, "A2"), v(&s, "A3")), (Value::from(1.0), Value::from(2.0), Value::from(3.0)));
+        assert!(s.doc().expect("document").redo.is_empty());
     }
 }
