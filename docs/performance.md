@@ -932,6 +932,60 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 32: the clutter a sort leaves for the closure (2026-11-21)
+
+`sort.formulas` had fallen to 3.19 s, and the attribution said the dirty closure was the
+largest remaining piece at **541 ms**: of the **8M changed cells** a 1M-row sort hands the closure
+as seeds, **6M are plain values that can never hold a formula node**, and every one of them paid a
+`has_node` probe anyway.
+
+| inside the closure | ms | share |
+|---|---:|---:|
+| the whole closure (8M seeds, 2M with a node) | 541 | 100 % |
+| seed probe `has_node` (8M, two hash levels = one DRAM miss each, 69 ns) | **323** | 60 % |
+| seed dependents (dense box, a per-cell column hash, whole-column intervals) | 143 | 26 % |
+| dedupe, queue, result list | 75 | 14 % |
+
+**The knife:** the sort already walked those 8M cells and counted which ones hold a formula, so it
+hands the recalculation that list. `Calc::cells_moved_seeded(wb, changed, used, relabelled, formula_seeds)`
+takes `node_seeds`: those seeds skip the graph probe, **but every seed still has its
+dependents expanded**, so a value cell's formulas recalculate exactly as before, and a formula cell
+the list covers is queued even when no changed cell feeds it (`=NOW()`, `$Z$1`). Every other call site
+passes `None` and behaves as it did.
+
+One shape mattered more than the idea: handing the list in **gather's source order** scattered the
+2M formula seeds across the graph and measured **686 ms, worse than the probes it saved**; filling
+it in **write-back order (row-major, with a reserve from the gather's count)** landed 213–222 ms.
+
+| | before | after |
+|---|---:|---:|
+| closure, 1M | 541 ms | **213 ms** |
+| `sort.formulas` 1M | 3,382 ms | **2,926 ms** |
+| `sort.formulas` 100k | 309 ms | **289 ms** |
+
+Eight-pair sign test with `-Repeat 2` (see below): **1M 3,360 → 2,912 ms (−13.33 %, 8/8,
+p = 0.0039)**, 100k 309 → 289 (−6.38 %, 8/8); `sort.desc` and `edit.recalc` came out slightly
+faster (7/8 each, the same path serving them). Gate **27/27** with `sort.formulas` at 3.02 s (35 %).
+
+**A method note worth keeping:** the first two 1M attempts at this were INCONCLUSIVE — 6/8 with a
+paired σ of 615 ms, then 4/8 with 567 — on a machine whose *own baseline* produced a 2.78 s
+outlier in the same window. Running each sample as a best-of-two (`ab_gate.ps1 -Repeat 2`) took σ
+to 135 ms and the same change certified 8/8. **A 1M-row scenario on this box needs `-Repeat 2`
+before a hypothesis is called a no-win.**
+
+**Equivalence, because a closure change is where "did not recalculate" hides:** the fuzz gate's own
+full-vs-incremental invariant (3/3 in debug, 3/3 twice at 120×120 release),
+`recalc_compare --check-full` over built/reopened × aggregate/no-aggregate, `sort_roundtrip`
+three modes at 1M (its *outside* mode is exactly "a formula outside the block reads a value the
+sort moved"), and four new tests written red-first by breaking the change on purpose in two
+different ways.
+
+**Still in the closure:** 213 ms — dependents expansion 143 (a per-cell column hash for the second
+box, whole-column interval queries) and dedupe/queue/result 75. Next candidates with numbers:
+index the columns directly instead of hashing a column per cell (estimated 60–120 ms), and replace
+the write-back's Key list with per-row lane bitmaps (recovering the ~50 ms and 32 MB the list
+costs).
+
 ## Round 31: the sort's formula side, now that the gate can see it (2026-11-21)
 
 The gate only measured a **values** sort (`A1:F`), and a real table's sorted block holds formulas.
@@ -1062,6 +1116,24 @@ the one piece with a structural answer left — Excel shares the text of a fille
 shares only the expression tree (2M formulas, 3 shapes) — worth about 100 MB, and it needs its own
 round for the formula bar and the xlsx writer.
 
+## Two audits that did not become work (2026-11-21)
+
+- **The frame audit, re-run on the current build** (`plan/bench/p3_cases.ps1 -Case paint`; hidden
+  desktop, the 1M reference workbook, fifteen PageDowns, a jump to A500000, a jump back to A1, six
+  more PageDowns): **paint average 1.59 ms** (four windows: 1.50 / 1.61 / 1.65 / 1.59), **worst
+  single frame 3.94 ms**, working set 984 MB; `goTo A500000` 31.4 ms and back to A1 16.1 ms
+  through the control channel. Against the 2026-11-20 sample (avg 1.67–1.77, max 2.45–2.64) the
+  average is a little better and the worst frame is worse — one spike in 240 frames. Both numbers
+  sit far under the budget a frame actually has (6.9 ms at 144 Hz, 16.7 at 60), so **no frame is
+  dropped at either rate** and this stays a watch item, not work.
+- **The +75 MB/h memory drift did not reproduce.** An hour of `examples/mem_drift` at 100k rows
+  with the process's working set sampled every minute: **168.2 MB at minute 1, 170.4 at 30,
+  136.7 at 59** — +4.6 MB/h over the first half, −69.7 over the second, **−32.6 MB/h overall**,
+  and the engine's own totals fell from 60.4 MB (cycle 101) to 56.6 MB (cycle 48,851). The
+  original +75 MB/h was measured while two agents were compiling in parallel (that report records
+  two polluted re-measures of its own). Recorded as not-reproduced with the conditions, not fixed;
+  `plan/soak-rss-finding.md` keeps the numbers and the command.
+
 ## Interaction and long-run measurements (2026-11-20)
 
 These harnesses close the gaps the gate does not cover (since 2026-11-20 the drift soak *is* one
@@ -1112,6 +1184,14 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-21 (round 32, the closure):** of the 8M changed cells a 1M sort seeds, 6M are values
+  that cannot hold a node and each paid a `has_node` probe (323 of the closure's 541 ms). The sort
+  hands the recalculation its exact formula-cell list (others pass `None`): closure **541 →
+  213 ms**, `sort.formulas` **3,360 → 2,912 ms (−13.33 %, 8/8, p=0.0039)**, 100k −6.38 %; the list must
+  be filled in write order (source order measured 686 ms). Also recorded: the frame audit (paint
+  avg 1.59 ms, worst frame 3.94) and the +75 MB/h drift **did not reproduce** over an hour
+  (−32.6 MB/h overall). Method note: 1M scenarios on this box need `-Repeat 2` — two single-pass
+  runs called this a no-win at σ 615/567 ms, best-of-two certified it at σ 135.
 - **2026-11-21 (round 31, the sort's formula side):** the gate grew `sort.formulas` (a body that
   holds formulas; 4.19 s at 1M against the values sort's 1.91). Attribution put 1.66 s of the
   2.64 s difference into bookkeeping (graph re-index 1.17, re-printing 0.49) and 0.36 into real

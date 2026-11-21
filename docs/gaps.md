@@ -357,6 +357,18 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 32): the closure's seeds, −13.33 % more.** A 1M sort hands the dirty
+  closure 8M changed cells as seeds, and **6M of them are plain values that can never hold a
+  formula node** — each paid a `has_node` probe, 323 of the closure's 541 ms (dependents 143,
+  dedupe/queue 75). The sort already knows which cells hold a formula, so it passes that list
+  (`Calc::cells_moved_seeded`; every other call site passes `None`): seeds skip the probe, but
+  **every seed still has its dependents expanded**, so a moved value's formulas recalculate and a
+  covered formula cell is queued even when nothing feeds it. One shape mattered: the list has to
+  be filled in **write-back order** — gather's source order scattered the 2M seeds across the
+  graph and measured **686 ms, worse than the probes**. Closure **541 → 213 ms**, `sort.formulas`
+  **1M 3,360 → 2,912 ms (−13.33 %, 8/8, p = 0.0039)**, 100k 309 → 289; gate 27/27 with
+  `sort.formulas` at 3.02 s. Left: dependents expansion 143 ms (a column hash a cell, whole-column
+  intervals) and dedupe/queue 75.
 - **Landed (11-21, round 31): the sort's formula side, −28.94 %.** The gate only saw a values
   sort, so a new scenario (`sort.formulas`, sorting `A1:H` by column B with the `G`/`H` formulas in
   the block) was added before the work: **4.19 s at 1M** against 1.91 for the values sort, and the
