@@ -357,6 +357,19 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 29): a memory regression a performance win had borrowed, found by
+  re-measuring.** The live heap reported **1.23 GB** against the 884 MB record and the whole
+  difference was the `history / undo` line, because round 26's deferred release keeps up to two
+  evicted snapshots for a **later cheap command** to free — and a user who does one bulk edit and
+  stops never issues one. `Session::release_deferred()` (plus `has_pending_release`) is drained by
+  `SheetApp::release_idle` from the first line of the UI's per-frame `logic()`; the report grew a
+  `pending_release` line so `undo` no longer carries it. **884.7 MB / undo 212.4 / 340.4 MB
+  released**, no command-path change (fill.values −0.91 %, edit.recalc +0.37 %, both
+  INCONCLUSIVE; gate 25/25; engine 624; the UI interaction suite 45/45). Honest limit: a headless
+  host with no frame loop keeps the two snapshots unless it calls the method — documented, and
+  wiring it into MCP is that crate's change. **What the 884.7 MB is:** cells 371 (formula text
+  133), graph 286, one undo snapshot 212, journal 15 — graph and undo buy speed and are refused
+  trades; formula text is the one structural piece left (~100 MB, its own round).
 - **Landed (11-21, round 28): the 1M sort, −12.6 % certified.** The gate's `sort.desc` went
   **3,013 → 2,633 ms (8/8, p = 0.0039)** at 1M and 278 → 247 at 100k (7/8) in the eight-pair sign
   test: the store's row write takes `Band::put`'s answer instead of ranking the row before and

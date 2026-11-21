@@ -931,6 +931,46 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 29: the memory a performance win had quietly borrowed (2026-11-21)
+
+Re-measuring the live heap after round 28 caught a **regression nothing else would have caught**:
+the reference workbook reported **1.23 GB** where the 11-18 record is 884 MB, and the whole
+difference sat in the `history / undo` line — **552.8 MB against 212.3 MB**.
+
+- **The cause was round 26's own win.** Deferring the release of an evicted history snapshot so a
+  bulk edit does not pay a 249–296 ms `free()` keeps up to `PENDING_RELEASE_MAX = 2` steps in
+  `DocState::pending_release`, drained **by later cheap commands**. A user who does one bulk
+  operation and then stops issues no later command, so two ~170 MB snapshots stayed resident
+  forever. The memory report added that queue to the undo line, which is why the line moved.
+- **The fix lives entirely off the command path.** `Session::has_pending_release` and
+  `Session::release_deferred() -> usize` (one `mem::take`, no clock, no thread, wasm-safe); the
+  UI calls the drain from `SheetApp::release_idle` on the first line of `logic()`, the shared
+  per-frame entry for the native and web hosts, and it returns immediately when the queue is
+  empty. The report grew its own `pending_release` line so `undo` no longer carries a queue that
+  is not undo. The memory example drains before it prints and says how much it released.
+- **Result:** **884.7 MB** total, `undo` **212.4 MB**, `pending_release` 0 after a **340.4 MB**
+  release — within a decimal of the 11-18 numbers, so the borrowed bytes were exactly the queue.
+- **No performance cost, as required:** eight-pair sign test on the merged tree gave
+  `fill.values` −0.91 % (5/8, p = 0.36) and `edit.recalc` +0.37 % (5/8, p = 0.36) — both
+  INCONCLUSIVE, i.e. the change does not touch the command path at all. Gate **25/25**, engine
+  624, the UI's real-frame interaction suite 45/45, wasm ok, lint clean.
+- **The honest limit:** a headless long-lived host (`cella-cli mcp`) has no frame loop, so it
+  keeps up to two deferred snapshots unless it calls `release_deferred` itself; that is stated in
+  the method's documentation rather than papered over. Wiring it to MCP request boundaries is
+  `crates/mcp`'s own change.
+
+### What the remaining memory is, and what it is not
+
+With the bug gone the 884.7 MB is design, not slack: cells 371 MB (formula text 133), the
+calculation graph 286 MB, one undo snapshot 212 MB, the journal 15 MB. The graph buys the
+recalculation speed and compressing it means a different precedent representation — its own round,
+measured against the gate. The undo snapshot is a 1M-row AutoFill; its compression is refused by
+the 60 ms encode gate (15,625 bands against `COMPRESS_MAX_BANDS = 600`) and keeping it would put
+~1.5 s back into the edit path, which is exactly what round 26 removed. Formula text (133 MB) is
+the one piece with a structural answer left — Excel shares the text of a filled region while Cella
+shares only the expression tree (2M formulas, 3 shapes) — worth about 100 MB, and it needs its own
+round for the formula bar and the xlsx writer.
+
 ## Interaction and long-run measurements (2026-11-20)
 
 These harnesses close the gaps the gate does not cover (since 2026-11-20 the drift soak *is* one
@@ -981,7 +1021,13 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-21 (round 28, the sort):** the store's row write probes its band once a cell and a
+- **2026-11-21 (round 29, the borrowed memory):** the heap re-measured 1.23 GB against the 884 MB
+  record and the difference was round 26's deferred release holding two evicted snapshots for a
+  user who never issues a later command. An idle frame now drains them
+  (`Session::release_deferred`, `SheetApp::release_idle`), the report grew a `pending_release`
+  line: **884.7 MB / undo 212.4 MB / 340.4 MB released**, with no command-path change
+  (fill.values −0.91 %, edit.recalc +0.37 %, both INCONCLUSIVE; gate 25/25). Earlier:
+  **2026-11-21 (round 28, the sort):** the store's row write probes its band once a cell and a
   values-only sort skips the per-cell graph update — **1M sort 3,013 → 2,633 ms (−12.62 %, 8/8,
   p=0.0039)**, 100k 278 → 247 (−11.42 %, 7/8); bystanders in the noise; gate 25/25 with
   `sort.desc` at 2.71 s. An in-place cycle permutation was built and reverted (write order lost
