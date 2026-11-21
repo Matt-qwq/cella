@@ -1,50 +1,66 @@
 # External benchmark: Cella, Excel, WPS and upstream GridCraft
 
-> **Measured 2026-11-21** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
-> release builds, one session, in this order: every product ran the same file and the same edit,
-> and all three returned the same answer cell. Medians of five runs (Excel, Cella) and three (WPS,
-> which spends ~15 s on the edit); ranges in the notes. Run-to-run spread on this machine is
-> about 10 %.
+> **Measured 2026-11-22** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
+> release builds, one session, in this order: every product ran the same file, the same edit and the
+> same full recalculation, and all three agreed on the answer cell. Three runs each; medians below,
+> ranges in the notes. Run-to-run spread on this machine is about 10 %.
 
 The file is `plan/bench/ref-1m.xlsx`: 1,000,000 rows x 8 columns, 2,000,000 formulas
 (`G = B*C+D`, `H = H(n-1)+G(n)`), 70,371,330 bytes, written by Cella. The edit is `B1 = 3`, which
 dirties `G1` and the whole `H` chain (about 1,000,000 cells); every product had automatic
-calculation on, so the assignment pays for the recalculation. Excel and WPS were driven through
-COM; Cella through its control channel (a normal desktop this time — the 11-18 run used a hidden
-one, which costs a ~40 ms frame-batched round trip; see performance.md).
+calculation on, so the assignment pays for the recalculation. The full recalculation is F9 —
+Cella's `formulas.calculateNow`, Excel's `CalculateFull` — on the freshly opened file. Excel and WPS
+were driven through COM; Cella through its control channel (`plan/bench/external_ab.ps1` and
+`plan/bench/f9_ab.ps1`).
 
 | | Excel 16.0 | WPS 12.1 | Cella (this build) |
 |---|---:|---:|---:|
-| open the 70 MB file | 9.01 s | 11.11 s | **2.61 s** |
-| **edit B1 -> the dependent chain** | **0.168 s** | 15.37 s | **0.220 s** |
-| working set after opening | **579 MB** | 1,004 MB | 988 MB |
-| private working set after opening | **532 MB** | 896 MB | 1,249 MB |
+| open the 70 MB file | 8.67 s | 10.86 s | **2.69 s** |
+| **edit B1 -> the dependent chain** | **0.236 s** | 16.36 s | 0.270 s |
+| **full recalculation (F9), 2M formulas** | **0.064 s** | — | 1.05 s |
+| working set after opening | **580 MB** | 1,001 MB | 879 MB |
+| private working set after opening | **530 MB** | 894 MB | 1,137 MB |
 | H1000000 after the edit | 23,999,823,993,691 | the same | the same |
 
-Ranges: Excel open 8.93–9.27 s, edit 0.161–0.235 s (one 5th run at 0.235; the median is 0.168);
-WPS open 10.98–11.31 s, edit 15.09–15.60 s; Cella open 2.54–2.64 s, edit 0.219–0.229 s. Memory was
-read from the running processes after the document was open (WMI/Get-Process), Excel as
-`EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`.
+Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s; WPS open 10.84–11.15 s,
+edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella open
+2.63–2.73 s, edit 0.253–0.276 s, F9 1.03–1.07 s. Memory was read from the running processes after
+the document was open (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as
+`cella.exe`.
 
 ## What this says
 
-- **Cella opens this file 3.5x faster than Excel and 4.3x faster than WPS.** That has been true
+- **Cella opens this file 3.2x faster than Excel and 4x faster than WPS.** That has been true
   since the read path was rewritten and it is not close.
-- **Excel still wins the edit, but by 1.3x, not by 4.4x.** 0.168 s against our 0.220 s, on an
-  operation that recalculates a million chained formulas inside the assignment (Excel is
-  synchronous here: `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both
-  numbers mean "the chain is up to date"). The 11-18 table below recorded 0.08 s against our
-  0.36 s; rounds 26–27 took our side down (an evicted undo step releases on later cheap commands,
-  the closure holds a two-formula precedent in a box, a band prices itself from a copy tag, and the
-  store compares the packed row before it copies a band), while Excel measured 0.161–0.235 s in
-  five runs today on the same protocol. The table above is one session's numbers and is the one to
-  quote.
-- **Memory is where Excel still wins clearly**: 579 MB of working set against our 988, and 532 MB
-  private against 1,249 — on a document that also carries one undo step (~212 MB at 1M rows) and
-  the replayable journal (~15 MB). WPS sits between the two on working set and behind both on
-  speed.
+- **Excel still wins the edit, but by 1.1x.** 0.236 s against our 0.270 s, on an operation that
+  recalculates a million chained formulas inside the assignment (Excel is synchronous here:
+  `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both numbers mean "the
+  chain is up to date").
+- **Full recalculation is the one operation where the gap is large, and it is the graph, not the
+  evaluator.** F9 costs us **1.05 s** against Excel's **0.064 s** (16x), and the command rebuilds
+  its dependency graph from the workbook first — `rebuild.graph` alone measures 0.71 s at 1M rows
+  in the gate — so the evaluation proper is about 0.34 s (≈5x Excel's whole F9). Excel keeps its
+  tree across recalculation; `formulas.calculateNow` builds one. This is the next measured gap and
+  it is a rebuild design question, not an evaluator one (the evaluator was refuted as the target in
+  round 26).
+- **Memory**: 879 MB of working set against Excel's 580, and 1,137 MB private against 530 — 1.5x and
+  2.1x, where the 11-21 build was 988 / 1,249. The round-34 change (the formula text is printed, not
+  stored) took ~110 MB out of both; what remains is the undo step (~174 MB at 1M rows), the
+  replayable journal (~15 MB) and the calculation graph (~286 MB), each of which buys something.
 - Every product agrees on `H1000000`, which is the point of running the same file through all
   three.
+
+## Previous measurement (2026-11-21)
+
+Kept because the older documents cite it. Same protocol, same file; the memory numbers are the
+build before round 34.
+
+| | Excel 16.0 | WPS 12.1 | Cella 0.13.0+ |
+|---|---:|---:|---:|
+| open the 70 MB file | 9.01 s | 11.11 s | 2.61 s |
+| edit B1 -> the dependent chain | 0.168 s | 15.37 s | 0.220 s |
+| working set after opening | 579 MB | 1,004 MB | 988 MB |
+| private working set after opening | 532 MB | 896 MB | 1,249 MB |
 
 ## Previous measurement (2026-11-18)
 

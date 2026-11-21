@@ -1,6 +1,10 @@
 # Performance
 
-> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 34 — **the formula text is printed, not stored**: `Formula` 48 → 32 bytes, live heap **884.7 → 776.6 MB (−108.1 MB, −12.2 %)**, reopened 614.4 MB, `formula text` 133.4 → 64.0 MB, `undo` 212.4 → 173.8 MB. The report generator also takes **best of three** now (round 33's page had `save.xlsx` at 1M at 3.39 s, 100 % of its budget, where the same commit measures **1.52 s**). Earlier: round 33, the fill — and the discovery that its metric was not the drag: `fill.values` was the gate's tightest budget (69 %) and attribution showed only ~45 % of it moves values (16 % is the harness's own JSON, 34 % a command's fixed cost paid a hundred times), while a real fill handle drags one value down 1M rows in **157 ms**. A one-way `wrote_formula` flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write refits only rows whose height can change (autofit 243 → 1.2 ms): **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %; the gate grew `fill.autofill` so the drag itself has a number, and stands at **29/29**. Earlier in the same day: the closure's seeds (541 → 213 ms), the formula-body sort (4.19 → 2.93 s), the sort's kernels (3.80 → 1.91 s values), a memory regression found by re-measuring and fixed (1.23 GB → 884.7 MB), three certified knives plus a 6M-cell paste halved, the evaluator refuted by measurement, and the budget lock. Earlier still: rounds 3–10.
+> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 35 closes the line — **gate 29/29** on an idle machine, the round-34 save cost
+measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
+first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
+rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
+re-read: WS 879 vs 580 MB, private 1,137 vs 530. Earlier: round 34 — **the formula text is printed, not stored**: `Formula` 48 → 32 bytes, live heap **884.7 → 776.6 MB (−108.1 MB, −12.2 %)**, reopened 614.4 MB, `formula text` 133.4 → 64.0 MB, `undo` 212.4 → 173.8 MB. The report generator also takes **best of three** now (round 33's page had `save.xlsx` at 1M at 3.39 s, 100 % of its budget, where the same commit measures **1.52 s**). Earlier: round 33, the fill — and the discovery that its metric was not the drag: `fill.values` was the gate's tightest budget (69 %) and attribution showed only ~45 % of it moves values (16 % is the harness's own JSON, 34 % a command's fixed cost paid a hundred times), while a real fill handle drags one value down 1M rows in **157 ms**. A one-way `wrote_formula` flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write refits only rows whose height can change (autofit 243 → 1.2 ms): **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %; the gate grew `fill.autofill` so the drag itself has a number, and stands at **29/29**. Earlier in the same day: the closure's seeds (541 → 213 ms), the formula-body sort (4.19 → 2.93 s), the sort's kernels (3.80 → 1.91 s values), a memory regression found by re-measuring and fixed (1.23 GB → 884.7 MB), three certified knives plus a 6M-cell paste halved, the evaluator refuted by measurement, and the budget lock. Earlier still: rounds 3–10.
 
 **The one-page report is [performance-report.md](performance-report.md)** (and its Chinese
 companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xtask perf-report`
@@ -942,6 +946,33 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 35: the close-out — the gate, the save A/B, and F9 (2026-11-22)
+
+- **The gate: 29/29 within budget** on an idle machine (1M: `fill.values` 1.09 s / 36 %,
+  `edit.recalc` 544 ms / 38 %, `sort.desc` 1.79 s / 27 %, `sort.formulas` 2.53 s / 29 %,
+  `save.xlsx` 1.80 s / 53 %, `open.xlsx` 2.83 s / 48 %; the tightest row is `open.csv` at 100k,
+  65 %). `mem_drift`: 73,576 cycles in 240 s, flat within 0.13 %.
+- **What round 34 costs at save, A/B on the same machine a commit apart.** The change prints a
+  formula's text at save instead of reading a field, so the question was how much that adds:
+  `save_bench` (best of six, in-process, the stable metric) at `0e4b964` **1.57 / 1.59 / 1.59 s**
+  against `0a128be` **1.63 / 1.63 / 1.63 s** — **+2.5 %**, not the +18 % a single gate pass
+  suggested (that pass was one sample; `save.xlsx` in the gate is best-of-one). The print lands
+  inside the writer's parallel row windows, which is why it is this cheap.
+- **F9 measured against Excel for the first time on the same file** (`plan/bench/f9_ab.ps1`):
+  Cella `formulas.calculateNow` **1.03 / 1.05 / 1.07 s**, Excel `CalculateFull`
+  **0.062 / 0.064 / 0.082 s** — **16x**. The breakdown is the useful part: `rebuild.graph` at 1M
+  measures 0.71 s in this same gate and `formulas.calculateNow` rebuilds the graph before it
+  evaluates, so the evaluation proper is about **0.34 s (≈5x Excel's whole F9)**. The old line
+  ("full recalculation 1.30 s vs Excel 0.31 s") is retired — 0.31 s was an older Excel measurement
+  on a different protocol, and the evaluator is not the gap. Excel keeps its dependency tree across
+  a recalculation; ours is rebuilt by the command. That is the next measured gap and it is a
+  rebuild design question (round 26 refuted the evaluator as the target).
+- **Process memory re-read** on the same file: working set **879 MB** against Excel's 580 (1.5x) and
+  private **1,137 MB** against 530 (2.1x), down ~110 MB each from the 11-21 build (988 / 1,249).
+- **The external table is re-run in full** (`docs/external-benchmark.md`): open 2.69 s vs 8.67
+  (Excel) / 10.86 (WPS); edit 0.270 s vs 0.236 — the honest "1.1x", not the 4.4x the old documents
+  quoted.
+
 ## Round 34: the formula text is printed, not stored (2026-11-21)
 
 The 11-18 memory record left one structural piece: the `formula text` line, **133.4 MB** for 2M
@@ -989,12 +1020,10 @@ or one that does not parse) keeps its text and pays one extra box. `Formula` is 
 **−108.1 MB, −12.2 %**, and what the remaining 64 MB is: 32 bytes a formula — the shape pointer,
 the empty text slot, the boxed legacy range and the dynamic mark.
 
-**What it costs, and what was not run:** a save now prints each formula (one `print_at` and one
-`String` inside the parallel row windows), and the sort's per-cell text comparisons print instead of
-reading a field: the expected cost is a few percent on `save.xlsx` and `sort.formulas`, well inside
-their budgets. `cargo xtask ci` passed 9/9; **`cargo xtask perf` was not run** — the dev machine sat
-at ~80 % load (a game) for the whole round, so a pass would have measured the load. `save.xlsx` and
-`sort.formulas` at 1M are the two scenarios to check first on a quiet machine.
+**What it costs:** a save prints each formula (one `print_at` and one `String`, inside the
+parallel row windows) and the sort's per-cell text comparisons print instead of reading a field.
+Both were measured in round 35: the gate is 29/29 and the save A/B is **+2.5 %** (1.59 → 1.63 s,
+best of six, three runs a side).
 
 ## Round 33: the fill, and the difference between a metric and a drag (2026-11-21)
 

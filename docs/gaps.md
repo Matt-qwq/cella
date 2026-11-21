@@ -357,6 +357,23 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Measured (11-22, round 35): the close-out, and the one operation where the gap is 16x.** The gate
+  is **29/29** on an idle machine (1M: `edit.recalc` 544 ms, `sort.formulas` 2.53 s, `save.xlsx`
+  1.80 s, `open.xlsx` 2.83 s; `mem_drift` flat within 0.13 %). Round 34's save cost, A/B on the same
+  machine a commit apart (`save_bench`, best of six, three runs a side): **1.59 → 1.63 s, +2.5 %**.
+  **F9 on the 70 MB file, against Excel for the first time**: Cella `formulas.calculateNow`
+  **1.05 s** (1.03–1.07) against Excel `CalculateFull` **0.064 s** (0.062–0.082) — **16x** — and
+  **0.71 s of our 1.05 s is the dependency-graph rebuild** (`rebuild.graph` at 1M in the same gate;
+  `formulas.calculateNow` rebuilds before it evaluates), so the **evaluation proper is ~0.34 s
+  (≈5x)**. Excel keeps its tree across a recalculation. The old "full recalculation 1.30 s vs Excel
+  0.31 s" line is retired: 0.31 s was a different protocol, and the evaluator is not the gap (round
+  26 refuted it). **This is the next measured gap and it is a rebuild design question** — the
+  candidate list's first item now, not an evaluator rewrite.
+- **Measured (11-22, round 35): the external table re-run in full** (`plan/bench/external_ab.ps1`
+  and `f9_ab.ps1`): open **2.69 s** against Excel 8.67 / WPS 10.86; edit **0.270 s** against 0.236 /
+  16.36 — the honest "1.1x", not the 4.4x the old documents quoted; memory **WS 879 MB** against
+  580 (1.5x) and **private 1,137 MB** against 530 (2.1x), ~110 MB lighter than the 11-21 build
+  (988 / 1,249) thanks to round 34. Details: docs/external-benchmark.md.
 - **Landed (11-21, round 34): the formula text is no longer stored per cell — −108.1 MB.** A
   filled formula's text is `Shape::print_at(at)`, the invariant the shape work already pins, so
   `Formula` is **48 → 32 bytes** and `text` (`Option<Box<String>>`) exists only for a formula with
