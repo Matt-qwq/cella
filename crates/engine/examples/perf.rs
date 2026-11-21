@@ -40,6 +40,11 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("fill.values", "write rows × 6 values through range.setValues", fill_values),
     ("fill.formulas", "fill G = B*C+D down rows", fill_formulas),
     ("fill.chained", "fill a running sum H = H(n-1) + G(n) down rows", fill_chained),
+    (
+        "fill.autofill",
+        "copy one value down a whole column through edit.autoFill, the drag a user makes",
+        fill_autofill,
+    ),
     ("aggregate", "three aggregate formulas over the filled columns", aggregate),
     ("edit.recalc", "edit one cell and recalculate what depends on it", edit_recalc),
     ("edit.undo", "undo that edit", edit_undo),
@@ -314,6 +319,22 @@ fn fill_chained(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
         b.exec("edit.autoFill", json!({"source": "H2", "target": format!("H2:H{rows}")})).map(|_| ())
     })?;
     Ok((format!("H = H(n-1)+G(n) over {rows} rows"), ms))
+}
+
+/// The user's drag: one cell copied down a column of `rows` cells. This is deliberately not
+/// `fill.values` — that one measures a hundred `range.setValues` calls, whose per-command overhead
+/// (argument parsing, journal bytes, autofit scheduling) is paid a hundred times and is not what a
+/// person does when they grab a fill handle.
+fn fill_autofill(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    b.exec("cell.set", json!({ "cell": "J1", "input": "42" }))?;
+    let ((), ms) = timed(|| {
+        b.exec(
+            "edit.autoFill",
+            json!({ "source": "J1", "target": format!("J1:J{rows}") }),
+        )
+        .map(|_| ())
+    })?;
+    Ok((format!("{rows} rows of one value, dragged"), ms))
 }
 
 fn aggregate(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {

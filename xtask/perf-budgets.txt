@@ -11,6 +11,7 @@ edit.recalc     100000  160
 edit.undo       100000  3
 fill.chained    100000  370
 fill.formulas   100000  290
+fill.autofill   100000  190
 fill.values     100000  250
 mem_drift       100000  11
 open.csv        100000  130
@@ -25,6 +26,7 @@ edit.recalc    1000000  1450
 edit.undo      1000000  52
 fill.chained   1000000  3550
 fill.formulas  1000000  2550
+fill.autofill  1000000  885
 fill.values    1000000  3050
 open.csv       1000000  1250
 open.xlsx      1000000  5900
