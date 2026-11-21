@@ -1638,6 +1638,46 @@ fn sort_recalculates_the_rows_it_moved() {
     assert_eq!(v(&s, "E3"), Value::Number(3.0));
 }
 
+/// A sort permutes its block's rows and nothing else: a cell of the same row outside the block
+/// keeps its row, and a formula there is not moved (its row did not move) even though it now
+/// reads a different row's data. The block's own values travel with their rows.
+#[test]
+fn sort_leaves_the_cells_beside_the_block_in_their_rows() {
+    let mut s = s();
+    s.execute(
+        "range.setValues",
+        json!({"range": "A1:F5", "values": [
+            ["c", 3, 30, 300, "=B1*2", "=E1+1"],
+            ["a", 1, 10, 100, "=B2*2", "=E2+1"],
+            ["e", 5, 50, 500, "=B3*2", "=E3+1"],
+            ["b", 2, 20, 200, "=B4*2", "=E4+1"],
+            ["d", 4, 40, 400, "=B5*2", "=E5+1"],
+        ]}),
+    )
+    .unwrap();
+    s.execute("data.sort", json!({"range": "A1:D5", "keys": [{"column": "B"}]})).unwrap();
+    let a: Vec<Value> = (1..=5).map(|r| v(&s, &format!("A{r}"))).collect();
+    assert_eq!(a, ["a", "b", "c", "d", "e"].map(Value::from));
+    let c: Vec<Value> = (1..=5).map(|r| v(&s, &format!("C{r}"))).collect();
+    assert_eq!(c, [10.0, 20.0, 30.0, 40.0, 50.0].map(Value::Number), "the block's values moved");
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    for row in 1..=5u32 {
+        let e = sh.cell(CellRef::new(row - 1, 4)).expect("E keeps its cell");
+        let text = format!("B{row}*2");
+        assert_eq!(e.formula.as_ref().map(|f| f.text.as_str()), Some(text.as_str()), "E{row} is not moved");
+        assert_eq!(e.value, Value::Number(f64::from(row) * 2.0), "E{row} was recalculated in place");
+        let f = sh.cell(CellRef::new(row - 1, 5)).expect("F keeps its cell");
+        let text = format!("E{row}+1");
+        assert_eq!(f.formula.as_ref().map(|f| f.text.as_str()), Some(text.as_str()), "F{row} is not moved");
+        assert_eq!(f.value, Value::Number(f64::from(row) * 2.0 + 1.0));
+    }
+    // Undo puts the block and everything that read it back.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "E1"), Value::Number(6.0), "E1 reads the row that moved back");
+    assert_eq!(v(&s, "A1"), Value::from("c"));
+}
+
 /// A sort moves its block by rewriting its rows in place, so a block with fixed points, several
 /// cycles, absent cells, formulas, styles and notes must come through the move, undo, redo and a
 /// save/reopen exact — no row may be read after the move has overwritten it.

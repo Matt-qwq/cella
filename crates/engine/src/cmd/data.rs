@@ -456,6 +456,16 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                 .collect()
         };
         SortProfile::mark(&mut profile, "gather_notes_links");
+        // Reordering is the inverse of `order`: `dst_of[src] = dst`.
+        let dst_of: Vec<u32> = {
+            let mut v = vec![0u32; order.len()];
+            for (dst_i, &src_i) in order.iter().enumerate() {
+                if let Some(slot) = v.get_mut(src_i as usize) {
+                    *slot = dst_i as u32;
+                }
+            }
+            v
+        };
         // The body's cells in destination order (line by line, lane by lane). An absent cell stays
         // `None`: the destination is emptied rather than written as a blank.
         let mut moved: Vec<Option<Cell>> = Vec::with_capacity(body.count() as usize);
@@ -469,29 +479,62 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         let mut body_had_formula = false;
         let row_reader = (!by_cols).then(|| sh.cells.row_reader(body.start.col, body.end.col));
         let has_pictures = !sh.cell_pictures.is_empty();
-        for (dst_i, &src_i) in order.iter().enumerate() {
-            let start = moved.len();
-            if let Some(read) = &row_reader {
-                read(body.start.row + src_i, &mut moved);
-            } else {
-                moved.extend(lanes.iter().map(|&k| sh.cell(line(src_i, k))));
-            }
-            for (&k, cell) in lanes.iter().zip(moved.get_mut(start..).into_iter().flatten()) {
-                body_had_formula |= cell.as_ref().is_some_and(|c| c.formula.is_some());
-                if let Some(c) = cell.as_mut()
-                    && let Some(f) = &c.formula
-                {
-                    body_arrays |= f.array.is_some() || f.dynamic;
-                    // A row permutation is the **identity** in R1C1: `=A1` in row 2 moving to
-                    // row 1 says `=A2`, and the shape is the same one. Only a reference that
-                    // would leave the sheet changes it, and only that cell materialises a private
-                    // shape with the `#REF!` Excel shows (SHAPE-SHARING.md §4.9).
-                    if let Some(moved) = f.copied_to(line(src_i, k), line(dst_i as u32, k)) {
-                        c.formula = Some(Arc::new(moved));
+        if let Some(read) = &row_reader {
+            // The read runs in **source** order and scatters each line into its destination slot.
+            // A destination-order read of a permutation lands in a different band every line, and
+            // the bands are what the store packs cells by; that random walk was most of the
+            // gather. A source-order read walks the bands once, forwards, and pays one scattered
+            // write of a line's cells into the buffer the write-back then walks forwards.
+            moved.resize(body.count() as usize, None);
+            let stride = lanes.len();
+            let mut scratch: Vec<Option<Cell>> = Vec::with_capacity(stride);
+            for src_i in 0..n {
+                scratch.clear();
+                read(body.start.row + src_i, &mut scratch);
+                let dst_i = dst_of.get(src_i as usize).copied().unwrap_or(src_i);
+                let base = dst_i as usize * stride;
+                for (j, (&k, slot)) in lanes.iter().zip(scratch.iter_mut()).enumerate() {
+                    let mut cell = slot.take();
+                    body_had_formula |= cell.as_ref().is_some_and(|c| c.formula.is_some());
+                    if let Some(c) = cell.as_mut()
+                        && let Some(f) = &c.formula
+                    {
+                        body_arrays |= f.array.is_some() || f.dynamic;
+                        // A row permutation is the **identity** in R1C1: `=A1` in row 2 moving to
+                        // row 1 says `=A2`, and the shape is the same one. Only a reference that
+                        // would leave the sheet changes it, and only that cell materialises a
+                        // private shape with the `#REF!` Excel shows (SHAPE-SHARING.md §4.9).
+                        if let Some(moved) = f.copied_to(line(src_i, k), line(dst_i, k)) {
+                            c.formula = Some(Arc::new(moved));
+                        }
+                    }
+                    if has_pictures && let Some(picture) = sh.cell_pictures.get(&line(src_i, k)) {
+                        pictures.push((line(dst_i, k), picture.clone()));
+                    }
+                    if let Some(slot) = moved.get_mut(base + j) {
+                        *slot = cell;
                     }
                 }
-                if has_pictures && let Some(picture) = sh.cell_pictures.get(&line(src_i, k)) {
-                    pictures.push((line(dst_i as u32, k), picture.clone()));
+            }
+        } else {
+            // A column sort moves whole columns; there is no row reader, and the cells go in one
+            // at a time in destination order.
+            for (dst_i, &src_i) in order.iter().enumerate() {
+                let start = moved.len();
+                moved.extend(lanes.iter().map(|&k| sh.cell(line(src_i, k))));
+                for (&k, cell) in lanes.iter().zip(moved.get_mut(start..).into_iter().flatten()) {
+                    body_had_formula |= cell.as_ref().is_some_and(|c| c.formula.is_some());
+                    if let Some(c) = cell.as_mut()
+                        && let Some(f) = &c.formula
+                    {
+                        body_arrays |= f.array.is_some() || f.dynamic;
+                        if let Some(moved) = f.copied_to(line(src_i, k), line(dst_i as u32, k)) {
+                            c.formula = Some(Arc::new(moved));
+                        }
+                    }
+                    if has_pictures && let Some(picture) = sh.cell_pictures.get(&line(src_i, k)) {
+                        pictures.push((line(dst_i as u32, k), picture.clone()));
+                    }
                 }
             }
         }
@@ -510,16 +553,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
             if by_cols { vec![] } else { order.iter().map(|&i| sh.rows.get(&(body.start.row + i)).copied()).collect() };
         // Floating objects anchored inside the sorted body travel with their lines, unless they
         // are pinned absolutely ("Don't move or size with cells", `editAs="absolute"`). Reordering
-        // is the inverse of `order`: `dst_of[src] = dst`.
-        let dst_of: Vec<u32> = {
-            let mut v = vec![0u32; order.len()];
-            for (dst_i, &src_i) in order.iter().enumerate() {
-                if let Some(slot) = v.get_mut(src_i as usize) {
-                    *slot = dst_i as u32;
-                }
-            }
-            v
-        };
+        // is the inverse of `order`: `dst_of[src] = dst`, built with the gather above.
         // The object's own geometry (its top-left anchor cell, offset and size) is read from the
         // pre-sort `sh`; a two-cell object's bottom-right cell is derived from its size here so it
         // can be re-fitted to the lines it spans after the sort.
