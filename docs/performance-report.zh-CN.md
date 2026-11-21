@@ -1,6 +1,6 @@
 # 性能报告
 
-> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `2ccc59a`（2026-11-21）。
+> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `ccce92d`（2026-11-21）。
 > 机器：windows x86_64；rustc 1.97.1 (8bab26f4f 2026-07-14)。所有数字都是同一台空闲机器上的墙钟时间，本机跑动之间波动约 10%，
 > 这也是门禁预算取"安静一次的两倍"的原因。方法与口径见 [performance.md](performance.md)。
 
@@ -12,31 +12,31 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      128 ms     250 ms     51%
-fill.formulas          100000      140 ms     290 ms     48%
-fill.chained           100000      184 ms     370 ms     50%
-aggregate              100000       55 ms     110 ms     50%
-edit.recalc            100000       75 ms     160 ms     47%
-edit.undo              100000      200 us     3.0 ms      7%
-sort.desc              100000      282 ms     580 ms     49%
-save.xlsx              100000      158 ms     300 ms     53%
-open.xlsx              100000      260 ms     520 ms     50%
-rebuild.graph          100000       54 ms     110 ms     49%
-open.csv               100000       62 ms     130 ms     48%
-fill.values           1000000      1.49 s     3.05 s     49%
-fill.formulas         1000000      1.31 s     2.55 s     51%
-fill.chained          1000000      1.71 s     3.55 s     48%
-aggregate             1000000      347 ms     1.15 s     30%
-edit.recalc           1000000      632 ms     1.45 s     44%
+fill.values            100000      143 ms     250 ms     57%
+fill.formulas          100000      166 ms     290 ms     57%
+fill.chained           100000      263 ms     370 ms     71%
+aggregate              100000       66 ms     110 ms     60%
+edit.recalc            100000       88 ms     160 ms     55%
+edit.undo              100000      100 us     3.0 ms      3%
+sort.desc              100000      294 ms     580 ms     51%
+save.xlsx              100000      181 ms     300 ms     60%
+open.xlsx              100000      341 ms     520 ms     66%
+rebuild.graph          100000       60 ms     110 ms     55%
+open.csv               100000       66 ms     130 ms     51%
+fill.values           1000000      1.64 s     3.05 s     54%
+fill.formulas         1000000      1.36 s     2.55 s     53%
+fill.chained          1000000      2.02 s     3.55 s     57%
+aggregate             1000000      438 ms     1.15 s     38%
+edit.recalc           1000000      710 ms     1.45 s     49%
 edit.undo             1000000      1.5 ms      52 ms      3%
-sort.desc             1000000      3.04 s     6.70 s     45%
-save.xlsx             1000000      1.88 s     3.40 s     55%
-open.xlsx             1000000      3.10 s     5.90 s     52%
-rebuild.graph         1000000      840 ms     1.45 s     58%
-open.csv              1000000      569 ms     1.25 s     45%
-save.repeat            100000      153 ms     370 ms     41%
-save.repeat           1000000      1.66 s     3.20 s     52%
-mem_drift              100000      4.9 ms      11 ms     44%
+sort.desc             1000000      2.97 s     6.70 s     44%
+save.xlsx             1000000      1.83 s     3.40 s     54%
+open.xlsx             1000000      3.33 s     5.90 s     56%
+rebuild.graph         1000000      794 ms     1.45 s     55%
+open.csv              1000000      730 ms     1.25 s     58%
+save.repeat            100000      149 ms     370 ms     40%
+save.repeat           1000000      1.76 s     3.20 s     55%
+mem_drift              100000      4.6 ms      11 ms     42%
 
 OK: all 25 scenarios within budget (xtask/perf-budgets.txt)
 
@@ -48,31 +48,35 @@ OK: all 25 scenarios within budget (xtask/perf-budgets.txt)
 
 Cella memory — 1000000 rows x 6 columns
 
-as built (built by the perf scenario's three fills)
+  deferred release queue: 340.4 MB released before the report below
+  (an evicted history step waits for a later cheap command or the host's idle drain; a session
+   that stops after a bulk edit would keep it, so the queue line below is zero by construction)
+
+as built (built by the perf scenario's three fills, its release queue drained)
 
   part                                 bytes    share  size
   ---------------------------------------------------  ----------
-  sheet Sheet1 / cells             371136740    30.3%  371.1 MB
-    band headers + rows             52250000     4.3%  52.2 MB
+  sheet Sheet1 / cells             371136740    42.0%  371.1 MB
+    band headers + rows             52250000     5.9%  52.2 MB
     band index                        375168     0.0%  375.2 kB
-    bitmaps                          8000000     0.7%  8.0 MB
-    payloads                        16000000     1.3%  16.0 MB
-    kind runs                        8000000     0.7%  8.0 MB
-    style runs                       4000000     0.3%  4.0 MB
+    bitmaps                          8000000     0.9%  8.0 MB
+    payloads                        16000000     1.8%  16.0 MB
+    kind runs                        8000000     0.9%  8.0 MB
+    style runs                       4000000     0.5%  4.0 MB
     style ids                          62500     0.0%  62.5 kB
-    number tables                   33004944     2.7%  33.0 MB
-    text dictionaries               32000000     2.6%  32.0 MB
-    row side tables                 71999872     5.9%  72.0 MB
-    formula text                   133444256    10.9%  133.4 MB
-    formula trees                   12000000     1.0%  12.0 MB
+    number tables                   33004944     3.7%  33.0 MB
+    text dictionaries               32000000     3.6%  32.0 MB
+    row side tables                 71999872     8.1%  72.0 MB
+    formula text                   133444256    15.1%  133.4 MB
+    formula trees                   12000000     1.4%  12.0 MB
   sheet Sheet1 / lines                   192     0.0%  192 B
   sheet Sheet1 / objects                1598     0.0%  1.6 kB
   workbook / styles                     1990     0.0%  2.0 kB
   workbook / names                         0     0.0%  0 B
   workbook / other                       960     0.0%  960 B
-  calc / graph nodes               104857928     8.6%  104.9 MB
-  calc / precedent areas           124999960    10.2%  125.0 MB
-  calc / dependents map             56001416     4.6%  56.0 MB
+  calc / graph nodes               104857928    11.9%  104.9 MB
+  calc / precedent areas           124999960    14.1%  125.0 MB
+  calc / dependents map             56001416     6.3%  56.0 MB
   calc / range index                       0     0.0%  0 B
   calc / wide range index                  0     0.0%  0 B
   calc / legacy arrays                     0     0.0%  0 B
@@ -86,15 +90,16 @@ as built (built by the perf scenario's three fills)
   calc / pass (at rest)                    0     0.0%  0 B
     graph dependents lists                 0           many
   history / saved snapshot              2544     0.0%  2.5 kB
-  history / undo                   552829918    45.1%  552.8 MB
+  history / undo                   212444230    24.0%  212.4 MB
+  history / deferred release               0     0.0%  0 B
   history / redo                           0     0.0%  0 B
-  journal                           15251076     1.2%  15.3 MB
+  journal                           15251076     1.7%  15.3 MB
                             -------------------------
-  TOTAL                           1225084482   100.0%  1.23 GB
+  TOTAL                            884698794   100.0%  884.7 MB
   formula shapes                3 of 2000000  the trees the formulas share
   undo stack (1 steps)             212444230           retained beyond the live workbook
     AutoFill                       212444230           the newest first
-    Sheet1 / stripes        86250004           retained 212441686 · row tables 55996928 · texts 32000000
+    Sheet1 / stripes        86250004           retained 212441686 · row tables 55999904 · texts 32000000
 
 the same workbook saved as xlsx (70371330 bytes) and opened again
 
@@ -135,6 +140,7 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
     graph dependents lists                 0           many
   history / saved snapshot               952     0.0%  952 B
   history / undo                           0     0.0%  0 B
+  history / deferred release               0     0.0%  0 B
   history / redo                           0     0.0%  0 B
   journal                           15251146     2.2%  15.3 MB
                             -------------------------
@@ -153,10 +159,11 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
   graph nodes                               104.9 MB        104.9 MB  +0 B
   dependents map                             56.0 MB         56.0 MB  +0 B
   name cache                                     0 B             0 B  +0 B
-  undo                                      552.8 MB             0 B  -552.8 MB
+  undo                                      212.4 MB             0 B  -212.4 MB
+  deferred release                               0 B             0 B  +0 B
   saved snapshot                              2.5 kB           952 B  -1.6 kB
   journal                                    15.3 MB         15.3 MB  +70 B
-  total                                      1.23 GB        683.8 MB  -541.3 MB
+  total                                     884.7 MB        683.8 MB  -200.9 MB
 
 
 ```
