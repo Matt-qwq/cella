@@ -2450,6 +2450,15 @@ pub struct CellStore {
     /// guard exists to refuse. A store that once held an array and no longer does takes the slow
     /// path.
     array_anchors: bool,
+    /// Whether a formula has ever been written into this store; see [`CellStore::has_formulas`].
+    ///
+    /// One-sided like `array_anchors`, and for the same reason. The walk `has_formulas` makes
+    /// costs 1.3 ms over a million stored rows, and a data import pays it once per bulk command
+    /// into a workbook that holds no formula at all. Every write that can put one in raises this
+    /// and nothing lowers it: a store that has held a formula takes the walk, which is the only
+    /// exact answer (a row insert can leave a stored formula logically unreachable, so a counter
+    /// that removal keeps in step would need to see every such path).
+    wrote_formula: bool,
 }
 
 impl Clone for CellStore {
@@ -2466,6 +2475,7 @@ impl Clone for CellStore {
             building: None,
             used: Mutex::new(self.used_box()),
             array_anchors: self.array_anchors,
+            wrote_formula: self.wrote_formula,
         }
     }
 }
@@ -3445,6 +3455,9 @@ impl CellStore {
         if !self.array_anchors {
             self.array_anchors = cell_has_array(&cell);
         }
+        if !self.wrote_formula {
+            self.wrote_formula = cell.formula.is_some();
+        }
         // `put` answers both questions the length bookkeeping asks; two `contains` probes around it
         // cost a band lookup, a row search and a rank each, which is what a paste of six million
         // cells was paying per cell.
@@ -3485,6 +3498,9 @@ impl CellStore {
             band.finish();
             if !self.array_anchors {
                 self.array_anchors = band.has_array_anchor();
+            }
+            if !self.wrote_formula {
+                self.wrote_formula = band.rows.iter().any(|row| !row.formulas().is_empty());
             }
             // A chunk boundary can land in a band already spilled by the previous batch: bring it
             // back so the merge can see its rows, then spill the result again.
@@ -3954,6 +3970,9 @@ impl CellStore {
         self.band_for_write(key);
         if !self.array_anchors {
             self.array_anchors = cells.iter().any(|(_, cell)| cell_has_array(cell));
+        }
+        if !self.wrote_formula {
+            self.wrote_formula = cells.iter().any(|(_, cell)| cell.formula.is_some());
         }
         let band = Arc::make_mut(self.bands.entry(key).or_default());
         // A row that isn't there yet — every row while a file opens — is built in one go: the
@@ -4537,7 +4556,12 @@ impl CellStore {
 
     /// Whether any logically reachable cell contains a formula, even without a cached result.
     /// Unlike `Self::formulas`, this needs neither ordering nor a copy of each formula.
+    ///
+    /// A store no formula was ever written into answers without the walk: see `wrote_formula`.
     pub fn has_formulas(&self) -> bool {
+        if !self.wrote_formula {
+            return false;
+        }
         let contains = |key: u32, band: &Band| {
             band.rows.iter().any(|row| {
                 let formulas = row.formulas();
@@ -6833,6 +6857,41 @@ mod tests {
         assert!(s.has_formulas());
         s.remove(at);
         assert!(!s.has_formulas());
+    }
+
+    /// The cache behind `has_formulas` is a one-sided "a formula was written here": every write
+    /// path that can store one raises it, and the exactness the callers rely on (a deleted formula
+    /// must read false) still comes from the walk.
+    #[test]
+    fn has_formulas_sees_every_write_path_and_stays_exact() {
+        let formula = || Arc::new(Formula::new("=A1+1"));
+        // The row path a reader and a sort write through.
+        let mut by_row = CellStore::new();
+        let mut cells = vec![(0u32, Cell::value(Value::Number(1.0)))];
+        by_row.set_row(0, &mut cells);
+        assert!(!by_row.has_formulas(), "values only");
+        let mut cells = vec![(0u32, Cell { formula: Some(formula()), ..Default::default() })];
+        by_row.set_row(BAND, &mut cells);
+        assert!(by_row.has_formulas(), "a formula written by the row path is seen");
+        // The batch path the file reader decodes through.
+        let mut batch = BandBatch::new();
+        let mut cells = vec![(0u32, Cell { formula: Some(formula()), ..Default::default() })];
+        batch.set_row(0, &mut cells);
+        let mut by_batch = CellStore::new();
+        by_batch.insert_batch(batch);
+        assert!(by_batch.has_formulas(), "a formula written by a reader batch is seen");
+        // A clone keeps the answer without walking, and a deserialized store recomputes it.
+        assert!(by_batch.clone().has_formulas());
+        let json = serde_json::to_string(&by_batch).expect("a store serializes");
+        let back: CellStore = serde_json::from_str(&json).expect("and deserializes");
+        assert!(back.has_formulas());
+        // A values-only store of a few bands answers false.
+        let mut plain = CellStore::new();
+        for row in 0..BAND * 2 {
+            let mut cells = vec![(0u32, Cell::value(Value::Number(f64::from(row))))];
+            plain.set_row(row, &mut cells);
+        }
+        assert!(!plain.has_formulas());
     }
 
     #[test]
