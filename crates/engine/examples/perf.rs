@@ -231,9 +231,7 @@ fn merge_best(best: &mut [Measurement], next: Vec<Measurement>) {
 fn run_once(rows: usize, only: Option<&[String]>) -> Result<Vec<Measurement>, String> {
     let mut b = Bench::new();
     let mut out = Vec::new();
-    let first_selected = STEPS
-        .iter()
-        .position(|(id, _what, _step)| only.is_none_or(|ids| ids.iter().any(|want| want == id)));
+    let first_selected = STEPS.iter().position(|(id, _what, _step)| only.is_none_or(|ids| ids.iter().any(|want| want == id)));
     let Some(first_selected) = first_selected.or(only.map(|_| STEPS.len())) else {
         return Err("no scenario matched".to_string());
     };
