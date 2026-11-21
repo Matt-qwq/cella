@@ -53,11 +53,11 @@ fn a_legacy_formula_is_intersected_and_a_dynamic_one_still_spills() {
     let sheet = wb.sheet(0).unwrap();
     // The legacy formula reads as the intersected one and evaluates at its own row.
     let b2 = sheet.cell(at("B2")).unwrap();
-    assert_eq!(b2.formula.as_ref().unwrap().text, "@A1:A3*2");
+    assert_eq!(b2.formula.as_ref().unwrap().text_at(at("B2")).as_deref(), Some("@A1:A3*2"));
     assert_eq!(b2.value, Value::Number(4.0));
     // The dynamic-array formula in the same file is untouched and spills over the range it named.
     let d2 = sheet.cell(at("D2")).unwrap();
-    assert_eq!(d2.formula.as_ref().unwrap().text, "A1:A3*2");
+    assert_eq!(d2.formula.as_ref().unwrap().text_at(at("D2")).as_deref(), Some("A1:A3*2"));
     assert_eq!(sheet.value(at("D2")), Value::Number(2.0));
     assert_eq!(sheet.value(at("D3")), Value::Number(4.0));
     assert_eq!(sheet.value(at("D4")), Value::Number(6.0));
@@ -67,7 +67,7 @@ fn a_legacy_formula_is_intersected_and_a_dynamic_one_still_spills() {
     // unwrapped formula is dynamic (it must not be intersected as a legacy one).
     let h1 = sheet.cell(at("H1")).unwrap();
     let f = h1.formula.as_ref().unwrap();
-    assert_eq!(f.text, "SUM(A1:A3)");
+    assert_eq!(f.text_at(at("H1")).as_deref(), Some("SUM(A1:A3)"));
     assert!(f.dynamic);
     assert_eq!(h1.value, Value::Number(6.0));
 }

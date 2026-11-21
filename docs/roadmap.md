@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** **round 33 found the fill's number was a metric, not the drag** (34 % of `fill.values`
+> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** **round 34 stopped storing a formula's text per cell** — it is the print of the shared shape at the cell (the invariant the shape work pins), so `Formula` is 48 → 32 bytes and **live heap 884.7 → 776.6 MB (−108.1 MB, −12.2 %)**, reopened 614.4, `formula text` 133.4 → 64.0 MB. The XLSX writer prints at save, the JSON writer materialises the text it always wrote (bytes unchanged), and the structural rewrite's fallback learned the old cell positions it needs. Earlier: **round 33 found the fill's number was a metric, not the drag** (34 % of `fill.values`
 is per-command overhead and 16 % the harness's JSON; a real fill handle costs 157 ms at 1M) and
 took the overhead −27.14 % (1M 1,464 → 1,067 ms, 8/8); the gate grew `fill.autofill` to protect
 the drag itself. Earlier: **round 32 took the closure −13.3 % more** (a sort tells the recalculation which
@@ -878,6 +878,16 @@ different trade — speed and size against interoperability, and against every t
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-21 | minor | **Round 34: the formula text is printed, not stored.** A filled formula's text is
+`Shape::print_at(at)` — the invariant the shape work pins — so `Formula` is **48 → 32 bytes** with
+text only for formulas a shape cannot spell (JSON-only, unparseable, a clamped reference). **Live
+heap 884.7 → 776.6 MB (−108.1 MB, −12.2 %)**, reopened 683.8 → 614.4, `formula text` 133.4 → 64.0,
+`undo` 212.4 → 173.8. The XLSX writer prints at save inside the parallel row windows; the JSON
+writer materialises the text into the `Value` tree (package bytes unchanged) and a JSON reader
+re-interns shapes; equality compares shapes by spelling; `cell_before` gained the block-move and
+cell-insert/delete inverses the rewrite fallback needs (two rewrite bugs the tests caught are
+pinned). Also: `perf-report` takes best of three (round 33's page published a 3.39 s save that
+measures 1.52 s). Docs: performance.md (round 34), gaps §2, ROADMAP |
 | 2026-11-21 | minor | **Round 33: the fill.** `fill.values` was the tightest budget; attribution showed only
 ~45 % of it moves values (16 % is the harness's JSON, 34 % per-command overhead paid 100 times)
 while a real drag is 157 ms. A one-way `wrote_formula` flag makes `has_formulas` O(1) (137 → 6 ms)

@@ -180,7 +180,7 @@ fn a_structural_edit_repairs_a_duplicate_and_its_structured_reference() {
     assert_named(&wb);
     assert_eq!(names(&table(&wb)), ["x", "y", "y2"]);
     let sh = wb.active().expect("sheet");
-    let formula = sh.cell(CellRef::new(0, 4)).and_then(|c| c.formula.map(|f| f.text.clone()));
+    let formula = sh.cell(CellRef::new(0, 4)).and_then(|c| c.formula).and_then(|f| f.text_at(CellRef::new(0, 4)));
     assert_eq!(formula.as_deref(), Some("SUM(T[y2])"));
     assert_eq!(header_state(&wb), header_state(&reload(&wb)));
 }

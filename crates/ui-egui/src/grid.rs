@@ -761,7 +761,7 @@ fn display_text(
     if sh.show_formulas
         && let Some(f) = sh.cell(c).and_then(|x| x.formula)
     {
-        return (format!("={}", f.text), None, false, None);
+        return (format!("={}", f.text_at(c).unwrap_or_default()), None, false, None);
     }
     if !sh.show_zeros && v.as_f64() == Some(0.0) {
         return (String::new(), None, false, None);

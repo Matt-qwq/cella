@@ -129,7 +129,8 @@ pub(crate) fn expose_grid(ui: &mut egui::Ui, wb: &Workbook, si: usize, sh: &Shee
             let _ = grid.interact(rect, id, Sense::hover());
             let value = sh.value(cell);
             let label = if value.is_empty() { String::new() } else { value.display() };
-            let formula = sh.cells.get(cell).and_then(|c| c.formula.clone()).map(|f| f.text.trim_start_matches('=').to_string());
+            let formula =
+                sh.cells.get(cell).and_then(|c| c.formula.clone()).and_then(|f| f.text_at(cell)).map(|t| t.trim_start_matches('=').to_string());
             let address = cell.a1();
             ctx.accesskit_node_builder(id, |n| {
                 n.set_role(Role::GridCell);

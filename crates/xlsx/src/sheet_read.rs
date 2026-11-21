@@ -1362,7 +1362,7 @@ fn read_formula_text(
     // spelling, with the shape already interned at this cell.
     let mut fm = crate::fmla::formula_from_file_at(f.text.trim(), pos, &mut st.shapes);
     if let Some(known) = known.given()
-        && let Some(u) = crate::fmla::unwrap_google_sheets(&fm.text, known)
+        && let Some(u) = crate::fmla::unwrap_google_sheets(&fm.text_at(pos).unwrap_or_default(), known)
     {
         fm = crate::fmla::formula_from_file_at(&u, pos, &mut st.shapes);
         *unwrapped = true;
@@ -1370,8 +1370,9 @@ fn read_formula_text(
     match f.kind.unwrap_or("normal") {
         "shared" => {
             let si = f.si.and_then(|v| v.trim().parse::<u32>().ok())?;
-            if !fm.text.is_empty() {
-                st.shared.insert(si, Shared { anchor: pos, shape: fm.shape.clone(), text: fm.text.clone(), unwrapped: *unwrapped });
+            if !f.text.trim().is_empty() {
+                st.shared
+                    .insert(si, Shared { anchor: pos, shape: fm.shape.clone(), text: fm.text_at(pos).unwrap_or_default(), unwrapped: *unwrapped });
                 Some((fm, None))
             } else {
                 // The family is named by the file: the member reuses the master's shape, so the
@@ -1382,11 +1383,11 @@ fn read_formula_text(
                     return None;
                 };
                 *unwrapped |= sh.unwrapped;
-                Some((Formula::copied_from(sh.shape.as_ref(), &sh.text, sh.anchor, pos).unwrap_or_else(|| Formula::new(&sh.text)), None))
+                Some((Formula::copied_from(sh.shape.as_ref(), Some(&sh.text), sh.anchor, pos).unwrap_or_else(|| Formula::new(&sh.text)), None))
             }
         }
         "array" => {
-            if fm.text.is_empty() {
+            if f.text.trim().is_empty() {
                 return None;
             }
             let range = f.range.and_then(RangeRef::parse).unwrap_or(RangeRef::cell(pos));
@@ -1406,7 +1407,7 @@ fn read_formula_text(
             None
         }
         _ => {
-            if fm.text.is_empty() {
+            if f.text.trim().is_empty() {
                 None
             } else {
                 Some((fm, None))

@@ -34,9 +34,9 @@ pub fn content_diff(a: &Workbook, b: &Workbook) -> Option<String> {
         // remapped by different structural edits, and `diff` is a physical comparison.
         for c in x.cells.diff_logical(&y.cells) {
             let content = |s: &Sheet| {
-                s.cell(c).filter(has_content).map(|c| match &c.formula {
-                    Some(f) => format!("={}", f.text),
-                    None => format!("{:?}", c.value),
+                s.cell(c).filter(has_content).map(|cell| match &cell.formula {
+                    Some(f) => format!("={}", f.text_at(c).unwrap_or_default()),
+                    None => format!("{:?}", cell.value),
                 })
             };
             if content(x) != content(y) {

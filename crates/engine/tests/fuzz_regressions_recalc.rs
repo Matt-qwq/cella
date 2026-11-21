@@ -45,7 +45,8 @@ fn value(s: &Session, at: &str) -> Value {
 fn formula(s: &Session, at: &str) -> Option<String> {
     let wb = s.doc().expect("document").wb.clone();
 
-    wb.active().and_then(|sh| sh.cell(CellRef::parse(at).expect("cell"))).and_then(|c| c.formula).map(|f| f.text.clone())
+    let c = CellRef::parse(at).expect("cell");
+    wb.active().and_then(|sh| sh.cell(c)).and_then(|c| c.formula).and_then(|f| f.text_at(c))
 }
 
 /// A full recalculation from a fresh dependency graph.
@@ -77,13 +78,14 @@ fn recalc_diff(wb: &Workbook) -> Option<String> {
                 let f = x
                     .cell(c)
                     .and_then(|c| c.formula)
-                    .map(|f| format!(" (formula ={})", f.text))
+                    .and_then(|f| f.text_at(c))
+                    .map(|t| format!(" (formula ={t})"))
                     .or_else(|| {
                         let (anchor, _) = x.spill_ranges.iter().find(|(_, r)| r.contains(c))?;
 
                         let f = x.cell(*anchor).and_then(|c| c.formula)?;
 
-                        Some(format!(" (spilled from {} ={})", anchor.a1(), f.text))
+                        f.text_at(*anchor).map(|t| format!(" (spilled from {} ={t})", anchor.a1()))
                     })
                     .unwrap_or_default();
 

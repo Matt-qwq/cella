@@ -357,6 +357,18 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 34): the formula text is no longer stored per cell — −108.1 MB.** A
+  filled formula's text is `Shape::print_at(at)`, the invariant the shape work already pins, so
+  `Formula` is **48 → 32 bytes** and `text` (`Option<Box<String>>`) exists only for a formula with
+  no shape (a JSON document's, an unparseable one) or a shape that clamps at its cell. **Live heap
+  884.7 → 776.6 MB (−12.2 %)**, reopened 683.8 → 614.4; the `formula text` line 133.4 → 64.0 MB and
+  `undo` 212.4 → 173.8 (the snapshot shares the smaller formulas). Reads go through `text_at` /
+  `input_text_at`; the XLSX writer prints at save inside its parallel row windows, the JSON writer
+  materialises the text into the `Value` tree (package bytes unchanged, the golden test holds) and
+  the reader re-interns shapes; equality compares a shape by spelling; the structural rewrite's
+  per-cell fallback gained the old positions it needs from `cell_before` (block move, cell
+  insert/delete), which fixed a column move that left a reference pointing at the hole and an
+  `insertCells` that re-shifted formulas twice. model 172 / calc 174 / xlsx 479 / engine 633 green.
 - **Landed (11-21, round 33): the fill's per-command overhead, −27.14 %.** `fill.values`
   was the tightest scenario in the gate (69 % of budget), and attributing it first showed it is
   **a metric, not the user's action**: a hundred `range.setValues` calls spend 34 % of their

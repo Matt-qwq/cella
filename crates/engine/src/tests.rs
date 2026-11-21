@@ -127,7 +127,7 @@ fn editing_a_name_renames_it_in_formulas() {
     let names: Vec<&str> = d.wb.names.iter().map(|n| n.name.as_str()).collect();
     assert_eq!(names, ["Other", "Cost"]);
     let b1 = d.wb.active().unwrap().cell(CellRef::parse("B1").unwrap()).and_then(|c| c.formula.clone()).unwrap();
-    assert_eq!(b1.text, "Cost*2");
+    assert_eq!(b1.text_at(CellRef::parse("B1").unwrap()).as_deref(), Some("Cost*2"));
     assert_eq!(v(&s, "B1"), Value::number(42.0));
     assert!(s.execute("formulas.defineName", json!({"name": "X", "oldName": "Missing"})).is_err());
 }
@@ -436,9 +436,41 @@ fn bulk_formula_history_is_bounded_and_latest_edit_still_undoes() {
     doc.wb = current;
     doc.undo = history;
     session.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(session.doc().unwrap().wb.active().unwrap().cells.get(CellRef::new(0, 0)).unwrap().formula.as_ref().unwrap().text, "B1+3");
+    assert_eq!(
+        session
+            .doc()
+            .unwrap()
+            .wb
+            .active()
+            .unwrap()
+            .cells
+            .get(CellRef::new(0, 0))
+            .unwrap()
+            .formula
+            .as_ref()
+            .unwrap()
+            .text_at(CellRef::new(0, 0))
+            .as_deref(),
+        Some("B1+3")
+    );
     session.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(session.doc().unwrap().wb.active().unwrap().cells.get(CellRef::new(0, 0)).unwrap().formula.as_ref().unwrap().text, "B1+4");
+    assert_eq!(
+        session
+            .doc()
+            .unwrap()
+            .wb
+            .active()
+            .unwrap()
+            .cells
+            .get(CellRef::new(0, 0))
+            .unwrap()
+            .formula
+            .as_ref()
+            .unwrap()
+            .text_at(CellRef::new(0, 0))
+            .as_deref(),
+        Some("B1+4")
+    );
 }
 
 #[test]
@@ -855,7 +887,7 @@ fn a_row_insert_reprints_a_fill_and_keeps_its_one_shape() {
     let d = s.doc().unwrap();
     let sh = d.wb.active().unwrap();
     for (c, f, _) in sh.cells.formulas() {
-        assert_eq!(f.expr_at(c).map(|e| cella_formula::print(&e)).as_deref(), Some(f.text.as_str()), "{c:?}");
+        assert_eq!(f.expr_at(c).map(|e| cella_formula::print(&e)), f.text_at(c), "{c:?}");
     }
 }
 
@@ -872,8 +904,10 @@ fn strip_shapes(s: &mut Session) {
                 Some(cell) => cell,
                 None => continue,
             };
-            cell.formula =
-                Some(std::sync::Arc::new(cella_model::Formula { text: f.text.clone(), shape: None, array: f.array.clone(), dynamic: f.dynamic }));
+            // A text-only formula, as a file gives it: the text is the cell's own, so it is
+            // materialised here (R34 keeps none on a filled cell).
+            let text = f.text_at(c).map(Box::new);
+            cell.formula = Some(std::sync::Arc::new(cella_model::Formula { text, shape: None, array: f.array.clone(), dynamic: f.dynamic }));
             sh.cells.set(c, cell);
         }
     }
@@ -1665,11 +1699,11 @@ fn sort_leaves_the_cells_beside_the_block_in_their_rows() {
     for row in 1..=5u32 {
         let e = sh.cell(CellRef::new(row - 1, 4)).expect("E keeps its cell");
         let text = format!("B{row}*2");
-        assert_eq!(e.formula.as_ref().map(|f| f.text.as_str()), Some(text.as_str()), "E{row} is not moved");
+        assert_eq!(e.formula.as_ref().and_then(|f| f.text_at(CellRef::new(row - 1, 4))).as_deref(), Some(text.as_str()), "E{row} is not moved");
         assert_eq!(e.value, Value::Number(f64::from(row) * 2.0), "E{row} was recalculated in place");
         let f = sh.cell(CellRef::new(row - 1, 5)).expect("F keeps its cell");
         let text = format!("E{row}+1");
-        assert_eq!(f.formula.as_ref().map(|f| f.text.as_str()), Some(text.as_str()), "F{row} is not moved");
+        assert_eq!(f.formula.as_ref().and_then(|f| f.text_at(CellRef::new(row - 1, 5))).as_deref(), Some(text.as_str()), "F{row} is not moved");
         assert_eq!(f.value, Value::Number(f64::from(row) * 2.0 + 1.0));
     }
     // Undo puts the block and everything that read it back.
@@ -1795,7 +1829,7 @@ fn sort_permutes_rows_in_place_with_holes_formulas_styles_and_notes() {
                 let c = CellRef::new(r, 1);
                 let cell = sh.cell(c);
                 let bold = d.wb.styles.get(sh.style_id(c)).font.bold;
-                let text = sh.cell(CellRef::new(r, 2)).and_then(|x| x.formula.map(|f| f.text.clone()));
+                let text = sh.cell(CellRef::new(r, 2)).and_then(|x| x.formula).and_then(|f| f.text_at(CellRef::new(r, 2)));
                 (cell.map_or(Value::Empty, |x| x.value), text, bold)
             })
             .collect();
@@ -1819,7 +1853,11 @@ fn sort_permutes_rows_in_place_with_holes_formulas_styles_and_notes() {
         }
         let c = sh.cell(CellRef::new(row, 2)).expect("the formula moved with its row");
         let expected_text = format!("B{}*2", dst + 1);
-        assert_eq!(c.formula.as_ref().map(|f| f.text.as_str()), Some(expected_text.as_str()), "C text of destination {dst}");
+        assert_eq!(
+            c.formula.as_ref().and_then(|f| f.text_at(CellRef::new(row, 2))).as_deref(),
+            Some(expected_text.as_str()),
+            "C text of destination {dst}"
+        );
         let expected = if src == 4 { Value::Number(0.0) } else { Value::Number(f64::from(numbers[src]) * 2.0) };
         assert_eq!(c.value, expected, "C value of destination {dst}");
         assert_eq!(d.wb.styles.get(sh.style_id(CellRef::new(row, 1))).font.bold, src == 5, "bold follows source row 5 to destination 7");
@@ -1850,7 +1888,10 @@ fn sort_permutes_rows_in_place_with_holes_formulas_styles_and_notes() {
             assert_eq!(b.map(|x| x.value), Some(Value::Number(f64::from(numbers[src]))));
         }
         let expected_text = format!("B{}*2", dst + 1);
-        assert_eq!(reopened.cell(CellRef::new(row, 2)).and_then(|x| x.formula).as_ref().map(|f| f.text.as_str()), Some(expected_text.as_str()));
+        assert_eq!(
+            reopened.cell(CellRef::new(row, 2)).and_then(|x| x.formula).and_then(|f| f.text_at(CellRef::new(row, 2))).as_deref(),
+            Some(expected_text.as_str())
+        );
     }
 }
 
@@ -5158,7 +5199,13 @@ fn save_with_a_password_round_trips_and_picks_the_right_format() {
     assert!(err.contains(crate::io::WRONG_PASSWORD), "{err}");
     let (wb, _) = crate::io::open_bytes_with_password("Budget.xlsx", &bytes, Some("pw-5524")).unwrap();
     let sh = wb.active().unwrap();
-    assert_eq!(sh.cell(cella_core::CellRef::parse("A1").unwrap()).and_then(|c| c.formula).map(|f| f.text.clone()).as_deref(), Some("SUM(1,2,3)"));
+    assert_eq!(
+        sh.cell(cella_core::CellRef::parse("A1").unwrap())
+            .and_then(|c| c.formula)
+            .and_then(|f| f.text_at(cella_core::CellRef::parse("A1").unwrap()))
+            .as_deref(),
+        Some("SUM(1,2,3)")
+    );
 
     // file.saveBytes carries the same password (and never echoes it).
     let out = s.execute("file.saveBytes", json!({"password": "pw-5524"})).unwrap();
@@ -5205,7 +5252,12 @@ fn the_standard_scheme_is_written_on_request_and_kept_on_save() {
     assert!(err.contains(crate::io::WRONG_PASSWORD), "{err}");
     let (wb, _) = crate::io::open_bytes_with_password("Legacy.xlsx", &bytes, Some(PW)).unwrap();
     assert_eq!(
-        wb.active().unwrap().cell(CellRef::parse("A1").unwrap()).and_then(|c| c.formula).map(|f| f.text.clone()).as_deref(),
+        wb.active()
+            .unwrap()
+            .cell(CellRef::parse("A1").unwrap())
+            .and_then(|c| c.formula)
+            .and_then(|f| f.text_at(CellRef::parse("A1").unwrap()))
+            .as_deref(),
         Some("SUM(1,2,3)")
     );
 
@@ -5295,7 +5347,7 @@ fn subtotal_109_recalculates_when_row_height_or_autofit_reveals_rows() {
 fn cell_snapshot(s: &Session) -> Vec<(CellRef, Value, Option<String>, cella_model::StyleId)> {
     let wb = &s.doc().unwrap().wb;
     let sh = wb.active().unwrap();
-    sh.cells.iter().map(|(c, cell)| (c, cell.value, cell.formula.as_ref().map(|f| f.text.clone()), sh.style_id(c))).collect()
+    sh.cells.iter().map(|(c, cell)| (c, cell.value, cell.formula.as_ref().and_then(|f| f.text_at(c)), sh.style_id(c))).collect()
 }
 
 /// A filter changes which rows are shown, not what any cell holds: the only formulas such an edit
@@ -7656,7 +7708,9 @@ mod compressed_history {
         // half: the pages are the sheet's own cells deflated and the formula delta does not
         // compress, while the live figure no longer carries 144 B a row of row side tables.
         let report = s.memory_report();
-        assert!(report.undo * 3 < cells * 2, "{} against {cells}", report.undo);
+        // Three quarters, re-pinned after R34: a text-only formula's text is boxed now, so the
+        // step that holds a thousand of them is charged eight bytes a formula more than it was.
+        assert!(report.undo * 4 < cells * 3, "{} against {cells}", report.undo);
         // And the step still reads back exactly.
         s.execute("edit.undo", json!({})).unwrap();
         assert!(v(&s, "F1000").is_empty());
@@ -8179,7 +8233,7 @@ fn a_row_compacted_by_remove_duplicates_keeps_the_references_its_text_names() {
     // The XLOOKUP was written at J11 and the compaction moved it up to J10.
     let at = cella_core::CellRef::new(9, 9);
     let read = |wb: &cella_model::Workbook| {
-        wb.sheets.iter().find(|x| x.name == "Data").and_then(|x| x.cells.get(at)).map(|c| (c.formula.as_ref().map(|f| f.text.clone()), c.value))
+        wb.sheets.iter().find(|x| x.name == "Data").and_then(|x| x.cells.get(at)).map(|c| (c.formula.as_ref().and_then(|f| f.text_at(at)), c.value))
     };
     let before = read(&s.doc().expect("a document").wb);
     assert_eq!(before.as_ref().map(|(f, _)| f.as_deref()), Some(Some("XLOOKUP(D15,G1:G20,G1:G20)")));

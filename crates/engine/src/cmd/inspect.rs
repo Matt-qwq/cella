@@ -179,7 +179,7 @@ fn cell_get(s: &mut Session, p: &Json) -> Result<Json> {
         "cell": c.a1(),
         "value": value_json(&sh.value(c)),
         "type": if sh.cell_pictures.contains_key(&c) { "picture" } else { match sh.value(c) { Value::Empty => "empty", Value::Number(_) => "number", Value::Text(_) => "text", Value::Bool(_) => "boolean", Value::Error(_) => "error", Value::Array(_) => "array" } },
-        "formula": cell.and_then(|x| x.formula).map(|f| format!("={}", f.text)),
+        "formula": cell.and_then(|x| x.formula).map(|f| format!("={}", f.text_at(c).unwrap_or_default())),
         "text": crate::display::cell_text(&d.wb, sh, c),
         "input": sh.input_text(c),
         "picture": sh.cell_pictures.get(&c).map(|picture| json!({"mime": picture.mime, "alt": picture.alt, "bytes": picture.data.len()})),
@@ -310,7 +310,7 @@ fn changed_json(sheet: &str, at: CellRef, before: Option<&cella_model::Cell>, af
         "cell": at.a1(),
         "before": before.map(|c| value_json(&c.value)).unwrap_or(Json::Null),
         "after": after.map(|c| value_json(&c.value)).unwrap_or(Json::Null),
-        "beforeFormula": before.and_then(|c| c.formula.as_ref().map(|f| f.text.clone())),
-        "afterFormula": after.and_then(|c| c.formula.as_ref().map(|f| f.text.clone())),
+        "beforeFormula": before.and_then(|c| c.formula.as_ref()).and_then(|f| f.text_at(at)),
+        "afterFormula": after.and_then(|c| c.formula.as_ref()).and_then(|f| f.text_at(at)),
     })
 }

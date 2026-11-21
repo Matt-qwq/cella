@@ -37,7 +37,7 @@ pub use query::{
 };
 pub use sheet::{DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT, LineIndex, Sheet, SheetKind, SheetViewMode, Visibility, points_to_chars};
 pub use slicer::{DEFAULT_SLICER_STYLE, PivotSlicer, PivotTimeline, SLICER_STYLES, SlicerItem, SlicerSort, SlicerValue, TimeUnit, TimelineRange};
-pub use store::{BandBatch, CellStore, Compacted, Packed, PageCacheStats, SpillOptions, StoreMemory, btree_index_bytes, hash_index_bytes};
+pub use store::{BAND, BandBatch, CellStore, Compacted, Packed, PageCacheStats, SpillOptions, StoreMemory, btree_index_bytes, hash_index_bytes};
 pub use style::{
     Alignment, BorderLine, BorderStyle, Borders, Color, Fill, Font, HAlign, NumFmt, PatternType, ReadingOrder, Style, StyleId, StyleTable, Theme,
     Underline, VAlign, VertAlign,

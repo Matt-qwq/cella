@@ -669,8 +669,8 @@ mod tests {
                 Some(a) => assert!(std::sync::Arc::ptr_eq(a, &shape), "row {row}: its own tree"),
             }
             // The cell's own text, and the tree it resolves to, are the source's formula moved down.
-            assert_eq!(f.text, format!("A{}*2+3", row + 1));
-            assert_eq!(shape.print_at(at).as_deref(), Some(f.text.as_str()), "row {row}");
+            assert_eq!(f.text_at(at).as_deref(), Some(format!("A{}*2+3", row + 1).as_str()));
+            assert_eq!(shape.print_at(at), f.text_at(at), "row {row}");
         }
         // The values were recalculated from the shared tree: `=A1*2+3` at B1, and A10 is blank.
         assert_eq!(sh.value(CellRef::new(0, 1)), Value::Number(5.0));

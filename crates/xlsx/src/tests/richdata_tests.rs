@@ -182,7 +182,7 @@ fn pictures_roundtrip_across_sheets_with_and_without_dynamic_arrays() {
         if dynamic {
             let cell = loaded.sheet(0).unwrap().cells.get(at("E1")).unwrap();
             let f = cell.formula.as_ref().unwrap();
-            assert_eq!(f.text, "SEQUENCE(2)");
+            assert_eq!(f.text_at(at("E1")).as_deref(), Some("SEQUENCE(2)"));
             assert!(f.array.is_none());
         }
         let rels = package.rels("xl/workbook.xml").unwrap();

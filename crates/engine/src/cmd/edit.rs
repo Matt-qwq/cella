@@ -522,7 +522,9 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
                         // `origin`, not at whichever cell happened to carry this style first.
                         if let Some(formula) = c.as_mut().and_then(|cell| cell.formula.as_ref()).cloned() {
                             let rewrite = formula.shape().is_some_and(|s| s.file_rewrite);
-                            let text = formula.text_at(origin).unwrap_or_default();
+                            // The text as it was entered at `at`, re-anchored at the origin the
+                            // rest of the fill adjusts from.
+                            let text = formula.text_at(at).unwrap_or_default();
                             let entered = Formula::new_at(&text, origin, &mut shapes, rewrite);
                             if let Some(cell) = c.as_mut() {
                                 cell.formula = Some(std::sync::Arc::new(entered));
@@ -1561,14 +1563,14 @@ pub(crate) fn rewrite_shapes(wb: &mut cella_model::Workbook, map: impl Fn(usize,
                     continue;
                 }
                 if let Some(mut cell) = sheet.cells.get(c) {
-                    let nf = Formula { text, shape: Some(new), array: f.array.clone(), dynamic: f.dynamic };
+                    let nf = Formula { text: None, shape: Some(new), array: f.array.clone(), dynamic: f.dynamic };
                     cell.formula = Some(std::sync::Arc::new(nf));
                     sheet.cells.set(c, cell);
                 }
                 continue;
             }
             // Text alone, or a shape that does not resolve here: the cell's own parse.
-            let Some(tree) = f.text_tree() else { continue };
+            let Some(tree) = f.text_tree_at(c) else { continue };
             let Some(new) = map(si, tree) else { continue };
             let text = cella_formula::print(&new);
             if let Some(mut cell) = sheet.cells.get(c) {
@@ -1591,6 +1593,37 @@ pub(crate) fn rewrite_shapes(wb: &mut cella_model::Workbook, map: impl Fn(usize,
 /// block rather than the lines a shape is anchored to.
 fn cell_before(c: CellRef, e: &cella_formula::adjust::Edit) -> Option<CellRef> {
     use cella_formula::adjust::{Axis, Edit};
+    // A cut re-creates each moved formula at its destination (`from_expr_at`, which prints the
+    // source's tree there), so a Move has no "cell before": the text at the cell is the text the
+    // adjustment must read.
+    // Cells inserted or deleted inside a range: the band moves, the rest of the sheet stays.
+    if let Edit::InsertCells { axis, range } | Edit::DeleteCells { axis, range } = e {
+        let insert = matches!(e, Edit::InsertCells { .. });
+        let line = |v: u32, lo: u32, hi: u32, count: u32| -> Option<u32> {
+            if insert {
+                if v > hi {
+                    v.checked_sub(count)
+                } else if v < lo {
+                    Some(v)
+                } else {
+                    None
+                }
+            } else if v >= lo {
+                v.checked_add(count)
+            } else {
+                Some(v)
+            }
+        };
+        return match axis {
+            Axis::Rows if c.col >= range.start.col && c.col <= range.end.col => {
+                line(c.row, range.start.row, range.end.row, range.height()).map(|row| CellRef::new(row, c.col))
+            }
+            Axis::Cols if c.row >= range.start.row && c.row <= range.end.row => {
+                line(c.col, range.start.col, range.end.col, range.width()).map(|col| CellRef::new(c.row, col))
+            }
+            _ => Some(c),
+        };
+    }
     let (axis, at, count) = match e {
         Edit::Insert { axis, at, count } | Edit::Delete { axis, at, count } => (*axis, *at, *count),
         _ => return None,
@@ -1707,7 +1740,7 @@ pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str,
                     continue;
                 }
                 if let Some(mut cell) = sheet.cells.get(c) {
-                    let nf = Formula { text, shape: Some(shape), array: array.map(Box::new), dynamic: f.dynamic };
+                    let nf = Formula { text: None, shape: Some(shape), array: array.map(Box::new), dynamic: f.dynamic };
                     cell.formula = Some(std::sync::Arc::new(nf));
                     sheet.cells.set(c, cell);
                 }
@@ -1716,7 +1749,11 @@ pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str,
             // Only this cell can say (see `form_by_shape`): the cell's *text* spells the tree the
             // formula holds at the position it was written for, so the parse is the tree the edit
             // must adjust — this is the per-cell path S5 kept for what it cannot answer.
-            let Some(expr) = f.text_tree() else { continue };
+            // The text as the cell held it before the edit: for a cell a cut moved, its old
+            // position (the shape prints the text it was written for, not the one its new
+            // position implies), and for every other cell its own.
+            let before = cell_before(c, e).unwrap_or(c);
+            let Some(expr) = f.text_tree_at(before) else { continue };
             let new = cella_formula::adjust::adjust(expr, &host, target, e);
             let text = cella_formula::print(&new);
             if (f.text_at(c).as_deref() != Some(text.as_str()) || array != f.array.as_deref().copied() || (moves_cells && f.shape.is_some()))
@@ -2247,7 +2284,7 @@ mod tests {
             // The syntax half the model can see, ORed with the file-format half only this crate can.
             let shape = f.shape().expect("a typed formula interns a shape");
             assert_eq!(shape.file_rewrite, rewrite, "{input}");
-            assert_eq!(shape.print_at(at).as_deref(), Some(f.text.as_str()), "{input}");
+            assert_eq!(shape.print_at(at), f.text_at(at), "{input}");
         }
     }
 
@@ -2280,7 +2317,7 @@ mod tests {
         assert_eq!(get(&mut s, "C3")["value"], json!(4.0));
         // Past the result Excel shows #N/A; the old content of the range is replaced.
         assert_eq!(get(&mut s, "C4")["text"], "#N/A");
-        let bar = s.doc().unwrap().wb.active().unwrap().cell(CellRef::parse("C2").unwrap()).map(|c| c.bar_text());
+        let bar = s.doc().unwrap().wb.active().unwrap().cell(CellRef::parse("C2").unwrap()).map(|c| c.bar_text_at(CellRef::parse("C2").unwrap()));
         assert_eq!(bar.as_deref(), Some("{=B2:B3*2}"));
     }
 

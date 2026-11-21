@@ -17,7 +17,8 @@ fn app() -> SheetApp {
     app
 }
 fn formula(app: &SheetApp) -> String {
-    app.session.active().unwrap().wb.active().unwrap().cell(CellRef::new(0, 0)).unwrap().formula.as_ref().unwrap().text.to_string()
+    let sh = app.session.active().unwrap().wb.active().unwrap();
+    sh.cell(CellRef::new(0, 0)).unwrap().formula.as_ref().unwrap().text_at(CellRef::new(0, 0)).unwrap_or_default()
 }
 fn enter(app: &mut SheetApp, text: &str) -> bool {
     app.begin_edit(Some(text.into()), false);

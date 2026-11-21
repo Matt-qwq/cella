@@ -757,13 +757,14 @@ fn value_diff(a: &Workbook, b: &Workbook, what: &str, file: bool) -> Option<Stri
             if !same_value(&va, &vb, file) {
                 let f = x
                     .cell(c)
-                    .and_then(|c| c.formula)
-                    .map(|f| format!(" (formula ={})", f.text))
+                    .and_then(|cell| cell.formula)
+                    .and_then(|f| f.text_at(c))
+                    .map(|t| format!(" (formula ={t})"))
                     .or_else(|| {
                         // A spilled cell: name the array it came from, which is what has a formula.
                         let (anchor, _) = x.spill_ranges.iter().find(|(_, r)| r.contains(c))?;
                         let f = x.cell(*anchor).and_then(|c| c.formula)?;
-                        Some(format!(" (spilled from {} ={})", anchor.a1(), f.text))
+                        f.text_at(*anchor).map(|t| format!(" (spilled from {} ={t})", anchor.a1()))
                     })
                     .unwrap_or_default();
                 return Some(format!("{}!{c}{f}: {va:?} in memory, {vb:?} after {what}", x.name));
@@ -801,9 +802,9 @@ fn recalc_diff(wb: &Workbook) -> Result<(), String> {
 fn normalized_formula(at: CellRef, f: &Formula) -> String {
     if let Some(e) = f.expr_at(at) {
         let printed = cella_formula::print(&e);
-        assert_eq!(printed, f.text, "{at:?}: the cell's text is not the print of its tree at its cell");
+        assert_eq!(Some(&printed), f.text_at(at).as_ref(), "{at:?}: the cell's text is not the print of its tree at its cell");
     }
-    let text = Formula::new(&f.text).text;
+    let text = f.text_at(at).unwrap_or_default();
     if f.array.is_some() { format!("{{={text}}}") } else { format!("={text}") }
 }
 

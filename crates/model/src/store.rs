@@ -43,7 +43,10 @@ use crate::style::StyleId;
 const MAX_PACKED_COLUMN_SEGMENTS: usize = 8;
 
 /// Rows per band: one undo snapshot shares bands this size, so an edit copies at most 64 rows.
-const BAND: u32 = 64;
+///
+/// Public because a writer that walks the JSON spelling of the store (the band key is
+/// `row / BAND`) needs the same arithmetic the serializer uses.
+pub const BAND: u32 = 64;
 
 /// A value-only write this large is split across threads; below it the thread start costs more than
 /// the work. Above the ceiling the clone of every touched band would double too much of the model.
@@ -808,16 +811,26 @@ impl Band {
                 .iter()
                 .map(|(_, f)| {
                     let shape = f.shape.as_ref().filter(|s| Arc::strong_count(s) == 1).map_or(0, |s| s.bytes as usize);
-                    f.text.len().saturating_add(shape)
+                    formula_text_bytes(f).saturating_add(shape)
                 })
                 .sum::<usize>()
     }
 
     /// Heap bytes of one text: its characters plus the pointer that names them.
+    #[allow(dead_code)]
     fn text_bytes(text: &Arc<str>) -> usize {
         text.len().saturating_add(std::mem::size_of::<Arc<str>>())
     }
+}
 
+/// Heap bytes a formula's text costs on top of `size_of::<Formula>()`: the characters, plus the
+/// `String` header the box holds. A filled formula keeps none (R34); a text-only one pays what it
+/// always did (the box itself is already inside `Formula`).
+fn formula_text_bytes(f: &Formula) -> usize {
+    f.text.as_ref().map_or(0, |t| t.len().saturating_add(std::mem::size_of::<String>()))
+}
+
+impl Band {
     /// Whether `next` is an untouched copy of this band, so both hold the same row keys with the
     /// same formula/array side tables, pointer for pointer (see [`BandTag`]). A value-only edit
     /// copies a band this way; nothing the copy did changed a row or a side table.
@@ -887,7 +900,7 @@ impl Band {
                 m.wide = m.wide.saturating_add(rare.wide.capacity() * size_of::<u64>());
             }
             for (_, f) in &extras.formulas {
-                formulas.push((Arc::as_ptr(f) as usize, f.text.len()));
+                formulas.push((Arc::as_ptr(f) as usize, formula_text_bytes(f)));
                 if let Some(s) = &f.shape {
                     shapes.push((Arc::as_ptr(s) as usize, s.bytes));
                 }
@@ -1664,8 +1677,11 @@ fn row_same_as(a: &Band, ra: &BandRow, b: &Band, rb: &BandRow) -> bool {
             return false;
         }
     }
-    let texts = |row: &BandRow| -> Vec<(u32, String)> { row.formulas().iter().map(|(c, f)| (*c, f.text.clone())).collect() };
-    texts(ra) == texts(rb)
+    // A filled formula keeps no text (R34), so "the same row" compares the formulas themselves:
+    // their shape (by pointer when it is the very same `Arc`, by spelling across two workbooks),
+    // their array range and their dynamic mark.
+    let (fa, fb) = (ra.formulas(), rb.formulas());
+    fa.len() == fb.len() && fa.iter().zip(fb).all(|((ca, x), (cb, y))| ca == cb && x == y)
 }
 
 /// Bands built away from the store, by a reader decoding rows on several threads. The step that
@@ -6371,11 +6387,14 @@ mod page {
         }
     }
 
-    fn encode_formula(out: &mut Vec<u8>, f: &Formula) -> Option<()> {
-        if f.text.len() > MAX_TEXT {
+    fn encode_formula(out: &mut Vec<u8>, f: &Formula, at: CellRef) -> Option<()> {
+        // The page file carries text, so a formula that prints itself is materialised here: a
+        // decoded band holds text-only formulas and re-parses what it needs.
+        let text = f.text_at(at)?;
+        if text.len() > MAX_TEXT {
             return None;
         }
-        put_bytes(out, f.text.as_bytes());
+        put_bytes(out, text.as_bytes());
         match f.array.as_deref() {
             Some(a) => {
                 put_u8(out, 1);
@@ -6425,7 +6444,7 @@ mod page {
                 put_len(out, e.formulas.len());
                 for (col, f) in &e.formulas {
                     put_u32(out, *col);
-                    encode_formula(out, f)?;
+                    encode_formula(out, f, CellRef::new(row.key, *col))?;
                 }
                 put_len(out, e.arrays().len());
                 for (col, a) in e.arrays() {
@@ -6730,9 +6749,9 @@ mod tests {
         let changes = newer.formula_changes_against(&older).expect("comparable");
         assert_eq!(changes.len(), 3, "{changes:?}");
         assert_eq!(changes.iter().map(|(at, _)| *at).collect::<Vec<_>>(), vec![c(10, 1), c(11, 1), c(12, 2)]);
-        assert_eq!(changes.first().and_then(|(_, f)| f.as_ref()).map(|f| f.text.as_str()), Some("A11*2"));
+        assert_eq!(changes.first().and_then(|(at, f)| f.as_ref().and_then(|f| f.text_at(*at))), Some("A11*2".to_string()));
         assert!(changes.get(1).is_some_and(|(_, f)| f.is_none()));
-        assert_eq!(changes.get(2).and_then(|(_, f)| f.as_ref()).map(|f| f.text.as_str()), Some("B13+1"));
+        assert_eq!(changes.get(2).and_then(|(at, f)| f.as_ref().and_then(|f| f.text_at(*at))), Some("B13+1".to_string()));
 
         // A row insert moved the cells to other logical positions: not comparable band by band.
         let mut moved = older.clone();
@@ -7044,7 +7063,7 @@ mod tests {
         assert!(s.set_value(c(0, 0), &Value::Text("changed".into())));
         let cell = s.get(c(0, 0)).unwrap();
         assert_eq!(cell.value, Value::Text("changed".into()));
-        assert_eq!(cell.formula.as_ref().map(|f| f.text.as_str()), Some("1+1"));
+        assert_eq!(cell.formula.as_ref().and_then(|f| f.text_at(c(0, 0))), Some("1+1".to_string()));
         assert_eq!(cell.style, StyleId(3), "a value write keeps the cell's formatting");
         assert_eq!(s.len(), 2);
         // A cell that isn't stored gets no value (and is not created).
@@ -7261,7 +7280,7 @@ mod tests {
         // A spilled band answers exactly what it held: value, formula and style.
         assert_eq!(older.get(c(3, 0)).map(|cell| cell.value), Some(Value::Text(Arc::<str>::from("r3"))));
         let formula = older.get(c(3, 1)).and_then(|cell| cell.formula);
-        assert_eq!(formula.map(|f| f.text.clone()), Some("B4+1".to_string()));
+        assert_eq!(formula.and_then(|f| f.text_at(c(3, 1))), Some("B4+1".to_string()));
         assert_eq!(older.get(c(3, 1)).map(|cell| cell.style), Some(StyleId(2)));
         assert_eq!(older.len(), len);
         // Expanding reads every page back into a live band and drops the file, so the snapshot is
@@ -7270,7 +7289,7 @@ mod tests {
         assert_eq!((older.paged_band_count(), older.page_cache_stats()), (0, None));
         assert_eq!(older.bands.len(), 8);
         assert_eq!(older.len(), len);
-        assert_eq!(older.get(c(3, 1)).and_then(|cell| cell.formula).map(|f| f.text.clone()), Some("B4+1".to_string()));
+        assert_eq!(older.get(c(3, 1)).and_then(|cell| cell.formula).and_then(|f| f.text_at(c(3, 1))), Some("B4+1".to_string()));
         // The decoded bands are the snapshot's own: the page keeps a row's formula table but not
         // the sharing of it, so the expanded snapshot is charged those tables too — a few kB here,
         // and never the sheet it replaced.
@@ -8116,7 +8135,7 @@ mod tests {
         let mut copy = s.clone();
         copy.set_value(c(0, 0), &Value::Number(7.0));
         copy.set(c(0, 1), Cell::formula(Formula::new("=5+5")));
-        let text = |store: &CellStore, at| store.get(at).and_then(|x| x.formula).map(|f| f.text.clone());
+        let text = |store: &CellStore, at| store.get(at).and_then(|x| x.formula).and_then(|f| f.text_at(at));
         assert_eq!(text(&s, c(0, 1)).as_deref(), Some("2+2"));
         assert_eq!(text(&copy, c(0, 1)).as_deref(), Some("5+5"));
         assert_eq!(text(&s, c(0, 0)).as_deref(), Some("1+1"));
@@ -8299,7 +8318,7 @@ mod tests {
         assert_eq!(s.get(c(0, 0)).map(|x| x.value), Some(Value::Number(0.0)));
         assert_eq!(s.get(c(1, 0)), None, "the inserted row is empty");
         assert_eq!(s.get(c(2, 0)).map(|x| x.value), Some(Value::Number(1.0)));
-        assert_eq!(s.get(c(3, 2)).and_then(|x| x.formula).map(|f| f.text.clone()), Some("A3".to_string()));
+        assert_eq!(s.get(c(3, 2)).and_then(|x| x.formula).and_then(|f| f.text_at(c(3, 2))), Some("A3".to_string()));
         let mut rows: Vec<u32> = s.iter().map(|(at, _)| at.row).collect();
         rows.dedup();
         assert_eq!(rows, [0, 2, 3, 4, 5, 6, 7, 8]);
@@ -8337,7 +8356,7 @@ mod tests {
         }
         s.take_range(RangeRef::cols(10, 13));
         s.shift_cols(14, -4);
-        assert_eq!(s.get(c(15, 8)).and_then(|x| x.formula).map(|f| f.text.clone()), Some("1/0".to_string()));
+        assert_eq!(s.get(c(15, 8)).and_then(|x| x.formula).and_then(|f| f.text_at(c(15, 8))), Some("1/0".to_string()));
         let mut values = vec![(c(15, 8), Value::Error(cella_core::CellError::Div0))];
         s.set_values(&mut values);
         assert_eq!(s.get(c(15, 8)).map(|x| x.value), Some(Value::Error(cella_core::CellError::Div0)));
@@ -8349,7 +8368,7 @@ mod tests {
         s.set(c(15, 8), Cell { value: Value::Empty, formula: Some(Arc::new(Formula::new("=1/0"))), style: StyleId(0) });
         s.set(c(15, 10), Cell::value(Value::Number(1.0)));
         s.shift_cols(10, 4);
-        assert_eq!(s.get(c(15, 8)).and_then(|x| x.formula).map(|f| f.text.clone()), Some("1/0".to_string()));
+        assert_eq!(s.get(c(15, 8)).and_then(|x| x.formula).and_then(|f| f.text_at(c(15, 8))), Some("1/0".to_string()));
         assert!(s.set_value(c(15, 8), &Value::Error(cella_core::CellError::Div0)), "the mapped formula cell takes a value");
         assert_eq!(s.get(c(15, 8)).map(|x| x.value), Some(Value::Error(cella_core::CellError::Div0)));
     }
@@ -8949,12 +8968,12 @@ mod tests {
         s.set(c(1, 1), Cell { value: Value::Number(2.0), formula: Some(Arc::new(Formula::new("=A1+1"))), style: StyleId(3) });
         assert!(s.enable_paging());
         s.shift_rows(1, -1);
-        let formulas: Vec<(CellRef, String, bool)> = s.formulas().map(|(at, f, has_value)| (at, f.text.clone(), has_value)).collect();
+        let formulas: Vec<(CellRef, Option<String>, bool)> = s.formulas().map(|(at, f, has_value)| (at, f.text_at(at), has_value)).collect();
         assert_eq!(formulas.len(), 1);
         let block = RangeRef::new(c(0, 0), c(63, 10));
         assert!(s.has_owned_cells(block));
         assert_eq!(s.compact().pages, 1);
-        assert_eq!(s.formulas().map(|(at, f, has_value)| (at, f.text.clone(), has_value)).collect::<Vec<_>>(), formulas);
+        assert_eq!(s.formulas().map(|(at, f, has_value)| (at, f.text_at(at), has_value)).collect::<Vec<_>>(), formulas);
         assert!(s.has_owned_cells(block));
         let page = s.pages.get(&0).expect("the rewritten page");
         assert!(page.has_formulas(), "the formula flag is recomputed");

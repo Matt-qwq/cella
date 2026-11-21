@@ -67,8 +67,9 @@ fn open() -> Workbook {
 fn shared_formula_uses_follow_their_master_across_bands() {
     let wb = open();
     let sheet = wb.sheet(0).expect("sheet");
-    let text =
-        |a: &str| -> String { sheet.cell(at(a)).and_then(|c| c.formula).map(|f| f.text.clone()).unwrap_or_else(|| panic!("no formula at {a}")) };
+    let text = |a: &str| -> String {
+        sheet.cell(at(a)).and_then(|c| c.formula).and_then(|f| f.text_at(at(a))).unwrap_or_else(|| panic!("no formula at {a}"))
+    };
     assert_eq!(text("B10"), "A10*2");
     // Shifted by the row offset, not copied verbatim.
     assert_eq!(text("B11"), "A11*2");
@@ -91,7 +92,7 @@ fn array_ranges_keep_only_the_anchor() {
 
     let d20 = sheet.cell(at("D20")).expect("D20");
     let f = d20.formula.as_ref().expect("formula");
-    assert_eq!(f.text, "A20:A21+1");
+    assert_eq!(f.text_at(at("D20")).as_deref(), Some("A20:A21+1"));
     assert_eq!(f.array.as_deref().map(|r| (r.start, r.end)), Some((at("D20"), at("E21"))));
     assert_eq!(d20.value, Value::Number(2.5));
     // Cached values inside a legacy array range are not kept: the formula fills them again.
@@ -101,7 +102,7 @@ fn array_ranges_keep_only_the_anchor() {
 
     let f20 = sheet.cell(at("F20")).expect("F20");
     let f = f20.formula.as_ref().expect("formula");
-    assert_eq!(f.text, "SEQUENCE(3)");
+    assert_eq!(f.text_at(at("F20")).as_deref(), Some("SEQUENCE(3)"));
     // A dynamic array keeps its metadata (no legacy `array` range) and drops the spill cache.
     assert_eq!(f.array, None);
     assert!(f.dynamic);

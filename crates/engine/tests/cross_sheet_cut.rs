@@ -27,7 +27,8 @@ fn value(s: &Session, sheet: &str, cell: &str) -> Value {
 
 fn formula(s: &Session, sheet: &str, cell: &str) -> String {
     let wb = &s.doc().unwrap().wb;
-    wb.sheet(wb.sheet_index(sheet).unwrap()).unwrap().cell(CellRef::parse(cell).unwrap()).unwrap().formula.as_ref().unwrap().text.clone()
+    let at = CellRef::parse(cell).unwrap();
+    wb.sheet(wb.sheet_index(sheet).unwrap()).unwrap().cell(at).unwrap().formula.as_ref().unwrap().text_at(at).unwrap_or_default()
 }
 
 fn cut_to(s: &mut Session, source: &str, range: &str, destination: &str, at: &str) {

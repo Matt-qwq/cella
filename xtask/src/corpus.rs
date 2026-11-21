@@ -365,7 +365,7 @@ fn digest(wb: &Workbook) -> (usize, usize, u64) {
             cells += 1;
             (c.row, c.col).hash(&mut hasher);
             value_text(&cell.value).hash(&mut hasher);
-            cell.formula.as_ref().map(|f| f.text.as_str()).hash(&mut hasher);
+            cell.formula.as_ref().and_then(|f| f.text_at(c)).hash(&mut hasher);
             sheet.style_id(c).hash(&mut hasher);
         }
     }

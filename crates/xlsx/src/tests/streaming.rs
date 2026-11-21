@@ -146,7 +146,7 @@ fn a_shared_formula_finds_its_master_in_an_earlier_window() {
     let sheet = sheet_of(&body, streamed());
     let text = |a: &str| -> String {
         let at = cella_core::CellRef::parse(a).expect("address");
-        sheet.cells.get(at).and_then(|c| c.formula).map(|f| f.text.clone()).unwrap_or_default()
+        sheet.cells.get(at).and_then(|c| c.formula).and_then(|f| f.text_at(at)).unwrap_or_default()
     };
     assert_eq!(text("B3"), "A3*2");
     assert_eq!(text("B25"), "A25*2");

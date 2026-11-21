@@ -535,8 +535,8 @@ fn full_roundtrip() {
         let got = b.cell(c).unwrap_or_else(|| panic!("missing {c}"));
         assert_eq!(got.value, cell.value, "value at {c}");
         assert_eq!(
-            got.formula.as_ref().map(|f| (&f.text, f.array.as_deref())),
-            cell.formula.as_ref().map(|f| (&f.text, f.array.as_deref())),
+            got.formula.as_ref().map(|f| (f.text_at(c), f.array.as_deref())),
+            cell.formula.as_ref().map(|f| (f.text_at(c), f.array.as_deref())),
             "formula at {c}"
         );
         assert_eq!(back.styles.get(got.style), wb.styles.get(cell.style), "style at {c}");
@@ -1274,7 +1274,7 @@ fn implicit_intersection_is_written_as_single() {
     assert!(metadata);
     let (back, _) = read_xlsx(&bytes).unwrap();
     let sh = back.sheet(0).unwrap();
-    assert_eq!(sh.cell(at("D3")).and_then(|c| c.formula).map(|f| f.text.clone()), Some("@A1:A3*2".to_string()));
+    assert_eq!(sh.cell(at("D3")).and_then(|c| c.formula).and_then(|f| f.text_at(at("D3"))), Some("@A1:A3*2".to_string()));
     assert_eq!(sh.cell(at("D3")).and_then(|c| c.formula).and_then(|f| f.array.as_deref().copied()), None);
 }
 
@@ -1362,7 +1362,7 @@ fn let_lambda_parameters_drop_xlpm_on_read() {
     assert!(xml.contains("_xlpm.v"), "{xml}");
     let (back, _) = read_xlsx(&bytes).unwrap();
     let sh = back.sheet(0).unwrap();
-    let text = |a: &str| sh.cell(at(a)).and_then(|c| c.formula).map(|f| f.text.clone());
+    let text = |a: &str| sh.cell(at(a)).and_then(|c| c.formula).and_then(|f| f.text_at(at(a)));
     assert_eq!(text("A1").as_deref(), Some("LET(x,1,x+1)"));
     assert_eq!(text("A2").as_deref(), Some("LAMBDA(a,a*2)(3)"));
     assert_eq!(text("C1").as_deref(), Some("MAP(B1:B2,LAMBDA(v,v+1))"));
@@ -1401,7 +1401,7 @@ fn table_newline_column_and_backslash_name_survive() {
     assert_eq!(s.tables[0].name, "\\_Prime.1");
     assert_eq!(s.tables[0].columns[0].name, "Handle\nBars");
     assert_eq!(s.value(at("A1")), Value::text("Handle\nBars"));
-    assert_eq!(s.cell(at("D1")).and_then(|c| c.formula).map(|f| f.text.clone()), Some("COUNTA(\\_Prime.1[Name])".to_string()));
+    assert_eq!(s.cell(at("D1")).and_then(|c| c.formula).and_then(|f| f.text_at(at("D1"))), Some("COUNTA(\\_Prime.1[Name])".to_string()));
     assert!(cella_formula::parse("COUNTA(\\_Prime.1[Name])").is_ok(), "backslash table name parses as a structured reference");
 }
 

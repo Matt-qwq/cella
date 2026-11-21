@@ -89,7 +89,7 @@ fn nonspilling_formulas_preserve_array_evaluation_and_metadata() {
     for (address, text, value) in cases {
         let c = results.cell(at(address)).unwrap();
         let f = c.formula.as_ref().unwrap();
-        assert_eq!(f.text, text);
+        assert_eq!(f.text_at(at(address)).as_deref(), Some(text));
         assert_eq!(f.array, None, "dynamic formula must not become legacy CSE");
         assert_eq!(c.value, Value::Number(value));
     }
@@ -297,14 +297,14 @@ fn this_row_references_are_written_in_long_form() {
     let (back, _) = read_xlsx(&bytes).unwrap();
     let sh = back.sheet(0).unwrap();
     assert_eq!(sh.tables[0].columns[1].formula.as_deref(), Some("[@Input]*2"));
-    assert_eq!(sh.cell(at("B2")).unwrap().formula.as_ref().unwrap().text, "Data[@Input]*2");
+    assert_eq!(sh.cell(at("B2")).unwrap().formula.as_ref().unwrap().text_at(at("B2")).as_deref(), Some("Data[@Input]*2"));
 }
 
 /// Compare both cell and formula metadata, collecting all boundaries in the group on failure.
 fn check_formula_metadata(mut wb: Workbook, sheet_index: usize, cases: &[(&str, bool)]) {
     for (i, (text, _)) in cases.iter().enumerate() {
         let f = Formula::new(text);
-        assert!(f.text_tree().is_some(), "test formula must parse: {text}");
+        assert!(f.text_tree_at(CellRef::new(0, 0)).is_some(), "test formula must parse: {text}");
         wb.sheet_mut(sheet_index).unwrap().cells.set(CellRef::new(i as u32 + 100, 5), Cell::formula(f));
     }
     let bytes = write_xlsx(&wb).unwrap();

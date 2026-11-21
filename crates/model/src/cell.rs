@@ -19,7 +19,17 @@ use crate::style::StyleId;
 /// `plan/SHAPE-SHARING.md`), and it cost a 96-byte-per-formula allocation class of its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Formula {
-    pub text: String,
+    /// The canonical text, **only when it cannot be printed from the shape**: a formula with no
+    /// shape (one read from a JSON document, or one that does not parse) and a shape that cannot
+    /// spell the formula at the cell it sits at (a reference clamps there). Every cell of a fill
+    /// carries its shape and no text — the text is `Shape::print_at(at)`, the invariant the fuzz
+    /// pins — so the per-cell copy was a cache of a pure function, and it cost 37 MB of text plus
+    /// a `String` header on every one of 2M formulas.
+    ///
+    /// Boxed twice on purpose: `Option<Box<String>>` is 8 bytes, where `String` is 24. The rare
+    /// text-only formula pays one extra allocation; a filled million pays 8 bytes a cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<Box<String>>,
     /// The interned shape of the formula: its tree with every relative reference stored as an
     /// offset from the cell, so it serves every cell the formula was filled into. Read it through
     /// [`Formula::expr_at`], which resolves it at the cell's position.
@@ -77,10 +87,14 @@ impl Formula {
     /// resolves a tree to decide how to spell a formula (S3 of `plan/SHAPE-SHARING.md`) — a shape
     /// interned without it would be saved under the model's own spelling.
     pub fn from_expr_at(e: Expr, at: CellRef, shapes: &mut ShapeTable, file_rewrite: bool) -> Formula {
-        let text = cella_formula::print(&e);
+        let printed = cella_formula::print(&e);
         let mut shape = Shape::from_expr(e, at);
         shape.file_rewrite |= file_rewrite;
-        Formula { text, shape: Some(shapes.intern(shape)), array: None, dynamic: false }
+        let shape = shapes.intern(shape);
+        // A shape that cannot spell the formula at its own cell keeps the text: the cell shows the
+        // clamped spelling, and `expr_at` / `text_tree_at` fall back to it.
+        let text = (!shape.fits(at)).then(|| Box::new(printed));
+        Formula { text, shape: Some(shape), array: None, dynamic: false }
     }
     /// A formula of `text` with no tree and no shape: the text exactly as it was read, kept whole
     /// (it may not parse at all, and one that does not is shown and saved as it stands).
@@ -89,7 +103,7 @@ impl Formula {
     /// formula and nothing else — and where the shape design's fallback begins (§5.3 of
     /// `plan/SHAPE-SHARING.md`): [`Formula::expr_at`] parses it at the cell.
     pub fn from_text(text: &str) -> Formula {
-        Formula { text: text.to_string(), shape: None, array: None, dynamic: false }
+        Formula { text: Some(Box::new(text.to_string())), shape: None, array: None, dynamic: false }
     }
     /// The absolute tree this cell evaluates **at its position**, and the only way to a tree a
     /// formula keeps: the shape resolved (its relative parts are offsets), else — a cell that holds
@@ -104,7 +118,7 @@ impl Formula {
         {
             return Some(e);
         }
-        cella_formula::parse(&self.text).ok()
+        self.text.as_deref().and_then(|t| cella_formula::parse(t).ok())
     }
     /// The shape this cell's formula shares with every other cell of the same fill, when it has one.
     pub fn shape(&self) -> Option<Arc<Shape>> {
@@ -118,16 +132,12 @@ impl Formula {
     /// of (shape, cell) — the invariant the fuzz pins — so the per-cell copy is a cache, and
     /// `None` means the shape cannot spell this formula at `at` (a reference that clamps).
     pub fn text_at(&self, at: CellRef) -> Option<String> {
-        // Today every formula still carries its text; the shape is the answer only once a cell's
-        // text is not stored (the cache the fill path will stop keeping, R34 step 2).
-        if !self.text.is_empty() {
-            return Some(self.text.clone());
+        if let Some(shape) = &self.shape
+            && let Some(text) = shape.print_at(at)
+        {
+            return Some(text);
         }
-        let shape = self.shape.as_ref()?;
-        if !shape.fits(at) {
-            return None;
-        }
-        shape.print_at(at)
+        self.text.as_ref().map(|t| t.to_string())
     }
     /// The formula this cell's content becomes when the formula at `from` is filled or copied to
     /// `at`: the **same shape**, one `Arc` clone and a print, when it fits there; otherwise the
@@ -138,27 +148,26 @@ impl Formula {
     /// `None` when the formula cannot be moved at all (its text does not parse), which the callers
     /// treat as "keep the source cell as it is", exactly as the copy-and-shift code did.
     pub fn copied_to(&self, from: CellRef, at: CellRef) -> Option<Formula> {
-        Formula::copied_from(self.shape.as_ref(), &self.text, from, at)
+        Formula::copied_from(self.shape.as_ref(), self.text.as_ref().map(|t| t.as_str()), from, at)
     }
     /// [`Formula::copied_to`] from the two halves a file's shared-formula family holds — the shape
     /// its master cell interned and, for the rare family member that cannot reuse it, the text.
-    pub fn copied_from(shape: Option<&Arc<Shape>>, text: &str, from: CellRef, at: CellRef) -> Option<Formula> {
+    pub fn copied_from(shape: Option<&Arc<Shape>>, text: Option<&str>, from: CellRef, at: CellRef) -> Option<Formula> {
         if let Some(shape) = shape
             && shape.fits(at)
-            && let Some(text) = shape.print_at(at)
         {
-            return Some(Formula { text, shape: Some(Arc::clone(shape)), array: None, dynamic: false });
+            return Some(Formula { text: None, shape: Some(Arc::clone(shape)), array: None, dynamic: false });
         }
         // A cell the shape cannot serve — a relative reference of it leaves the sheet here, so the
         // destination text names `#REF!` — gets a tree of its own again, exactly as the per-cell
         // shift gave it, held as a **private** shape (no interner in reach, and nothing to share:
         // such a cell is rare and its text is unique). It still prints the text it was given
         // (`Shape::print_at` at `at` is ``text``), so the master invariant holds for it too.
-        let e = shape.map_or_else(|| cella_formula::parse(text).ok(), |s| s.resolve(from))?;
+        let e = shape.map_or_else(|| text.and_then(|t| cella_formula::parse(t).ok()), |s| s.resolve(from))?;
         let shifted = shift_relative_copy(&e, i64::from(at.row) - i64::from(from.row), i64::from(at.col) - i64::from(from.col));
         // The text is the *resolved* tree's: the canonical one stores offsets, and printing those
         // would spell a relative reference as the row and column it is an offset by.
-        let text = cella_formula::print(&shifted);
+        let printed = cella_formula::print(&shifted);
         let mut private = Shape::from_expr(shifted, at);
         // A shift keeps the syntax that makes a file spell a formula differently (a `LET`, a `#`,
         // an `@`, a trim reference, a structured reference) and clamping a reference to `#REF!`
@@ -166,6 +175,7 @@ impl Formula {
         // the part of it that lives in the writer: over-approximating costs one walk on a save,
         // under-approximating would write a formula under the model's own spelling.
         private.file_rewrite |= shape.is_some_and(|s| s.file_rewrite);
+        let text = (!private.fits(at)).then(|| Box::new(printed));
         Some(Formula { text, shape: Some(Arc::new(private)), array: None, dynamic: false })
     }
     /// The absolute tree the cell's **text** spells, at the position it was written for: the tree a
@@ -178,8 +188,11 @@ impl Formula {
     /// (`Shape::straddles`), or a cell whose shape does not resolve where it now sits — parse their
     /// own text here. The text is the only witness of what such a formula said, because its shape's
     /// base is stale by construction.
-    pub fn text_tree(&self) -> Option<Expr> {
-        cella_formula::parse(&self.text).ok()
+    pub fn text_tree_at(&self, at: CellRef) -> Option<Expr> {
+        if let Some(text) = &self.text {
+            return cella_formula::parse(text).ok();
+        }
+        self.text_at(at).and_then(|t| cella_formula::parse(&t).ok())
     }
 }
 
@@ -191,7 +204,29 @@ impl Formula {
 /// (SHAPE-SHARING.md trap 14).
 impl PartialEq for Formula {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text && self.array == other.array && self.dynamic == other.dynamic
+        self.array == other.array && self.dynamic == other.dynamic && self.same_source(other)
+    }
+}
+
+impl Formula {
+    /// Whether two formulas are the same formula (see the note on [`PartialEq for Formula`]).
+    ///
+    /// A filled formula keeps no text (R34), so the comparison is the shape's spelling — its
+    /// intern key — which is the same for every cell of a fill and the same across two workbooks
+    /// that hold one formula. The pointer check keeps the common case (the very same `Arc`) free
+    /// of the print.
+    fn same_source(&self, other: &Self) -> bool {
+        match (&self.text, &other.text) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => match (&self.shape, &other.shape) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.spelling() == b.spelling(),
+                (None, None) => true,
+                _ => false,
+            },
+            // A text-only formula and a shaped one are the same formula only at a known cell, and
+            // equality has none: a reader interns a shape precisely so this case does not arise.
+            _ => false,
+        }
     }
 }
 
@@ -224,31 +259,9 @@ impl Cell {
     pub fn is_blank(&self) -> bool {
         self.value.is_empty() && self.formula.is_none() && self.style == StyleId::DEFAULT
     }
-    /// What the formula bar shows, for a caller that does not know the cell (tests, a value shown
-    /// away from its sheet). Prefer `input_text_at` / `Sheet::input_text`, which ask the shape
-    /// for the text at the cell it sits at.
-    pub fn input_text(&self) -> String {
-        if let Some(f) = &self.formula {
-            return format!("={}", f.text);
-        }
-        match &self.value {
-            Value::Text(t) => {
-                // Text that would parse as something else is shown with its apostrophe by Excel
-                // only when entered that way; we show it plainly.
-                t.to_string()
-            }
-            v => v.display(),
-        }
-    }
-    /// What the formula bar shows when not editing: [`input_text`](Self::input_text), with a
-    /// legacy array formula in braces (`{=A1:A2*2}`).
-    pub fn bar_text(&self) -> String {
-        match &self.formula {
-            Some(f) if f.array.is_some() => format!("{{={}}}", f.text),
-            _ => self.input_text(),
-        }
-    }
-    /// [`input_text`](Self::input_text) for the cell it sits at: the shape prints the formula.
+    /// What the formula bar shows **at the cell the value sits at**: the shape prints the formula,
+    /// and a text-only formula answers with its own text. There is no position-free form on
+    /// purpose: a filled cell carries no text to show (R34), so the cell must be named.
     pub fn input_text_at(&self, at: CellRef) -> String {
         if let Some(f) = &self.formula {
             return format!("={}", f.text_at(at).unwrap_or_default());
@@ -258,7 +271,8 @@ impl Cell {
             v => v.display(),
         }
     }
-    /// [`bar_text`](Self::bar_text) for the cell it sits at.
+    /// What the formula bar shows when not editing: [`input_text_at`](Self::input_text_at), with
+    /// a legacy array formula in braces (`{=A1:A2*2}`).
     pub fn bar_text_at(&self, at: CellRef) -> String {
         match &self.formula {
             Some(f) if f.array.is_some() => format!("{{={}}}", f.text_at(at).unwrap_or_default()),
@@ -271,13 +285,12 @@ impl Cell {
 /// 64-bit numbers: `Formula` holds a `String` and `Cell` a `Value`, so a 32-bit target (wasm32)
 /// has its own, smaller layout.
 ///
-/// `Formula` is **48**: a text, the shape pointer, the boxed legacy range and the dynamic-array
-/// mark. It was 72 before the shape work's two layout steps (S6 boxed `array`, 72 -> 56; S7
-/// deleted the per-cell tree and its byte count, 56 -> 48), which drops the `Arc<Formula>`
-/// allocation from a 96-byte chunk to an 80-byte one. Pinned here because the undo budget and the
-/// store's accounting read it.
+/// `Formula` is **32**: the shape pointer, a boxed fallback text (only a formula with no shape
+/// keeps one, R34), the boxed legacy range and the dynamic-array mark. It was 48 while every
+/// formula carried its own `String`, and 72 before the shape work's two layout steps. Pinned here
+/// because the undo budget and the store's accounting read it.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Formula>() == 48);
+const _: () = assert!(std::mem::size_of::<Formula>() == 32);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Cell>() == 40);
 
@@ -311,6 +324,6 @@ mod size_pins {
     fn formula_sizes_are_pinned() {
         println!("size_of::<Formula>() = {}", std::mem::size_of::<Formula>());
         println!("size_of::<Cell>() = {}", std::mem::size_of::<Cell>());
-        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (48, 40));
+        assert_eq!((std::mem::size_of::<Formula>(), std::mem::size_of::<Cell>()), (32, 40));
     }
 }

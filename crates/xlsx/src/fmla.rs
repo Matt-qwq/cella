@@ -13,25 +13,21 @@ use cella_model::Formula;
 /// module's `_xlfn.` table by the reader), so a save of a million shape cells resolves no tree at
 /// all; a cell that carries its own tree asks it, one allocation-free walk.
 pub fn file_text(f: &Formula, at: CellRef) -> std::borrow::Cow<'_, str> {
-    // The model's text is the canonical print of the tree (both constructors print), so it is
-    // exactly what printing it again would produce — and borrowing it saves the copy and the
-    // allocation a save of a million-formula sheet made a million times.
+    // A filled cell keeps no text (R34): the shape prints it, once, here. A text-only formula
+    // (a JSON document, or a formula nothing has parsed yet) is parsed at the cell and this walk
+    // decides the spelling, the fallback shape sharing kept (SHAPE-SHARING.md §5.3).
     if let Some(shape) = f.shape() {
         if !shape.file_rewrite {
-            return std::borrow::Cow::Borrowed(f.text.as_str());
+            return std::borrow::Cow::Owned(f.text_at(at).unwrap_or_default());
         }
         return match f.expr_at(at) {
             Some(e) => std::borrow::Cow::Owned(expr_to_file(e)),
-            None => std::borrow::Cow::Borrowed(f.text.as_str()),
+            None => std::borrow::Cow::Owned(f.text_at(at).unwrap_or_default()),
         };
     }
-    // Text alone (a JSON document, or a formula nothing has parsed yet): `expr_at` parses it at
-    // the cell, and this walk decides the spelling. It is the fallback the shape design kept
-    // (SHAPE-SHARING.md §5.3): an `_xlfn.` formula read back from such a document is spelled
-    // right, at the price of one parse a save.
     match f.expr_at(at) {
         Some(e) if needs_file_rewrite(&e) => std::borrow::Cow::Owned(expr_to_file(e)),
-        _ => std::borrow::Cow::Borrowed(f.text.as_str()),
+        _ => std::borrow::Cow::Owned(f.text_at(at).unwrap_or_default()),
     }
 }
 
@@ -363,7 +359,7 @@ mod tests {
         // Found by the command-sequence fuzzer: deleting the anchor of `H5#` left `=#REF!` in
         // the workbook but `ANCHORARRAY(#REF!)` in the file, which read back differently.
         let deleted = Formula::from_text("#REF!");
-        assert_eq!(deleted.text, "#REF!");
+        assert_eq!(deleted.text_at(CellRef::new(0, 0)).as_deref(), Some("#REF!"));
         assert_eq!(to_file(&deleted), "#REF!");
     }
 
@@ -390,12 +386,12 @@ mod tests {
             let model_text = from_file(text);
             let rewrite = cella_formula::parse(&model_text).is_ok_and(|e| needs_file_rewrite(&e));
             let two = Formula::new_at(&model_text, at, &mut shapes, rewrite);
-            assert_eq!(one.text, two.text, "{text:?}");
+            assert_eq!(one.text_at(at), two.text_at(at), "{text:?}");
             assert_eq!(one.shape.is_some(), two.shape.is_some(), "{text:?}");
             // The model's text is what a save writes, so it must not have changed either.
             assert_eq!(file_text(&one, at).as_ref(), file_text(&two, at).as_ref(), "{text:?}");
             if let Some(shape) = one.shape() {
-                assert_eq!(shape.print_at(at).as_deref(), Some(one.text.as_str()), "{text:?}");
+                assert_eq!(shape.print_at(at), one.text_at(at), "{text:?}");
             }
         }
     }

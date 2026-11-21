@@ -180,8 +180,9 @@ fn typing_at_a_visual_caret_inserts_at_the_logical_offset() {
     time += 0.01;
     frame(&ctx, &mut app, time, vec![key(Key::Enter, Modifiers::NONE)]);
     let d = app.session.active().expect("a document");
-    let cell = d.wb.sheet(d.wb.active_sheet).expect("a sheet").cell(cella_engine::core::CellRef::new(0, 0));
-    assert_eq!(cell.map(|c| c.input_text()).unwrap_or_default(), "abc Xאבג");
+    let at = cella_engine::core::CellRef::new(0, 0);
+    let cell = d.wb.sheet(d.wb.active_sheet).expect("a sheet").cell(at);
+    assert_eq!(cell.map(|c| c.input_text_at(at)).unwrap_or_default(), "abc Xאבג");
 }
 
 #[test]

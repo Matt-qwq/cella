@@ -183,7 +183,8 @@ fn check_workbook(s: &Session, rows: u32, mode: Mode, sorted: bool) -> Result<u6
         if let Some(col) = formula_col {
             let cell = sheet.cell(CellRef::new(row, col)).ok_or_else(|| format!("row {}: formula cell is missing", row + 1))?;
             let expected = format!("B{}+C{}", row + 1, row + 1);
-            if cell.formula.as_ref().map(|f| f.text.as_str()) != Some(expected.as_str()) || cell.value != Value::Number(f64::from(id * 2 + 100)) {
+            let at = CellRef::new(row, col);
+            if cell.formula.as_ref().and_then(|f| f.text_at(at)) != Some(expected.clone()) || cell.value != Value::Number(f64::from(id * 2 + 100)) {
                 return Err(format!("row {}: wrong reference or cached result: {cell:?}", row + 1));
             }
         }

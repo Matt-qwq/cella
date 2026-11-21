@@ -391,8 +391,8 @@ fn volatile_names(wb: &Workbook) -> HashSet<String> {
 }
 
 /// The formula as the formula bar shows it.
-fn formula_text(cell: &Cell) -> String {
-    cell.bar_text()
+fn formula_text(cell: &Cell, at: CellRef) -> String {
+    cell.bar_text_at(at)
 }
 
 fn cell_name(wb: &Workbook, (sheet, c): Key) -> String {
@@ -565,7 +565,7 @@ pub fn oracle(cached: &Workbook, fresh: &Workbook, calc: &Calc, trust_cache: boo
         let actual = fresh.sheet(k.0).and_then(|s| s.cell(k.1)).map(|x| x.value.scalar()).unwrap_or_default();
         r.mismatches.push(Mismatch {
             cell: cell_name(cached, k),
-            formula: cell.as_ref().map(formula_text).unwrap_or_default(),
+            formula: cell.as_ref().map(|c| formula_text(c, k.1)).unwrap_or_default(),
             kind: mismatch_kind(&expected, &actual),
             expected,
             actual,
@@ -617,8 +617,8 @@ fn value_show(v: &Value) -> String {
     }
 }
 
-fn opt_formula(c: Option<&Cell>) -> String {
-    c.filter(|c| c.formula.is_some()).map(formula_text).unwrap_or_default()
+fn opt_formula(c: Option<&Cell>, at: CellRef) -> String {
+    c.filter(|c| c.formula.is_some()).map(|c| formula_text(c, at)).unwrap_or_default()
 }
 
 /// Per-sheet comparison of two lists, reporting what one side has and the other lacks.
@@ -687,7 +687,7 @@ pub fn diff_workbooks(a: &Workbook, b: &Workbook, opts: &Options) -> Vec<Categor
             if va != vb {
                 values.push(|| format!("{name}!{}: {} → {}", c.a1(), value_show(&va), value_show(&vb)));
             }
-            let (fa, fb) = (opt_formula(ca), opt_formula(cb));
+            let (fa, fb) = (opt_formula(ca, c), opt_formula(cb, c));
             if fa != fb {
                 formulas.push(|| format!("{name}!{}: {fa} → {fb}", c.a1()));
             }

@@ -3219,7 +3219,7 @@ pub(crate) mod tests {
         let shapes: Vec<(Key, cella_formula::Shape)> = dirty
             .iter()
             .filter_map(|&k| {
-                let text = wb.sheet(k.0).and_then(|s| s.cells.get(k.1)).and_then(|c| c.formula.as_ref().map(|f| f.text.clone()))?;
+                let text = wb.sheet(k.0).and_then(|s| s.cells.get(k.1)).and_then(|c| c.formula.clone()).and_then(|f| f.text_at(k.1))?;
                 let expr = cella_formula::parse(text.strip_prefix('=').unwrap_or(&text)).ok()?;
                 Some((k, cella_formula::Shape::from_expr(expr, k.1)))
             })

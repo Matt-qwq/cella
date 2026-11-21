@@ -16,7 +16,7 @@ fn at(s: &str) -> CellRef {
 /// A cell's formula text and array range.
 fn formula(wb: &Workbook, a: &str) -> (String, Option<Box<RangeRef>>) {
     let f = wb.sheet(0).unwrap().cell(at(a)).unwrap().formula.unwrap();
-    (f.text.clone(), f.array.clone())
+    (f.text_at(at(a)).unwrap_or_default(), f.array.clone())
 }
 
 #[test]

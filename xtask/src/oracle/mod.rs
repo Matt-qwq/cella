@@ -260,7 +260,7 @@ fn compare_with_model(wb: &Workbook, seen: &Json) -> Vec<String> {
             let address = cell_ref.a1();
             let Some(cell_view) = cells.get(&address) else {
                 let what = match &cell.formula {
-                    Some(f) => format!("the formula ={}", f.text),
+                    Some(f) => format!("the formula ={}", f.text_at(cell_ref).unwrap_or_default()),
                     None => format!("{:?}", cell.value),
                 };
                 issues.push(format!("{}!{} lost by the reader (model has {what})", sheet.name, address));
@@ -271,7 +271,12 @@ fn compare_with_model(wb: &Workbook, seen: &Json) -> Vec<String> {
                 Some(f) => {
                     let is_formula = value.as_str().is_some_and(|s| s.starts_with('=')) || value.get("formula").is_some();
                     if !is_formula {
-                        issues.push(format!("{}!{} should read as ={} but the reader sees {value}", sheet.name, address, f.text));
+                        issues.push(format!(
+                            "{}!{} should read as ={} but the reader sees {value}",
+                            sheet.name,
+                            address,
+                            f.text_at(cell_ref).unwrap_or_default()
+                        ));
                     }
                 }
                 None => {
@@ -520,7 +525,7 @@ mod tests {
                         continue;
                     }
                     let value = match &cell.formula {
-                        Some(f) => Json::String(format!("={}", f.text)),
+                        Some(f) => Json::String(format!("={}", f.text_at(cell_ref).unwrap_or_default())),
                         None => cella_engine::cmd::inspect::value_json(&cell.value),
                     };
                     let format = wb.styles.get(sh.style_id(cell_ref)).num_fmt.as_str().to_string();

@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 34 opens P5.1 — the generated report now takes **best of three** (round 33's page had `save.xlsx` at 1M at 3.39 s, 100 % of its budget, where the same commit measures **1.52 s**), and a probe prices the formula text: 2M formulas hold **133.4 MB** (a 48 B struct + 18.7 B of text each) and printing one back from its shape costs **106 ns** with 0 mismatches. Earlier: round 33, the fill — and the discovery that its metric was not the drag: `fill.values` was the gate's tightest budget (69 %) and attribution showed only ~45 % of it moves values (16 % is the harness's own JSON, 34 % a command's fixed cost paid a hundred times), while a real fill handle drags one value down 1M rows in **157 ms**. A one-way `wrote_formula` flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write refits only rows whose height can change (autofit 243 → 1.2 ms): **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %; the gate grew `fill.autofill` so the drag itself has a number, and stands at **29/29**. Earlier in the same day: the closure's seeds (541 → 213 ms), the formula-body sort (4.19 → 2.93 s), the sort's kernels (3.80 → 1.91 s values), a memory regression found by re-measuring and fixed (1.23 GB → 884.7 MB), three certified knives plus a 6M-cell paste halved, the evaluator refuted by measurement, and the budget lock. Earlier still: rounds 3–10.
+> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 34 — **the formula text is printed, not stored**: `Formula` 48 → 32 bytes, live heap **884.7 → 776.6 MB (−108.1 MB, −12.2 %)**, reopened 614.4 MB, `formula text` 133.4 → 64.0 MB, `undo` 212.4 → 173.8 MB. The report generator also takes **best of three** now (round 33's page had `save.xlsx` at 1M at 3.39 s, 100 % of its budget, where the same commit measures **1.52 s**). Earlier: round 33, the fill — and the discovery that its metric was not the drag: `fill.values` was the gate's tightest budget (69 %) and attribution showed only ~45 % of it moves values (16 % is the harness's own JSON, 34 % a command's fixed cost paid a hundred times), while a real fill handle drags one value down 1M rows in **157 ms**. A one-way `wrote_formula` flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write refits only rows whose height can change (autofit 243 → 1.2 ms): **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %; the gate grew `fill.autofill` so the drag itself has a number, and stands at **29/29**. Earlier in the same day: the closure's seeds (541 → 213 ms), the formula-body sort (4.19 → 2.93 s), the sort's kernels (3.80 → 1.91 s values), a memory regression found by re-measuring and fixed (1.23 GB → 884.7 MB), three certified knives plus a 6M-cell paste halved, the evaluator refuted by measurement, and the budget lock. Earlier still: rounds 3–10.
 
 **The one-page report is [performance-report.md](performance-report.md)** (and its Chinese
 companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xtask perf-report`
@@ -942,6 +942,60 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 34: the formula text is printed, not stored (2026-11-21)
+
+The 11-18 memory record left one structural piece: the `formula text` line, **133.4 MB** for 2M
+formulas = 66.7 B a formula (a 48-byte `Formula` and 18.7 bytes of text). The shape work had
+already made the text a **pure function of (shape, cell)** — the fuzz's master invariant is
+`text == print(expr_at(at))` — so the per-cell copy was a cache of a print. A probe priced it
+before anything moved (`cargo run --release -p cella-model --example formula_text_probe`):
+
+| the probe, 1M formulas of one fill | |
+|---|---:|
+| `print_at` cost | **106 ns a formula** (2M ≈ 212 ms) |
+| text it prints | 22.7 B a formula, 0 mismatches against the stored copies |
+
+**What changed.** `Formula.text` is an `Option<Box<String>>`, and it is `None` (8 bytes instead of
+a `String`'s 24) for every formula that has a shape and whose shape fits its cell — which is every
+cell a fill, a paste, a sort or a read interns. A text-only formula (one read from a JSON document,
+or one that does not parse) keeps its text and pays one extra box. `Formula` is **48 → 32 bytes**.
+
+- **Reads go through `Formula::text_at(at)`**, `Cell::input_text_at`/`bar_text_at` and
+  `Sheet::input_text(c)`: the shape prints, the stored text answers, and there is no position-free
+  `Cell::input_text` left to misuse.
+- **The XLSX writer prints** (`file_text`) once a formula; the row windows build in parallel, so the
+  added `print_at` shares the workers.
+- **The JSON writer materialises** the text into the `Value` tree after `to_value` (a walk beside the
+  workbook's cells, so the workbook is untouched and the bytes match); a **JSON reader re-interns
+  shapes**, so a loaded workbook equals the saved one — including equality, which now compares a
+  shape by its spelling, with the pointer as the fast path.
+- **The structural rewrite's per-cell fallback** used to read `f.text` — the text the cell held
+  *before* the edit. A shape prints the text of the cell it was written for, so the fallback now
+  asks `cell_before`, which gained the block-move and cell-insert/delete inverses. Two real bugs
+  came out of that and are pinned by tests: a column move kept a reference pointing at the hole it
+  left, and `insertCells` re-shifted formulas it had already moved.
+- **The accounting charges a text-only formula** its boxed `String` header as well, so the page and
+  undo charges stayed honest after the layout change.
+
+**Result** (`examples/memory 1000000`, the perf scenario's three fills):
+
+| | before | after |
+|---|---:|---:|
+| live heap | 884.7 MB | **776.6 MB** |
+| reopened | 683.8 MB | **614.4 MB** |
+| `formula text` | 133.4 MB | **64.0 MB** |
+| `history / undo` | 212.4 MB | **173.8 MB** (the snapshot shares the smaller formulas) |
+
+**−108.1 MB, −12.2 %**, and what the remaining 64 MB is: 32 bytes a formula — the shape pointer,
+the empty text slot, the boxed legacy range and the dynamic mark.
+
+**What it costs, and what was not run:** a save now prints each formula (one `print_at` and one
+`String` inside the parallel row windows), and the sort's per-cell text comparisons print instead of
+reading a field: the expected cost is a few percent on `save.xlsx` and `sort.formulas`, well inside
+their budgets. `cargo xtask ci` passed 9/9; **`cargo xtask perf` was not run** — the dev machine sat
+at ~80 % load (a game) for the whole round, so a pass would have measured the load. `save.xlsx` and
+`sort.formulas` at 1M are the two scenarios to check first on a quiet machine.
+
 ## Round 33: the fill, and the difference between a metric and a drag (2026-11-21)
 
 `fill.values` was the tightest scenario in the gate (69 % of its budget), so it was
@@ -1249,7 +1303,14 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
-- **2026-11-21 (round 34 opens P5.1):** the report generator now takes best of three. Round 33's
+- **2026-11-21 (round 34, the formula text):** a filled formula keeps no text — it is
+  `Shape::print_at(at)`, the invariant shape sharing pins — so `Formula` is **48 → 32 bytes** and
+  `text` an `Option<Box<String>>` only for text-only formulas. **Live heap 884.7 → 776.6 MB
+  (−108.1 MB, −12.2 %)**, reopened 683.8 → 614.4, `formula text` 133.4 → 64.0, `undo` 212.4 →
+  173.8. The XLSX writer prints at save, the JSON writer materialises the text into the `Value`
+  tree (bytes unchanged) and the reader re-interns shapes, equality compares a shape by spelling,
+  and `cell_before` gained the block-move and cell-insert/delete inverses the rewrite fallback
+  needs. Two rewrite bugs the tests caught are pinned. Earlier: (round 34 opens P5.1): the report generator now takes best of three. Round 33's
   page had `save.xlsx` at 1M at 3.39 s (100 % of its budget) where the same commit measures
   **1.52 s (45 %)** best of three — a single cold pass behind a 1M formula sort. And a probe prices
   the formula text (`cargo run --release -p cella-model --example formula_text_probe`): 2M formulas

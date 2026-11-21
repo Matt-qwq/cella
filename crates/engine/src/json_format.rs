@@ -22,9 +22,11 @@
 //! to the model, and a change that only renames a field is a version bump (the old name survives
 //! through the kept fields rather than disappearing).
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use cella_model::Workbook;
+use cella_core::CellRef;
+use cella_formula::ShapeTable;
+use cella_model::{BAND, Formula, Workbook};
 use serde_json::{Map, Value};
 
 use crate::{EngineError, Result};
@@ -96,13 +98,15 @@ pub fn read_with(bytes: &[u8], limits: &Limits) -> Result<(Workbook, Vec<String>
     // The envelope is the `formatVersion` key, not the number under it: a file without the key is
     // the bare workbook every build before this one wrote, and is read as version 0.
     let Some(version) = doc.remove(VERSION_KEY).map(|v| version_of(&v)).transpose()? else {
-        let wb = from_value(Value::Object(doc))?;
+        let mut wb = from_value(Value::Object(doc))?;
+        intern_shapes(&mut wb);
         return Ok((wb, Vec::new()));
     };
     let Some(book) = doc.remove(WORKBOOK_KEY) else {
         return Err(refused(format!("format version {version} has no \"{WORKBOOK_KEY}\"")));
     };
     let mut wb = from_value(book)?;
+    intern_shapes(&mut wb);
     // What is left of the envelope: a newer version's keys, kept for the save that writes them back.
     wb.json_envelope.keep_object(doc, RESERVED);
     let warnings = match version.cmp(&FORMAT_VERSION) {
@@ -136,11 +140,66 @@ pub fn write(wb: &Workbook) -> Result<Vec<u8>> {
         }
     }
     doc.insert(VERSION_KEY.to_string(), Value::from(FORMAT_VERSION));
-    let book = serde_json::to_value(wb).map_err(|e| EngineError::Other(format!("this workbook cannot be written as JSON: {e}")))?;
+    let mut book = serde_json::to_value(wb).map_err(|e| EngineError::Other(format!("this workbook cannot be written as JSON: {e}")))?;
+    materialize_texts(wb, &mut book);
     doc.insert(WORKBOOK_KEY.to_string(), book);
     // Pretty, and stable: serde_json's map is ordered, so the same workbook always gives the same
     // bytes (there is a golden test on it).
     serde_json::to_vec_pretty(&Value::Object(doc)).map_err(|e| EngineError::Other(format!("this workbook cannot be written as JSON: {e}")))
+}
+
+/// The shapes a JSON document does not carry (serde skips them): every formula that came back as
+/// text alone is parsed once at its cell and re-interned, so a loaded workbook behaves like the
+/// one that was saved — including [`Formula`]'s equality, which compares shapes (R34).
+fn intern_shapes(wb: &mut Workbook) {
+    let mut shapes = ShapeTable::default();
+    for sheet in &mut wb.sheets {
+        let sheet = Arc::make_mut(sheet);
+        let formulas: Vec<(CellRef, Arc<Formula>)> = sheet.cells.iter().filter_map(|(c, cell)| cell.formula.clone().map(|f| (c, f))).collect();
+        for (at, f) in formulas {
+            if f.shape.is_some() {
+                continue;
+            }
+            let Some(text) = f.text.as_deref() else { continue };
+            let Ok(e) = cella_formula::parse(text) else { continue };
+            let rewrite = cella_xlsx::needs_file_rewrite(&e);
+            let mut shaped = Formula::from_expr_at(e, at, &mut shapes, rewrite);
+            shaped.array = f.array.clone();
+            shaped.dynamic = f.dynamic;
+            let mut cell = sheet.cells.get(at).unwrap_or_default();
+            cell.formula = Some(Arc::new(shaped));
+            sheet.cells.set(at, cell);
+        }
+    }
+}
+
+/// The text of every formula whose cell keeps none (R34). The JSON spelling is the model's own text,
+/// and a reader has no shape to print it from; the pass walks the `Value` tree beside the
+/// workbook's cells, so the workbook is not touched and the bytes match the pre-R34 output.
+fn materialize_texts(wb: &Workbook, book: &mut Value) {
+    let Some(sheets) = book.get_mut("sheets").and_then(Value::as_array_mut) else { return };
+    for (si, sheet) in wb.sheets.iter().enumerate() {
+        let Some(sheet_json) = sheets.get_mut(si) else { continue };
+        let Some(bands) = sheet_json.pointer_mut("/cells/bands").and_then(Value::as_object_mut) else { continue };
+        for (band_key, band) in bands.iter_mut() {
+            let Ok(band_index) = band_key.parse::<u32>() else { continue };
+            let Some(rows) = band.get_mut("rows").and_then(Value::as_object_mut) else { continue };
+            for (row_key, row) in rows.iter_mut() {
+                let Ok(row_index) = row_key.parse::<u32>() else { continue };
+                let Some(cols) = row.as_object_mut() else { continue };
+                for (col_key, cell) in cols.iter_mut() {
+                    let Ok(col) = col_key.parse::<u32>() else { continue };
+                    let Some(row) = band_index.checked_mul(BAND).and_then(|b| b.checked_add(row_index)) else { continue };
+                    let at = CellRef::new(row, col);
+                    let Some(f) = sheet.cells.get(at).and_then(|c| c.formula.clone()) else { continue };
+                    let Some(text) = f.text_at(at) else { continue };
+                    if let Some(formula) = cell.get_mut("formula").and_then(Value::as_object_mut) {
+                        formula.insert("text".to_string(), Value::String(text));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The workbook of `value`, with the error a reader can act on.
@@ -280,7 +339,7 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         let cell = back.sheet(0).and_then(|s| s.cell(CellRef::new(0, 2))).expect("the cell is back");
         let f = cell.formula.as_ref().expect("the formula is back");
-        assert_eq!(f.text, "A1:A2*2");
+        assert_eq!(f.text_at(CellRef::new(0, 2)).as_deref(), Some("A1:A2*2"));
         assert_eq!(f.array.as_deref().copied(), RangeRef::parse("C1:C2"));
         assert!(f.dynamic);
     }

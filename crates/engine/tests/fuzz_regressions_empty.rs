@@ -39,7 +39,8 @@ fn value(s: &Session, at: &str) -> Value {
 
 fn formula(s: &Session, at: &str) -> Option<String> {
     let wb = s.doc().expect("document").wb.clone();
-    wb.active().and_then(|sh| sh.cell(CellRef::parse(at).expect("cell"))).and_then(|c| c.formula).map(|f| f.text.clone())
+    let c = CellRef::parse(at).expect("cell");
+    wb.active().and_then(|sh| sh.cell(c)).and_then(|c| c.formula).and_then(|f| f.text_at(c))
 }
 
 fn spill_ranges(s: &Session) -> usize {
@@ -59,7 +60,7 @@ fn recalc_diff(wb: &Workbook) -> Option<String> {
         for c in keys {
             let (va, vb) = (x.value(c), y.value(c));
             if va != vb {
-                let f = x.cell(c).and_then(|c| c.formula).map(|f| format!(" (formula ={})", f.text)).unwrap_or_default();
+                let f = x.cell(c).and_then(|c| c.formula).and_then(|f| f.text_at(c)).map(|t| format!(" (formula ={t})")).unwrap_or_default();
                 return Some(format!("{}!{c}{f}: {va:?} in memory, {vb:?} after a full recalc", x.name));
             }
         }

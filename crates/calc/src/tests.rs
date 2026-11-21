@@ -121,7 +121,7 @@ fn a_recalculation_reads_the_shape_of_a_text_only_cell() {
     for c in at {
         let sh = t.wb.sheet_mut(0).unwrap();
         let mut cell = sh.cells.get(c).unwrap();
-        let text = cell.formula.clone().unwrap().text.clone();
+        let text = cell.formula.clone().unwrap().text_at(c).unwrap_or_default();
         cell.formula = Some(std::sync::Arc::new(cella_model::Formula::from_text(&text)));
         sh.cells.set(c, cell);
     }
@@ -129,7 +129,7 @@ fn a_recalculation_reads_the_shape_of_a_text_only_cell() {
     // The fallback: a cell with text alone parses its text at the cell, and prints the same text.
     for (c, f, _) in t.wb.sheet(0).unwrap().cells.formulas() {
         let tree = f.expr_at(c).expect("the text parses");
-        assert_eq!(cella_formula::print(&tree), f.text, "{c:?}");
+        assert_eq!(Some(cella_formula::print(&tree)), f.text_at(c), "{c:?}");
         assert!(f.shape.is_none(), "reading a tree does not intern one");
     }
     t.calc.recalc_all(&mut t.wb);
@@ -140,7 +140,7 @@ fn a_recalculation_reads_the_shape_of_a_text_only_cell() {
     assert!(std::sync::Arc::ptr_eq(&shapes[0], &shapes[1]), "one shape for the column");
     for (i, c) in [CellRef::new(0, 1), CellRef::new(1, 1)].iter().enumerate() {
         let printed = shapes[i].print_at(*c);
-        let text = t.wb.sheet(0).unwrap().cells.get(*c).and_then(|x| x.formula).map(|f| f.text.clone());
+        let text = t.wb.sheet(0).unwrap().cells.get(*c).and_then(|x| x.formula).and_then(|f| f.text_at(*c));
         assert_eq!(printed, text, "{c:?}");
     }
     assert_eq!((t.get("B1"), t.get("B2")), (Value::Number(6.0), Value::Number(8.0)));
