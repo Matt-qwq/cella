@@ -357,6 +357,20 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   own paired gate (`plan/bench/ab_paste.ps1`, `crates/engine/examples/paste_bench.rs`; the
   baseline side needed that one example file replayed onto `90c4781` because the harness is new).
   Gate 25/25 after the merge.
+- **Landed (11-21, round 33): the fill's per-command overhead, −27.14 %.** `fill.values`
+  was the tightest scenario in the gate (69 % of budget), and attributing it first showed it is
+  **a metric, not the user's action**: a hundred `range.setValues` calls spend 34 % of their
+  time in per-command overhead and 16 % in the harness's own JSON, while a real fill handle
+  (`edit.autoFill`) drags one value down 1M rows in **157 ms**. Two knives on the overhead:
+  a one-way `wrote_formula` flag makes `has_formulas` O(1) (the commit's scan 137 → 6 ms,
+  and a sort's `detect_formulas` too), and a bulk value write refits only the rows whose height
+  can change (autofit 243 → 1.2 ms, with a null that must restore a wrapped cell's height and an
+  Alt+Enter text whose new wrapped style must still grow the row). **1M 1,464 → 1,067 ms
+  (−27.14 %, 8/8, p = 0.0039)**, 100k −19.84 %, re-certified independently at −23.85 %; gate
+  **29/29** and `fill.values` now at 1.29 s (42 %). The gate grew **`fill.autofill`** — the drag
+  itself, 1M 449 ms in a workbook already holding eight columns — because the values half of a
+  fill had no number at all. `fill.formulas`, `fill.chained` and `edit.recalc` were unchanged and no
+  credit is claimed for them.
 - **Landed (11-21, round 32): the closure's seeds, −13.33 % more.** A 1M sort hands the dirty
   closure 8M changed cells as seeds, and **6M of them are plain values that can never hold a
   formula node** — each paid a `has_node` probe, 323 of the closure's 541 ms (dependents 143,

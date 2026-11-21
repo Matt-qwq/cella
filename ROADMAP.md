@@ -2,7 +2,15 @@
 
 **Stage: alpha** · large-workbook beta gate met · next: beta, ~20 points of "ready for real work" and ~16–24 h away (most of it verification that needs the pinned corpus and the machines the field reports came from)
 
-> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** minor (**round 32 — the closure's seeds.** Of the 8M changed cells a 1M sort seeds,
+> **Last reviewed:** 2026-11-20 · **Last updated:** 2026-11-20 · **Change:** minor (**round 33 — the fill, and a metric that was not the drag.** `fill.values` was
+the gate's tightest budget (69 %); attributing it showed only ~45 % of it is moving values, 34 %
+is per-command overhead paid a hundred times and 16 % is the harness's JSON — a real fill handle
+drags a value down 1M rows in **157 ms**. Two knives on the overhead: a one-way `wrote_formula`
+flag answers `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write only refits rows
+whose height can change (autofit 243 → 1.2 ms). **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p=0.0039)**,
+100k −19.84 %, independently re-certified at −23.85 %; gate **29/29**, `fill.values` at 1.29 s
+(42 %) and a new **`fill.autofill`** scenario protecting the drag (1M 449 ms). Earlier:
+**round 32 — the closure's seeds.** Of the 8M changed cells a 1M sort seeds,
 6M are values that cannot hold a node, yet each paid a `has_node` probe — 323 of the closure's
 541 ms. The sort now hands the recalculation its exact formula-cell list (other callers pass
 `None`, unchanged): closure **541 → 213 ms**, `sort.formulas` **1M 3,360 → 2,912 ms (−13.33 %,

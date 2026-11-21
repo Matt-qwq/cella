@@ -932,6 +932,61 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 33: the fill, and the difference between a metric and a drag (2026-11-21)
+
+`fill.values` was the tightest scenario in the gate (69 % of its budget), so it was
+attributed before anything was touched — and the attribution found that **it is not the thing a
+person does**. The scenario runs a hundred `range.setValues` calls, a hundred thousand values
+each; grabbing a fill handle runs one `edit.autoFill`. Splitting the 1,634 ms:
+
+| the gate's `fill.values`, 1M (100 commands) | ms | |
+|---|---:|---|
+| the harness building its own JSON | 255 | 16 % — R13 pinned this as part of the scenario; not touched |
+| arguments → cells (a style probe a cell) | 367 | 22 % |
+| store write (`set_row_cells`) | 371 | 23 % |
+| the commit's empty-graph recalculation scan | 137 | 8 % — 15,625 bands × 64 rows a command, to answer "any formulas?" |
+| autofit scheduling (60k changed → 10k rows, walked again) | 243 | 15 % — all plain styles; changed nothing |
+| journal (serialising 60k values to count their bytes) | 185 | 11 % |
+| undo push, clone, guards | 75 | 5 % |
+
+So **only ~45 % of the gate's number is moving values into the store**; 34 % is per-command
+overhead paid a hundred times, and 16 % is the harness. The same work through the user's path
+(`edit.autoFill`, 1M rows): **157 ms** to drag one value down a column, 320 ms for a text
+series, and 1,027–1,233 ms for a formula (745 of that is the recalculation the formula needs).
+
+Two knives, both aimed at the per-command overhead rather than at the metric:
+
+1. **A store that never held a formula answers `has_formulas` without walking it** (`4baea66`).
+   A one-way flag set by every write that carries a formula — never cleared, so a store that has
+   held one falls back to the exact walk (the test that deletes a sheet's only formula still
+   passes). The commit's scan went 137 → **6 ms**, and a sort's `detect_formulas` becomes O(1) too.
+2. **A bulk value write only refits the rows whose height can change** (`79a69ca`). Building
+   the cells already has each cell's style in hand, so the command can record "no wrapped cell,
+   nothing above the default size, nothing deleted" and skip scheduling, sorting and re-walking
+   60,000 changed cells. Header write-back revokes the claim. Autofit 243 → **1.2 ms**; the two
+   regression tests are a null that must restore a wrapped cell's default height and an Alt+Enter
+   text built with a *new* wrapped style that must still grow the row.
+
+| case | base | cand | delta | fav | p | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| `fill.values` 1M | 1,464 ms | **1,067 ms** | **−27.14 %** | 8/8 | 0.0039 | **GAIN** (t = −13.50) |
+| `fill.values` 100k | 123 ms | **99 ms** | **−19.84 %** | 8/8 | 0.0039 | **GAIN** |
+| `fill.formulas` / `fill.chained` / `edit.recalc` | | | −1 % / −1.7 % / −0.7 % | 4–6/8 | ≥0.15 | no conclusion — **and no claim made** |
+
+Re-certified independently with `-Repeat 2`: 1M **1,593 → 1,213 ms (−23.85 %, 8/8,
+p = 0.0039)**. Gate **29/29**; `fill.values` 1M is now **1.29 s** (42 % of its budget, from 69 %).
+
+**The gate grew the scenario the work was about.** `fill.autofill` copies one value down a
+column through `edit.autoFill` — 100k **99 ms**, 1M **449 ms** in a workbook that already holds
+eight columns (the harness measured 442 ms standalone). `fill.formulas` was already the
+formula half of this; the values half had no number at all.
+
+**Still in `fill.values`:** the harness's own JSON (255–307 ms, by design), the per-cell style
+probe in dispatch (~340 ms; a row read could take 100–150), `set_row_cells` (~350, close to the
+floor a per-row put has), and the journal's byte counting (~170 ms, which would need an owner
+decision about what the byte budget counts). On the user's path a formula drag's 512 ms of
+writing is the next piece — one band lookup a cell and a printed text a cell.
+
 ## Round 32: the clutter a sort leaves for the closure (2026-11-21)
 
 `sort.formulas` had fallen to 3.19 s, and the attribution said the dirty closure was the
@@ -1184,6 +1239,15 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-21 (round 33, the fill):** `fill.values` was the tightest budget and turned out to be
+  a metric rather than a drag — a hundred `range.setValues` calls pay 34 % of their time in
+  per-command overhead and 16 % in the harness's own JSON, while a real fill handle costs
+  **157 ms** at 1M. Two knives on the overhead: a one-way `wrote_formula` flag answers
+  `has_formulas` in O(1) (scan 137 → 6 ms) and a bulk value write only refits rows whose height
+  can change (autofit 243 → 1.2 ms). **1M 1,464 → 1,067 ms (−27.14 %, 8/8, p=0.0039)**, 100k −19.84 %,
+  re-certified at −23.85 %; gate **29/29** with the new `fill.autofill` scenario protecting the
+  drag itself (1M 449 ms). `fill.formulas`/`fill.chained`/`edit.recalc` unchanged and no credit
+  claimed for them.
 - **2026-11-21 (round 32, the closure):** of the 8M changed cells a 1M sort seeds, 6M are values
   that cannot hold a node and each paid a `has_node` probe (323 of the closure's 541 ms). The sort
   hands the recalculation its exact formula-cell list (others pass `None`): closure **541 →
