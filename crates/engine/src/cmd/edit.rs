@@ -415,6 +415,10 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     let mut profile = WriteProfile::start("setValues");
     edit(s, |cx| {
         let mut batch: Vec<(u32, Cell)> = Vec::new();
+        // Every cell below is built here, so its style is in hand: a bulk import that keeps the
+        // destination's plain style owes no row a fit (see `Ctx::fit_plain`). A cell removed
+        // (a null) or built with a wrapping/large style turns the claim off.
+        cx.fit_plain = true;
         for (ri, row) in rows.iter().enumerate() {
             if let Some(prof) = profile.as_mut() {
                 prof.row_started();
@@ -444,6 +448,15 @@ fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
                     // typed input needs its text built: a number's own spelling is never used.
                     _ => input_to_cell(&json_to_input(v), sheet, at, &mut cx.wb, &mut shapes)?,
                 };
+                if cx.fit_plain {
+                    cx.fit_plain = match cell.as_ref() {
+                        Some(c) => {
+                            let st = cx.wb.styles.get(c.style);
+                            st.font.size <= cella_model::DEFAULT_FONT_SIZE && !st.align.wrap
+                        }
+                        None => false,
+                    };
+                }
                 match cell {
                     Some(c) if bulk => batch.push((at.col, c)),
                     Some(c) => cx.sheet_mut(sheet)?.set_cell(at, c),

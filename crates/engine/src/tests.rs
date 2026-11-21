@@ -2068,6 +2068,38 @@ fn line_breaks_grow_a_row_only_when_the_cell_wraps() {
     assert!(s.doc().unwrap().wb.active().unwrap().row_height(3) > default_h * 2.5, "typed line breaks turn wrap on and grow the row");
 }
 
+/// `range.setValues` tells the commit that the cells it built keep a plain style, so a bulk
+/// import no longer walks every row it wrote to find out. A row it *emptied* of a wrapped cell
+/// must still lose the height that cell gave it — the claim covers the cells it writes, and a
+/// removed cell (a null) is not one of them.
+#[test]
+fn a_bulk_value_write_clears_the_height_of_a_row_it_emptied() {
+    let mut s = s();
+    let default_h = s.doc().unwrap().wb.active().unwrap().row_height(0);
+    s.execute("cell.set", json!({"cell": "A1", "input": "one two three four five six seven eight nine ten"})).unwrap();
+    s.execute("home.wrapText", json!({"range": "A1", "on": true})).unwrap();
+    assert!(s.doc().unwrap().wb.active().unwrap().row_height(0) > default_h, "the wrapped cell grew its row");
+    s.execute("range.setValues", json!({"range": "A1", "values": [[null]]})).unwrap();
+    assert_eq!(s.doc().unwrap().wb.active().unwrap().row_height(0), default_h, "removing the wrapped cell refits the row");
+}
+
+/// The style that decides is the one on the cell the command *built*, not the destination's: text
+/// entered with a line break turns wrap on as it is typed (Alt+Enter), so a bulk write of such
+/// text owes its row a fit even though the cell it landed in was plain.
+#[test]
+fn a_bulk_value_write_of_wrapped_text_grows_its_row() {
+    let mut s = s();
+    let default_h = s.doc().unwrap().wb.active().unwrap().row_height(1);
+    s.execute(
+        "range.setValues",
+        json!({"range": "A2", "values": [["first line
+second line
+third line"]]}),
+    )
+    .unwrap();
+    assert!(s.doc().unwrap().wb.active().unwrap().row_height(1) > default_h * 2.0, "typed line breaks wrap the cell and grow the row");
+}
+
 #[test] // B — Review Focus 1
 fn open_keeps_custom_height_rows() {
     let mut s = Session::new();

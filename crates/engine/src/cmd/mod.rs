@@ -480,13 +480,24 @@ pub struct Ctx<'a> {
     /// [`cella_calc::Calc::cells_moved_seeded`]). `None` is the generic case: every changed cell is
     /// probed, and an empty list says none of them can be a node.
     pub formula_seeds: Option<Vec<Key>>,
+    /// The command wrote only cells whose style cannot change an automatic row height (no wrap,
+    /// no font larger than the default) and removed no cell; see `commit`'s fit-row scheduling.
+    /// A bulk value import knows this as it builds each cell, where asking the store again per
+    /// cell is the tax this saves.
+    pub fit_plain: bool,
 }
 
 pub(crate) fn edit<R>(s: &mut Session, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
     let d = s.doc_mut()?;
     commit(d, |cx| {
         let r = f(cx)?;
+        let command_cells = cx.changed.len();
         crate::tables::sync_headers(cx);
+        if cx.changed.len() != command_cells {
+            // A table header was written back after the command finished: the command did not see
+            // that cell's style, so its fit claim no longer covers every changed cell.
+            cx.fit_plain = false;
+        }
         Ok(r)
     })
 }
@@ -508,10 +519,22 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
         formulas_unchanged: false,
         relabelled: None,
         formula_seeds: None,
+        fit_plain: false,
     };
     let r = f(&mut ctx)?;
-    let Ctx { mut wb, mut changed, structural, visibility, mut fit_rows, protection_checked, formulas_unchanged, relabelled, formula_seeds, .. } =
-        ctx;
+    let Ctx {
+        mut wb,
+        mut changed,
+        structural,
+        visibility,
+        mut fit_rows,
+        protection_checked,
+        formulas_unchanged,
+        relabelled,
+        formula_seeds,
+        fit_plain,
+        ..
+    } = ctx;
     check_chart_sheets(&d.wb, &wb)?;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
@@ -522,7 +545,23 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     if wb.calc.precision_as_displayed {
         round_edited_as_displayed(&d.wb, &mut wb, &mut changed, structural);
     }
-    if changed.len() <= 200_000 {
+    if fit_plain {
+        // Every changed cell the command wrote keeps a plain style, so none of them can grow a
+        // row; the only pass still owed is clearing a height an *earlier* edit set on a row this
+        // one lands in. Scheduling all 60,000 changed cells of a ten-thousand-row import and
+        // walking each row's cells again to find that out was 2.4 ms of every such command.
+        let mut last: Option<(usize, u32)> = None;
+        for &(si, c) in &changed {
+            if last == Some((si, c.row)) {
+                continue;
+            }
+            last = Some((si, c.row));
+            let stale = wb.sheet(si).and_then(|sh| sh.rows.get(&c.row)).is_some_and(|i| !i.custom && i.size.is_some());
+            if stale {
+                fit_rows.push((si, c.row));
+            }
+        }
+    } else if changed.len() <= 200_000 {
         fit_rows.extend(changed.iter().map(|(s, c)| (*s, c.row)));
     }
     if let Some(t0) = t0 {
