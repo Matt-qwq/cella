@@ -830,8 +830,9 @@ cargo run --release -p cella-engine --example sort_roundtrip -- --rows=1000000 -
 
 ## The evaluator round of 2026-11-20: refuted by measurement, one bookkeeping win
 
-Three waves against the chained edit's remaining gap to Excel (0.36 s vs 0.08 s on the reference
-edit):
+Three waves against the chained edit's remaining gap to Excel (the 11-18 session measured 0.36 s
+against Excel's 0.08 s on the reference edit; **both sides were re-measured on 2026-11-21 and the
+gap is 0.220 s against 0.168 s — 1.3×, not 4.4×** — see [external-benchmark.md](external-benchmark.md)):
 
 - **Per-shape bytecode, built and refuted.** Every shape compiles once into flat opcodes over the
   same kernels the tree uses, executed on a slot stack — equivalence-proven both ways (a new

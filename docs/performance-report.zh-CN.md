@@ -1,6 +1,6 @@
 # 性能报告
 
-> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `8f54473`（2026-11-21）。
+> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `2ccc59a`（2026-11-21）。
 > 机器：windows x86_64；rustc 1.97.1 (8bab26f4f 2026-07-14)。所有数字都是同一台空闲机器上的墙钟时间，本机跑动之间波动约 10%，
 > 这也是门禁预算取"安静一次的两倍"的原因。方法与口径见 [performance.md](performance.md)。
 
@@ -12,31 +12,31 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      138 ms     250 ms     55%
-fill.formulas          100000      157 ms     290 ms     54%
-fill.chained           100000      224 ms     370 ms     61%
-aggregate              100000       65 ms     110 ms     59%
-edit.recalc            100000       86 ms     160 ms     54%
+fill.values            100000      128 ms     250 ms     51%
+fill.formulas          100000      140 ms     290 ms     48%
+fill.chained           100000      184 ms     370 ms     50%
+aggregate              100000       55 ms     110 ms     50%
+edit.recalc            100000       75 ms     160 ms     47%
 edit.undo              100000      200 us     3.0 ms      7%
-sort.desc              100000      332 ms     580 ms     57%
-save.xlsx              100000      209 ms     300 ms     70%
-open.xlsx              100000      366 ms     520 ms     70%
-rebuild.graph          100000       70 ms     110 ms     64%
-open.csv               100000       71 ms     130 ms     55%
-fill.values           1000000      1.79 s     3.05 s     59%
-fill.formulas         1000000      1.42 s     2.55 s     56%
-fill.chained          1000000      2.17 s     3.55 s     61%
-aggregate             1000000      444 ms     1.15 s     39%
-edit.recalc           1000000      732 ms     1.45 s     51%
-edit.undo             1000000      1.6 ms      52 ms      3%
-sort.desc             1000000      3.51 s     6.70 s     52%
-save.xlsx             1000000      2.03 s     3.40 s     60%
-open.xlsx             1000000      3.66 s     5.90 s     62%
-rebuild.graph         1000000      877 ms     1.45 s     60%
-open.csv              1000000      724 ms     1.25 s     58%
-save.repeat            100000      177 ms     370 ms     48%
-save.repeat           1000000      1.94 s     3.20 s     61%
-mem_drift              100000      5.6 ms      11 ms     51%
+sort.desc              100000      282 ms     580 ms     49%
+save.xlsx              100000      158 ms     300 ms     53%
+open.xlsx              100000      260 ms     520 ms     50%
+rebuild.graph          100000       54 ms     110 ms     49%
+open.csv               100000       62 ms     130 ms     48%
+fill.values           1000000      1.49 s     3.05 s     49%
+fill.formulas         1000000      1.31 s     2.55 s     51%
+fill.chained          1000000      1.71 s     3.55 s     48%
+aggregate             1000000      347 ms     1.15 s     30%
+edit.recalc           1000000      632 ms     1.45 s     44%
+edit.undo             1000000      1.5 ms      52 ms      3%
+sort.desc             1000000      3.04 s     6.70 s     45%
+save.xlsx             1000000      1.88 s     3.40 s     55%
+open.xlsx             1000000      3.10 s     5.90 s     52%
+rebuild.graph         1000000      840 ms     1.45 s     58%
+open.csv              1000000      569 ms     1.25 s     45%
+save.repeat            100000      153 ms     370 ms     41%
+save.repeat           1000000      1.66 s     3.20 s     52%
+mem_drift              100000      4.9 ms      11 ms     44%
 
 OK: all 25 scenarios within budget (xtask/perf-budgets.txt)
 
@@ -163,56 +163,79 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
 
 ## 与 Excel、WPS、上游 GridCraft 的横评
 
-> **Measured** 2026-11-18 on the development machine (Windows 11, AMD Ryzen, 32 GB), release
-> builds. Every product ran the same file and the same edit; the answer cell is identical across
-> all four. Run-to-run spread on this machine is about 10 %.
-
-> **Update 2026-11-21 — this table predates rounds 26–27.** The Cella column was measured on
-> 2026-11-18 at 0.13.0. Two rounds since then changed the machinery under exactly these
-> operations, and every change was certified by an eight-pair sign test
-> (`plan/ab-r27-*.csv`, `plan/ab-r27-paste-*.csv`): an evicted undo step releases on later cheap
-> commands (round 26); the closure keeps a two-formula precedent in a box, so the 2M-dirty edit
-> went **866 → 707 ms (−18.4 %)**; a band prices a snapshot from its copy tag instead of a per-row
-> walk (**−7.2 % built**); the store compares the packed row before copying a band, finds a row
-> with one bit probe and stops double-probing in `set` (**−20.1 % built, −21.4 % reopened**); and
-> the same knife took **a 6M-cell paste from 2,011 to 1,300 ms (−35.4 %)**. In the gate's own
-> harness the 1M chained `edit.recalc` now runs **725 ms** against its 1.45 s budget.
->
-> **What has not changed:** Excel's 0.08 s for this edit has not been beaten, and the external
-> columns — and the Cella column itself — have **not** been re-measured together since 2026-11-18.
-> The gate's synthetic 1M edit is now 251 ms on our side, but that is a different workload from
-> the reference file, so it is a direction, not a ratio. Until the whole table is re-run in one
-> session with Excel and WPS, read the numbers above as a dated measurement, not a current claim.
+> **Measured 2026-11-21** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
+> release builds, one session, in this order: every product ran the same file and the same edit,
+> and all three returned the same answer cell. Medians of five runs (Excel, Cella) and three (WPS,
+> which spends ~15 s on the edit); ranges in the notes. Run-to-run spread on this machine is
+> about 10 %.
 
 The file is `plan/bench/ref-1m.xlsx`: 1,000,000 rows x 8 columns, 2,000,000 formulas
 (`G = B*C+D`, `H = H(n-1)+G(n)`), 70,371,330 bytes, written by Cella. The edit is `B1 = 3`, which
 dirties `G1` and the whole `H` chain (about 1,000,000 cells); every product had automatic
-calculation on, so the assignment pays for the recalculation.
+calculation on, so the assignment pays for the recalculation. Excel and WPS were driven through
+COM; Cella through its control channel (a normal desktop this time — the 11-18 run used a hidden
+one, which costs a ~40 ms frame-batched round trip; see performance.md).
+
+| | Excel 16.0 | WPS 12.1 | Cella (this build) |
+|---|---:|---:|---:|
+| open the 70 MB file | 9.01 s | 11.11 s | **2.61 s** |
+| **edit B1 -> the dependent chain** | **0.168 s** | 15.37 s | **0.220 s** |
+| working set after opening | **579 MB** | 1,004 MB | 988 MB |
+| private working set after opening | **532 MB** | 896 MB | 1,249 MB |
+| H1000000 after the edit | 23,999,823,993,691 | the same | the same |
+
+Ranges: Excel open 8.93–9.27 s, edit 0.161–0.235 s (one 5th run at 0.235; the median is 0.168);
+WPS open 10.98–11.31 s, edit 15.09–15.60 s; Cella open 2.54–2.64 s, edit 0.219–0.229 s. Memory was
+read from the running processes after the document was open (WMI/Get-Process), Excel as
+`EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`.
+
+### What this says
+
+- **Cella opens this file 3.5x faster than Excel and 4.3x faster than WPS.** That has been true
+  since the read path was rewritten and it is not close.
+- **Excel still wins the edit, but by 1.3x, not by 4.4x.** 0.168 s against our 0.220 s, on an
+  operation that recalculates a million chained formulas inside the assignment (Excel is
+  synchronous here: `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both
+  numbers mean "the chain is up to date"). The 11-18 table below recorded 0.08 s against our
+  0.36 s; rounds 26–27 took our side down (an evicted undo step releases on later cheap commands,
+  the closure holds a two-formula precedent in a box, a band prices itself from a copy tag, and the
+  store compares the packed row before it copies a band), while Excel measured 0.161–0.235 s in
+  five runs today on the same protocol. The table above is one session's numbers and is the one to
+  quote.
+- **Memory is where Excel still wins clearly**: 579 MB of working set against our 988, and 532 MB
+  private against 1,249 — on a document that also carries one undo step (~212 MB at 1M rows) and
+  the replayable journal (~15 MB). WPS sits between the two on working set and behind both on
+  speed.
+- Every product agrees on `H1000000`, which is the point of running the same file through all
+  three.
+
+### Previous measurement (2026-11-18)
+
+Kept because it is what the older documents cite, and because the difference is instructive: the
+same protocol produced a very different Excel edit time.
 
 | | Excel 16.0.20527 | WPS 12.1.0.25222 | upstream GridCraft v0.19.1 | Cella 0.13.0 |
 |---|---:|---:|---:|---:|
 | open the 70 MB file | 7.8 s | 11.7 s | 21.4 s (open + full recalc) | **3.1 s** (3.33 s with a full recalc after it) |
 | full recalculation of 2M formulas | **0.31 s** | 16.9 s | included above | 1.30 s |
-| **edit B1 -> the dependent chain** | **0.08 s** | 16.9 s | 3.64 s | 0.36 s |
+| edit B1 -> the dependent chain | **0.08 s** | 16.9 s | 3.64 s | 0.36 s |
 | working set after opening | **588 MB** | 987 MB | n/a (engine only) | 996 MB |
 | private working set after opening | **468 MB** | 864 MB | n/a | 1,341 MB |
 | idle, no document | **~35 MB** | 288 MB | n/a | 196 MB |
 | H1000000 after the edit | 23,999,823,993,691 | the same | the same | the same |
 
-Two runs each, and the table quotes both where they differ (Excel open 7.9/7.71 s, edit
-0.08/0.07 s; WPS open 11.3/12.14 s, edit 17.19/16.6 s; Cella open 2.88/3.30 s, edit 0.29/0.42 s).
-Memory was read from the running process (WMI) after the document was open; the Excel and WPS
-figures are from the same day and file.
+Two runs each; the runs differed as follows (Excel open 7.9/7.71 s, edit 0.08/0.07 s; WPS open
+11.3/12.14 s, edit 17.19/16.6 s; Cella open 2.88/3.30 s, edit 0.29/0.42 s).
 
-### The same operations in each engine
+### The same operations in each engine (2026-11-18, not re-run)
 
-Excel and WPS were driven through COM; Cella through its control channel on a hidden desktop (no
-window is put in front of anyone). Upstream GridCraft v0.19.1 cannot be driven that way here (its
-app opens a DX12 window, and the control port dies on a hidden desktop), so it ran **its own
-engine benchmark script** (`crates/engine/examples/perf.rs`, the direct ancestor of ours) on the
-same 1,000,000 rows. Cella ran the equivalent operations in its gate harness, which builds the
-same three columns. The harness mechanics are not identical - upstream sets one row per
-`range.setValues`, ours chunks 10,000 - so read these as engine-scale ratios, not lab-grade totals:
+Upstream GridCraft v0.19.1 cannot be driven through the control channel here (its app opens a DX12
+window and the control port dies on a hidden desktop), so it ran **its own engine benchmark
+script** (`crates/engine/examples/perf.rs`, the direct ancestor of ours) on the same 1,000,000
+rows, while Cella ran the equivalent operations in its gate harness. The harness mechanics are not
+identical — upstream sets one row per `range.setValues`, ours chunks 10,000 — so read these as
+engine-scale ratios, not lab-grade totals. **Nothing in this table was re-measured on 2026-11-21**;
+it is the 11-18 session's record.
 
 | operation, 1M rows | upstream v0.19.1 | Cella 0.13.0 | ratio |
 |---|---:|---:|---:|
@@ -223,20 +246,25 @@ same three columns. The harness mechanics are not identical - upstream sets one 
 | sort 1M rows | 11.19 s | **4.88 s** | 2.3x |
 | save xlsx | 7.65 s (64.9 MB) | **1.91 s** (70.4 MB) | 4.0x |
 
-### What this does and does not say
+Upstream v0.19.1 has moved on since this repository forked at v0.11.1, and the comparison above is
+not a score against it: it was never tracked as a target. It is here so a reader can see that this
+line's own work (the query pipeline, the data model, the memory round, the recalculation round) did
+not leave the core slow.
 
-- Cella opens this file 2.5x faster than Excel and 3.8x faster than WPS, recalculates the chain
-  4.4x faster than upstream and 47x faster than WPS, and holds 996 MB of working set against
-  Excel's 588 and WPS's 987 - 1.3x behind the leader, on a document that also carries the undo
-  step (212 MB) and the replayable journal (15 MB).
-- **Excel still wins the one thing a chain edit measures**: 0.08 s against our 0.36 s, 4.4x. That
-  is the honest remaining gap; it is the whole reason the evaluator is the next work item.
-- Upstream v0.19.1 has moved on since this repository forked at v0.11.1, and the comparison above
-  is not a score against it: it was never tracked as a target. It is here so a reader can see that
-  this line's own work (the query pipeline, the data model, the memory round, the recalculation
-  round) did not leave the core slow.
-- Startup, UI interaction latency, other platforms and workload variety (pivots, charts, print)
-  are **not measured** (see `performance-report.md`).
+### Reproduce
+
+```powershell
+# every product, one file, one edit (prints product,open_s,edit_s,h1000000,ws_mb,private_mb,ok)
+powershell -File plan/bench/external_ab.ps1 -Product excel -Path plan/bench/ref-1m.xlsx
+powershell -File plan/bench/external_ab.ps1 -Product wps   -Path plan/bench/ref-1m.xlsx
+powershell -File plan/bench/external_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx
+```
+
+### Not measured
+
+Startup, UI interaction latency, other platforms, and workload variety (pivots, charts, print) are
+**not measured here** (see `performance-report.md` for what the gate does cover, and
+`performance.md` for the interaction harnesses that sit outside the gate).
 
 
 ## 没有测量的项目
