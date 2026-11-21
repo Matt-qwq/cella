@@ -155,7 +155,7 @@ fn read(s: &mut Session, p: &Json) -> Result<Json> {
         for col in r.start.col..=r.end.col {
             let c = CellRef::new(row, col);
             let v = if formulas && let Some(f) = sh.cell(c).and_then(|x| x.formula) {
-                json!(format!("={}", f.text))
+                json!(format!("={}", f.text_at(c).unwrap_or_default()))
             } else if formatted {
                 json!(crate::display::cell_text(&d.wb, sh, c))
             } else {

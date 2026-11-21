@@ -12,7 +12,7 @@ pub(crate) fn canonical(
 ) -> Result<String, ParseError> {
     // The editor hid the `_xludf.` prefixes of this cell's formula; confirming it unchanged keeps
     // the user-defined calls instead of binding them to the built-ins of the same name.
-    if let Some(stored) = wb.sheet(sheet).and_then(|sh| sh.cell(cell)).filter(|c| c.formula.is_some()).map(|c| c.input_text())
+    if let Some(stored) = wb.sheet(sheet).and_then(|sh| sh.cell(cell)).filter(|c| c.formula.is_some()).map(|c| c.input_text_at(cell))
         && has_udf_prefix(&stored)
         && text == display(&stored, locale, wb, sheet)
     {

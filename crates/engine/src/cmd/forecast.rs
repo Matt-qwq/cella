@@ -492,7 +492,8 @@ mod tests {
 
     fn formula(s: &Session, sheet: usize, a1: &str) -> String {
         let wb = &s.doc().unwrap().wb;
-        wb.sheet(sheet).unwrap().cell(CellRef::parse(a1).unwrap()).and_then(|c| c.formula).map(|f| f.text.clone()).unwrap_or_default()
+        let at = CellRef::parse(a1).unwrap();
+        wb.sheet(sheet).unwrap().cell(at).and_then(|c| c.formula).and_then(|f| f.text_at(at)).unwrap_or_default()
     }
 
     #[test]

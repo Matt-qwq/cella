@@ -110,6 +110,25 @@ impl Formula {
     pub fn shape(&self) -> Option<Arc<Shape>> {
         self.shape.clone()
     }
+    /// The formula's text **at the cell it sits at**: the shape prints it when the cell has one,
+    /// and a formula that holds text alone (one read from a JSON document, or one that does not
+    /// parse) answers with that text.
+    ///
+    /// This is the read every caller that knows its cell should make: the text is a pure function
+    /// of (shape, cell) — the invariant the fuzz pins — so the per-cell copy is a cache, and
+    /// `None` means the shape cannot spell this formula at `at` (a reference that clamps).
+    pub fn text_at(&self, at: CellRef) -> Option<String> {
+        // Today every formula still carries its text; the shape is the answer only once a cell's
+        // text is not stored (the cache the fill path will stop keeping, R34 step 2).
+        if !self.text.is_empty() {
+            return Some(self.text.clone());
+        }
+        let shape = self.shape.as_ref()?;
+        if !shape.fits(at) {
+            return None;
+        }
+        shape.print_at(at)
+    }
     /// The formula this cell's content becomes when the formula at `from` is filled or copied to
     /// `at`: the **same shape**, one `Arc` clone and a print, when it fits there; otherwise the
     /// tree a per-cell shift makes at `at`, held as a shape that belongs to this cell alone (a
@@ -205,7 +224,9 @@ impl Cell {
     pub fn is_blank(&self) -> bool {
         self.value.is_empty() && self.formula.is_none() && self.style == StyleId::DEFAULT
     }
-    /// What the formula bar shows.
+    /// What the formula bar shows, for a caller that does not know the cell (tests, a value shown
+    /// away from its sheet). Prefer `input_text_at` / `Sheet::input_text`, which ask the shape
+    /// for the text at the cell it sits at.
     pub fn input_text(&self) -> String {
         if let Some(f) = &self.formula {
             return format!("={}", f.text);
@@ -225,6 +246,23 @@ impl Cell {
         match &self.formula {
             Some(f) if f.array.is_some() => format!("{{={}}}", f.text),
             _ => self.input_text(),
+        }
+    }
+    /// [`input_text`](Self::input_text) for the cell it sits at: the shape prints the formula.
+    pub fn input_text_at(&self, at: CellRef) -> String {
+        if let Some(f) = &self.formula {
+            return format!("={}", f.text_at(at).unwrap_or_default());
+        }
+        match &self.value {
+            Value::Text(t) => t.to_string(),
+            v => v.display(),
+        }
+    }
+    /// [`bar_text`](Self::bar_text) for the cell it sits at.
+    pub fn bar_text_at(&self, at: CellRef) -> String {
+        match &self.formula {
+            Some(f) if f.array.is_some() => format!("{{={}}}", f.text_at(at).unwrap_or_default()),
+            _ => self.input_text_at(at),
         }
     }
 }

@@ -416,7 +416,7 @@ impl Sheet {
         self.cell_pictures.insert(c, picture);
     }
     pub fn input_text(&self, c: CellRef) -> String {
-        if self.cell_pictures.contains_key(&c) { String::new() } else { self.cell(c).map(|cell| cell.input_text()).unwrap_or_default() }
+        if self.cell_pictures.contains_key(&c) { String::new() } else { self.cell(c).map(|cell| cell.input_text_at(c)).unwrap_or_default() }
     }
     /// Formatting a chart sheet's (non-existent) cells is dropped, like a content write.
     pub fn set_style(&mut self, c: CellRef, style: StyleId) {

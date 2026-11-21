@@ -2025,7 +2025,7 @@ fn insert_symbol(s: &mut Session, p: &Json) -> Result<Json> {
     let ch = str_param(p, "char").unwrap_or("").to_string();
     let d = s.doc()?;
     let at = d.selection.active;
-    let cur = d.wb.active().and_then(|sh| sh.cell(at)).map(|c| c.input_text()).unwrap_or_default();
+    let cur = d.wb.active().map(|sh| sh.input_text(at)).unwrap_or_default();
     s.execute("cell.set", json!({"cell": at.a1(), "input": format!("{cur}{ch}")}))
 }
 

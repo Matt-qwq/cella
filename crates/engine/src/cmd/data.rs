@@ -1479,7 +1479,7 @@ fn remove_duplicates(s: &mut Session, p: &Json) -> Result<Json> {
                             g.dynamic = dynamic;
                             g
                         }
-                        None => Formula::from_text(&f.text),
+                        None => Formula::from_text(&f.text_at(at).unwrap_or_default()),
                     });
                 }
             }

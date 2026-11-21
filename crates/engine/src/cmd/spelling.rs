@@ -169,7 +169,7 @@ fn change(s: &mut Session, p: &Json) -> Result<Json> {
         return s.execute("edit.replace", json!({"what": word, "with": to, "matchCase": true, "all": true}));
     }
     let c = cell_param(s, p, "cell")?.ok_or_else(|| bad("review.changeSpelling", "missing `cell`"))?;
-    let text = s.doc()?.wb.active().and_then(|sh| sh.cell(c)).map(|x| x.input_text()).unwrap_or_default();
+    let text = s.doc()?.wb.active().map(|sh| sh.input_text(c)).unwrap_or_default();
     s.execute("cell.set", json!({"cell": c.a1(), "input": text.replacen(&word, &to, 1)}))
 }
 

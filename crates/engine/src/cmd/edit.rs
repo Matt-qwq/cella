@@ -169,7 +169,7 @@ pub(crate) fn input_to_cell(
         cell.style = style;
         // Formulas whose result is a date/time get a format from functions like TODAY().
         if wb.styles.get(style).num_fmt.as_str() == "General" {
-            let f = cell.formula.as_ref().map(|f| f.text.to_ascii_uppercase()).unwrap_or_default();
+            let f = cell.formula.as_ref().map(|f| f.text_at(at).unwrap_or_default().to_ascii_uppercase()).unwrap_or_default();
             let auto = if f.starts_with("TODAY(")
                 || f.starts_with("DATE(")
                 || f.starts_with("EDATE(")
@@ -522,7 +522,8 @@ fn range_fill(s: &mut Session, p: &Json) -> Result<Json> {
                         // `origin`, not at whichever cell happened to carry this style first.
                         if let Some(formula) = c.as_mut().and_then(|cell| cell.formula.as_ref()).cloned() {
                             let rewrite = formula.shape().is_some_and(|s| s.file_rewrite);
-                            let entered = Formula::new_at(&formula.text, origin, &mut shapes, rewrite);
+                            let text = formula.text_at(origin).unwrap_or_default();
+                            let entered = Formula::new_at(&text, origin, &mut shapes, rewrite);
                             if let Some(cell) = c.as_mut() {
                                 cell.formula = Some(std::sync::Arc::new(entered));
                             }
@@ -1429,7 +1430,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                         _ => None,
                                     }
                                 {
-                                    let text = format!("=({}){sym}{}", f.text, cella_core::number_to_text(y));
+                                    let text = format!("=({}){sym}{}", f.text_at(dest).unwrap_or_default(), cella_core::number_to_text(y));
                                     new.formula = Some(std::sync::Arc::new(Formula::new(&text)));
                                     new.value = Value::Empty;
                                 }
@@ -1556,7 +1557,7 @@ pub(crate) fn rewrite_shapes(wb: &mut cella_model::Workbook, map: impl Fn(usize,
                     .or_insert_with(|| map(si, shape.tree().clone()).and_then(|tree| shape.rewritten(tree)).map(|s| shapes.intern(s)));
                 let Some(new) = slot.clone() else { continue };
                 let Some(text) = new.print_at(c) else { continue };
-                if text == f.text && f.shape.as_ref().is_some_and(|old| std::sync::Arc::ptr_eq(old, &new)) {
+                if f.text_at(c).as_deref() == Some(text.as_str()) && f.shape.as_ref().is_some_and(|old| std::sync::Arc::ptr_eq(old, &new)) {
                     continue;
                 }
                 if let Some(mut cell) = sheet.cells.get(c) {
@@ -1575,7 +1576,7 @@ pub(crate) fn rewrite_shapes(wb: &mut cella_model::Workbook, map: impl Fn(usize,
                 let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
                 nf.array = f.array.clone();
                 nf.dynamic = f.dynamic;
-                if text != f.text {
+                if f.text_at(c).as_deref() != Some(text.as_str()) {
                     cell.formula = Some(std::sync::Arc::new(nf));
                     sheet.cells.set(c, cell);
                 }
@@ -1702,7 +1703,7 @@ pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str,
             };
             if let Some((text, shape)) = form_by_shape(&f, c, &host, target, e, &mut shapes, &mut planned) {
                 let same_shape = f.shape.as_ref().is_some_and(|old| std::sync::Arc::ptr_eq(old, &shape));
-                if text == f.text && same_shape && array == f.array.as_deref().copied() {
+                if f.text_at(c).as_deref() == Some(text.as_str()) && same_shape && array == f.array.as_deref().copied() {
                     continue;
                 }
                 if let Some(mut cell) = sheet.cells.get(c) {
@@ -1718,7 +1719,7 @@ pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str,
             let Some(expr) = f.text_tree() else { continue };
             let new = cella_formula::adjust::adjust(expr, &host, target, e);
             let text = cella_formula::print(&new);
-            if (text != f.text || array != f.array.as_deref().copied() || (moves_cells && f.shape.is_some()))
+            if (f.text_at(c).as_deref() != Some(text.as_str()) || array != f.array.as_deref().copied() || (moves_cells && f.shape.is_some()))
                 && let Some(mut cell) = sheet.cells.get(c)
             {
                 // Interned at the cell it sits at now, so `expr_at` is this tree again.
@@ -2021,7 +2022,7 @@ fn find(s: &mut Session, p: &Json) -> Result<Json> {
                 let text = if values || cell.formula.is_none() || crate::display::formula_hidden(&d.wb, sh, c) {
                     crate::display::cell_text(&d.wb, sh, c)
                 } else {
-                    cell.input_text()
+                    cell.input_text_at(c)
                 };
                 matches(&text, &what, case, whole).then_some((c, text))
             })
