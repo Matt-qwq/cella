@@ -221,11 +221,29 @@ fn merge_best(best: &mut [Measurement], next: Vec<Measurement>) {
 }
 
 /// Build a session of `rows` rows × 6 columns and time every selected scenario on it.
+///
+/// [`STEPS`] is ordered because each scenario builds on what the ones before it left: `open.xlsx`
+/// opens the bytes `save.xlsx` wrote, `edit.undo` undoes `edit.recalc`'s edit, and every one of
+/// them needs the fills. A re-measure that names one scenario alone (the gate does exactly that
+/// for a scenario that came in over budget) therefore runs **every step before the first selected
+/// one untimed**, as setup — otherwise `open.xlsx` would open 4 kB of empty workbook and report
+/// a number that measures nothing.
 fn run_once(rows: usize, only: Option<&[String]>) -> Result<Vec<Measurement>, String> {
     let mut b = Bench::new();
     let mut out = Vec::new();
-    for (id, _what, step) in STEPS {
-        if only.is_some_and(|ids| !ids.iter().any(|want| want == id)) {
+    let first_selected = STEPS
+        .iter()
+        .position(|(id, _what, _step)| only.is_none_or(|ids| ids.iter().any(|want| want == id)));
+    let Some(first_selected) = first_selected.or(only.map(|_| STEPS.len())) else {
+        return Err("no scenario matched".to_string());
+    };
+    for (at, (id, _what, step)) in STEPS.iter().enumerate() {
+        let selected = only.is_none_or(|ids| ids.iter().any(|want| want == id));
+        if !selected {
+            if at < first_selected {
+                eprintln!("perf: {rows} rows — {id} (setup, untimed)");
+                step(&mut b, rows)?;
+            }
             continue;
         }
         eprintln!("perf: {rows} rows — {id}");
