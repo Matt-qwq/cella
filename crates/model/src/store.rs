@@ -7464,10 +7464,18 @@ mod tests {
             let row = next(BAND * 4);
             let col = next(6);
             match next(12) {
-                0 => store.set(c(row, col), plain(row + col)),
-                1 => store.set(c(row, col), Cell::value(Value::Text(Arc::from(format!("t{step}").as_str())))),
-                2 => store
-                    .set(c(row, 2), Cell { formula: Some(Arc::new(Formula::new(format!("=A{}+{step}", row + 1).as_str()))), ..Default::default() }),
+                0 => {
+                    store.set(c(row, col), plain(row + col));
+                }
+                1 => {
+                    store.set(c(row, col), Cell::value(Value::Text(Arc::from(format!("t{step}").as_str()))));
+                }
+                2 => {
+                    store.set(
+                        c(row, 2),
+                        Cell { formula: Some(Arc::new(Formula::new(format!("=A{}+{step}", row + 1).as_str()))), ..Default::default() },
+                    );
+                }
                 3 => {
                     let _ = store.remove(c(row, col));
                 }
@@ -7486,14 +7494,18 @@ mod tests {
                     let mut cells = vec![(0u32, plain(row)), (1, Cell::value(Value::Text(Arc::from("row"))))];
                     store.set_row(row, &mut cells);
                 }
-                8 => store.set(c(row, 4), Cell::value(Value::Array(Arc::new(cella_core::Array::row(vec![Value::Number(f64::from(step))]))))),
+                8 => {
+                    store.set(c(row, 4), Cell::value(Value::Array(Arc::new(cella_core::Array::row(vec![Value::Number(f64::from(step))])))));
+                }
                 9 => {
                     // A stated cell rewritten with itself: the copy is the same content.
                     if let Some(cell) = store.get(c(row, col)) {
                         store.set(c(row, col), cell);
                     }
                 }
-                10 => store.set(c(row, 3), Cell { style: StyleId(step % 5), ..Default::default() }),
+                10 => {
+                    store.set(c(row, 3), Cell { style: StyleId(step % 5), ..Default::default() });
+                }
                 _ => {
                     let _ = store.set_value(c(row, 1), &Value::Text(Arc::from(format!("v{step}").as_str())));
                 }
@@ -9185,7 +9197,9 @@ mod tests {
                     store.set(at, number(u64::from(step)));
                 }
                 // A blank write removes the cell instead of storing one.
-                4 => store.set(c(next(200) as u32, next(8) as u32), Cell::default()),
+                4 => {
+                    let _ = store.set(c(next(200) as u32, next(8) as u32), Cell::default());
+                }
                 5 => {
                     store.remove(c(next(200) as u32, next(8) as u32));
                 }

@@ -2379,7 +2379,9 @@ pub(crate) mod tests {
             (CellRef::new(32, 2), Some(17.0)),
         ];
         let write = |wb: &mut Workbook, c: CellRef, v: Option<f64>| match v {
-            Some(v) => wb.sheet_mut(0).unwrap().cells.set(c, Cell::value(Value::Number(v))),
+            Some(v) => {
+                wb.sheet_mut(0).unwrap().cells.set(c, Cell::value(Value::Number(v)));
+            }
             None => {
                 wb.sheet_mut(0).unwrap().cells.remove(c);
             }
