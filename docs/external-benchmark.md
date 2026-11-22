@@ -112,15 +112,15 @@ powershell -File plan/bench/external_ab.ps1 -Product excel -Path plan/bench/ref-
 powershell -File plan/bench/external_ab.ps1 -Product wps   -Path plan/bench/ref-1m.xlsx
 powershell -File plan/bench/external_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx
 
-# F9 alone (prints product,run,seconds,ok), and the whole set with an HTML report:
+# F9 alone (prints product,run,seconds,ok), and the whole report in one command:
 powershell -File plan/bench/f9_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx -Repeat 3
-powershell -File plan/bench/f9_report.ps1 -Repeat 3
+powershell -File plan/bench/report.ps1
 ```
 
-`f9_report.ps1` runs open/edit/memory and F9 for every product three times, writes the CSVs under
-`plan/bench/f9-board/data/`, and compiles a single-file HTML report (the local
-[specboard](file:///D:/pycharm_projects/specboard) compiler) to
-`plan/bench/f9-board/out/f9/<date>_v<N>/index.html` — double-click it, no network needed.
+`report.ps1` waits for an idle machine, runs `cargo xtask perf-report` (the 29-scenario gate and
+the live heap), then open/edit/memory and F9 for every product three times, keeps only the final
+numbers, and compiles a single-file HTML report (the local specboard compiler) to
+`plan/bench/f9-board/out/report/<date>_v<N>/index.html` — double-click it, no network needed.
 
 ## Not measured
 
