@@ -112,10 +112,18 @@ powershell -File plan/bench/external_ab.ps1 -Product excel -Path plan/bench/ref-
 powershell -File plan/bench/external_ab.ps1 -Product wps   -Path plan/bench/ref-1m.xlsx
 powershell -File plan/bench/external_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx
 
-# F9 alone (prints product,run,seconds,ok), and the whole report in one command:
+# F9 alone (prints product,run,seconds,ok), the gate's operations replayed in Excel/WPS,
+# and the whole report in one command:
 powershell -File plan/bench/f9_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx -Repeat 3
+powershell -File plan/bench/gate_ext.ps1 -Product excel -Repeat 3
 powershell -File plan/bench/report.ps1
 ```
+
+`gate_ext.ps1` replays the gate's ten mappable operations (bulk write, formula fill, chained
+fill, autofill, three aggregates, one edit, both sorts, save, open) through Excel's COM so the
+report can put Cella's gate numbers beside Excel's. `rebuild.graph`, `mem_drift`, `save.repeat`,
+`edit.undo` and `open.csv` have no comparable external operation; WPS did not finish the 1M bulk
+write in fifteen minutes, so it appears in the open/edit/memory tables only.
 
 `report.ps1` waits for an idle machine, runs `cargo xtask perf-report` (the 29-scenario gate and
 the live heap), then open/edit/memory and F9 for every product three times, keeps only the final
