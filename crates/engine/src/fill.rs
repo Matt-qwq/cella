@@ -163,8 +163,6 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
     // holds one, the edit says so and the commit skips a probe a changed cell — 135 ms over a
     // million-row drag (2026-11-22).
     let mut touched_a_formula = false;
-    #[allow(clippy::disallowed_methods)]
-    let t_write = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
     for (c, cell) in &writes {
         match cell {
             Some(x) if mode == FillMode::Formats => {
@@ -182,26 +180,14 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
             }
         }
     }
-    if let Some(t) = t_write {
-        eprintln!("  fill: {} writes {:.1} ms", writes.len(), t.elapsed().as_secs_f64() * 1000.0);
-    }
-    #[allow(clippy::disallowed_methods)]
-    let t_touch = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
-    if let Some(t) = t_write {
-        eprintln!("  fill: {} writes {:.1} ms", writes.len(), t.elapsed().as_secs_f64() * 1000.0);
-    }
-    #[allow(clippy::disallowed_methods)]
-    let t_touch = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now()) };
     sh.cell_pictures.extend(pictures);
     if !touched_a_formula {
         cx.formulas_unchanged = true;
     }
+    // One reservation for the whole fill: a million pushes otherwise grow the vector a dozen times.
     cx.changed.reserve(writes.len());
     for (c, _) in writes {
         cx.touch(sheet, c);
-    }
-    if let Some(t) = t_touch {
-        eprintln!("  fill: touches {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
     Ok(())
 }
