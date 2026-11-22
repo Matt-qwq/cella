@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)** and **`edit.recalc` 567 → 400 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -969,6 +969,14 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   then the target column for the sum — a row walk each. Whole-column criteria and target over the
   same rows are now walked together in their bounding box, a row at a time: **218.5 → 177.1 ms** on
   `aggregate` (−19 %). The two-pass path stays for every other shape.
+- **A value fill knew nothing the recalculation wanted.** `edit.autoFill` of a constant ran the
+  generic commit path, which probes a million changed cells to learn whether any holds a formula —
+  135 ms to discover what the command already knows. `Band::put` now answers whether the cell it
+  replaced held a formula, `CellStore::set` and `Sheet::set_cell_reporting` pass it up, and `fill`
+  accumulates it: a fill that neither wrote nor replaced a formula sets `Ctx::formulas_unchanged`,
+  and the commit skips the probe. **Six alternating pairs on `fill.autofill`: 550 → 388 ms
+  (−29.5 %, 6/6)**; a regression test drags a constant over two formulas (the cell reading them
+  recalculates) and the fuzzer's incremental ≡ full invariant holds it (64 seeds × 120 steps).
 - **Measured.** Eight alternating pairs for the read-path cuts (baseline `9e4511c`): `aggregate`
   **348 → 219 ms (−37.1 %, 8/8, p = 0.0039)**, `edit.recalc` **567 → 438 ms (−22.8 %, 8/8)**. Six
   more pairs for the fused SUMIFS (baseline the commit before it): `aggregate` **218.5 →
@@ -980,11 +988,11 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   Suite: model 173 / calc 175 / engine 633 green; `visit_values` has its own equivalence test
   against `iter_range`.
 
-- **What is left of the aggregates:** `XLOOKUP` scans a million texts (~100 ms of the 175 ms) —
-  it wants a whole-column text index, which the host builds today only for blocks up to 200,000
-  values. Then the values-only edit (`fill.autofill` 398 ms: 274 ms of store write and 135 ms of a
-  per-changed-cell formula probe in the generic commit path, which needs the fill to report what it
-  replaced), the chain's operand read (40–60 ms) and the copy-on-write a write pays (60–120 ms).
+- **What is left:** `XLOOKUP` scans a million texts (~100 ms of the aggregate's 175 ms) — it wants
+  a whole-column text index, which the host builds today only for blocks up to 200,000 values; the
+  values-only edit's remaining 388 ms is mostly the store write itself (274 ms for a million cells,
+  274 ns a cell); then the chain's operand read (40–60 ms) and the copy-on-write a write pays
+  (60–120 ms).
 
 ## Round 36: Calculate Now stops rebuilding the graph (2026-11-22)
 
