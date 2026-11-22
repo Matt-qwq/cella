@@ -979,7 +979,7 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   path. They are held equal across case (`Alpha`/`alpha`/`ALPHA`), a wildcard needle in exact mode,
   `match_mode` 2 with a pattern, a blank return cell reading 0, a formula in the lookup column, a
   number needle, a miss (`#N/A`) and a 5,000-row column.
-- **Gate and page (idle machine, 2026-11-23_v2):** **31/31**; `aggregate` 1M **117 ms / 10 %**,
+- **Gate and page (idle machine, the page is `2026-11-23_v6`):** **31/31**; `aggregate` 1M **117 ms / 10 %**,
   `edit.recalc` **283 ms / 20 %**, `fill.autofill` 274 ms / 31 %, `f9.calculateNow` 481 ms / 30 %.
   The external replay of the same file: F9 **0.307 s against Excel's 0.073 s (4.2x)**, the edit
   **0.157 s against 0.171 s** (under Excel's for the first time), open 2.46 s against 8.64 s (WPS
