@@ -962,16 +962,18 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   three runs a side: **1.046 s → 0.406 s (−61.2 %)**, the candidate faster in **12 of 12** runs
   (base 1.019–1.089, candidate 0.395–0.419). Against Excel, measured interleaved so both sides saw
   the same machine: **0.40 s vs 0.072 s = 5.6x**, from 16x.
-- **Why the gate's F9 is not 0.40 s: two states, one command.** The gate's `f9.calculateNow` is
-  **832 ms at 1M (52 % of its 1.60 s budget)** and 82 ms at 100k (45 %). Its pass splits as 88 ms of
-  parallel waves for the independent `G` column, 45 ms of slot table, **443 ms for the chain** and
-  35 ms of write-back. The app's pass on the reference file is the same shape — a million `G`
-  formulas and a million-deep `H` chain — and splits as 70 ms parallel + 46 ms tables + **147 ms
-  chain** + 30 ms write, beside the copy-on-write `calc_now` pays to write values into a live
-  session: 0.40 s for the command on an opened file, 0.83 s for the same pass on a workbook built
-  in-process by the fill path. That built-vs-reopened split is the one the edit and memory numbers
-  have carried since round 27; both numbers are real, and the gate is the one that protects a
-  regression. Budgets follow the file's rule (twice a quiet pass): 180 ms and 1.60 s.
+- **Why the gate's F9 is not 0.40 s: the gate's workbook holds three whole-column aggregates, and a
+  full recalculation re-evaluates them.** `f9.calculateNow` is **832 ms at 1M (52 % of its 1.60 s
+  budget)** and 82 ms at 100k (45 %). Bisected in one process (round 37, `plan/PERF-STAGE-2.md`
+  §2.2): a fresh workbook of the same shape — a million `G` formulas and a million-deep `H` chain —
+  recalculates in **414 ms**, of which the chain is **104 ms**; adding the gate's own three
+  aggregates one at a time takes it to **613 ms** (`=SUM(G:G)`), **848 ms** (`SUMIFS`) and 773 ms
+  (`XLOOKUP`), against the 139 / 109 / 116 ms those same three measure on their own. The app's F9 on
+  the reference file (no aggregates) is 405–440 ms for the same two million formulas. So the gap is
+  not the chain kernel, not the store and not built-vs-reopened: it is **the aggregate kernels**, and
+  it is the next round's first target (K2 in the plan). The app's chain reads each `G` value through
+  the store at ~60–105 ns a cell, which is what the kernel's own 100–150 ms is made of. Budgets
+  follow the file's rule (twice a quiet pass): 180 ms and 1.60 s.
 - **What keeps it honest.** `Calc::rebuilds` is now a public diagnostic (it was `cfg(test)`), so
   the engine's `calculate_now` test asserts the command *does not* derive the graph again instead
   of trusting the call site; the same test compares every cell with a from-scratch rebuild after a

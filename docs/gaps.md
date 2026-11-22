@@ -378,10 +378,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   (100k 82 ms / 180 ms, 1M **832 ms / 1.60 s**) and stands at **31/31**; `Calc::rebuilds` became a
   public diagnostic so the engine test asserts the graph is kept, and a from-scratch rebuild after
   edits that take every graph path is the test's oracle (red first). What is left of F9 is the
-  evaluation itself: a million of the two million formulas are one chain, which cannot parallelise
-  (443 ms of the gate pass against the app's 147 ms on the same shape — the gate builds its workbook
-  with the fill path, the app opens one from a file, the built-vs-reopened split of round 27), plus
-  the command's own wrapper cost, which is round 37's subject.
+  evaluation itself, and round 37's bisect split it: a fresh workbook of the same shape recalculates
+  in **414 ms** (the million-deep chain is **104 ms** of it, store-read bound at 60–105 ns a cell),
+  and the gate's three whole-column aggregates add **613 / 848 / 773 ms** as they are added — the
+  same 139 / 109 / 116 ms they measure on their own. **The aggregate kernels are the pool**, not the
+  chain and not the command's wrapper (0.5 ms); that is K1 in `plan/PERF-STAGE-2.md`.
 - **Measured (11-22, round 35): the external table re-run in full** (`plan/bench/external_ab.ps1`
   and `f9_ab.ps1`): open **2.69 s** against Excel 8.67 / WPS 10.86; edit **0.270 s** against 0.236 /
   16.36 — the honest "1.1x", not the 4.4x the old documents quoted; memory **WS 879 MB** against
