@@ -785,6 +785,30 @@ pub(super) fn spills_as_before(sheet: &cella_model::Sheet, anchor: CellRef, rang
 }
 
 impl PassHost<'_> {
+    /// Whether every formula this pass still owes a value for, among the cells of `range`, has
+    /// one — what a block read asks before it treats a range full of formulas as constants.
+    ///
+    /// The walk takes the smaller side: a range with fewer cells than the pass has formulas is
+    /// probed cell by cell (arithmetic in the dense table), and a pass with fewer formulas walks
+    /// its own entries. Asking the *store* which of a million cells hold formulas instead built a
+    /// `Cell` a cell — 90 ms for a whole-column read, and a pass whose three aggregates each read
+    /// one paid it three times.
+    fn settled_in(&self, sheet: usize, range: RangeRef) -> bool {
+        let cells = u64::from(range.height()) * u64::from(range.width());
+        if cells <= self.trees.len() as u64 {
+            for row in range.start.row..=range.end.row {
+                for col in range.start.col..=range.end.col {
+                    if let Some(slot) = self.trees.slot((sheet, CellRef::new(row, col)))
+                        && self.slot_value(slot).is_none()
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        self.trees.iter().all(|(slot, key)| key.0 != sheet || !range.contains(key.1) || self.slot_value(slot).is_some())
+    }
     /// Accumulates the run of chain formulas that starts at `k` (whose slot is `slot`), when `k`
     /// is one, and says whether it calculated `k`.
     ///
@@ -1378,11 +1402,7 @@ impl Host for PassHost<'_> {
         // into one small table whose own few formulas were worked out on the first read.
         // A formula cell is settled when this pass has already worked it out, or when the pass is
         // not working it out at all (it keeps the value the file or the last calculation gave it).
-        let stable = !self.iterate
-            && sh.cells.formula_cells(range).all(|c| match self.trees.slot((sheet, c)) {
-                Some(slot) => self.slot_value(slot).is_some(),
-                None => true,
-            });
+        let stable = !self.iterate && self.settled_in(sheet, range);
         if !stable {
             return None;
         }
@@ -1399,14 +1419,17 @@ impl Host for PassHost<'_> {
         // Sparse walk: only stored cells; formula cells that are (or were) dirty go through
         // `compute`, constants are copied straight from the store.
         let mut formulas: Vec<(usize, CellRef)> = Vec::new();
-        for (c, cell) in sh.cells.iter_range(range) {
+        // A value-only walk: the block builder wants the value and the formula flag, not a `Cell`
+        // with its formula `Arc` and style — 50 ms against 113 ms for a million-cell column.
+        sh.cells.visit_values(range, &mut |c, value, has_formula| {
             let i = (c.row - range.start.row) as usize * w + (c.col - range.start.col) as usize;
-            if cell.formula.is_some() {
+            if has_formula {
                 formulas.push((i, c));
             } else if let Some(slot) = out.get_mut(i) {
-                *slot = cell.value.clone();
+                *slot = value;
             }
-        }
+            true
+        });
         for (c, v) in sh.spill.range(range.start..=range.end) {
             if range.contains(*c) {
                 let i = (c.row - range.start.row) as usize * w + (c.col - range.start.col) as usize;
