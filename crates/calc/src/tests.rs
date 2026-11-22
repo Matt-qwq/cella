@@ -2746,3 +2746,42 @@ fn a_chain_with_a_literal_operand_matches_the_general_path() {
     assert_eq!(fast_wb.sheet(0).expect("sheet").value(CellRef::new(1, 1)), Value::Number(3.0));
     assert_eq!(fast_wb.sheet(0).expect("sheet").value(CellRef::new(1799, 1)), Value::Error(CellError::Num), "the column overflows");
 }
+
+/// Calculate Now keeps the graph it is given — and lands where a from-scratch rebuild lands.
+///
+/// The rebuild it saves is the difference between 1.05 s and 0.40 s of a million-row F9: every
+/// edit maintains the graph, so deriving two million precedents again is work already done.
+/// `rebuilds` is the counter that measures exactly this, and the engine's `calculate_now` test
+/// reads it too.
+#[test]
+fn calculate_now_keeps_the_graph_and_lands_where_a_rebuild_lands() {
+    let mut t = T::new();
+    t.set("A1", "2");
+    t.set("B1", "=A1*2");
+    t.set("C1", "=B1+1");
+    t.set("D1", "=SUM(A1:C1)");
+    t.set("E1", "=SEQUENCE(2,2)");
+    assert_eq!(t.calc.rebuilds, 0, "setting cells must not rebuild the graph");
+    // Edits after the graph was built: each one maintains it, which is the contract F9 rests on.
+    t.set("A1", "5");
+    t.set("B1", "=A1*3");
+    t.calc.recalc_all_keeping_graph(&mut t.wb);
+    assert_eq!(t.calc.rebuilds, 0, "Calculate Now rebuilt the graph");
+    assert!(t.calc.last_recalc_cells >= 4, "the four formulas were evaluated: {}", t.calc.last_recalc_cells);
+    assert_eq!(t.num("B1"), 15.0);
+    assert_eq!(t.num("C1"), 16.0);
+    assert_eq!(t.num("D1"), 36.0);
+    // The spill was laid out again by the pass, from the formula where it is now.
+    assert_eq!(t.get("E1"), Value::Number(1.0));
+    assert_eq!(t.get("F1"), Value::Number(2.0));
+    assert_eq!(t.get("E2"), Value::Number(3.0));
+    assert_eq!(t.get("F2"), Value::Number(4.0));
+    // The ground truth: the same workbook through a Calc that has never seen it.
+    let mut fresh = t.wb.clone();
+    let mut calc = Calc::new();
+    calc.recalc_all(&mut fresh);
+    assert_eq!(calc.rebuilds, 1);
+    for at in ["A1", "B1", "C1", "D1", "E1", "F1", "E2", "F2", "G1"] {
+        assert_eq!(fresh.sheet(0).expect("sheet").value(c(at)), t.wb.sheet(0).expect("sheet").value(c(at)), "{at}");
+    }
+}

@@ -853,7 +853,10 @@ fn evaluate(s: &mut Session, p: &Json) -> Result<Json> {
 fn calc_now(s: &mut Session, _: &Json) -> Result<Json> {
     let d = s.doc_mut()?;
     let mut wb = (*d.wb).clone();
-    d.calc.recalc_all(&mut wb);
+    // Calculate Now keeps the graph: every edit maintained it and a structural edit's commit
+    // rebuilt it, so rebuilding again here was 0.69 s of a 1.05 s F9 (see
+    // `Calc::recalc_all_keeping_graph`).
+    d.calc.recalc_all_keeping_graph(&mut wb);
     d.wb = std::sync::Arc::new(wb);
     Ok(json!({"cells": d.calc.last_recalc_cells}))
 }

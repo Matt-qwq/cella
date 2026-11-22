@@ -44,6 +44,7 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("aggregate", "three aggregate formulas over the filled columns", aggregate),
     ("edit.recalc", "edit one cell and recalculate what depends on it", edit_recalc),
     ("edit.undo", "undo that edit", edit_undo),
+    ("f9.calculateNow", "Calculate Now: recalculate every formula, keeping the dependency graph", f9_calculate_now),
     ("sort.desc", "sort rows by one column, descending", sort_desc),
     ("sort.formulas", "sort a body that holds formulas, so they move with their rows", sort_formulas),
     ("save.xlsx", "save the workbook as xlsx", save_xlsx),
@@ -351,6 +352,15 @@ fn edit_undo(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
         None => format!("undo of the B1 edit: graph rebuilt, {} cells recalculated", b.recalc_cells()),
     };
     Ok((detail, ms))
+}
+
+/// Calculate Now (F9) on a workbook whose graph every edit has been maintaining: the command
+/// evaluates every formula and keeps the graph, instead of deriving two million precedents
+/// again (0.69 s of a 1.05 s F9 before round 36). The scenario sits before the sorts so they
+/// run on a workbook whose values are current.
+fn f9_calculate_now(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("formulas.calculateNow", json!({})).map(|_| ()))?;
+    Ok((format!("{} formulas recalculated, graph kept", b.recalc_cells()), ms))
 }
 
 fn sort_desc(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {

@@ -137,8 +137,11 @@ pub struct Calc {
     /// check that M blocked arrays over N stored spills cost N + M, not N × M).
     #[cfg(test)]
     block_probes: u64,
-    #[cfg(test)]
-    pub(crate) rebuilds: usize,
+    /// Times the graph was derived from the workbook from scratch — a rebuild, not an edit.
+    /// Diagnostics, like [`Calc::last_restore_cells`]: Calculate Now no longer rebuilds, and a
+    /// test of the command says so instead of trusting the engine to keep calling the right
+    /// entry point.
+    pub rebuilds: u64,
 }
 
 impl Default for Calc {
@@ -163,7 +166,6 @@ impl Default for Calc {
             read_probes: 0,
             #[cfg(test)]
             block_probes: 0,
-            #[cfg(test)]
             rebuilds: 0,
             #[cfg(test)]
             chains: 0,
@@ -1014,10 +1016,7 @@ impl Calc {
 
     /// Rebuilds the graph from scratch.
     pub fn rebuild(&mut self, wb: &Workbook) {
-        #[cfg(test)]
-        {
-            self.rebuilds += 1;
-        }
+        self.rebuilds = self.rebuilds.saturating_add(1);
         self.parallel_fallback = false;
         self.graph = Graph::default();
         self.unshared.clear();
@@ -1196,9 +1195,42 @@ impl Calc {
         Some(out)
     }
 
-    /// Recalculates every formula (F9 / Ctrl+Alt+F9, and after loading).
+    /// Recalculates every formula **after rebuilding the graph**: Ctrl+Alt+F9, a structural
+    /// edit's commit, and opening a workbook that asks for a full calculation.
+    ///
+    /// The rebuild is what a structural edit needs — its addresses moved under every formula, so
+    /// what each one reads has to be derived again. A plain Calculate Now does not, because every
+    /// edit already maintains the graph; that is [`recalc_all_keeping_graph`](Self::recalc_all_keeping_graph),
+    /// and on the reference workbook the rebuild was 0.69 s of a 1.05 s F9.
     pub fn recalc_all(&mut self, wb: &mut Workbook) {
         self.rebuild(wb);
+        self.full_pass(wb);
+    }
+
+    /// Recalculates every formula the graph holds, **keeping the graph** — what Calculate Now
+    /// (F9) runs.
+    ///
+    /// The difference is the whole point: 1.05 s against 0.40 s on a million-row workbook with
+    /// two million formulas, because the rebuild pushes down every formula's precedents again for
+    /// a graph that every edit has been maintaining all along (`cells_changed*`, `restore*`, a
+    /// structural edit's [`recalc_all`](Self::recalc_all)). Excel behaves the same way: its
+    /// `CalculateFull` takes 68 ms on the same file, which no from-scratch derivation of two
+    /// million precedents fits in.
+    ///
+    /// The contract this rests on — **the graph names the same formulas as the workbook, with the
+    /// same precedents** — is the one incremental recalculation already needs, and the
+    /// command-sequence fuzzer holds it to it on every run (incremental ≡ full recalc). The one
+    /// degenerate caller, a `Calc` that has never seen this workbook, is caught by the empty graph
+    /// and rebuilt, which is what `recalc_all` does anyway.
+    pub fn recalc_all_keeping_graph(&mut self, wb: &mut Workbook) {
+        if self.graph.is_empty() {
+            self.rebuild(wb);
+        }
+        self.full_pass(wb);
+    }
+
+    /// The pass a full recalculation makes, whichever way its graph arrived.
+    fn full_pass(&mut self, wb: &mut Workbook) {
         let prefer = spill_owners(wb);
         // Spills are laid out again from the formulas where they are now (a structural edit moves
         // or deletes the formulas, not the values they spilled).
