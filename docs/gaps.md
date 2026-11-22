@@ -383,6 +383,18 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   and the gate's three whole-column aggregates add **613 / 848 / 773 ms** as they are added — the
   same 139 / 109 / 116 ms they measure on their own. **The aggregate kernels are the pool**, not the
   chain and not the command's wrapper (0.5 ms); that is K1 in `plan/PERF-STAGE-2.md`.
+- **Measured (11-23, round 39): a whole-column `XLOOKUP` stops building the column.**
+  `aggregate`'s lookup read `A:A` into an `Array` before comparing anything — 75 ms to build a
+  million `Value`s, 45 ms to scan them — so a needle on the first row paid for the whole column.
+  The evaluator's reference-returning `xlookup` now answers the narrow shape (a literal text needle
+  without wildcards, three arguments, one column each over the same rows) by walking the stored
+  cells and returning a reference to the matched row: **`aggregate` 184.7 → 126.7 ms (−31.4 %,
+  6/6, p = 0.016)**, **`edit.recalc` 344.5 → 283.2 ms (−17.8 %, 6/6)**; the fast path declines a
+  needle from a cell, wildcards, a mode argument, a formula or a spill in the column, and a number
+  needle, and a differential test holds both spellings equal. Gate **31/31** (`aggregate` 125 ms /
+  11 %, `edit.recalc` 312 ms / 22 %). Against Excel's 50 ms the aggregate is **2.5x** now, from
+  3.5x; what is left of it is `SUM` (~55 ms) and `SUMIFS` (~63 ms), one packed pass each. The same
+  shape is still open for `MATCH`/`VLOOKUP` over a whole column.
 - **Measured (11-22, round 37): a whole-column read stops building a `Cell` a cell — the aggregates
   were the pool.** `edit.recalc` 1M 610 ms and `aggregate` 364 ms were mostly three whole-column
   formulas (139 / 109 / 116 ms each), not the chain (104 ms) and not the command wrapper (0.5 ms).

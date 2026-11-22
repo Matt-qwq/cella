@@ -226,11 +226,51 @@ impl<'h> Evaluator<'h> {
         }
     }
 
+    /// The whole-column exact text lookup, as a reference to the matched row of the return column:
+    /// `Some(Err(_))` when the shape applies and the answer is an error, `None` when the shape does
+    /// not apply and the general path below must run. Never evaluates the block.
+    fn xlookup_text_column(&mut self, args: &[Expr]) -> Option<Ev> {
+        let [Expr::Text(needle), _, _] = args else { return None };
+        if needle.is_empty() || needle.contains(['*', '?', '~']) {
+            return None;
+        }
+        let (Ev::R(look), Ev::R(ret)) = (self.eval(&args[1]), self.eval(&args[2])) else { return None };
+        let ([l], [r]) = (look.as_slice(), ret.as_slice()) else { return None };
+        let (l, r) = (*l, *r);
+        if l.sheet != r.sheet || l.range.width() != 1 || r.range.width() != 1 || l.range.height() != r.range.height() || l.range.height() <= 1 {
+            return None;
+        }
+        let rows = u64::from(l.range.height());
+        let work = 2 * rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let found = self.host.first_text_in_column(l.sheet, l.range, needle)?;
+        if !self.spend(work) {
+            return Some(err(CellError::Calc));
+        }
+        Some(match found {
+            Some(row) => {
+                Ev::R(vec![Area { sheet: r.sheet, range: RangeRef::new(CellRef::new(row, r.range.start.col), CellRef::new(row, r.range.end.col)) }])
+            }
+            None => err(CellError::NA),
+        })
+    }
+
     /// XLOOKUP whose result range is a reference returns a reference, as in Excel, so that it can
     /// end a range (`SUM(XLOOKUP(a,…):XLOOKUP(b,…))`) or feed CELL. Everything else (arrays of
     /// lookup values, array arguments, errors) goes to the library function.
     pub(super) fn xlookup(&mut self, args: &[Expr]) -> Ev {
-        if (3..=6).contains(&args.len())
+        // The narrow shape a whole-column lookup takes: a literal text needle, exactly three
+        // arguments (no `if_not_found`, both defaults: exact match, first to last), one column
+        // each, the same rows. Reading the column into an `Array` first is what the general path
+        // below pays — 75 ms to build a million `Value`s and 45 ms to scan them, to compare the
+        // first pair (2026-11-23). The stored cells answer it in one pass, case-insensitively, the
+        // way an exact lookup compares text.
+        if let Some(found) = self.xlookup_text_column(args) {
+            return found;
+        }
+        if args.len() == 3
             && let (Ev::R(look), Ev::R(ret)) = (self.eval(&args[1]), self.eval(&args[2]))
             && let ([l], [r]) = (look.as_slice(), ret.as_slice())
             && let Some(spec) = cella_functions::lookup("XMATCH")

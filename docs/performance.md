@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 39 — **a whole-column `XLOOKUP` stops building the column.** The lookup in `aggregate` — `XLOOKUP("Item 77777", A:A, B:B)` over a million rows — read `A:A` into an `Array` first: **75 ms** building a million `Value`s and **45 ms** scanning them, to decide on the first pair. The evaluator's reference-returning `xlookup` now answers the narrow shape (a literal text needle without wildcards, exactly three arguments, one column each over the same rows) by walking the stored cells (`Host::first_text_in_column`: `visit_packed`, no `Value` a row, an ASCII byte compare that falls back to the Unicode-lowercasing order) and returning a reference to the matched row; everything else declines before evaluating a cell. **`aggregate` 184.7 → 126.7 ms (−31.4 %, faster in 6 of 6, p = 0.016)** and **`edit.recalc` 344.5 → 283.2 ms (−17.8 %, 6 of 6)** — an edit re-evaluates the same three aggregates — with the gate at **31/31** (`aggregate` 125 ms / 11 %, `edit.recalc` 312 ms / 22 %). Earlier: round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -952,6 +952,39 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 39: a whole-column XLOOKUP stops building the column (2026-11-23)
+
+- **Where the time was.** `aggregate` — `SUM(G:G)`, `SUMIFS(B:B, C:C, ">50")` and
+  `XLOOKUP("Item 77777", A:A, B:B)` — was 175 ms, and the lookup was ~110 of it. A probe on the
+  gate's own sheet split it: the lookup read `A:A` into an `Array` before comparing anything, so a
+  needle on the **first row** still cost **75 ms** (a million `Value`s built), and the scan added
+  **45 ms** over a million rows.
+- **The cut.** The evaluator's own `xlookup` — the reference-returning one, which ran `XMATCH` over
+  `area_value(&l)` — takes the shape a drag-down lookup has: a literal text needle without
+  wildcards, exactly three arguments (so no `if_not_found` and both defaults, exact and
+  first-to-last), one column each, the same rows, on one sheet. It asks the host for the first stored
+  cell whose text equals the needle and returns a reference to that row of the return column. The
+  host method is `Host::first_text_in_column`; `PassHost` implements it under the three guards the
+  SUMIFS kernel taught (a converging pass, a sheet with spills, a formula or an array in the block —
+  `visit_packed` yields `None` for those and the walk declines rather than guess).
+- **Measured (1M, one binary, six alternating pairs, box at 8–16 % load):** `aggregate`
+  **184.7 → 126.7 ms (−31.4 %, 6 of 6, p = 0.016)**; `edit.recalc` **344.5 → 283.2 ms
+  (−17.8 %, 6 of 6)**, because the edit dirties the same three formulas. The lookup alone, under
+  load and therefore indicative only: a needle on the first row **75 → 1.3 ms**, at row 77,777
+  **113 → 5.5 ms**, a miss over the whole column **120 → 60 ms**. The packed walk is ~60 ns a row
+  against ~45 for the materialised `Array`'s scan: the block build is gone, the scan is a little
+  slower, and the case that matters — a lookup decided early — stops paying for the rows below it.
+- **Proof of equivalence.** `crates/engine/tests/xlookup_column.rs` writes the same lookup twice on
+  one sheet: the literal needle takes the fast path, the same needle in a cell takes the general
+  path. They are held equal across case (`Alpha`/`alpha`/`ALPHA`), a wildcard needle in exact mode,
+  `match_mode` 2 with a pattern, a blank return cell reading 0, a formula in the lookup column, a
+  number needle, a miss (`#N/A`) and a 5,000-row column.
+- **Gate:** **31/31**; `aggregate` 1M **125 ms / 11 %**, `edit.recalc` **312 ms / 22 %**,
+  `f9.calculateNow` 544 ms / 34 %, `fill.autofill` 300 ms / 34 % (the box was idle, 8–16 % load).
+- **What is left of the three aggregates:** `SUM` (~55 ms of the aggregate command) and `SUMIFS`
+  (~63 ms) now dominate; both are one packed pass each over a million values, and neither has an
+  obvious next knife. `aggregate` against Excel's 50 ms is 2.5x.
+
 ## Round 38: the fill's store write is not the splice (2026-11-23, measured and reverted)
 
 - **Where the time was said to be.** Round 37 closed with two items left: `XLOOKUP` scanning a
@@ -1461,6 +1494,11 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-23 (round 39, the whole-column XLOOKUP):** the lookup read its column into an `Array`
+  first (75 ms for a million `Value`s, 45 ms to scan) and now walks the stored cells, for the narrow
+  shape only. **`aggregate` 184.7 → 126.7 ms (−31.4 %, 6/6, p = 0.016)**, **`edit.recalc`
+  344.5 → 283.2 ms (−17.8 %, 6/6)**, gate 31/31. Pinned by a differential test that spells the same
+  lookup two ways on one sheet.
 - **2026-11-23 (round 38, the fill's store write, reverted):** a batched column write measured
   **−5 %** on `fill.autofill` (6/6, p = 0.016, 538 → 512 ms, measured under load) and was reverted:
   the per-cell cost is value resolution and cold-band access, not the splice (~20–40 ns of the

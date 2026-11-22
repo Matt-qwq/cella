@@ -1727,6 +1727,39 @@ impl Host for PassHost<'_> {
         complete.then(|| error.map_or_else(|| Value::number(sum), Value::Error))
     }
 
+    fn first_text_in_column(&mut self, sheet: usize, range: RangeRef, needle: &str) -> Option<Option<u32>> {
+        use cella_model::Packed;
+
+        let sh = self.wb.sheet(sheet)?;
+        // The same three things that send the SUMIFS kernel back: a pass that may still change the
+        // cells (iterate), and a sheet whose spills could answer with a value no band holds.
+        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill.is_empty() || range.width() != 1 {
+            return None;
+        }
+        let mut found = None;
+        let mut complete = true;
+        // Text equality as an exact lookup compares it: case-insensitive. ASCII — what a report's
+        // keys are — answers with a byte compare that fails on the first difference; anything else
+        // goes through the Unicode-lowercasing order, which is the rule itself.
+        let ascii = needle.is_ascii();
+        let equal = |t: &str| {
+            if ascii && t.is_ascii() { needle.eq_ignore_ascii_case(t) } else { cella_core::compare_text(needle, t) == std::cmp::Ordering::Equal }
+        };
+        sh.cells.visit_packed(range, &mut |at, packed| match packed {
+            Some(Packed::Text(t)) if equal(t) => {
+                found = Some(at.row);
+                false
+            }
+            Some(_) => true,
+            // A formula or an array may compute a matching text: only the general path knows.
+            None => {
+                complete = false;
+                false
+            }
+        });
+        complete.then_some(found)
+    }
+
     fn visit_range(&mut self, sheet: usize, range: RangeRef, f: &mut dyn FnMut(&Value) -> bool) -> bool {
         let wb = self.wb;
         let Some(sh) = wb.sheet(sheet) else { return false };

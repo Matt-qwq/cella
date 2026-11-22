@@ -156,6 +156,14 @@ pub trait Host {
     fn sumifs_numeric_columns(&self, _target: Area, _criteria: Area, _criterion: cella_functions::NumericOrderingCriterion) -> Option<Value> {
         None
     }
+    /// The row of the first stored cell in a single-column block whose text equals `needle` the way
+    /// an exact lookup compares text (case-insensitively), read without building a `Value` a row.
+    /// `Some(None)` means no cell holds it; `None` means the block holds a formula or a spill and
+    /// only the general path can answer. What `XLOOKUP("text", A:A, B:B)` needs instead of
+    /// materialising two million `Value`s to compare the first pair.
+    fn first_text_in_column(&mut self, _sheet: usize, _range: RangeRef, _needle: &str) -> Option<Option<u32>> {
+        None
+    }
     /// While a formula is calculated on demand inside another one: [`stack_position`] where the
     /// outermost one started, which the stack budget is counted from.
     fn stack_top(&self) -> Option<usize> {
