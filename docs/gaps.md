@@ -391,7 +391,9 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   `visit_packed_settled` folds a settled formula column from packed values, and `SUMIFS` now walks
   its criteria and target columns in one pass: **`aggregate` 348 → 175 ms (−49.7 %), `edit.recalc`
   567 → 400 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, gate **31/31**. Left:
-  `XLOOKUP`'s million-text scan (~100 ms of the 175). The values-only edit went next: the fill now
+  the chain's operand read went next (a column cursor: `edit.recalc` 693 → 594 ms, −14.3 %, 6/6),
+  and `XLOOKUP`'s million-text scan (~100 ms of the 175) is what remains of the aggregates. The
+  values-only edit went before that: the fill now
   reports whether it wrote or replaced a formula (`Band::put` answers it, `Sheet::set_cell_reporting`
   passes it up), so the generic commit's 135 ms probe a million cells is skipped — **`fill.autofill`
   550 → 388 ms (−29.5 %, 6/6)**, pinned by a regression test and the fuzzer. Left: the store write

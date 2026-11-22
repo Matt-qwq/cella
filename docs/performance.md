@@ -974,6 +974,11 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   then the target column for the sum — a row walk each. Whole-column criteria and target over the
   same rows are now walked together in their bounding box, a row at a time: **218.5 → 177.1 ms** on
   `aggregate` (−19 %). The two-pass path stays for every other shape.
+- **The chain read its operand a row at a time.** `H(n) = H(n-1) + G(n)` reads one cell of one
+  column a row: a million probes into the band map at ~60 ns each. `CellStore::column_reader` is a
+  cursor that keeps the band in hand (~25 ns), and the chain uses it wherever the general read would
+  have ended at the store anyway. **Six alternating pairs: `edit.recalc` 693 → 594 ms (−14.3 %,
+  6/6)** under load.
 - **A value fill knew nothing the recalculation wanted.** `edit.autoFill` of a constant ran the
   generic commit path, which probes a million changed cells to learn whether any holds a formula —
   135 ms to discover what the command already knows. `Band::put` now answers whether the cell it
@@ -993,11 +998,14 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   Suite: model 173 / calc 175 / engine 633 green; `visit_values` has its own equivalence test
   against `iter_range`.
 
-- **What is left:** `XLOOKUP` scans a million texts (~100 ms of the aggregate's 175 ms) — it wants
-  a whole-column text index, which the host builds today only for blocks up to 200,000 values; the
-  values-only edit's remaining 388 ms is mostly the store write itself (274 ms for a million cells,
-  274 ns a cell); then the chain's operand read (40–60 ms) and the copy-on-write a write pays
-  (60–120 ms).
+- **What is left, and why it is a design change rather than a cut:** (1) `XLOOKUP` materialises its
+  lookup column and scans a million texts (~100 ms of the aggregate's 175) — the fix is a streaming
+  lookup the function API cannot express today (it takes `&[Value]`), and the host's text index only
+  pays for blocks up to 200,000 values; (2) the store write inside `fill.autofill` (274 ms of its
+  388, i.e. ~270 ns a cell) is the band packer doing a row insert a cell — the fix is a batched
+  column write in the model, which is a subsystem, not a knob; (3) the copy-on-write a write pays
+  (60–120 ms) needs the session to stop sharing sheets with its undo snapshots, which is the same
+  question as the memory round's.
 
 ## Round 36: Calculate Now stops rebuilding the graph (2026-11-22)
 
