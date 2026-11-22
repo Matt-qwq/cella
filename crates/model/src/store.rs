@@ -3411,6 +3411,28 @@ impl CellStore {
         self.read_cell(c, Band::value_at).unwrap_or(Value::Empty)
     }
 
+    /// A value cursor over one column: `f(row)` answers the stored value at `(row, col)` for a walk
+    /// that moves down the column a row at a time, keeping the band it is in between calls.
+    ///
+    /// The chain kernel reads one operand a row — `H(n) = H(n-1) + G(n)` makes a million reads of
+    /// one column — and each of them otherwise pays a probe into the band map (~60 ns against ~25).
+    pub fn column_reader(&self, col: u32) -> impl FnMut(u32) -> Value + '_ {
+        let mut current: Option<(u32, Option<Arc<Band>>)> = None;
+        move |row: u32| {
+            let (Some(physical), Some(col)) = (self.physical_row(row), self.physical_col(col)) else { return Value::Empty };
+            let key = physical / BAND;
+            if current.as_ref().is_none_or(|(k, _)| *k != key) {
+                current = Some((key, self.band_arc(key)));
+            }
+            let Some(band) = current.as_ref().and_then(|(_, band)| band.as_ref()) else { return Value::Empty };
+            let Some(at) = band.row(physical % BAND) else { return Value::Empty };
+            match at.index_of(band, col) {
+                Some(i) => band.value_at(at, i, col),
+                None => Value::Empty,
+            }
+        }
+    }
+
     /// The value stored at `c`, keeping "nothing stored" apart from a stored empty value (a
     /// formatted cell, or a formula whose result is empty).
     pub fn value_ref(&self, c: CellRef) -> Option<Value> {
