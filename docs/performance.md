@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 219 ms (−37.1 %, 8/8, p = 0.0039)** and **`edit.recalc` 567 → 438 ms (−22.8 %, 8/8)**, i.e. 6.97x → 4.38x and 4.39x → 3.39x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)** and **`edit.recalc` 567 → 400 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -965,17 +965,27 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   `visit_packed_settled`, which hands out a formula's stored value where `visit_packed` says "the
   evaluator owns it", and the aggregate uses it when the block is settled: **one packed walk, no
   values built**. A million-cell `SUM` went from 139 ms to about 20.
-- **Measured** (1M, eight alternating pairs: `perf-base.exe` built at `9e4511c`, `perf-cand.exe` at
-  the commit, one process a run): `aggregate` **348 → 219 ms (−37.1 %, 8/8, p = 0.0039)** and
-  `edit.recalc` **567 → 438 ms (−22.8 %, 8/8)**. Against Excel's 50 / 129 ms that is
-  **6.97x → 4.38x** and **4.39x → 3.39x** — the two scenarios the three-way table compares. Gate
-  **31/31** (aggregate 221 ms / 19 %, edit.recalc 504 ms / 35 %, `f9.calculateNow` 665 ms / 42 %).
+- **SUMIFS walked two columns twice.** The packed path walked the criteria column for its matches,
+  then the target column for the sum — a row walk each. Whole-column criteria and target over the
+  same rows are now walked together in their bounding box, a row at a time: **218.5 → 177.1 ms** on
+  `aggregate` (−19 %). The two-pass path stays for every other shape.
+- **Measured.** Eight alternating pairs for the read-path cuts (baseline `9e4511c`): `aggregate`
+  **348 → 219 ms (−37.1 %, 8/8, p = 0.0039)**, `edit.recalc` **567 → 438 ms (−22.8 %, 8/8)**. Six
+  more pairs for the fused SUMIFS (baseline the commit before it): `aggregate` **218.5 →
+  177.1 ms (−19 %, 6/6)**, `edit.recalc` **441.6 → 399.9 ms (−9.4 %, 6/6)**. Gate **31/31** at
+  `105a8d4` (`aggregate` **175 ms / 15 %**, `edit.recalc` **400 ms / 28 %**, `f9.calculateNow`
+  597 ms / 37 %). Cumulatively `aggregate` **348 → 175 ms (−49.7 %)** and `edit.recalc` **567 →
+  400 ms (−29.5 %)**; against Excel's 50 / 129 ms that is 6.97x → **3.5x** and 4.39x → **3.1x** — the
+  two scenarios the three-way table compares.
   Suite: model 173 / calc 175 / engine 633 green; `visit_values` has its own equivalence test
   against `iter_range`.
 
-- **What is left of the aggregates:** `SUMIFS` (109 ms) walks its criteria column and its target
-  column in two passes and `XLOOKUP` (116 ms) scans a million texts; fusing the two SUMIFS walks is
-  the next cut, and XLOOKUP wants the text index the host already builds for small blocks.
+- **What is left of the aggregates:** `XLOOKUP` scans a million texts (~100 ms of the 175 ms) —
+  it wants a whole-column text index, which the host builds today only for blocks up to 200,000
+  values. Then the values-only edit (`fill.autofill` 398 ms: 274 ms of store write and 135 ms of a
+  per-changed-cell formula probe in the generic commit path, which needs the fill to report what it
+  replaced), the chain's operand read (40–60 ms) and the copy-on-write a write pays (60–120 ms).
+
 ## Round 36: Calculate Now stops rebuilding the graph (2026-11-22)
 
 - **What was wrong.** `formulas.calculateNow` → `Calc::recalc_all`, whose first line was

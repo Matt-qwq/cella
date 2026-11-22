@@ -388,10 +388,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   formulas (139 / 109 / 116 ms each), not the chain (104 ms) and not the command wrapper (0.5 ms).
   `CellStore::visit_values` walks values without a `Cell` (113 → 50 ms a million cells),
   `PassHost::settled_in` stops the block builder asking the store which cells hold formulas, and
-  `visit_packed_settled` folds a settled formula column from packed values: **`aggregate` 348 →
-  219 ms (−37.1 %, 8/8, p = 0.0039), `edit.recalc` 567 → 438 ms (−22.8 %, 8/8)**, gate **31/31**.
-  Left: `SUMIFS`' two walks (109 ms) and `XLOOKUP`'s text scan (116 ms); then the values-only edit
-  (274 ms of store write + 187 ms a changed cell).
+  `visit_packed_settled` folds a settled formula column from packed values, and `SUMIFS` now walks
+  its criteria and target columns in one pass: **`aggregate` 348 → 175 ms (−49.7 %), `edit.recalc`
+  567 → 400 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, gate **31/31**. Left:
+  `XLOOKUP`'s million-text scan (~100 ms of the 175), then the values-only edit (`fill.autofill`
+  398 ms: 274 ms of store write + 135 ms of per-cell probe in the generic commit path).
 - **Measured (11-22, round 35): the external table re-run in full** (`plan/bench/external_ab.ps1`
   and `f9_ab.ps1`): open **2.69 s** against Excel 8.67 / WPS 10.86; edit **0.270 s** against 0.236 /
   16.36 — the honest "1.1x", not the 4.4x the old documents quoted; memory **WS 879 MB** against
