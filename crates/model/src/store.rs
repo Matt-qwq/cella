@@ -4194,12 +4194,7 @@ impl CellStore {
         self.visit_packed_impl(r, true, f)
     }
 
-    fn visit_packed_impl(
-        &self,
-        r: RangeRef,
-        settled: bool,
-        f: &mut dyn FnMut(CellRef, Option<Packed<'_>>) -> bool,
-    ) -> bool {
+    fn visit_packed_impl(&self, r: RangeRef, settled: bool, f: &mut dyn FnMut(CellRef, Option<Packed<'_>>) -> bool) -> bool {
         let col_runs = self.col_map.segments_in(r.start.col, r.end.col);
         // A sheet with many column edits would repeat the row walk once per column run; past a
         // handful of runs build each cell once instead, so the work stays bounded by the range.

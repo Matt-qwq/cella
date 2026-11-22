@@ -383,6 +383,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   and the gate's three whole-column aggregates add **613 / 848 / 773 ms** as they are added — the
   same 139 / 109 / 116 ms they measure on their own. **The aggregate kernels are the pool**, not the
   chain and not the command's wrapper (0.5 ms); that is K1 in `plan/PERF-STAGE-2.md`.
+- **Measured (11-22, round 37): a whole-column read stops building a `Cell` a cell — the aggregates
+  were the pool.** `edit.recalc` 1M 610 ms and `aggregate` 364 ms were mostly three whole-column
+  formulas (139 / 109 / 116 ms each), not the chain (104 ms) and not the command wrapper (0.5 ms).
+  `CellStore::visit_values` walks values without a `Cell` (113 → 50 ms a million cells),
+  `PassHost::settled_in` stops the block builder asking the store which cells hold formulas, and
+  `visit_packed_settled` folds a settled formula column from packed values: **`aggregate` 348 →
+  219 ms (−37.1 %, 8/8, p = 0.0039), `edit.recalc` 567 → 438 ms (−22.8 %, 8/8)**, gate **31/31**.
+  Left: `SUMIFS`' two walks (109 ms) and `XLOOKUP`'s text scan (116 ms); then the values-only edit
+  (274 ms of store write + 187 ms a changed cell).
 - **Measured (11-22, round 35): the external table re-run in full** (`plan/bench/external_ab.ps1`
   and `f9_ab.ps1`): open **2.69 s** against Excel 8.67 / WPS 10.86; edit **0.270 s** against 0.236 /
   16.36 — the honest "1.1x", not the 4.4x the old documents quoted; memory **WS 879 MB** against

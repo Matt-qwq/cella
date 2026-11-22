@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 219 ms (−37.1 %, 8/8, p = 0.0039)** and **`edit.recalc` 567 → 438 ms (−22.8 %, 8/8)**, i.e. 6.97x → 4.38x and 4.39x → 3.39x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -947,6 +947,35 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 37: a whole-column read stops building a Cell a cell (2026-11-22)
+
+- **Where the time was.** `edit.recalc` at 1M takes 610 ms (Excel 129) and `aggregate` — three
+  whole-column formulas — 364 ms (Excel 50). Bisected in one process with the gate's own history
+  one step at a time (`plan/PERF-STAGE-2.md` §2.2): a fresh 1M workbook recalculates in 414 ms, the
+  million-deep chain is 104 ms of that, and each of the three aggregates adds 130–235 ms. The chain
+  is not the pool and the command wrapper never was (0.5 ms); the **whole-column reads** are.
+- **Two walks a pass was paying twice.** A block read (`Host::range_array`) judged its range stable
+  by asking the store which of its cells hold formulas — a `Cell` a cell, 90 ms over a million rows,
+  paid by each of the three aggregates. It now takes the smaller side of (cells to probe, formulas
+  the pass owes), which for a whole-column read inside a one-cell edit is a single check.
+  `range_values` also walked with `iter_range`, which builds a `Cell` (a `Value`, a style and two
+  `Arc` bumps) and a `Vec` a band: **50 ms against 113 ms** for the same million-cell column.
+- **The fold itself.** `SUM` over a column of formulas fell back to `Sheet::value` a cell, because a
+  formula's stored value is the file's cache — unless the pass owes it nothing. The store grew
+  `visit_packed_settled`, which hands out a formula's stored value where `visit_packed` says "the
+  evaluator owns it", and the aggregate uses it when the block is settled: **one packed walk, no
+  values built**. A million-cell `SUM` went from 139 ms to about 20.
+- **Measured** (1M, eight alternating pairs: `perf-base.exe` built at `9e4511c`, `perf-cand.exe` at
+  the commit, one process a run): `aggregate` **348 → 219 ms (−37.1 %, 8/8, p = 0.0039)** and
+  `edit.recalc` **567 → 438 ms (−22.8 %, 8/8)**. Against Excel's 50 / 129 ms that is
+  **6.97x → 4.38x** and **4.39x → 3.39x** — the two scenarios the three-way table compares. Gate
+  **31/31** (aggregate 221 ms / 19 %, edit.recalc 504 ms / 35 %, `f9.calculateNow` 665 ms / 42 %).
+  Suite: model 173 / calc 175 / engine 633 green; `visit_values` has its own equivalence test
+  against `iter_range`.
+
+- **What is left of the aggregates:** `SUMIFS` (109 ms) walks its criteria column and its target
+  column in two passes and `XLOOKUP` (116 ms) scans a million texts; fusing the two SUMIFS walks is
+  the next cut, and XLOOKUP wants the text index the host already builds for small blocks.
 ## Round 36: Calculate Now stops rebuilding the graph (2026-11-22)
 
 - **What was wrong.** `formulas.calculateNow` → `Calc::recalc_all`, whose first line was

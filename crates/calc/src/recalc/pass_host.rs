@@ -1526,12 +1526,8 @@ impl Host for PassHost<'_> {
         // A settled block of one column is the shape of a whole-column SUM over formulas: the
         // formulas hold the values the last calculation left, this pass owes none of them, so the
         // fold reads them packed — no prepass, no `Sheet::value` a cell (139 ms → 55 ms at 1M).
-        let settled_owned = owned
-            && kind == crate::eval::Agg::Sum
-            && range.width() == 1
-            && range.height() >= 4096
-            && !self.iterate
-            && self.settled_in(sheet, range);
+        let settled_owned =
+            owned && kind == crate::eval::Agg::Sum && range.width() == 1 && range.height() >= 4096 && !self.iterate && self.settled_in(sheet, range);
         if settled_owned {
             let mut needs_host = false;
             let mut error = None;
