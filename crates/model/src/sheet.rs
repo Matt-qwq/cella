@@ -382,11 +382,17 @@ impl Sheet {
     /// A chart sheet has no cells, so a write to one is dropped here, at the model's own door: no
     /// code path can leave cells on a chart sheet, where they would be invisible and lost on save.
     pub fn set_cell(&mut self, c: CellRef, cell: Cell) {
+        let _ = self.set_cell_reporting(c, cell);
+    }
+
+    /// [`set_cell`](Self::set_cell), answering whether the cell it replaced held a formula — what a
+    /// bulk write of values tells the recalculation (see `Ctx::formulas_unchanged`).
+    pub fn set_cell_reporting(&mut self, c: CellRef, cell: Cell) -> bool {
         if self.is_chart_sheet() {
-            return;
+            return false;
         }
         self.cell_pictures.remove(&c);
-        self.cells.set(c, cell);
+        self.cells.set(c, cell)
     }
     /// Stores a whole row of cells at once (what a file reader does); see [`CellStore::set_row`].
     /// Dropped on a chart sheet, which has no cells.

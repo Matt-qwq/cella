@@ -1249,7 +1249,9 @@ fn cell(dc: &DecodeCtx<'_>, sheet: &mut Sheet, st: &mut RowState, c: &crate::row
         // The cell's own reference wins over the row it sits in (a file may put a cell in a
         // different row); only the common case goes through the row batch.
         Some(cell) if d.at.row == st.row => st.row_cells.push((d.at.col, cell)),
-        Some(cell) => sheet.cells.set(d.at, cell),
+        Some(cell) => {
+            sheet.cells.set(d.at, cell);
+        }
         None => {}
     }
 }

@@ -158,16 +158,32 @@ pub fn fill(cx: &mut Ctx, sheet: usize, src: RangeRef, target: RangeRef, mode: F
         }
     }
     let sh = cx.sheet_mut(sheet)?;
+    // Whether the fill touched a formula at either end: a value dragged over a cell that held a
+    // formula removes one, and the recalculation has to re-index that cell. When neither side
+    // holds one, the edit says so and the commit skips a probe a changed cell — 135 ms over a
+    // million-row drag (2026-11-22).
+    let mut touched_a_formula = false;
     for (c, cell) in &writes {
         match cell {
-            Some(x) if mode == FillMode::Formats => sh.cells.set(*c, x.clone()),
-            Some(x) => sh.set_cell(*c, x.clone()),
+            Some(x) if mode == FillMode::Formats => {
+                touched_a_formula = true;
+                sh.cells.set(*c, x.clone());
+            }
+            Some(x) => {
+                touched_a_formula |= x.formula.is_some();
+                touched_a_formula |= sh.set_cell_reporting(*c, x.clone());
+            }
             None => {
+                // A blank write removes whatever was there, formula included.
+                touched_a_formula = true;
                 sh.remove_cell(*c);
             }
         }
     }
     sh.cell_pictures.extend(pictures);
+    if !touched_a_formula {
+        cx.formulas_unchanged = true;
+    }
     for (c, _) in writes {
         cx.touch(sheet, c);
     }
@@ -675,6 +691,35 @@ mod tests {
         // The values were recalculated from the shared tree: `=A1*2+3` at B1, and A10 is blank.
         assert_eq!(sh.value(CellRef::new(0, 1)), Value::Number(5.0));
         assert_eq!(sh.value(CellRef::new(9, 1)), Value::Number(3.0));
+    }
+
+    /// A value dragged over a cell that held a formula **removes** it, and the recalculation has to
+    /// see that: the fill says "no formula touched" only when neither side holds one, and this is
+    /// the case that would break the claim (the graph keeps a node for a cell that no longer has a
+    /// formula, and the cell reading it keeps the old value).
+    #[test]
+    fn a_value_fill_over_a_formula_removes_it_from_the_graph() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", serde_json::json!({"range": "A1", "values": [[2], [3], [4]]})).unwrap();
+        s.execute("cell.set", serde_json::json!({"cell": "B2", "input": "=A1*2"})).unwrap();
+        s.execute("cell.set", serde_json::json!({"cell": "B3", "input": "=A2*2"})).unwrap();
+        s.execute("cell.set", serde_json::json!({"cell": "C2", "input": "=B2+1"})).unwrap();
+        assert_eq!(s.doc().unwrap().wb.sheet(0).unwrap().value(CellRef::new(1, 2)), Value::Number(5.0));
+        // A constant dragged down over the two formulas: it removes them, and the cell reading B2
+        // has to recalculate on the values that replaced them.
+        s.execute("cell.set", serde_json::json!({"cell": "B1", "input": "7"})).unwrap();
+        s.execute("edit.autoFill", serde_json::json!({"source": "B1", "target": "B1:B3"})).unwrap();
+        let sh = s.doc().unwrap().wb.sheet(0).cloned().unwrap();
+        assert!(sh.cells.formula(CellRef::new(1, 1)).is_none(), "the formula is gone");
+        assert_eq!(sh.value(CellRef::new(1, 1)), Value::Number(7.0));
+        assert_eq!(sh.value(CellRef::new(1, 2)), Value::Number(8.0), "the cell reading it recalculated");
+        // And the reverse: a formula dragged down over values is re-indexed as a formula.
+        s.execute("cell.set", serde_json::json!({"cell": "D1", "input": "=A1*2"})).unwrap();
+        s.execute("edit.autoFill", serde_json::json!({"source": "D1", "target": "D1:D3"})).unwrap();
+        let sh = s.doc().unwrap().wb.sheet(0).cloned().unwrap();
+        assert!(sh.cells.formula(CellRef::new(2, 3)).is_some(), "the formula was filled down");
+        assert_eq!(sh.value(CellRef::new(2, 3)), Value::Number(8.0), "A3 is 4, so D3 is 8");
     }
 
     #[test]

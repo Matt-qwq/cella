@@ -1397,7 +1397,11 @@ impl Band {
     /// at that position before and whether one is stored there now, so a caller that keeps the
     /// store's length does not have to probe the band twice more to learn it. Text and style slots
     /// are resolved before the row is borrowed, because both live in the band.
-    fn put(&mut self, row_key: u32, col: u32, cell: Cell) -> (bool, bool) {
+    /// Stores `cell` at `col`; a blank cell is removed instead. Returns whether a cell was stored
+    /// at that position before, whether one is stored there now, and whether the cell it replaced
+    /// held a formula — the last one is what lets a bulk write of values tell the recalculation it
+    /// neither added nor removed a formula (see `Ctx::formulas_unchanged`).
+    fn put(&mut self, row_key: u32, col: u32, cell: Cell) -> (bool, bool, bool) {
         let blank = cell.is_blank();
         let (kind, payload) = if blank { (EMPTY, Payload::Small(0)) } else { self.payload(&cell.value) };
         let style = if blank { 0 } else { self.style_slot(cell.style) };
@@ -1414,6 +1418,7 @@ impl Band {
         }
         self.cover(at, col);
         let existing = self.rows[at].index_of(self, col);
+        let had_formula = self.rows[at].formula_at(col).is_some();
         self.rows[at].set_formula(col, if blank { None } else { formula.as_ref() });
         self.rows[at].set_array(col, if blank { None } else { array.as_ref() });
         let payload = match payload {
@@ -1456,7 +1461,7 @@ impl Band {
         if self.rows[at].is_empty() {
             self.clear_row_at(at);
         }
-        (existing.is_some(), !blank)
+        (existing.is_some(), !blank, had_formula)
     }
 
     /// Whether the cell stored at (`row_key`, `col`) already holds exactly `value`, as the packed
@@ -1720,7 +1725,7 @@ impl BandBatch {
             band.put_row(band_row, cells);
         } else {
             for (col, cell) in cells.drain(..) {
-                band.put(band_row, col, cell);
+                let _ = band.put(band_row, col, cell);
             }
         }
         if band.rows.is_empty() {
@@ -3468,29 +3473,32 @@ impl CellStore {
         }
     }
 
-    pub fn set(&mut self, c: CellRef, cell: Cell) {
+    /// Stores `cell` at `c`. Returns whether the cell it replaced held a formula — what a bulk
+    /// write of values reports so the recalculation can skip a probe a cell (see
+    /// `Ctx::formulas_unchanged`); `false` also covers a write that stored nothing.
+    pub fn set(&mut self, c: CellRef, cell: Cell) -> bool {
         let row_physical = self.physical_row(c.row);
         let col_physical = self.physical_col(c.col);
         // A blank write into an inserted row/column must not allocate storage for nothing.
         if (row_physical.is_none() || col_physical.is_none()) && cell.is_blank() {
-            return;
+            return false;
         }
         let Some(physical) = (match row_physical {
             Some(physical) => Some(physical),
             None => self.physical_row_for_write(c.row),
         }) else {
-            return;
+            return false;
         };
         let Some(col) = (match col_physical {
             Some(physical) => Some(physical),
             None => self.physical_col_for_write(c.col),
         }) else {
-            return;
+            return false;
         };
         let key = physical / BAND;
         let row = physical % BAND;
         if self.pages.contains_key(&key) && self.materialize(key).is_none() {
-            return;
+            return false;
         }
         self.band_for_write(key);
         if !self.array_anchors {
@@ -3502,10 +3510,10 @@ impl CellStore {
         // `put` answers both questions the length bookkeeping asks; two `contains` probes around it
         // cost a band lookup, a row search and a rank each, which is what a paste of six million
         // cells was paying per cell.
-        let (had, has, empty) = {
+        let (had, has, had_formula, empty) = {
             let band = Arc::make_mut(self.bands.entry(key).or_default());
-            let (had, has) = band.put(row, col, cell);
-            (had, has, band.rows.is_empty())
+            let (had, has, had_formula) = band.put(row, col, cell);
+            (had, has, had_formula, band.rows.is_empty())
         };
         match (had, has) {
             (false, true) => {
@@ -3523,6 +3531,7 @@ impl CellStore {
         if empty {
             self.bands.remove(&key);
         }
+        had_formula
     }
 
     /// Adds bands a [`BandBatch`] built off this thread. Whole bands are moved, not cells: packing
@@ -3572,7 +3581,7 @@ impl CellStore {
                     target.put_row(row.key, &mut cells);
                 } else {
                     for (col, cell) in cells {
-                        target.put(row.key, col, cell);
+                        let _ = target.put(row.key, col, cell);
                     }
                 }
                 let after = target.row(row.key).map_or(0, |r| r.cells as usize);
@@ -4030,7 +4039,7 @@ impl CellStore {
                 // put() answers whether the cell was stored before and is stored after: asking it
                 // instead of probing the row twice more drops two rank computations a cell, which
                 // is most of what a row of the sort's write-back costs.
-                let (had, has) = band.put(band_row, col, cell);
+                let (had, has, _had_formula) = band.put(band_row, col, cell);
                 match (had, has) {
                     (false, true) => self.len += 1,
                     (true, false) => {
