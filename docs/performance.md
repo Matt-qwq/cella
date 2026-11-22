@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -952,6 +952,31 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 38: the fill's store write is not the splice (2026-11-23, measured and reverted)
+
+- **Where the time was said to be.** Round 37 closed with two items left: `XLOOKUP` scanning a
+  million texts (~100 ms of `aggregate`'s 175) and the store write inside `fill.autofill` (274 ms
+  of 388 at 1M rows, ~274 ns a cell).
+- **What was built.** A batched column write: `CellStore::set_column` groups a run of rows by band
+  and `Band::write_column` rebuilds the band's four stripes in one pass each instead of splicing
+  one cell at a time, with a `Sheet::write_column` wrapper and the fill's vertical lanes routed
+  through it. The patch is kept at `plan/bench/patch/fill-column-batch.patch`.
+- **What it measured.** In one binary, alternating six times inside the same load spike (the box was
+  at 46–80 %): `fill.autofill` 1M **538 → 512 ms**, faster in **6 of 6** (p = 0.016) — **−5 %**. At
+  the model level the same store wrote a column at **145–150 ns** a cell against **150–160** one
+  cell at a time with no snapshot, and 190–210 against 265–305 with one — ~8 % of the store phase,
+  not the 2x the plan assumed.
+- **Why the assumption was wrong.** The per-cell splice — `insert_cell`, two `runs_insert` walks,
+  `shift_offsets` over 64 rows, one `insert_at` — is ~20–40 ns of the 274. The rest is resolving
+  each cell against the band's tables (a number-table hash probe, a style slot, the formula and array
+  side tables) and touching stripes that a million rows have long since pushed out of cache. A batch
+  removes neither. The one part it does remove — the run walks — is worth ~25 ms a million rows
+  (`run_push` at the end of a row instead of `runs_insert`).
+- **What was kept.** Nothing. The patch is reverted: 400 lines in the packed store — the structure an
+  undo snapshot shares at band granularity — for a 5 % fill is not a trade this codebase should make.
+  What it points at is narrow (a "one value down a column" kernel that resolves once per band, which
+  helps copy fills only); the remaining levers are named in `plan/PERF-STAGE-2.md` §2.4.
+
 ## Round 37: a whole-column read stops building a Cell a cell (2026-11-22)
 
 - **Where the time was.** `edit.recalc` at 1M takes 610 ms (Excel 129) and `aggregate` — three
@@ -1436,6 +1461,10 @@ derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
 ## Revision history
 
+- **2026-11-23 (round 38, the fill's store write, reverted):** a batched column write measured
+  **−5 %** on `fill.autofill` (6/6, p = 0.016, 538 → 512 ms, measured under load) and was reverted:
+  the per-cell cost is value resolution and cold-band access, not the splice (~20–40 ns of the
+  274 ns a cell). Patch at `plan/bench/patch/fill-column-batch.patch`.
 - **2026-11-21 (round 34, the formula text):** a filled formula keeps no text — it is
   `Shape::print_at(at)`, the invariant shape sharing pins — so `Formula` is **48 → 32 bytes** and
   `text` an `Option<Box<String>>` only for text-only formulas. **Live heap 884.7 → 776.6 MB
