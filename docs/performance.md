@@ -11,6 +11,11 @@ companion [performance-report.zh-CN.md](performance-report.zh-CN.md)): `cargo xt
 regenerates both from the harnesses' own output. The external comparison against Excel 16, WPS 12.1
 and upstream GridCraft v0.19.1 lives in [external-benchmark.md](external-benchmark.md).
 
+The pages are regenerated **on request and before a release**, not at the end of every round: the
+gate and the paired sign tests are what prove a change, and a page run costs an idle machine half a
+round's time. A page names the commit it was generated at, and that is the commit its numbers are
+valid for.
+
 Cella is for people who work on real data sets — programmers, analysts, e-commerce operations —
 so throughput on a large workbook *is* a product feature. A number someone measured once is
 folklore within a month. This page is the number, the harness that produces it, and the gate that
