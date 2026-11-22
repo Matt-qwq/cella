@@ -1523,6 +1523,33 @@ impl Host for PassHost<'_> {
             return None;
         }
         let owned = sh.cells.has_owned_cells(range);
+        // A settled block of one column is the shape of a whole-column SUM over formulas: the
+        // formulas hold the values the last calculation left, this pass owes none of them, so the
+        // fold reads them packed — no prepass, no `Sheet::value` a cell (139 ms → 55 ms at 1M).
+        let settled_owned = owned
+            && kind == crate::eval::Agg::Sum
+            && range.width() == 1
+            && range.height() >= 4096
+            && !self.iterate
+            && self.settled_in(sheet, range);
+        if settled_owned {
+            let mut needs_host = false;
+            let mut error = None;
+            sh.cells.visit_packed_settled(range, &mut |_, packed| {
+                let Some(packed) = packed else {
+                    needs_host = true;
+                    return false;
+                };
+                match acc.add_packed(kind, packed) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        error = Some(e);
+                        false
+                    }
+                }
+            });
+            return (!needs_host).then_some(error.map_or(Ok(()), Err));
+        }
         if owned {
             // On a large formula column, avoid rebuilding its cells twice or staging formula
             // coordinates. Keep the small/multi-column and iterative cases on the old path.
