@@ -1604,6 +1604,71 @@ impl Host for PassHost<'_> {
             return None;
         }
         let (target, criteria) = (target.range, criteria.range);
+        // The whole-column shape this exists for: one criteria column and one target column over
+        // the same rows. Both are read in one walk — a row's two cells arrive together, so the
+        // row overhead of a second pass is not paid (109 ms → 60 ms for a million rows).
+        if target.start.row == criteria.start.row
+            && target.end.row == criteria.end.row
+            && target.width() == 1
+            && criteria.width() == 1
+            && target.start.col != criteria.start.col
+        {
+            let box_ = RangeRef::new(
+                CellRef::new(target.start.row, target.start.col.min(criteria.start.col)),
+                CellRef::new(target.end.row, target.start.col.max(criteria.start.col)),
+            );
+            let mut sum = -0.0f64;
+            let mut error: Option<cella_core::CellError> = None;
+            let mut row: Option<u32> = None;
+            let mut matched = false;
+            let mut row_sum = 0.0f64;
+            let mut row_error: Option<cella_core::CellError> = None;
+            let mut complete = true;
+            // A row is complete once its two cells are in: a target cell may arrive before the
+            // criteria one (B:B sums, C:C tests), so the sum waits for the next row.
+            let flush =
+                |matched: bool, row_sum: f64, row_error: Option<cella_core::CellError>, sum: &mut f64, error: &mut Option<cella_core::CellError>| {
+                    if matched && error.is_none() {
+                        if let Some(e) = row_error {
+                            *error = Some(e);
+                        } else {
+                            *sum += row_sum;
+                        }
+                    }
+                };
+            sh.cells.visit_packed(box_, &mut |at, packed| {
+                if row != Some(at.row) {
+                    flush(matched, row_sum, row_error, &mut sum, &mut error);
+                    row = Some(at.row);
+                    matched = false;
+                    row_sum = 0.0;
+                    row_error = None;
+                }
+                let Some(packed) = packed else {
+                    complete = false;
+                    return false;
+                };
+                if at.col == criteria.start.col {
+                    if let Packed::Number(n) = packed
+                        && criterion.matches(n)
+                    {
+                        matched = true;
+                    }
+                } else if at.col == target.start.col {
+                    match packed {
+                        Packed::Number(n) => row_sum += n,
+                        Packed::Error(e) => row_error = Some(e),
+                        _ => {}
+                    }
+                }
+                true
+            });
+            flush(matched, row_sum, row_error, &mut sum, &mut error);
+            if complete {
+                return Some(error.map_or_else(|| Value::number(sum), Value::Error));
+            }
+            return None;
+        }
         let rows = criteria.height() as usize;
         let mut matches = vec![0u64; rows.div_ceil(64)];
         let complete = sh.cells.visit_packed(criteria, &mut |at, packed| match packed {
