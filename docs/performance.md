@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-21 · **Last updated:** 2026-11-21 · **Change:** round 35 closes the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-22 · **Last updated:** 2026-11-22 · **Change:** round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -21,7 +21,7 @@ real export, not a synthetic grid.
 
 ## Scenarios
 
-`crates/engine/examples/perf.rs` runs one session through thirteen named scenarios, in this order,
+`crates/engine/examples/perf.rs` runs one session through fourteen named scenarios, in this order,
 because that is how a real session looks (values, formulas over them, edits, sort, save, open).
 Each reports one number: its own wall-clock time in ms.
 
@@ -34,6 +34,7 @@ Each reports one number: its own wall-clock time in ms.
 | `aggregate` | `SUM(G1:G{n})`, `SUMIFS(B:B,C:C,">50")`, `XLOOKUP(...)` | whole-column aggregates and lookups, the queries analysts actually run |
 | `edit.recalc` | edits `B1` (every `G`, hence every `H`, depends on it) | incremental recalculation after one keystroke — the number a user feels |
 | `edit.undo` | undoes that edit | undo restores a snapshot, so it must not recalculate or rebuild anything |
+| `f9.calculateNow` | `formulas.calculateNow`: recalculates every formula of the workbook | the full recalculation a user asks for with F9. It keeps the dependency graph, which every edit maintains — rebuilding it here was 0.69 s of a 1.05 s F9 (round 36) |
 | `sort.desc` | `data.sortDescending` over `A1:F{n}` by one column | sort is the slowest interactive operation we have (see below) |
 | `sort.formulas` | `data.sortDescending` over `A1:H{n}` by column B, so the `G` and `H` formulas move with their rows | a real table's sorted block holds formulas; the values sort above cannot see the graph and formula-text work this costs |
 | `save.xlsx` | `file.saveBytes` as xlsx | the write path: pack, compress, stream |
@@ -946,6 +947,46 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 36: Calculate Now stops rebuilding the graph (2026-11-22)
+
+- **What was wrong.** `formulas.calculateNow` → `Calc::recalc_all`, whose first line was
+  `self.rebuild(wb)`: on the reference workbook that is 0.69 s of a 1.05 s F9, and it derives every
+  formula's precedents again for a graph that every edit has been maintaining (`cells_changed*`,
+  `restore*`, a structural edit's full recalculation). Excel does not do it either: `CalculateFull`
+  is 0.072 s on the same file, which no from-scratch derivation of two million precedents fits in.
+- **The change.** `Calc::recalc_all` still rebuilds (structural edits, opening a workbook that asks
+  for a full calculation, and the tests' ground truth); the new `Calc::recalc_all_keeping_graph`
+  makes the same pass over the graph it already has, and F9 calls that. An empty graph — a `Calc`
+  that has never seen the workbook — rebuilds inside it, so the degenerate caller is covered.
+- **Certificate.** `plan/bench/f9_ab.ps1`, same file, same machine, four alternating rounds of
+  three runs a side: **1.046 s → 0.406 s (−61.2 %)**, the candidate faster in **12 of 12** runs
+  (base 1.019–1.089, candidate 0.395–0.419). Against Excel, measured interleaved so both sides saw
+  the same machine: **0.40 s vs 0.072 s = 5.6x**, from 16x.
+- **Why the gate's F9 is not 0.40 s: two states, one command.** The gate's `f9.calculateNow` is
+  **832 ms at 1M (52 % of its 1.60 s budget)** and 82 ms at 100k (45 %). Its pass splits as 88 ms of
+  parallel waves for the independent `G` column, 45 ms of slot table, **443 ms for the chain** and
+  35 ms of write-back. The app's pass on the reference file is the same shape — a million `G`
+  formulas and a million-deep `H` chain — and splits as 70 ms parallel + 46 ms tables + **147 ms
+  chain** + 30 ms write, beside the copy-on-write `calc_now` pays to write values into a live
+  session: 0.40 s for the command on an opened file, 0.83 s for the same pass on a workbook built
+  in-process by the fill path. That built-vs-reopened split is the one the edit and memory numbers
+  have carried since round 27; both numbers are real, and the gate is the one that protects a
+  regression. Budgets follow the file's rule (twice a quiet pass): 180 ms and 1.60 s.
+- **What keeps it honest.** `Calc::rebuilds` is now a public diagnostic (it was `cfg(test)`), so
+  the engine's `calculate_now` test asserts the command *does not* derive the graph again instead
+  of trusting the call site; the same test compares every cell with a from-scratch rebuild after a
+  sequence that takes each path touching the graph (value edit, formula edit, fill,
+  formula-carrying sort, inserted rows, undo/redo, cross-sheet reference), and a second test
+  presses F9 twice and requires the same numbers. Both were red first: pointed back at
+  `recalc_all`, the test fails with "Calculate Now derived the graph again instead of keeping the
+  one every edit maintained". The structural path still rebuilds, and the fuzzer's
+  "incremental ≡ full recalc" invariant still builds its own `Calc` from an empty graph
+  (64 seeds × 120 steps green).
+- **Left on the table, deliberately:** the app-side F9 still clones the workbook to write values
+  into it (copy-on-write of the sheets a pass writes), and the remaining 0.40 s is the evaluation
+  itself. Both are round 37's subject — command wrapper cost and aggregate kernels — priced in
+  `plan/PERF-STAGE-2.md`.
+
 ## Round 35: the close-out — the gate, the save A/B, and F9 (2026-11-22)
 
 - **The gate: 29/29 within budget** on an idle machine (1M: `fill.values` 1.09 s / 36 %,
@@ -966,7 +1007,8 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   ("full recalculation 1.30 s vs Excel 0.31 s") is retired — 0.31 s was an older Excel measurement
   on a different protocol, and the evaluator is not the gap. Excel keeps its dependency tree across
   a recalculation; ours is rebuilt by the command. That is the next measured gap and it is a
-  rebuild design question (round 26 refuted the evaluator as the target).
+  rebuild design question (round 26 refuted the evaluator as the target). Round 36 answered it: the
+  command keeps the graph and evaluates, and F9 is 0.40 s (5.6x).
 - **Process memory re-read** on the same file: working set **879 MB** against Excel's 580 (1.5x) and
   private **1,137 MB** against 530 (2.1x), down ~110 MB each from the 11-21 build (988 / 1,249).
 - **The external table is re-run in full** (`docs/external-benchmark.md`): open 2.69 s vs 8.67

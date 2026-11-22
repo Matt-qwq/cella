@@ -17,16 +17,20 @@ were driven through COM; Cella through its control channel (`plan/bench/external
 |---|---:|---:|---:|
 | open the 70 MB file | 8.67 s | 10.86 s | **2.69 s** |
 | **edit B1 -> the dependent chain** | **0.236 s** | 16.36 s | 0.270 s |
-| **full recalculation (F9), 2M formulas** | **0.064 s** | — | 1.05 s |
+| **full recalculation (F9), 2M formulas** | **0.072 s** | — | 0.40 s |
 | working set after opening | **580 MB** | 1,001 MB | 879 MB |
 | private working set after opening | **530 MB** | 894 MB | 1,137 MB |
 | H1000000 after the edit | 23,999,823,993,691 | the same | the same |
 
-Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s; WPS open 10.84–11.15 s,
-edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella open
-2.63–2.73 s, edit 0.253–0.276 s, F9 1.03–1.07 s. Memory was read from the running processes after
-the document was open (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as
-`cella.exe`.
+Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s (median 0.072); WPS open
+10.84–11.15 s, edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella
+open 2.63–2.73 s, edit 0.253–0.276 s, F9 **0.396–0.438 s** (median 0.401 — re-measured after
+round 36, which removed the graph rebuild from the command; it was 1.03–1.07 s before). Memory was
+read from the running processes after the document was open (WMI/Get-Process), Excel as
+`EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was measured interleaved
+(Excel, Cella, Excel, Cella) so both sides saw the same machine; the removal itself is certified by
+a four-round alternating A/B on this file — **1.046 s → 0.406 s, −61.2 %, faster in 12 of 12
+runs**.
 
 ## What this says
 
@@ -36,13 +40,13 @@ the document was open (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, 
   recalculates a million chained formulas inside the assignment (Excel is synchronous here:
   `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both numbers mean "the
   chain is up to date").
-- **Full recalculation is the one operation where the gap is large, and it is the graph, not the
-  evaluator.** F9 costs us **1.05 s** against Excel's **0.064 s** (16x), and the command rebuilds
-  its dependency graph from the workbook first — `rebuild.graph` alone measures 0.71 s at 1M rows
-  in the gate — so the evaluation proper is about 0.34 s (≈5x Excel's whole F9). Excel keeps its
-  tree across recalculation; `formulas.calculateNow` builds one. This is the next measured gap and
-  it is a rebuild design question, not an evaluator one (the evaluator was refuted as the target in
-  round 26).
+- **Full recalculation: 0.40 s against Excel's 0.072 s (5.6x), down from 1.05 s (16x).** Round 36
+  stopped `formulas.calculateNow` rebuilding the dependency graph — every edit already maintains
+  it, and the rebuild was 0.69 s of a 1.05 s F9 in the gate. What is left is the evaluation of
+  2,000,000 formulas, a million of them one chain deep: ~0.40 s, and the chain is why it does not
+  parallelise. Excel keeps its tree across a recalculation too, so the remaining 5.6x is
+  per-formula and per-command cost — round 37's subject, not a rebuild question (the evaluator was
+  already refuted as the target in round 26).
 - **Memory**: 879 MB of working set against Excel's 580, and 1,137 MB private against 530 — 1.5x and
   2.1x, where the 11-21 build was 988 / 1,249. The round-34 change (the formula text is printed, not
   stored) took ~110 MB out of both; what remains is the undo step (~174 MB at 1M rows), the
@@ -125,7 +129,7 @@ report can put Cella's gate numbers beside Excel's. `rebuild.graph`, `mem_drift`
 `edit.undo` and `open.csv` have no comparable external operation; WPS did not finish the 1M bulk
 write in fifteen minutes, so it appears in the open/edit/memory tables only.
 
-`report.ps1` waits for an idle machine, runs `cargo xtask perf-report` (the 29-scenario gate and
+`report.ps1` waits for an idle machine, runs `cargo xtask perf-report` (the 31-scenario gate and
 the live heap), then open/edit/memory and F9 for every product three times, keeps only the final
 numbers, and compiles a single-file HTML report (the local specboard compiler) to
 `plan/bench/f9-board/out/report/<date>_v<N>/index.html` — double-click it, no network needed.

@@ -1,6 +1,6 @@
 # Performance report
 
-> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `0a128be` (2026-11-21).
+> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `0aa9810` (2026-11-22).
 > Machine: windows x86_64; rustc 1.97.1 (8bab26f4f 2026-07-14). Every number is wall clock on one idle machine, each
 > scenario's fastest of three passes (the machine's run-to-run spread is about 10 %, which is why
 > a gate budget is twice a quiet pass). Method and caveats: [performance.md](performance.md).
@@ -13,37 +13,39 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000       98 ms     250 ms     39%
-fill.formulas          100000      117 ms     290 ms     40%
-fill.chained           100000      160 ms     370 ms     43%
-fill.autofill          100000       83 ms     190 ms     43%
-aggregate              100000       51 ms     110 ms     46%
-edit.recalc            100000       68 ms     160 ms     43%
+fill.values            100000       99 ms     250 ms     40%
+fill.formulas          100000      118 ms     290 ms     41%
+fill.chained           100000      162 ms     370 ms     44%
+fill.autofill          100000       83 ms     190 ms     44%
+aggregate              100000       52 ms     110 ms     47%
+edit.recalc            100000       67 ms     160 ms     42%
 edit.undo              100000      100 us     3.0 ms      3%
-sort.desc              100000      192 ms     580 ms     33%
-sort.formulas          100000      261 ms     760 ms     34%
-save.xlsx              100000      149 ms     300 ms     50%
-open.xlsx              100000      255 ms     520 ms     49%
-rebuild.graph          100000       52 ms     110 ms     47%
-open.csv               100000       72 ms     130 ms     56%
-fill.values           1000000      1.07 s     3.05 s     35%
-fill.formulas         1000000      959 ms     2.55 s     38%
-fill.chained          1000000      1.46 s     3.55 s     41%
-fill.autofill         1000000      359 ms     885 ms     41%
-aggregate             1000000      341 ms     1.15 s     30%
-edit.recalc           1000000      545 ms     1.45 s     38%
+f9.calculateNow        100000       82 ms     180 ms     45%
+sort.desc              100000      199 ms     580 ms     34%
+sort.formulas          100000      276 ms     760 ms     36%
+save.xlsx              100000      165 ms     300 ms     55%
+open.xlsx              100000      272 ms     520 ms     52%
+rebuild.graph          100000       57 ms     110 ms     51%
+open.csv               100000       75 ms     130 ms     58%
+fill.values           1000000      1.13 s     3.05 s     37%
+fill.formulas         1000000      1.07 s     2.55 s     42%
+fill.chained          1000000      1.58 s     3.55 s     44%
+fill.autofill         1000000      399 ms     885 ms     45%
+aggregate             1000000      357 ms     1.15 s     31%
+edit.recalc           1000000      578 ms     1.45 s     40%
 edit.undo             1000000      1.5 ms      52 ms      3%
-sort.desc             1000000      1.80 s     6.70 s     27%
-sort.formulas         1000000      2.50 s     8.65 s     29%
-save.xlsx             1000000      1.62 s     3.40 s     48%
-open.xlsx             1000000      2.81 s     5.90 s     48%
-rebuild.graph         1000000      693 ms     1.45 s     48%
-open.csv              1000000      670 ms     1.25 s     54%
-save.repeat            100000      149 ms     370 ms     40%
-save.repeat           1000000      1.60 s     3.20 s     50%
-mem_drift              100000      3.2 ms      11 ms     29%
+f9.calculateNow       1000000      832 ms     1.60 s     52%
+sort.desc             1000000      1.93 s     6.70 s     29%
+sort.formulas         1000000      2.63 s     8.65 s     30%
+save.xlsx             1000000      1.75 s     3.40 s     52%
+open.xlsx             1000000      3.10 s     5.90 s     53%
+rebuild.graph         1000000      791 ms     1.45 s     55%
+open.csv              1000000      685 ms     1.25 s     55%
+save.repeat            100000      164 ms     370 ms     44%
+save.repeat           1000000      1.76 s     3.20 s     55%
+mem_drift              100000      3.6 ms      11 ms     33%
 
-OK: all 29 scenarios within budget (xtask/perf-budgets.txt)
+OK: all 31 scenarios within budget (xtask/perf-budgets.txt)
 
 ```
 
@@ -192,16 +194,20 @@ were driven through COM; Cella through its control channel (`plan/bench/external
 |---|---:|---:|---:|
 | open the 70 MB file | 8.67 s | 10.86 s | **2.69 s** |
 | **edit B1 -> the dependent chain** | **0.236 s** | 16.36 s | 0.270 s |
-| **full recalculation (F9), 2M formulas** | **0.064 s** | — | 1.05 s |
+| **full recalculation (F9), 2M formulas** | **0.072 s** | — | 0.40 s |
 | working set after opening | **580 MB** | 1,001 MB | 879 MB |
 | private working set after opening | **530 MB** | 894 MB | 1,137 MB |
 | H1000000 after the edit | 23,999,823,993,691 | the same | the same |
 
-Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s; WPS open 10.84–11.15 s,
-edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella open
-2.63–2.73 s, edit 0.253–0.276 s, F9 1.03–1.07 s. Memory was read from the running processes after
-the document was open (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as
-`cella.exe`.
+Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s (median 0.072); WPS open
+10.84–11.15 s, edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella
+open 2.63–2.73 s, edit 0.253–0.276 s, F9 **0.396–0.438 s** (median 0.401 — re-measured after
+round 36, which removed the graph rebuild from the command; it was 1.03–1.07 s before). Memory was
+read from the running processes after the document was open (WMI/Get-Process), Excel as
+`EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was measured interleaved
+(Excel, Cella, Excel, Cella) so both sides saw the same machine; the removal itself is certified by
+a four-round alternating A/B on this file — **1.046 s → 0.406 s, −61.2 %, faster in 12 of 12
+runs**.
 
 ### What this says
 
@@ -211,13 +217,13 @@ the document was open (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, 
   recalculates a million chained formulas inside the assignment (Excel is synchronous here:
   `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both numbers mean "the
   chain is up to date").
-- **Full recalculation is the one operation where the gap is large, and it is the graph, not the
-  evaluator.** F9 costs us **1.05 s** against Excel's **0.064 s** (16x), and the command rebuilds
-  its dependency graph from the workbook first — `rebuild.graph` alone measures 0.71 s at 1M rows
-  in the gate — so the evaluation proper is about 0.34 s (≈5x Excel's whole F9). Excel keeps its
-  tree across recalculation; `formulas.calculateNow` builds one. This is the next measured gap and
-  it is a rebuild design question, not an evaluator one (the evaluator was refuted as the target in
-  round 26).
+- **Full recalculation: 0.40 s against Excel's 0.072 s (5.6x), down from 1.05 s (16x).** Round 36
+  stopped `formulas.calculateNow` rebuilding the dependency graph — every edit already maintains
+  it, and the rebuild was 0.69 s of a 1.05 s F9 in the gate. What is left is the evaluation of
+  2,000,000 formulas, a million of them one chain deep: ~0.40 s, and the chain is why it does not
+  parallelise. Excel keeps its tree across a recalculation too, so the remaining 5.6x is
+  per-formula and per-command cost — round 37's subject, not a rebuild question (the evaluator was
+  already refuted as the target in round 26).
 - **Memory**: 879 MB of working set against Excel's 580, and 1,137 MB private against 530 — 1.5x and
   2.1x, where the 11-21 build was 988 / 1,249. The round-34 change (the formula text is printed, not
   stored) took ~110 MB out of both; what remains is the undo step (~174 MB at 1M rows), the
@@ -286,7 +292,24 @@ not leave the core slow.
 powershell -File plan/bench/external_ab.ps1 -Product excel -Path plan/bench/ref-1m.xlsx
 powershell -File plan/bench/external_ab.ps1 -Product wps   -Path plan/bench/ref-1m.xlsx
 powershell -File plan/bench/external_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx
+
+# F9 alone (prints product,run,seconds,ok), the gate's operations replayed in Excel/WPS,
+# and the whole report in one command:
+powershell -File plan/bench/f9_ab.ps1 -Product cella -Path plan/bench/ref-1m.xlsx -Repeat 3
+powershell -File plan/bench/gate_ext.ps1 -Product excel -Repeat 3
+powershell -File plan/bench/report.ps1
 ```
+
+`gate_ext.ps1` replays the gate's ten mappable operations (bulk write, formula fill, chained
+fill, autofill, three aggregates, one edit, both sorts, save, open) through Excel's COM so the
+report can put Cella's gate numbers beside Excel's. `rebuild.graph`, `mem_drift`, `save.repeat`,
+`edit.undo` and `open.csv` have no comparable external operation; WPS did not finish the 1M bulk
+write in fifteen minutes, so it appears in the open/edit/memory tables only.
+
+`report.ps1` waits for an idle machine, runs `cargo xtask perf-report` (the 31-scenario gate and
+the live heap), then open/edit/memory and F9 for every product three times, keeps only the final
+numbers, and compiles a single-file HTML report (the local specboard compiler) to
+`plan/bench/f9-board/out/report/<date>_v<N>/index.html` — double-click it, no network needed.
 
 ### Not measured
 

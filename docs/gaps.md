@@ -367,8 +367,21 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   `formulas.calculateNow` rebuilds before it evaluates), so the **evaluation proper is ~0.34 s
   (≈5x)**. Excel keeps its tree across a recalculation. The old "full recalculation 1.30 s vs Excel
   0.31 s" line is retired: 0.31 s was a different protocol, and the evaluator is not the gap (round
-  26 refuted it). **This is the next measured gap and it is a rebuild design question** — the
-  candidate list's first item now, not an evaluator rewrite.
+  26 refuted it). **This was the next measured gap and it was a rebuild design question** — the
+  candidate list's first item then, not an evaluator rewrite. Round 36 answered it (below).
+- **Measured (11-22, round 36): the F9 rebuild is gone — 0.40 s against Excel's 0.072 s (5.6x),
+  from 16x.** `Calc::recalc_all_keeping_graph` makes the full pass over the graph every edit already
+  maintains; `formulas.calculateNow` calls it, and `Calc::recalc_all` (which still rebuilds) stays
+  for structural edits, `fullCalcOnLoad` and the fuzzer's ground truth. Same-file A/B, four
+  alternating rounds of three runs a side: **1.046 → 0.406 s (−61.2 %), faster in 12 of 12 runs**;
+  the Excel pair was measured interleaved (0.072 s median). The gate grew `f9.calculateNow`
+  (100k 82 ms / 180 ms, 1M **832 ms / 1.60 s**) and stands at **31/31**; `Calc::rebuilds` became a
+  public diagnostic so the engine test asserts the graph is kept, and a from-scratch rebuild after
+  edits that take every graph path is the test's oracle (red first). What is left of F9 is the
+  evaluation itself: a million of the two million formulas are one chain, which cannot parallelise
+  (443 ms of the gate pass against the app's 147 ms on the same shape — the gate builds its workbook
+  with the fill path, the app opens one from a file, the built-vs-reopened split of round 27), plus
+  the command's own wrapper cost, which is round 37's subject.
 - **Measured (11-22, round 35): the external table re-run in full** (`plan/bench/external_ab.ps1`
   and `f9_ab.ps1`): open **2.69 s** against Excel 8.67 / WPS 10.86; edit **0.270 s** against 0.236 /
   16.36 — the honest "1.1x", not the 4.4x the old documents quoted; memory **WS 879 MB** against
