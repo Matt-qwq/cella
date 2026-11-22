@@ -1,6 +1,6 @@
 # Performance report
 
-> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `105a8d4` (2026-11-22).
+> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `9deb026` (2026-11-23).
 > Machine: windows x86_64; rustc 1.97.1 (8bab26f4f 2026-07-14). Every number is wall clock on one idle machine, each
 > scenario's fastest of three passes (the machine's run-to-run spread is about 10 %, which is why
 > a gate budget is twice a quiet pass). Method and caveats: [performance.md](performance.md).
@@ -13,37 +13,37 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      101 ms     250 ms     41%
-fill.formulas          100000      117 ms     290 ms     40%
-fill.chained           100000      166 ms     370 ms     45%
-fill.autofill          100000       86 ms     190 ms     45%
-aggregate              100000       39 ms     110 ms     36%
-edit.recalc            100000       59 ms     160 ms     37%
+fill.values            100000      100 ms     250 ms     40%
+fill.formulas          100000      118 ms     290 ms     41%
+fill.chained           100000      157 ms     370 ms     42%
+fill.autofill          100000       76 ms     190 ms     40%
+aggregate              100000       16 ms     110 ms     15%
+edit.recalc            100000       31 ms     160 ms     20%
 edit.undo              100000      100 us     3.0 ms      3%
-f9.calculateNow        100000       72 ms     180 ms     40%
-sort.desc              100000      181 ms     580 ms     31%
-sort.formulas          100000      257 ms     760 ms     34%
-save.xlsx              100000      151 ms     300 ms     50%
-open.xlsx              100000      263 ms     520 ms     51%
-rebuild.graph          100000       56 ms     110 ms     51%
+f9.calculateNow        100000       46 ms     180 ms     26%
+sort.desc              100000      152 ms     580 ms     26%
+sort.formulas          100000      225 ms     760 ms     30%
+save.xlsx              100000      152 ms     300 ms     51%
+open.xlsx              100000      259 ms     520 ms     50%
+rebuild.graph          100000       54 ms     110 ms     50%
 open.csv               100000       74 ms     130 ms     57%
-fill.values           1000000      1.09 s     3.05 s     36%
-fill.formulas         1000000      1.00 s     2.55 s     39%
-fill.chained          1000000      1.51 s     3.55 s     42%
-fill.autofill         1000000      398 ms     885 ms     45%
-aggregate             1000000      175 ms     1.15 s     15%
-edit.recalc           1000000      400 ms     1.45 s     28%
-edit.undo             1000000      1.5 ms      52 ms      3%
-f9.calculateNow       1000000      597 ms     1.60 s     37%
-sort.desc             1000000      1.67 s     6.70 s     25%
-sort.formulas         1000000      2.44 s     8.65 s     28%
-save.xlsx             1000000      1.67 s     3.40 s     49%
-open.xlsx             1000000      2.95 s     5.90 s     50%
-rebuild.graph         1000000      757 ms     1.45 s     52%
-open.csv              1000000      687 ms     1.25 s     55%
-save.repeat            100000      158 ms     370 ms     43%
-save.repeat           1000000      1.72 s     3.20 s     54%
-mem_drift              100000      3.4 ms      11 ms     31%
+fill.values           1000000      1.07 s     3.05 s     35%
+fill.formulas         1000000      975 ms     2.55 s     38%
+fill.chained          1000000      1.41 s     3.55 s     40%
+fill.autofill         1000000      274 ms     885 ms     31%
+aggregate             1000000      117 ms     1.15 s     10%
+edit.recalc           1000000      283 ms     1.45 s     20%
+edit.undo             1000000      1.4 ms      52 ms      3%
+f9.calculateNow       1000000      481 ms     1.60 s     30%
+sort.desc             1000000      1.57 s     6.70 s     23%
+sort.formulas         1000000      2.36 s     8.65 s     27%
+save.xlsx             1000000      1.65 s     3.40 s     48%
+open.xlsx             1000000      2.88 s     5.90 s     49%
+rebuild.graph         1000000      745 ms     1.45 s     51%
+open.csv              1000000      685 ms     1.25 s     55%
+save.repeat            100000      153 ms     370 ms     41%
+save.repeat           1000000      1.66 s     3.20 s     52%
+mem_drift              100000      3.3 ms      11 ms     30%
 
 OK: all 31 scenarios within budget (xtask/perf-budgets.txt)
 

@@ -1,6 +1,6 @@
 # External benchmark: Cella, Excel, WPS and upstream GridCraft
 
-> **Measured 2026-11-22** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
+> **Measured 2026-11-23** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
 > release builds, one session, in this order: every product ran the same file, the same edit and the
 > same full recalculation, and all three agreed on the answer cell. Three runs each; medians below,
 > ranges in the notes. Run-to-run spread on this machine is about 10 %.
@@ -15,40 +15,42 @@ were driven through COM; Cella through its control channel (`plan/bench/external
 
 | | Excel 16.0 | WPS 12.1 | Cella (this build) |
 |---|---:|---:|---:|
-| open the 70 MB file | 8.67 s | 10.86 s | **2.69 s** |
-| **edit B1 -> the dependent chain** | **0.236 s** | 16.36 s | 0.270 s |
-| **full recalculation (F9), 2M formulas** | **0.072 s** | — | 0.40 s |
-| working set after opening | **580 MB** | 1,001 MB | 879 MB |
-| private working set after opening | **530 MB** | 894 MB | 1,137 MB |
+| open the 70 MB file | 8.64 s | 11.05 s | **2.46 s** |
+| **edit B1 -> the dependent chain** | 0.171 s | 14.94 s | **0.157 s** |
+| **full recalculation (F9), 2M formulas** | **0.073 s** | — | 0.307 s |
+| working set after opening | **577 MB** | 981 MB | 857 MB |
+| private working set after opening | **518 MB** | 873 MB | 1,049 MB |
 | H1000000 after the edit | 23,999,823,993,691 | the same | the same |
 
-Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s (median 0.072); WPS open
-10.84–11.15 s, edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella
-open 2.63–2.73 s, edit 0.253–0.276 s, F9 **0.396–0.438 s** (median 0.401 — re-measured after
-round 36, which removed the graph rebuild from the command; it was 1.03–1.07 s before). Memory was
-read from the running processes after the document was open (WMI/Get-Process), Excel as
-`EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was measured interleaved
-(Excel, Cella, Excel, Cella) so both sides saw the same machine; the removal itself is certified by
-a four-round alternating A/B on this file — **1.046 s → 0.406 s, −61.2 %, faster in 12 of 12
-runs**.
+Ranges: Excel open 8.63–8.65 s, edit 0.160–0.192 s, F9 0.064–0.087 s; WPS open
+10.89–11.26 s, edit 14.67–15.20 s (WPS was not asked for F9 — its edit already takes 15 s); Cella
+open 2.43–2.49 s, edit 0.154–0.160 s, F9 **0.304–0.309 s** (the graph rebuild left the command in
+round 36 — 1.046 → 0.406 s, certified on this file — and round 37's chain cursor took the
+evaluation down again). Memory was read from the running processes after the document was open
+(WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was
+measured interleaved (Excel, Cella, Excel, Cella) so both sides saw the same machine.
 
 ## What this says
 
-- **Cella opens this file 3.2x faster than Excel and 4x faster than WPS.** That has been true
+- **Cella opens this file 3.5x faster than Excel and 4.5x faster than WPS.** That has been true
   since the read path was rewritten and it is not close.
-- **Excel still wins the edit, but by 1.1x.** 0.236 s against our 0.270 s, on an operation that
-  recalculates a million chained formulas inside the assignment (Excel is synchronous here:
+- **Cella's edit is under Excel's for the first time: 0.157 s against 0.171 s.** Both recalculate
+  the million-deep `H` chain inside the assignment (Excel is synchronous here:
   `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both numbers mean "the
   chain is up to date").
-- **Full recalculation: 0.40 s against Excel's 0.072 s (5.6x), down from 1.05 s (16x).** Round 36
+- **Full recalculation: 0.307 s against Excel's 0.073 s (4.2x), down from 1.05 s (16x) and 0.40 s
+  (5.6x) in the two rounds before.** Round 36
   stopped `formulas.calculateNow` rebuilding the dependency graph — every edit already maintains
   it, and the rebuild was 0.69 s of a 1.05 s F9 in the gate. What is left is the evaluation of
-  2,000,000 formulas, a million of them one chain deep: ~0.40 s, and the chain is why it does not
+  2,000,000 formulas, a million of them one chain deep: ~0.31 s, and the chain is why it does not
   parallelise. Excel keeps its tree across a recalculation too, so the remaining 5.6x is
   per-formula and per-command cost — round 37's subject, not a rebuild question (the evaluator was
   already refuted as the target in round 26).
-- **Memory**: 879 MB of working set against Excel's 580, and 1,137 MB private against 530 — 1.5x and
-  2.1x, where the 11-21 build was 988 / 1,249. The round-34 change (the formula text is printed, not
+  The 0.270 s of the 11-22 session is not attributed to one round here: this file is not the gate's
+  workbook, and the gate's own paired A/B is what certifies a change (its `edit.recalc` went
+  693 → 594 ms with round 37's chain cursor, 344 → 283 ms with round 39's lookup).
+- **Memory**: 857 MB of working set against Excel's 577, and 1,049 MB private against 518 — 1.5x and
+  2.0x, where the 11-22 build was 879 / 1,137. The round-34 change (the formula text is printed, not
   stored) took ~110 MB out of both; what remains is the undo step (~174 MB at 1M rows), the
   replayable journal (~15 MB) and the calculation graph (~286 MB), each of which buys something.
 - Every product agrees on `H1000000`, which is the point of running the same file through all
