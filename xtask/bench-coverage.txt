@@ -42,7 +42,7 @@ chart.delete                                 bench
 chart.formatPoint                            bench
 chart.formatSelection                        bench
 chart.move                                   bench
-chart.moveToObject                           excuse: needs a chart sheet (chart.moveToSheet puts a chart on one)
+chart.moveToObject                           bench
 chart.moveToSheet                            bench
 chart.quickLayout                            bench
 chart.selectData                             bench
@@ -62,7 +62,7 @@ control.list                                 bench
 control.press                                bench
 control.setValue                             bench
 data.advancedFilter                          bench
-data.analysisToolPak                         excuse: its input range key is not in its params doc
+data.analysisToolPak                         bench
 data.circleInvalid                           bench
 data.clearFilter                             bench
 data.consolidate                             bench
@@ -102,9 +102,9 @@ data.query.setStep                           bench
 data.query.steps                             bench
 data.reapply                                 bench
 data.refreshAll                              bench
-data.relationship.add                        excuse: needs a data model with two tables and a key pair
+data.relationship.add                        bench
 data.relationship.list                       bench
-data.relationship.remove                     excuse: needs a data model relationship
+data.relationship.remove                     bench
 data.removeDuplicates                        bench
 data.scenarioAdd                             bench
 data.scenarioDelete                          bench
@@ -115,7 +115,7 @@ data.showDetail                              bench
 data.showLevels                              bench
 data.solver                                  bench
 data.solverLoadModel                         bench
-data.solverReport                            excuse: needs a saved Solver model and a reports array
+data.solverReport                            bench
 data.solverReset                             bench
 data.solverSaveModel                         bench
 data.sort                                    bench
@@ -167,7 +167,7 @@ ext.run                                      bench
 file.close                                   excuse: closes the document under test
 file.exportCsv                               excuse: writes files
 file.exportHtml                              excuse: writes files
-file.exportParquet                           excuse: needs a `path`, and the generator refuses to invent file paths
+file.exportParquet                           excuse: writes a file (its `path` is an input the generator will not invent)
 file.exportPdf                               excuse: renders and writes a PDF
 file.new                                     excuse: opens another document
 file.open                                    excuse: opens another document (reads a file)

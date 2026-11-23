@@ -95,6 +95,7 @@ const NOT_RUN: &[(&str, &str)] = &[
     ("file.exportCsv", "writes files"),
     ("file.exportHtml", "writes files"),
     ("file.exportPdf", "renders and writes a PDF"),
+    ("file.exportParquet", "writes a file (its `path` is an input the generator will not invent)"),
     ("file.print", "renders a PDF (the print path is `file.print`'s own benchmarks)"),
     ("insert.picture", "reads files"),
     ("pageLayout.background", "reads files"),
@@ -444,9 +445,17 @@ fn prepare(rows: usize) -> Result<DocState, String> {
     }
     let objects: u32 = OBJECT_ROWS.min(rows as u32);
     best_effort(&mut s, "insert.table", json!({"range": format!("A1:H{objects}"), "header": true, "name": "Sales"}));
-    // A line chart, not a column one: `chart.formatPoint`'s marker is only meaningful on a line,
-    // scatter, bubble or radar point, and a column's point refuses it.
+    // One line chart for the formatting commands (a line's point takes a marker), and a second one
+    // moved to a chart sheet: `chart.moveToObject` moves a chart *off* a chart sheet back onto one.
     best_effort(&mut s, "insert.chart", json!({"range": "A1:D10", "type": "line", "at": "J2"}));
+    if let Some(sheet_chart) = best_effort_value(&mut s, "insert.chart", json!({"range": "A1:C10", "type": "line", "at": "J20"}))
+        && let Some(id) = sheet_chart.get("chart").and_then(Json::as_u64)
+    {
+        best_effort(&mut s, "chart.moveToSheet", json!({"chart": id, "name": "ChartSheet"}));
+        // Moving a chart creates a chart sheet and makes it active; everything placed after this
+        // point lives on a worksheet.
+        best_effort(&mut s, "sheet.activate", json!({"sheet": sheet.clone()}));
+    }
     best_effort(&mut s, "formulas.defineName", json!({"name": "Data", "refersTo": format!("={}!$A$1:$H${objects}", quoted(&sheet))}));
     best_effort(&mut s, "data.filter", json!({"range": format!("A1:H{objects}")}));
     // The object zoo. Each is placed in the empty columns to the right of the data, where nothing
@@ -487,12 +496,35 @@ fn prepare(rows: usize) -> Result<DocState, String> {
     );
     best_effort(&mut s, "data.scenarioAdd", json!({"name": param_gen::SCENARIO_NAME, "changing": "B2:B10", "values": [1, 2, 3, 4, 5, 6, 7, 8, 9]}));
     // One query, so `data.query.addStep`/`setStep`/`removeStep`/`refresh` have a pipeline to edit
-    // and `data.query.setSource` a source to change. It loads into the data model, not a sheet, so
-    // the workbook's sheet list stays what the other commands' params name.
+    // and `data.query.setSource` a source to change. The source is a range with its header row and
+    // the pipeline promotes it, so the model table carries the sheet's column names (a relationship
+    // or a solver report addresses them by name). It loads into the model, not a sheet, so the
+    // workbook's sheet list stays what the other commands' params name.
     best_effort(
         &mut s,
         "data.query.add",
-        json!({"name": "SalesQuery", "source": {"kind": "table", "table": "Sales"}, "steps": ["PromoteHeaders"], "load": "model"}),
+        json!({"name": "SalesQuery", "source": {"kind": "range", "range": "A1:H1000"}, "steps": ["PromoteHeaders"], "load": "model"}),
+    );
+    // A second model table with one row per region, so `data.relationship.add` has a many-to-one
+    // pair to link (Sales rows to the region they belong to).
+    s.execute("range.setValues", json!({"range": "M1", "values": [["Region"], ["North"], ["South"], ["East"], ["West"]]})).map_err(err)?;
+    best_effort(
+        &mut s,
+        "data.query.add",
+        json!({"name": "Regions", "source": {"kind": "range", "range": "M1:M5"}, "steps": ["PromoteHeaders"], "load": "model"}),
+    );
+    // A Solver model saved in the workbook, so `data.solverReport` has one to write a report for.
+    // `data.solver` saves it unless told not to.
+    s.execute("range.setValues", json!({"range": "L40", "values": [[1.0], [1.0]]})).map_err(err)?;
+    s.execute("cell.set", json!({"cell": "L42", "input": "=L40*2+L41"})).map_err(err)?;
+    best_effort(&mut s, "data.solver", json!({"objective": "L42", "goal": "max", "variables": "L40:L41", "constraints": ["L40<=10", "L41<=10"]}));
+    // One relationship, so `data.relationship.remove` has a link to drop. The measured
+    // `data.relationship.add` takes it out first (see `measure_once`): one command at a time means
+    // the pair cannot both start from the same workbook otherwise.
+    best_effort(
+        &mut s,
+        "data.relationship.add",
+        json!({"from": {"table": "SalesQuery", "column": "Region"}, "to": {"table": "Regions", "column": "Region"}}),
     );
     best_effort(&mut s, "selection.set", json!({"range": "A1:C10"}));
     best_effort(&mut s, "edit.copy", json!({}));
@@ -574,6 +606,28 @@ fn measure_once(base: &DocState, id: &str, rows: usize, scale: &'static str, att
         return Err(format!("clipboard setup failed: {}", copied.err().map(|e| e.to_string()).unwrap_or_default()));
     }
     let spec = command_specs().iter().find(|spec| spec.id == id).ok_or_else(|| format!("unknown command `{id}`"))?;
+    // The memory probe, before anything a command needs from the session: the *first* write in a
+    // session copies the base's shared bands into the session and its undo step, and the engine's
+    // capacity arithmetic then charges that copy to whatever command came next (measured without
+    // this, three unrelated commands reported the same ~693 MB). It is undone straight away so the
+    // redo stack is not left empty — `edit.redo` is one of the commands this catalogue prices —
+    // and it runs before the per-command setup below because an undo restores the active sheet too.
+    best_effort(&mut s, "cell.set", json!({"cell": "ZZ1", "input": "memory probe"}));
+    best_effort(&mut s, "edit.undo", json!({}));
+    // Two commands want a workbook no other command wants, and both are untimed setup here:
+    // `chart.moveToObject` moves the chart that is on the *active* chart sheet (prepare leaves one
+    // named ChartSheet), and `data.relationship.add` needs the relationship prepare installed for
+    // its opposite number taken out first, or it has nothing to add.
+    if id == "chart.moveToObject" {
+        best_effort(&mut s, "sheet.activate", json!({"sheet": "ChartSheet"}));
+    }
+    if id == "data.relationship.add" {
+        best_effort(
+            &mut s,
+            "data.relationship.remove",
+            json!({"from": {"table": "SalesQuery", "column": "Region"}, "to": {"table": "Regions", "column": "Region"}}),
+        );
+    }
     let wb = s.doc().map_err(err)?.wb.clone();
     // One seed per command and scale: two runs generate the same params, and at the two row
     // counts a command's params differ only in the size of the region they name. The retry moves
@@ -581,10 +635,6 @@ fn measure_once(base: &DocState, id: &str, rows: usize, scale: &'static str, att
     let mut rng = Rng::new(seed_of(id, scale).wrapping_add((attempt as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
     let params = doc_params(&mut rng, &wb, id, spec.params, scale_for(scale, rows));
     let before = wb.clone();
-    // Memory is a second axis the same row can carry: what the command *keeps*, measured on the
-    // engine's own report (the store's capacities, the graph, the history) rather than on a heap
-    // census. The deferred-release queue is drained first, so a snapshot the previous setup
-    // dropped is not charged to this command.
     s.release_deferred();
     let mem_before = s.memory_report().total;
     let started = Instant::now();

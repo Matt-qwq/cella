@@ -351,6 +351,11 @@ pub fn query_names(wb: &Workbook) -> Vec<String> {
     wb.queries.iter().map(|q| q.name.clone()).collect()
 }
 
+/// The model tables the workbook holds, as `(name, columns)` — what a relationship links.
+pub fn model_tables(wb: &Workbook) -> Vec<(String, Vec<String>)> {
+    wb.model.tables.iter().map(|t| (t.name.clone(), t.columns.clone())).collect()
+}
+
 pub fn control_ids(wb: &Workbook) -> Vec<u32> {
     wb.sheets.iter().flat_map(|s| s.controls.iter().map(|c| c.id)).collect()
 }
@@ -507,7 +512,36 @@ pub fn doc_params(rng: &mut Rng, wb: &Workbook, cmd: &str, doc: &str, scale: Sca
             p.insert(key, v);
         }
     }
+    // Keys the doc does not name but the command needs: the Analysis ToolPak takes a `range` its
+    // doc only describes in prose, so without this the command is always "missing `range`".
+    for (key, value) in extra_params(cmd, wb, rng, scale) {
+        p.insert(key, value);
+    }
     Json::Object(p)
+}
+
+/// Params a command takes that its `params` doc does not spell out as keys.
+fn extra_params(cmd: &str, _wb: &Workbook, _rng: &mut Rng, scale: Scale) -> Vec<(String, serde_json::Value)> {
+    match cmd {
+        // Descriptive Statistics is the tool with the simplest inputs: one range, a labels row and
+        // an output cell. (The others need two ranges, known variances, or a bins range.)
+        "data.analysisToolPak" => vec![
+            ("tool".to_string(), json!("descriptive")),
+            // One numeric column, header row included: the tool refuses a range that mixes text in.
+            // Column B is the sheet's numbers (column A is the item names).
+            (
+                "range".to_string(),
+                json!(match scale {
+                    Scale::Small => "B1:B11".to_string(),
+                    Scale::Whole { rows, .. } => format!("B1:B{rows}"),
+                }),
+            ),
+            ("output".to_string(), json!("P1")),
+            // The range starts at the header row: without this the tool reads "Id" as a number.
+            ("labels".to_string(), json!(true)),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// Keys a command needs even though its doc marks them optional.
@@ -531,29 +565,22 @@ fn forced_key(cmd: &str, key: &str) -> bool {
     )
 }
 
-/// Keys whose absence is the *valid* call: `pageLayout.themeColors` recolours the workbook's own
-/// theme when it is given no name, and a name the generator invents is an error; `chart.setDataLabels`
-/// is refused when it is given a point's `text` without a point, and every-other-label options are
-/// the ordinary call.
+/// Keys whose absence is the *valid* call, per command:
+/// - `pageLayout.themeColors` recolours the workbook's own theme when given no name, and a name the
+///   generator invents is an error.
+/// - `chart.setDataLabels` edits every series' labels unless given a point, and a point needs a
+///   series and excludes `deletePoint`/`showPoint` and a per-point `text`: all four at once is
+///   contradictory (the command says so), so the catalogue asks for the all-series form.
+/// - `data.query.add` names the new query itself, and the prepared workbook's query already holds
+///   the name the generator would otherwise reuse.
+/// - `data.solverReport` reads the Solver model the workbook saved; its `values`/`original` maps are
+///   cell-to-number objects whose cells must be that model's variables.
 fn omitted_key(cmd: &str, key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    // `themeColors` recolours the workbook's own theme when it is given no name, and a name the
-    // generator invents is an error.
-    if cmd == "pageLayout.themeColors" && k == "name" {
-        return true;
-    }
-    // `chart.setDataLabels` edits every series' labels unless it is given a point, and a point
-    // needs a series and excludes `deletePoint`/`showPoint` and a per-point `text`. All four at
-    // once is contradictory (the command says so), so the catalogue asks for the all-series form.
-    if cmd == "chart.setDataLabels" && matches!(k.as_str(), "text" | "point" | "deletepoint" | "showpoint") {
-        return true;
-    }
-    // `data.query.add` names the new query itself when it is given no name, and the prepared
-    // workbook's one query already holds the name the generator would otherwise reuse.
-    if cmd == "data.query.add" && k == "name" {
-        return true;
-    }
-    false
+    (cmd == "pageLayout.themeColors" && k == "name")
+        || (cmd == "chart.setDataLabels" && matches!(k.as_str(), "text" | "point" | "deletepoint" | "showpoint"))
+        || (cmd == "data.query.add" && k == "name")
+        || (cmd == "data.solverReport" && matches!(k.as_str(), "model" | "values" | "original"))
 }
 
 /// An object the workbook holds, by the name or id its command takes — consulted before the generic
@@ -686,6 +713,24 @@ fn object_value(cmd: &str, key: &str, wb: &Workbook, rng: &mut Rng) -> Option<Js
         "home.formatCells" if k == "style" => Some(json!({"numFmt": "0.00"})),
         // A point's marker takes a colour, not a bool (its hint is `hex|"none"`).
         "chart.formatPoint" if k == "marker" => Some(json!("#C00000")),
+        // `chart.moveToObject` moves a chart *off* a chart sheet, so it wants the chart that
+        // prepare moved there — the last one it created.
+        "chart.moveToObject" if k == "chart" => chart_ids(wb).last().map(|id| json!(id)),
+        // A report is a list of kinds, not a table column: the generic rules read the hint's
+        // square brackets as a column name.
+        "data.solverReport" if k == "reports" => Some(json!(["answer"])),
+        // A relationship links two model tables on a column they share; the prepared workbook has
+        // two (`SalesQuery` and `Regions`) and both carry `Region`.
+        c if c.starts_with("data.relationship.") => match k.as_str() {
+            "from" | "to" => {
+                let tables = model_tables(wb);
+                let pick = if k == "from" { 0 } else { 1 };
+                let (name, columns) = tables.get(pick).or_else(|| tables.first())?;
+                let shared = columns.iter().find(|c| c.eq_ignore_ascii_case("Region"));
+                Some(json!({"table": name, "column": shared.or_else(|| columns.first()).cloned().unwrap_or_default()}))
+            }
+            _ => None,
+        },
         // Every chart command addresses a chart by id, and the prepared workbook has one: an id
         // drawn at random names no chart and the command answers "no chart on this sheet".
         c if c.starts_with("chart.") && k == "chart" => first(chart_ids(wb)),

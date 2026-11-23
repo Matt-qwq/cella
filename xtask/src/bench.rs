@@ -347,11 +347,11 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
           ran and the answer was no (nothing found, no such table), `no change` means an edit that \
           changed nothing, and `PANIC` would mean a caught panic. `-` means that configuration was \
           not measured at all.\n\n";
-    s += "The `kept` column is the second axis: the live-heap bytes a command adds, from the engine's \
-          own report (`Session::memory_report`) after minus before, with the deferred-release queue \
-          drained first. It is the memory a command keeps — the store's capacities, the graph, the \
-          history — not a heap census, so it reads as \"this operation costs a hundred and fifty \
-          megabytes while it runs\", which is what a machine with less RAM than the file feels.\n\n";
+    s += "The `kept` column this page carried in round 44 is **withdrawn**: the memory reading \
+          charges a command's first write with the session's copy of the shared bands, and three \
+          unrelated commands (a sort, a font step, a solver report) all read the same ~700 MB at \
+          100,000 rows. The measurement still runs into the JSON; [performance.md](performance.md) \
+          says what has to be understood before it is published.\n\n";
 
     // The slowest, which is the part a person reads first.
     let widest = c.rows.iter().copied().max().unwrap_or(0);
@@ -367,21 +367,7 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
         s += "\n";
     }
 
-    // The hungriest, same reading order: memory is the other axis a command costs.
-    let mut hungriest: Vec<&Measurement> = c.measurements.iter().filter(|m| m.rows == widest && m.bytes > 0).collect();
-    hungriest.sort_by(|a, b| b.bytes.cmp(&a.bytes));
-    hungriest.truncate(10);
-    if widest > 0 && !hungriest.is_empty() {
-        s += &format!("## The ten that keep the most memory at {} rows\n\n", thousands(widest));
-        s += "The engine's own report (the store's capacities, the graph, the history), after minus \
-              before the command, with the deferred-release queue drained first — the memory a \
-              command keeps, not a heap census.\n\n";
-        s += "| command | scale | kept | time |\n|---|---|---|---|\n";
-        for m in &hungriest {
-            s += &format!("| `{}` | {} | {} | {} |\n", m.id, m.scale, fmt_bytes(m.bytes), fmt_ms(m.ms));
-        }
-        s += "\n";
-    }
+    // The hungriest table is withdrawn with the column it was built from: see the paragraph above.
 
     // The whole catalogue, in registration order (the order the example measured).
     let mut ids: Vec<&str> = Vec::new();
@@ -399,8 +385,8 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
             sep += "---|";
         }
     }
-    head += " kept | note |\n";
-    sep += "---|---|\n";
+    head += " note |\n";
+    sep += "---|\n";
     s += &head;
     s += &sep;
     for id in &ids {
@@ -432,13 +418,6 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
         }
         let said: Vec<String> =
             notes.iter().map(|(body, scales)| if c.scales.len() > 1 { format!("{}: {body}", scales.join("/")) } else { body.clone() }).collect();
-        let kept = c
-            .measurements
-            .iter()
-            .filter(|m| m.id == *id)
-            .max_by(|a, b| a.bytes.cmp(&b.bytes))
-            .map_or_else(|| "0".to_string(), |m| fmt_bytes(m.bytes));
-        line += &format!(" {kept} |");
         line += &format!(" {} |\n", said.join("; "));
         s += &line;
     }
@@ -1364,8 +1343,8 @@ mod tests {
         assert_eq!((c.rows.clone(), c.scales.len(), c.commands), (vec![1000], 2, 2));
         let facts = Facts { version: "0.0.0", sha: "deadbeef", date: "2026-11-23", machine: "test".into() };
         let page = render_catalogue(&facts, &c);
-        assert!(page.contains("| `home.bold` | 12 us | 1.23 s | 0 |  |"), "{page}");
-        assert!(page.contains("| `data.sort` | 0 us | 4.5 ms | 0 | small: refused: nothing to sort |"), "{page}");
+        assert!(page.contains("| `home.bold` | 12 us | 1.23 s |  |"), "{page}");
+        assert!(page.contains("| `data.sort` | 0 us | 4.5 ms | small: refused: nothing to sort |"), "{page}");
         assert!(page.contains("## The twenty slowest commands at 1,000 rows"), "{page}");
         assert!(page.contains("| `file.open` | reads files |"), "{page}");
         assert!(page.contains("2 of them measured."), "{page}");
