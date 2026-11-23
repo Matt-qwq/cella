@@ -237,7 +237,7 @@ hide, and the page lists the ones still in that state.
 read a scalar number as "the floor plus what the function added"; the `whole` column is where the
 function's own cost shows.
 
-**What the first run found** (2026-11-23, 517 functions × 2 row counts, 72 s):
+**What the first run found** (2026-11-23, 517 functions × 2 row counts, 30 s of measuring):
 
 - **498 of 517 functions answer at 1M rows**; nine do not, and each is listed with what it said
   (the `FORECAST.ETS` family refuses a whole-column series, `T.TEST` divides by zero on ten rows,
@@ -1843,7 +1843,7 @@ Adding a **command** is two steps: one line in [`xtask/bench-coverage.txt`](../x
   `error` marker for functions whose documented answer is an error), and
   `cargo xtask bench-functions --check` is **`ci`'s eleventh step**: a registered function with no
   line, a line naming no registered function, a duplicate and a call that does not start with its own
-  name are all red. The 72-second run found **498 of 517 answering at 1M** and the program's slowest
+  name are all red. The run measures all 517 in **30 s** (a rebuild adds ~40 s) and found **498 of 517 answering at 1M** and the program's slowest
   formulas: **`PIVOTBY` 5.21 s, `GROUPBY` 2.43 s, `UNIQUE` 1.43 s, `BYROW` 1.15 s** (a LAMBDA per
   row), `DROP` 771 ms, `SCAN` 601 ms, `MAP` 538 ms, `PHONETIC` 522 ms, `HSTACK` 370 ms, `SORT`
   268 ms. A whole-column argument costs 25–80 ms of materialisation before the function starts
