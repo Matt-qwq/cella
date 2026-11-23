@@ -58,6 +58,13 @@ const STEPS: &[(&str, &str, Step)] = &[
     // Last, because it opens a workbook of its own: a CSV has no formulas, and the scenarios above
     // measure the formulas the others built.
     ("open.csv", "write the sheet as a CSV file, then read that file back", open_csv),
+    // The four below run *after* `open.csv`, on the values-only workbook that import leaves behind:
+    // they write a block and hide rows, which would change what `save.xlsx` and `open.xlsx` measure
+    // if they ran earlier. Each is one operation a person waits on (docs/performance.md).
+    ("filter.apply", "apply an AutoFilter over the whole body", filter_apply),
+    ("filter.clear", "clear that AutoFilter again", filter_clear),
+    ("find.replaceAll", "Replace All: scan every used cell and rewrite each match", find_replace_all),
+    ("paste.block", "paste a block of rows × 6 cells (copy A:F, paste at L1)", paste_block),
 ];
 
 struct Bench {
@@ -460,6 +467,40 @@ fn rebuild_graph(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
         Ok(d.calc.graph.len())
     })?;
     Ok((format!("{formulas} formulas indexed"), ms))
+}
+
+/// AutoFilter over the whole body: what "select everything and filter it" costs. The cost is the
+/// row-visibility bitmap and the filter's column index over every row, not the paint.
+fn filter_apply(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("data.filter", json!({"range": format!("A1:F{rows}")})).map(|_| ()))?;
+    Ok((format!("AutoFilter applied over {rows} rows"), ms))
+}
+
+/// Clearing it again: the half the dropdown never shows.
+fn filter_clear(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("data.clearFilter", json!({})).map(|_| ()))?;
+    Ok(("the AutoFilter cleared".to_string(), ms))
+}
+
+/// Replace All across the whole sheet: every used cell is read and each match is rewritten. The
+/// needle is in column A of every row, so the write half is priced too — a scan that finds nothing
+/// is `edit.find`'s other shape.
+fn find_replace_all(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let (replaced, ms) = timed(|| {
+        let out = b.exec("edit.replace", json!({"what": "Item", "with": "Product", "all": true}))?;
+        Ok(out.get("replaced").and_then(Value::as_u64).unwrap_or(0))
+    })?;
+    Ok((format!("{replaced} cells replaced, every used cell scanned"), ms))
+}
+
+/// Paste a block: the copy is setup (it moves an `Arc`), the paste is the number — rows × 6 cells
+/// written into empty columns. The workbook this runs on came back from a CSV, so the block is
+/// values without styles; `paste_bench` measures the styled shape on a built workbook.
+fn paste_block(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    b.exec("selection.set", json!({"range": format!("A1:F{rows}")}))?;
+    b.exec("edit.copy", json!({}))?;
+    let ((), ms) = timed(|| b.exec("edit.paste", json!({"at": "L1"})).map(|_| ()))?;
+    Ok((format!("{} cells pasted", 6usize.saturating_mul(rows)), ms))
 }
 
 /// The `--json` document: one row per (scenario, row count), in run order.
