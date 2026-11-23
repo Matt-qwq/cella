@@ -495,7 +495,12 @@ pub fn alternatives(hint: &str) -> Option<Vec<String>> {
 pub fn doc_params(rng: &mut Rng, wb: &Workbook, cmd: &str, doc: &str, scale: Scale) -> Json {
     let mut p = serde_json::Map::new();
     for (key, optional, hint) in doc_keys(doc) {
-        if optional && rng.chance(40) {
+        // A key the doc marks optional but the command cannot run without: the fuzzer wants the
+        // odd refusal, the catalogue is measuring the command and "it said no" is not a cost.
+        if omitted_key(cmd, &key) {
+            continue;
+        }
+        if optional && !forced_key(cmd, &key) && rng.chance(40) {
             continue;
         }
         if let Some(v) = doc_value(rng, wb, cmd, &key, &hint, scale) {
@@ -503,6 +508,52 @@ pub fn doc_params(rng: &mut Rng, wb: &Workbook, cmd: &str, doc: &str, scale: Sca
         }
     }
     Json::Object(p)
+}
+
+/// Keys a command needs even though its doc marks them optional.
+///
+/// The catalogue runs a command alone, so a command whose optional key is the one that makes it do
+/// work is a command with no number. Listing it here (rather than never skipping optionals at all)
+/// keeps the fuzzer's deliberately thin params for everything else.
+fn forced_key(cmd: &str, key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    matches!(
+        (cmd, k.as_str()),
+        // A Timeline needs the PivotTable it filters; without one the command asks the user to
+        // select a cell in a report and does nothing.
+        ("insert.timeline", "pivot")
+            // A Data Table needs at least one input cell; both are optional because either will do.
+            | ("data.dataTable", "rowinput")
+            | ("data.dataTable", "columninput")
+            // A point's label is addressed by series and point: `text` alone is refused.
+            | ("chart.setDataLabels", "series")
+            | ("chart.setDataLabels", "point")
+    )
+}
+
+/// Keys whose absence is the *valid* call: `pageLayout.themeColors` recolours the workbook's own
+/// theme when it is given no name, and a name the generator invents is an error; `chart.setDataLabels`
+/// is refused when it is given a point's `text` without a point, and every-other-label options are
+/// the ordinary call.
+fn omitted_key(cmd: &str, key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    // `themeColors` recolours the workbook's own theme when it is given no name, and a name the
+    // generator invents is an error.
+    if cmd == "pageLayout.themeColors" && k == "name" {
+        return true;
+    }
+    // `chart.setDataLabels` edits every series' labels unless it is given a point, and a point
+    // needs a series and excludes `deletePoint`/`showPoint` and a per-point `text`. All four at
+    // once is contradictory (the command says so), so the catalogue asks for the all-series form.
+    if cmd == "chart.setDataLabels" && matches!(k.as_str(), "text" | "point" | "deletepoint" | "showpoint") {
+        return true;
+    }
+    // `data.query.add` names the new query itself when it is given no name, and the prepared
+    // workbook's one query already holds the name the generator would otherwise reuse.
+    if cmd == "data.query.add" && k == "name" {
+        return true;
+    }
+    false
 }
 
 /// An object the workbook holds, by the name or id its command takes — consulted before the generic
@@ -518,6 +569,9 @@ fn object_value(cmd: &str, key: &str, wb: &Workbook, rng: &mut Rng) -> Option<Js
         {
             match k.as_str() {
                 "pivot" => pick(pivot_names(wb)),
+                // A Timeline filters on a date field, and the prepared PivotTable's axis fields
+                // (a region, a quantity) are not dates: the source's Date column is what carries one.
+                "field" if cmd == "insert.timeline" => Some(json!("Date")),
                 "field" => pick(pivot_axis_fields(wb)),
                 "slicer" => pick(slicer_names(wb)),
                 "timeline" => pick(timeline_names(wb)),
@@ -566,6 +620,16 @@ fn object_value(cmd: &str, key: &str, wb: &Workbook, rng: &mut Rng) -> Option<Js
         },
         c if c.starts_with("data.query.") => match k.as_str() {
             "name" | "query" => pick(query_names(wb)),
+            // A query source is a tagged object: a table the workbook carries is the one source the
+            // prepared workbook can always serve.
+            "source" => Some(json!({
+                "kind": "table",
+                "table": tables(wb).first().map(|(_, t)| t.name.clone()).unwrap_or_else(|| "Sales".to_string()),
+            })),
+            // A step is a serde enum: the unit variant is its name, the rest are objects.
+            "step" => Some(json!("PromoteHeaders")),
+            "steps" => Some(json!(["PromoteHeaders"])),
+            "index" => Some(json!(0)),
             _ => None,
         },
         c if c.starts_with("control.") => match k.as_str() {
@@ -605,9 +669,26 @@ fn object_value(cmd: &str, key: &str, wb: &Workbook, rng: &mut Rng) -> Option<Js
         "object.format" => match k.as_str() {
             "kind" => Some(json!("shape")),
             "bold" | "italic" => Some(json!(true)),
+            // A typeface name, not a bool: the hint says `typeface` and the generic rules read any
+            // unrecognised hint as a number.
+            "font" => Some(json!("Arial")),
+            // Colours: the hints are `#RRGGBB|{theme, tint}|none` and the generic rules read them as
+            // a range; the outline is an object of its own.
+            "line" | "text_color" | "fill" => Some(json!("#1F4E79")),
+            "text_outline" => Some(json!({"color": "#1F4E79", "width": 1})),
             "alt" => Some(json!("an object")),
+            // A shape is addressed by id, and a chart id names no shape.
+            "id" => first(shape_ids(wb)),
             _ => None,
         },
+        // A whole `Style` is a struct of structs; a partial patch is what the command takes, and
+        // the number format is the one part whose JSON is a plain string.
+        "home.formatCells" if k == "style" => Some(json!({"numFmt": "0.00"})),
+        // A point's marker takes a colour, not a bool (its hint is `hex|"none"`).
+        "chart.formatPoint" if k == "marker" => Some(json!("#C00000")),
+        // Every chart command addresses a chart by id, and the prepared workbook has one: an id
+        // drawn at random names no chart and the command answers "no chart on this sheet".
+        c if c.starts_with("chart.") && k == "chart" => first(chart_ids(wb)),
         "automate.appendStep" | "automate.editStep" if k == "params" => Some(json!({})),
         "insert.timeline" if k == "field" => Some(json!("Date")),
         "data.consolidate" if k == "sources" => Some(json!(["Sheet1!$A$1:$B$10"])),

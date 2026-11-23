@@ -444,7 +444,9 @@ fn prepare(rows: usize) -> Result<DocState, String> {
     }
     let objects: u32 = OBJECT_ROWS.min(rows as u32);
     best_effort(&mut s, "insert.table", json!({"range": format!("A1:H{objects}"), "header": true, "name": "Sales"}));
-    best_effort(&mut s, "insert.chart", json!({"range": "A1:D10", "type": "column", "at": "J2"}));
+    // A line chart, not a column one: `chart.formatPoint`'s marker is only meaningful on a line,
+    // scatter, bubble or radar point, and a column's point refuses it.
+    best_effort(&mut s, "insert.chart", json!({"range": "A1:D10", "type": "line", "at": "J2"}));
     best_effort(&mut s, "formulas.defineName", json!({"name": "Data", "refersTo": format!("={}!$A$1:$H${objects}", quoted(&sheet))}));
     best_effort(&mut s, "data.filter", json!({"range": format!("A1:H{objects}")}));
     // The object zoo. Each is placed in the empty columns to the right of the data, where nothing
@@ -484,6 +486,14 @@ fn prepare(rows: usize) -> Result<DocState, String> {
         json!({"name": param_gen::EXTENSION_NAME, "commands": [{"command": "cell.set", "params": {"cell": "Z21", "input": "2"}}]}),
     );
     best_effort(&mut s, "data.scenarioAdd", json!({"name": param_gen::SCENARIO_NAME, "changing": "B2:B10", "values": [1, 2, 3, 4, 5, 6, 7, 8, 9]}));
+    // One query, so `data.query.addStep`/`setStep`/`removeStep`/`refresh` have a pipeline to edit
+    // and `data.query.setSource` a source to change. It loads into the data model, not a sheet, so
+    // the workbook's sheet list stays what the other commands' params name.
+    best_effort(
+        &mut s,
+        "data.query.add",
+        json!({"name": "SalesQuery", "source": {"kind": "table", "table": "Sales"}, "steps": ["PromoteHeaders"], "load": "model"}),
+    );
     best_effort(&mut s, "selection.set", json!({"range": "A1:C10"}));
     best_effort(&mut s, "edit.copy", json!({}));
     // Two formulas the formula-auditing commands can trace (J6 depends on J5, J5 on B2:B10).
