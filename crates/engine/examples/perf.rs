@@ -65,6 +65,13 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("filter.clear", "clear that AutoFilter again", filter_clear),
     ("find.replaceAll", "Replace All: scan every used cell and rewrite each match", find_replace_all),
     ("paste.block", "paste a block of rows × 6 cells (copy A:F, paste at L1)", paste_block),
+    // The second batch (round 43), also last and for the same reason: each one restructures the
+    // sheet, paints a rule over it or exports it, so it must not run before the rows above.
+    ("struct.insertColumn", "insert a column left of a million rows", struct_insert_column),
+    ("struct.deleteColumn", "delete it again (the inverse edit)", struct_delete_column),
+    ("cf.apply", "apply a data-bar rule over rows × 6 cells (the rule; painting it is the UI's ruler)", cf_apply),
+    ("pivot.refresh", "build a PivotTable's cache and report over a million rows", pivot_refresh),
+    ("print.pdf", "export the million-row body as a PDF (stops at the 2000-page cap)", print_pdf),
 ];
 
 struct Bench {
@@ -501,6 +508,69 @@ fn paste_block(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
     b.exec("edit.copy", json!({}))?;
     let ((), ms) = timed(|| b.exec("edit.paste", json!({"at": "L1"})).map(|_| ()))?;
     Ok((format!("{} cells pasted", 6usize.saturating_mul(rows)), ms))
+}
+
+/// Insert a column left of the body: a million rows shift right, and every formula that pointed
+/// into the body is re-addressed. The row edits above are the same edit on the other axis; this one
+/// is here because a column's width, its style and its header all move with it.
+fn struct_insert_column(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("home.insertColumns", json!({"cols": "C:C"})).map(|_| ()))?;
+    Ok(("a column inserted at C".to_string(), ms))
+}
+
+fn struct_delete_column(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("home.deleteColumns", json!({"cols": "C:C"})).map(|_| ()))?;
+    Ok(("that column deleted again".to_string(), ms))
+}
+
+/// A conditional-format rule over six million cells. The command stores the rule; the cost a
+/// person feels is the paint, which is the UI's ruler (`docs/performance-ui.md`) — what is
+/// measured here is the engine half: the rule's range, its validation and the statistics the grid
+/// asks for on the first look.
+fn cf_apply(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("home.conditionalFormat", json!({"range": format!("A1:F{rows}"), "rule": {"type": "dataBar"}})).map(|_| ()))?;
+    Ok((format!("a data-bar rule over {rows} rows × 6 columns"), ms))
+}
+
+/// A PivotTable's refresh over a million rows: the source range is written first (two columns with
+/// a header row, so the report has a field to group by), the report is created untimed, and the
+/// command that rebuilds its cache and lays it out is the number.
+fn pivot_refresh(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    // Setup: a header row and `rows` rows of (group, value) in T:U, in chunks like every other fill.
+    b.exec("range.setValues", json!({"range": "T1", "values": [["Group", "Value"]]}))?;
+    let mut r = 0;
+    while r < rows {
+        let n = CHUNK.min(rows - r);
+        let values: Vec<Value> = (0..n).map(|i| json!([(r + i) % 4, (r + i) % 97])).collect();
+        b.exec("range.setValues", json!({"range": format!("T{}", r + 2), "values": values}))?;
+        r += n;
+    }
+    // The workbook here came from a CSV, so the sheet is named after the file: quote it.
+    let name = b.session.doc().map_err(err)?.wb.active().map(|sh| sh.name.replace('\'', "''")).unwrap_or_else(|| "Sheet1".into());
+    let source = format!("'{name}'!$T$1:$U${}", rows + 1);
+    let created = b.exec(
+        "insert.pivotTable",
+        json!({"source": source, "destination": "W2", "rows": ["Group"], "values": [{"field": "Value", "func": "sum"}]}),
+    )?;
+    let name = created.get("name").and_then(Value::as_str).unwrap_or("PivotTable1").to_string();
+    let ((), ms) = timed(|| b.exec("pivot.refresh", json!({"pivot": name, "replace": true})).map(|_| ()))?;
+    Ok((format!("{rows} source rows rebuilt into the report"), ms))
+}
+
+/// Print to PDF: a million rows of six columns through the page-setup path, the paginator and the
+/// writer. The file goes to the temp dir and is removed again — the number is the export, not the
+/// disk.
+fn print_pdf(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    let path = std::env::temp_dir().join(format!("cella-perf-{rows}.pdf"));
+    let path = path.to_string_lossy().into_owned();
+    let (out, ms) = timed(|| b.exec("file.exportPdf", json!({"path": path, "range": format!("A1:F{rows}"), "sheets": "active"})))?;
+    let bytes = out.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    let pages = out.get("pages").and_then(Value::as_u64).unwrap_or(0);
+    let _ = std::fs::remove_file(&path);
+    // The export stops at `print::MAX_PAGES` (2000): a million rows is more pages than anyone
+    // prints, so the row says what it does — the cap, and how long reaching it takes.
+    let cap = if pages >= 2000 { " (the 2000-page cap)" } else { "" };
+    Ok((format!("{pages} pages{cap}, {bytes} bytes"), ms))
 }
 
 /// The `--json` document: one row per (scenario, row count), in run order.

@@ -57,6 +57,33 @@ machine, in this order — open, apply, clear, replace, paste:
   here — the workbook it runs on came back from a CSV; `paste_bench` measures the styled shape at
   1.3 s.)
 
+## The second batch round 43 added (2026-11-23, one pass each)
+
+A column edit on the other axis, and a conditional-format rule over six million cells. Same protocol
+as above: same file, same machine, one pass each, in this order — open, insert a column at C, delete
+it, apply a data bar to `A1:F1000001`:
+
+| operation, 1M rows | Excel 16.0 | WPS 12.1 | Cella |
+|---|---:|---:|---:|
+| **insert a column at C** (shift 1M rows right) | 0.941 s | 0.497 s | **0.017 s** |
+| **delete it again** | 1.365 s | 0.452 s | **0.013 s** |
+| **apply a data bar over 6M cells** | 0.165 s | 0.035 s | **0.0011 s** |
+| open the file (control, this session) | 13.5 s | 12.3 s | — |
+
+- **A column insert/delete is 29–105× cheaper here**, and the reason is in the store: Cella keeps a
+  sheet's cells in row bands with a column offset, so moving a column is bookkeeping, while both
+  other products rewrite a million shifted cells. This is the one place in the comparison where the
+  data structure, not the code, is the answer.
+- **The data bar is not the same operation.** Cella stores the rule (1.1 ms) and builds its
+  statistics when the grid first paints it — the UI's ruler, in
+  [performance-ui.md](performance-ui.md). Excel's 165 ms and WPS's 35 ms include their own
+  structure build. The honest reading is "the rule costs Cella nothing measurable; what it costs to
+  *paint* is not in this table".
+- **Not replayed:** `pivot.refresh` (each product builds a PivotTable through a different API, so the
+  comparable operation is Insert PivotTable, not Refresh — Cella's own row is the engine's) and
+  `print.pdf` (pagination, fonts and page caps differ by product; the 1M row export stops at
+  Cella's 2,000-page cap).
+
 ## What this says
 
 - **Cella opens this file 3.5x faster than Excel and 4.5x faster than WPS.** That has been true

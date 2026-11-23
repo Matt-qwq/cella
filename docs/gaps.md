@@ -1548,6 +1548,26 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - Font weights beyond regular/bold (#168), system font list (#4), Calibri metrics (#29), macOS
   chrome (#169, #170), Linux title bar (#54), icon consistency across apps (#173). **Estimate:** 7–12 h.
 
+### 25. `data.subtotal` rebuilds the sheet one total row at a time (P)
+
+**What:** `data.subtotal` inserts each group's total row with `home.insertRows`, so every group pays
+a shift of every row below it (`crates/engine/src/cmd/data.rs::subtotal`). On a million rows that is
+**Θ(groups × rows)**: 57 ms for four groups at 100k, 680 ms for four at 1M, **8.70 s for a hundred**,
+and the command catalogue's own worst row (28.4 s) is about 330 adjacent groups. On *unsorted* data
+every row is its own group (Subtotal totals adjacent equal values, as in Excel), so the command does
+not finish — the first probe had to be killed.
+
+**Why it matters:** Data ▸ Subtotal is what a report does before a chart, and a hundred groups is an
+ordinary report. Eight seconds is the longest a person waits on any one command in this program.
+
+**Fix:** compute every group boundary first and rebuild the body once (the aggregates are ~0.7 s of
+`SUBTOTAL` evaluation for a hundred groups), instead of inserting a row per group. The sheet body is
+rebuilt, so the undo step and the graph rewrite change shape with it — a design change, not a patch.
+
+**Evidence:** [performance.md](performance.md) §"`data.subtotal`: one row insert per group" — the
+scaling table, a probe over sorted data, and where the 28.4 s comes from. **Estimate:** 4–7 h with
+the paired sign test.
+
 ## Revision history
 
 | Date | Change | Summary |
