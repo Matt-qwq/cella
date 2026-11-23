@@ -74,6 +74,11 @@ const CHUNK: usize = 10_000;
 const OBJECT_ROWS: u32 = 1_000;
 /// Upper bound for `--repeat` (input-derived work, so it is capped).
 const MAX_REPEAT: usize = 10;
+/// How many generated param sets a command gets before the catalogue records that the workbook
+/// turned them all down. Four is enough for the keys the generator deliberately fuzzes wrong
+/// (a sheet that does not exist, a name that is not valid) and small enough that the run stays
+/// under a minute.
+const TRIES: usize = 4;
 
 /// The scales every command is measured at, and what each one answers.
 const SCALES: [(&str, &str); 2] = [("small", "params near the top-left, the fuzzer's"), ("whole", "region params over the whole used area")];
@@ -360,43 +365,101 @@ fn fmt_ms(ms: f64) -> String {
     }
 }
 
-/// The workbook every command starts from: `rows` × 6 value columns, plus one of each object a
-/// command needs to have something to work on — a table, a chart, a defined name, a selection, a
-/// clipboard block and an undo step.
+/// The workbook every command starts from: `rows` × 8 value columns, plus one of each object a
+/// command needs to have something to work on — a table, a chart, a PivotTable with its slicer and
+/// timeline, a shape, a text box, an equation, a WordArt, a button, a slider, a sparkline, a note,
+/// a comment, a checkbox and a script.
 ///
 /// Prepared once per row count and cloned per command ([`measure`]), so a command does not pay
 /// for the data the sheet already holds. The data and the undo step are required (a base without
-/// them would not be the workbook this page claims to measure); the objects are best-effort, and
-/// a command that could not be placed says so on stderr instead of failing the run.
+/// them would not be the workbook this page claims to measure); the objects are best-effort, and a
+/// command that could not be placed says so on stderr instead of failing the run.
 fn prepare(rows: usize) -> Result<DocState, String> {
     let mut s = Session::new();
     s.new_workbook();
     let sheet = s.doc().map_err(err)?.wb.sheets.first().map(|sh| sh.name.clone()).unwrap_or_else(|| "Sheet1".into());
+    // Row 1 is the header, so a table and a PivotTable have named columns to work with.
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Item", "Qty", "Mod", "Half", "Region", "Date", "One", "Two"]]})).map_err(err)?;
+    let data_rows = rows.saturating_sub(1);
     let mut r = 0;
-    while r < rows {
-        let n = CHUNK.min(rows - r);
+    while r < data_rows {
+        let n = CHUNK.min(data_rows - r);
         let values: Vec<Json> = (0..n)
             .map(|i| {
                 let n = r + i;
-                json!([format!("Item {n}"), n as f64, (n % 97) as f64, (n % 13) as f64 * 1.5, 1.0, 2.0])
+                json!([
+                    format!("Item {n}"),
+                    n as f64,
+                    (n % 97) as f64,
+                    (n % 13) as f64 * 1.5,
+                    REGIONS[n % REGIONS.len()],
+                    format!("2026-{:02}-{:02}", 1 + n % 12, 1 + n % 28),
+                    1.0,
+                    2.0
+                ])
             })
             .collect();
-        s.execute("range.setValues", json!({"range": format!("A{}", r + 1), "values": values})).map_err(err)?;
+        s.execute("range.setValues", json!({"range": format!("A{}", r + 2), "values": values})).map_err(err)?;
         r += n;
     }
     let objects: u32 = OBJECT_ROWS.min(rows as u32);
-    best_effort(&mut s, "insert.table", json!({"range": format!("A1:F{objects}"), "header": true, "name": "Sales"}));
-    best_effort(&mut s, "insert.chart", json!({"range": "A1:B10", "type": "column", "at": "J2"}));
-    best_effort(&mut s, "formulas.defineName", json!({"name": "Data", "refersTo": format!("={}!$A$1:$F${objects}", quoted(&sheet))}));
-    best_effort(&mut s, "data.filter", json!({"range": format!("A1:F{objects}")}));
+    best_effort(&mut s, "insert.table", json!({"range": format!("A1:H{objects}"), "header": true, "name": "Sales"}));
+    best_effort(&mut s, "insert.chart", json!({"range": "A1:D10", "type": "column", "at": "J2"}));
+    best_effort(&mut s, "formulas.defineName", json!({"name": "Data", "refersTo": format!("={}!$A$1:$H${objects}", quoted(&sheet))}));
+    best_effort(&mut s, "data.filter", json!({"range": format!("A1:H{objects}")}));
+    // The object zoo. Each is placed in the empty columns to the right of the data, where nothing
+    // a command does to A:H can reach it; the PivotTable's own name is what `pivot.*` takes.
+    let pivot = match best_effort_value(
+        &mut s,
+        "insert.pivotTable",
+        json!({"source": "Sales", "destination": "N2", "rows": ["Region"], "values": [{"field": "Qty", "func": "sum"}]}),
+    ) {
+        Some(v) => v.get("name").and_then(Json::as_str).map(str::to_string),
+        None => None,
+    };
+    if let Some(p) = &pivot {
+        best_effort(&mut s, "insert.slicer", json!({"pivot": p, "field": "Region", "at": "R2"}));
+        best_effort(&mut s, "insert.timeline", json!({"pivot": p, "field": "Date", "at": "R20"}));
+        best_effort(&mut s, "insert.pivotChart", json!({"pivot": p, "at": "V2"}));
+    }
+    best_effort(&mut s, "insert.shape", json!({"kind": "roundedRectangle", "at": "R38", "text": "hi"}));
+    best_effort(&mut s, "insert.textBox", json!({"at": "R42", "text": "note"}));
+    best_effort(&mut s, "insert.equation", json!({"at": "R46", "text": "a+b"}));
+    best_effort(&mut s, "insert.wordArt", json!({"style": 0, "text": "Go", "at": "V40"}));
+    best_effort(&mut s, "insert.button", json!({"at": "V44", "text": "Run", "command": "cell.set", "params": {"cell": "Z1", "input": "1"}}));
+    best_effort(&mut s, "insert.slider", json!({"at": "V48", "link": "$Z$2", "min": 0, "max": 100, "value": 5}));
+    best_effort(&mut s, "insert.sparkline", json!({"range": "B2:E2", "location": "Z5", "type": "line"}));
+    best_effort(&mut s, "insert.checkbox", json!({"range": "Z10:Z12"}));
+    best_effort(&mut s, "review.newNote", json!({"cell": "A1", "text": "note"}));
+    best_effort(&mut s, "review.newComment", json!({"cell": "B1", "text": "comment"}));
+    best_effort(&mut s, "draw.stroke", json!({"points": [[200.0, 200.0], [260.0, 240.0], [300.0, 200.0]], "color": "#FF0000"}));
+    best_effort(
+        &mut s,
+        "automate.newScript",
+        json!({"name": param_gen::SCRIPT_NAME, "commands": [{"command": "cell.set", "params": {"cell": "Z20", "input": "1"}}]}),
+    );
+    best_effort(
+        &mut s,
+        "ext.add",
+        json!({"name": param_gen::EXTENSION_NAME, "commands": [{"command": "cell.set", "params": {"cell": "Z21", "input": "2"}}]}),
+    );
+    best_effort(&mut s, "data.scenarioAdd", json!({"name": param_gen::SCENARIO_NAME, "changing": "B2:B10", "values": [1, 2, 3, 4, 5, 6, 7, 8, 9]}));
     best_effort(&mut s, "selection.set", json!({"range": "A1:C10"}));
     best_effort(&mut s, "edit.copy", json!({}));
-    // One ordinary edit, so `edit.undo` and `edit.redo` have a step to work on: without it they
-    // are refused ("nothing to undo") and a 0 ms row would say nothing about either.
+    // Two formulas the formula-auditing commands can trace (J6 depends on J5, J5 on B2:B10).
+    s.execute("cell.set", json!({"cell": "J5", "input": "=SUM(B2:B10)"})).map_err(err)?;
+    s.execute("cell.set", json!({"cell": "J6", "input": "=J5*2"})).map_err(err)?;
+    // Two ordinary edits with one undone, so `edit.undo` and `edit.redo` each have a step to work
+    // on: without them they are refused ("nothing to undo") and a 0 ms row would say nothing.
     s.execute("cell.set", json!({"cell": "J1", "input": "5"})).map_err(err)?;
+    s.execute("cell.set", json!({"cell": "J1", "input": "6"})).map_err(err)?;
+    s.execute("edit.undo", json!({})).map_err(err)?;
     let doc = s.doc().map_err(err)?.clone();
     Ok(doc)
 }
+
+/// The four regions a data row carries, so a slicer has tiles and a PivotTable has row items.
+const REGIONS: [&str; 4] = ["North", "South", "East", "West"];
 
 /// Place one of the workbook's optional objects. A failure is reported and stepped over: the
 /// catalogue's numbers are about the commands, not about this setup.
@@ -406,8 +469,51 @@ fn best_effort(s: &mut Session, id: &str, params: Json) {
     }
 }
 
-/// Run one command once, in a fresh session holding a copy of `base`, and time it.
+/// [`best_effort`] for the objects whose id or name a later command has to name (a PivotTable's
+/// name, a control's id).
+fn best_effort_value(s: &mut Session, id: &str, params: Json) -> Option<Json> {
+    match s.execute(id, params) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("bench_commands: preparing `{id}`: {e} (continuing without it)");
+            None
+        }
+    }
+}
+
+/// Run one command once, in a fresh session holding a copy of `base`, and time it. A command whose
+/// generated params the workbook turns down is retried with another draw ([`TRIES`]): the params
+/// generator also produces deliberately wrong values (a sheet that does not exist, a name that is
+/// not valid), which is what the fuzzer wants and what a catalogue must look past.
 fn measure(base: &DocState, id: &str, rows: usize, scale: &'static str) -> Result<Measurement, String> {
+    let mut best: Option<Measurement> = None;
+    for attempt in 0..TRIES {
+        let m = measure_once(base, id, rows, scale, attempt)?;
+        let ok = m.outcome == "ok";
+        if best.as_ref().is_none_or(|b| rank(&m) < rank(b)) {
+            best = Some(m);
+        }
+        if ok {
+            break;
+        }
+    }
+    best.ok_or_else(|| format!("`{id}` was not measured"))
+}
+
+/// How good a row is: one that ran beats one the command said no to, which beats params it turned
+/// down. Between two rows of the same rank the faster one wins.
+fn rank(m: &Measurement) -> (u8, u64) {
+    let kind = match m.outcome {
+        "ok" => 0,
+        "no" => 1,
+        "refused" => 2,
+        "params" => 3,
+        _ => 4,
+    };
+    (kind, (m.ms * 1000.0) as u64)
+}
+
+fn measure_once(base: &DocState, id: &str, rows: usize, scale: &'static str, attempt: usize) -> Result<Measurement, String> {
     let mut s = Session::new();
     s.add_document(base.clone());
     // Untimed setup the clipboard needs: `edit.paste` and `edit.pasteSpecial` read the session's
@@ -420,9 +526,10 @@ fn measure(base: &DocState, id: &str, rows: usize, scale: &'static str) -> Resul
     let spec = command_specs().iter().find(|spec| spec.id == id).ok_or_else(|| format!("unknown command `{id}`"))?;
     let wb = s.doc().map_err(err)?.wb.clone();
     // One seed per command and scale: two runs generate the same params, and at the two row
-    // counts a command's params differ only in the size of the region they name.
-    let mut rng = Rng::new(seed_of(id, scale));
-    let params = doc_params(&mut rng, &wb, spec.params, scale_for(scale, rows));
+    // counts a command's params differ only in the size of the region they name. The retry moves
+    // the seed, so every attempt asks a different question.
+    let mut rng = Rng::new(seed_of(id, scale).wrapping_add((attempt as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
+    let params = doc_params(&mut rng, &wb, id, spec.params, scale_for(scale, rows));
     let before = wb.clone();
     let started = Instant::now();
     let result = s.execute(id, params);

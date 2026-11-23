@@ -923,7 +923,7 @@ fn generate(rng: &mut Rng, s: &Session) -> Step {
     }
     let specs: Vec<_> = command_specs().iter().filter(|c| !EXCLUDED.iter().any(|(x, _)| *x == c.id)).collect();
     let spec = specs[rng.below(specs.len())];
-    (spec.id.to_string(), doc_params(rng, wb, spec.params, Scale::Small))
+    (spec.id.to_string(), doc_params(rng, wb, spec.id, spec.params, Scale::Small))
 }
 
 fn curated_params(rng: &mut Rng, wb: &Workbook, id: &str) -> Json {

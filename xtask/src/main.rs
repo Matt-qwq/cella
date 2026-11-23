@@ -59,6 +59,10 @@ commands:
   bench-coverage [--check] [--write]
                   the ledger xtask/bench-coverage.txt: where each command's cost is observed
                   (--check fails on an unclassified command; a step of `ci`)
+  bench-ui [--rows=N] [--frames=N] [--out PATH]
+                  the frame-time ruler: one repaint of the whole window at 1M rows, offscreen,
+                  no GPU; writes docs/performance-ui.md and fails over budget
+                  (release, minutes the first time — NOT part of `ci`)
   perf-report     write docs/performance-report.md from the scenario gate and the live-heap example
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
                   1M rows and compare it with xtask/perf-budgets.txt, plus the mem_drift soak and
@@ -102,6 +106,10 @@ fn main() -> ExitCode {
         Some("bench-coverage") => bench::run_coverage(&root(), &rest),
         #[cfg(not(feature = "engine"))]
         Some("bench-coverage") => Err("`bench-coverage` needs the engine feature (on by default)".to_string()),
+        #[cfg(feature = "engine")]
+        Some("bench-ui") => bench::run_ui(&root(), &rest),
+        #[cfg(not(feature = "engine"))]
+        Some("bench-ui") => Err("`bench-ui` needs the engine feature (on by default)".to_string()),
         Some("perf-report") => perfreport::run(&root()),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),

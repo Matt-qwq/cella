@@ -574,6 +574,170 @@ const HEADER: &str = "\
 # `cargo xtask bench-coverage --write` and fill them in.
 ";
 
+/// `cargo xtask bench-ui [--rows=N] [--frames=N] [--out PATH]`: the frame-time ruler, independent
+/// of the throughput gate. Runs `crates/ui-egui/examples/frame_time.rs` in release (it renders the
+/// whole window offscreen with no GPU) and writes `docs/performance-ui.md`; a phase whose median is
+/// over its budget fails the run, so the page and the check are one artefact.
+pub fn run_ui(root: &Path, args: &[&str]) -> Result<(), String> {
+    let mut out: PathBuf = root.join("docs/performance-ui.md");
+    let mut rows = 1_000_000usize;
+    let mut frames = 30usize;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let a: &str = a;
+        let (flag, inline) = match a.split_once('=') {
+            Some((f, v)) => (f, Some(v.to_string())),
+            None => (a, None),
+        };
+        match flag {
+            "--out" => out = PathBuf::from(it.next().ok_or("--out needs a path")?),
+            "--rows" => {
+                let v = match inline {
+                    Some(v) => v,
+                    None => it.next().map(|s| (*s).to_string()).ok_or("--rows needs a value")?,
+                };
+                rows = v.trim().parse().map_err(|_| format!("`{v}` is not a row count"))?;
+            }
+            "--frames" => {
+                let v = match inline {
+                    Some(v) => v,
+                    None => it.next().map(|s| (*s).to_string()).ok_or("--frames needs a value")?,
+                };
+                frames = v.trim().parse().map_err(|_| format!("`{v}` is not a frame count"))?;
+            }
+            other => {
+                return Err(format!("bench-ui: unknown argument `{other}` (usage: cargo xtask bench-ui [--rows=N] [--frames=N] [--out PATH])"));
+            }
+        }
+    }
+    eprintln!("bench-ui: the release build of the UI crate, then {frames} frames a phase — this takes a few minutes the first time");
+    let mut cmd = crate::cargo();
+    cmd.args([
+        "run",
+        "--release",
+        "-q",
+        "-p",
+        "cella-ui-egui",
+        "--example",
+        "frame_time",
+        "--",
+        "--json",
+        &format!("--rows={rows}"),
+        &format!("--frames={frames}"),
+    ]);
+    let text = capture(cmd, root)?;
+    let page_json: serde_json::Value = serde_json::from_str(text.trim()).map_err(|e| format!("frame_time did not print JSON: {e}"))?;
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| format!("read Cargo.toml: {e}"))?;
+    let version = crate::version::read(&manifest)?;
+    let sha = git(root, &["rev-parse", "--short", "HEAD"])?;
+    let date = git(root, &["log", "-1", "--format=%cs"])?;
+    let facts = Facts { version: &version, sha: &sha, date: &date, machine: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH) };
+    let page = render_ui(&facts, &page_json);
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let text = crate::eol::for_write(&out, &page);
+    std::fs::write(&out, text).map_err(|e| format!("write {}: {e}", out.display()))?;
+    println!("bench-ui: {} rows, {} frames a phase -> {}", thousands(rows), frames, shown(root, &out));
+    // The example's own budget check is the pass/fail: re-read it from the phases it reported.
+    let over: Vec<String> = page_json
+        .get("phases")
+        .and_then(serde_json::Value::as_array)
+        .map(|phases| {
+            phases
+                .iter()
+                .filter(|p| {
+                    p.get("median_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
+                        > p.get("budget_ms").and_then(serde_json::Value::as_f64).unwrap_or(f64::MAX)
+                })
+                .map(|p| {
+                    format!(
+                        "{} {:.2} ms > {} ms",
+                        p.get("phase").and_then(serde_json::Value::as_str).unwrap_or("?"),
+                        p.get("median_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+                        p.get("budget_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !over.is_empty() {
+        return Err(format!("bench-ui: {} phase(s) over budget: {}", over.len(), over.join(", ")));
+    }
+    println!("bench-ui: every phase within budget");
+    Ok(())
+}
+
+/// `docs/performance-ui.md` from the example's own numbers.
+fn render_ui(f: &Facts, doc: &serde_json::Value) -> String {
+    let rows = doc.get("rows").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let frames = doc.get("frames").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let window = doc
+        .get("window")
+        .and_then(serde_json::Value::as_array)
+        .map(|w| w.iter().filter_map(serde_json::Value::as_f64).map(|n| format!("{n:.0}")).collect::<Vec<_>>().join("×"))
+        .unwrap_or_else(|| "?".into());
+    let mut s = String::new();
+    s += "# Frame time\n\n";
+    s += "<!-- Generated by `cargo xtask bench-ui` from crates/ui-egui/examples/frame_time.rs. Don't edit by hand. -->\n\n";
+    s += &format!("> **Generated** for Cella {} at `{}` ({}). Machine: {}. ", f.version, f.sha, f.date, f.machine);
+    s += "Whole-window CPU time of one frame, rendered offscreen with no GPU.\n\n";
+    s += "`cargo xtask perf` prices operations per command; this prices **one repaint**, which is what \
+          a person actually waits on while scrolling. The window is ";
+    s += &format!("{window} pt over {} rows × 6 columns, {frames} frames a phase, after six warm-up frames. ", thousands(rows as usize));
+    s += "A phase's median is the number; the budget is the point at which the CPU cost of a frame \
+          would start dropping frames at 60 Hz on this class of machine — loose on purpose, because \
+          this measures the CPU half of a frame and not the GPU, the compositor or a real window's \
+          input latency.\n\n";
+    s += "| phase | what it does |\n|---|---|\n";
+    s += "| `idle` | repaints with the document unchanged: the floor every frame pays |\n";
+    s += "| `page` | scrolls one screen a frame: a new band of rows laid out and painted every frame |\n";
+    s += "| `jump` | jumps 60,000 rows every frame: cold bands, a new used-range origin — the worst case a scrollbar drag creates |\n\n";
+    s += "| phase | median | min | p90 | max | budget | of budget |\n|---|---|---|---|---|---|---|\n";
+    let mut over = Vec::new();
+    for p in doc.get("phases").and_then(serde_json::Value::as_array).cloned().unwrap_or_default() {
+        let name = p.get("phase").and_then(serde_json::Value::as_str).unwrap_or("?");
+        let median = p.get("median_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let min = p.get("min_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let p90 = p.get("p90_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let max = p.get("max_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let budget = p.get("budget_ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let share = if budget > 0.0 { median / budget * 100.0 } else { 0.0 };
+        if median > budget {
+            over.push((name.to_string(), median, budget));
+        }
+        s += &format!(
+            "| `{name}` | {} | {} | {} | {} | {} | {} |\n",
+            fmt_ms(median),
+            fmt_ms(min),
+            fmt_ms(p90),
+            fmt_ms(max),
+            fmt_ms(budget),
+            if share > 100.0 { format!("{share:.0}%!") } else { format!("{share:.0}%") }
+        );
+    }
+    s += "\n";
+    if over.is_empty() {
+        s += "Every phase is within budget. ";
+    } else {
+        s += "**Over budget:** ";
+        for (name, median, budget) in &over {
+            s += &format!("`{name}` {} against {}; ", fmt_ms(*median), fmt_ms(*budget));
+        }
+    }
+    s += "What a regression looks like: a frame that reads the store per visible cell, a used-range \
+          walk per frame, or layout work that stopped being cached shows up in `page` and `jump` \
+          long before it shows up in any command's time.\n\n";
+    s += "## What this does not measure\n\n";
+    s += "- **The GPU**: no wgpu here, so no present, no vsync, no texture upload. The repository \
+          owns the CPU half of a frame; the graphics driver owns the other one.\n";
+    s += "- **A real window**: input latency, the compositor and DPI changes are the desktop \
+          shell's, and `plan/bench/` has the scripts that measured them once (startup ~1.02 s, \
+          input-to-state ~40 ms round trip).\n";
+    s += "- **Other platforms**: one Windows machine.\n";
+    s
+}
+
 /// `cargo xtask bench-coverage [--check] [--write] [--path PATH]`
 pub fn run_coverage(root: &Path, args: &[&str]) -> Result<(), String> {
     let mut verify = false;

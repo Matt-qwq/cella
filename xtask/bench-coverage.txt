@@ -9,28 +9,28 @@
 #   bench           a number in docs/performance-commands.md (or, where a scenario prices it
 #                   better, in xtask/perf-budgets.txt)
 #   ui              frame time, not throughput — the UI bench is the ruler for it (not built yet)
-#   excuse: <why>   nothing to price, and why
 #
 # Check with `cargo xtask bench-coverage --check`; regenerate the missing lines as `todo` with
 # `cargo xtask bench-coverage --write` and fill them in.
+#                                            excuse: <why>   nothing to price, and why
 app.commands                                 bench
 arrange.align                                bench
 arrange.bringForward                         bench
 arrange.group                                bench
-arrange.rotate                               excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+arrange.rotate                               bench
 arrange.selectionPane                        bench
 arrange.sendBackward                         bench
 automate.allScripts                          bench
-automate.appendStep                          excuse: needs a recorded script (or an installed extension) in the workbook
+automate.appendStep                          bench
 automate.deleteScript                        bench
-automate.editStep                            excuse: needs a recorded script (or an installed extension) in the workbook
+automate.editStep                            bench
 automate.newScript                           bench
 automate.recordActions                       bench
-automate.removeStep                          excuse: needs a recorded script (or an installed extension) in the workbook
-automate.renameScript                        excuse: needs a recorded script (or an installed extension) in the workbook
-automate.runScript                           excuse: needs a recorded script (or an installed extension) in the workbook
+automate.removeStep                          bench
+automate.renameScript                        bench
+automate.runScript                           bench
 automate.scriptFromJournal                   bench
-automate.scriptSteps                         excuse: needs a recorded script (or an installed extension) in the workbook
+automate.scriptSteps                         bench
 automate.trustScripts                        bench
 cell.get                                     bench
 cell.set                                     bench
@@ -39,44 +39,44 @@ chart.addElement                             bench
 chart.changeColors                           bench
 chart.changeType                             bench
 chart.delete                                 bench
-chart.formatPoint                            excuse: needs a chart shaped for it (three series, a chart sheet)
+chart.formatPoint                            excuse: takes a chart element object (fill/line/point) the generator cannot shape
 chart.formatSelection                        bench
-chart.move                                   excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
-chart.moveToObject                           excuse: needs a chart shaped for it (three series, a chart sheet)
+chart.move                                   bench
+chart.moveToObject                           excuse: needs a chart sheet (chart.moveToSheet puts a chart on one)
 chart.moveToSheet                            bench
 chart.quickLayout                            bench
 chart.selectData                             bench
 chart.set                                    bench
 chart.setAxis                                bench
-chart.setDataLabels                          excuse: needs a chart shaped for it (three series, a chart sheet)
+chart.setDataLabels                          excuse: takes a labelled-point object the generator cannot shape
 chart.setErrorBars                           bench
 chart.setGridlines                           bench
-chart.setLegend                              excuse: needs a chart shaped for it (three series, a chart sheet)
-chart.setSeriesAxis                          excuse: needs a chart shaped for it (three series, a chart sheet)
+chart.setLegend                              bench
+chart.setSeriesAxis                          bench
 chart.shapeFill                              bench
-chart.shapeOutline                           excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+chart.shapeOutline                           bench
 chart.switchRowColumn                        bench
-control.assign                               excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
-control.format                               excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+control.assign                               bench
+control.format                               bench
 control.list                                 bench
-control.press                                excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
-control.setValue                             excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
-data.advancedFilter                          excuse: needs a scenario, a data table or a saved Solver model
-data.analysisToolPak                         excuse: needs a query or a data model the workbook does not carry
+control.press                                bench
+control.setValue                             bench
+data.advancedFilter                          bench
+data.analysisToolPak                         excuse: its input range key is not in its params doc
 data.circleInvalid                           bench
 data.clearFilter                             bench
-data.consolidate                             excuse: needs a scenario, a data table or a saved Solver model
-data.dataTable                               excuse: needs a scenario, a data table or a saved Solver model
+data.consolidate                             bench
+data.dataTable                               excuse: needs inputs in formula edge cells and caps at 100,000 cells
 data.filter                                  bench
-data.filterBy                                excuse: the generated params do not fit its doc (a curated param set is the next job)
+data.filterBy                                bench
 data.flashFill                               bench
-data.forecastSheet                           excuse: needs a scenario, a data table or a saved Solver model
+data.forecastSheet                           bench
 data.fromDatabase                            bench
 data.fromTableRange                          bench
 data.fromTextCsv                             bench
 data.fromWeb                                 bench
 data.getData                                 bench
-data.goalSeek                                excuse: needs a scenario, a data table or a saved Solver model
+data.goalSeek                                bench
 data.group                                   bench
 data.hideDetail                              bench
 data.measure.add                             bench
@@ -88,34 +88,34 @@ data.model.removeTable                       bench
 data.model.tables                            bench
 data.outlineSettings                         bench
 data.queriesConnections                      bench
-data.query.add                               excuse: needs a query or a data model the workbook does not carry
-data.query.addStep                           excuse: needs a query or a data model the workbook does not carry
+data.query.add                               excuse: needs a query source object the prepared workbook does not carry
+data.query.addStep                           excuse: needs a query and a step object
 data.query.delete                            bench
 data.query.list                              bench
 data.query.load                              bench
 data.query.preview                           bench
 data.query.refresh                           bench
-data.query.removeStep                        excuse: needs a query or a data model the workbook does not carry
+data.query.removeStep                        excuse: needs a query and a step index
 data.query.rename                            bench
-data.query.setSource                         excuse: needs a query or a data model the workbook does not carry
-data.query.setStep                           excuse: needs a query or a data model the workbook does not carry
+data.query.setSource                         excuse: needs a query and a source object
+data.query.setStep                           excuse: needs a query and a step index
 data.query.steps                             bench
 data.reapply                                 bench
 data.refreshAll                              bench
-data.relationship.add                        excuse: needs a query or a data model the workbook does not carry
+data.relationship.add                        excuse: needs a data model with two tables and a key pair
 data.relationship.list                       bench
-data.relationship.remove                     excuse: needs a query or a data model the workbook does not carry
+data.relationship.remove                     excuse: needs a data model relationship
 data.removeDuplicates                        bench
 data.scenarioAdd                             bench
-data.scenarioDelete                          excuse: needs a scenario, a data table or a saved Solver model
+data.scenarioDelete                          bench
 data.scenarioManager                         bench
-data.scenarioShow                            excuse: needs a scenario, a data table or a saved Solver model
+data.scenarioShow                            bench
 data.scenarioSummary                         bench
 data.showDetail                              bench
-data.showLevels                              excuse: the generated params do not fit its doc (a curated param set is the next job)
+data.showLevels                              bench
 data.solver                                  bench
 data.solverLoadModel                         bench
-data.solverReport                            excuse: needs a scenario, a data table or a saved Solver model
+data.solverReport                            excuse: needs a saved Solver model and a reports array
 data.solverReset                             bench
 data.solverSaveModel                         bench
 data.sort                                    bench
@@ -129,7 +129,7 @@ data.validation                              bench
 document.compact                             bench
 document.inspect                             bench
 draw.eraser                                  bench
-draw.inkToShape                              excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+draw.inkToShape                              bench
 draw.lasso                                   bench
 draw.pen                                     bench
 draw.stroke                                  bench
@@ -155,24 +155,24 @@ edit.goTo                                    bench
 edit.goToSpecial                             bench
 edit.paste                                   bench
 edit.pasteSpecial                            bench
-edit.redo                                    excuse: the generated params do not fit its doc (a curated param set is the next job)
+edit.redo                                    bench
 edit.replace                                 bench
 edit.selectAll                               bench
 edit.undo                                    bench
-equation.setText                             excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+equation.setText                             bench
 ext.add                                      bench
 ext.list                                     bench
-ext.remove                                   excuse: needs a recorded script (or an installed extension) in the workbook
-ext.run                                      excuse: needs a recorded script (or an installed extension) in the workbook
+ext.remove                                   bench
+ext.run                                      bench
 file.close                                   excuse: closes the document under test
 file.exportCsv                               excuse: writes files
 file.exportHtml                              excuse: writes files
-file.exportParquet                           excuse: the generated params do not fit its doc (a curated param set is the next job)
+file.exportParquet                           excuse: needs a `path`, and the generator refuses to invent file paths
 file.exportPdf                               excuse: renders and writes a PDF
 file.new                                     excuse: opens another document
 file.open                                    excuse: opens another document (reads a file)
 file.options                                 bench
-file.print                                   excuse: renders a PDF (the print path is `file.print`'s own benchmarks)
+file.print                                   excuse: renders a PDF
 file.printPreview                            bench
 file.properties                              bench
 file.save                                    excuse: writes files
@@ -201,8 +201,8 @@ formulas.nameManager                         bench
 formulas.pasteName                           bench
 formulas.recentlyUsed                        bench
 formulas.removeArrows                        bench
-formulas.selectDependents                    excuse: the generated params do not fit its doc (a curated param set is the next job)
-formulas.selectPrecedents                    excuse: the generated params do not fit its doc (a curated param set is the next job)
+formulas.selectDependents                    bench
+formulas.selectPrecedents                    bench
 formulas.showFormulas                        ui
 formulas.text                                bench
 formulas.traceDependents                     bench
@@ -220,12 +220,12 @@ home.alignMiddle                             bench
 home.alignRight                              bench
 home.alignTop                                bench
 home.autofitColumnWidth                      bench
-home.autofitRowHeight                        excuse: the generated params do not fit its doc (a curated param set is the next job)
+home.autofitRowHeight                        bench
 home.bold                                    bench
 home.borders                                 bench
 home.cellStyle                               bench
 home.clearRules                              bench
-home.columnWidth                             excuse: the generated params do not fit its doc (a curated param set is the next job)
+home.columnWidth                             bench
 home.comma                                   bench
 home.conditionalFormat                       bench
 home.decreaseDecimal                         bench
@@ -243,7 +243,7 @@ home.fontColor                               bench
 home.fontName                                bench
 home.fontSize                                bench
 home.formatAsTable                           bench
-home.formatCells                             excuse: the generated params do not fit its doc (a curated param set is the next job)
+home.formatCells                             excuse: takes a whole Style struct the generator cannot shape
 home.hideColumns                             bench
 home.hideRows                                bench
 home.increaseDecimal                         bench
@@ -265,7 +265,7 @@ home.newCellStyle                            bench
 home.numberFormat                            bench
 home.orientation                             bench
 home.percent                                 bench
-home.rowHeight                               excuse: the generated params do not fit its doc (a curated param set is the next job)
+home.rowHeight                               bench
 home.shrinkToFit                             bench
 home.strikethrough                           bench
 home.subscript                               bench
@@ -275,7 +275,7 @@ home.unhideColumns                           bench
 home.unhideRows                              bench
 home.unmergeCells                            bench
 home.wrapText                                bench
-insert.button                                excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+insert.button                                bench
 insert.chart                                 bench
 insert.chartRecommendations                  bench
 insert.checkbox                              bench
@@ -283,34 +283,34 @@ insert.equation                              bench
 insert.icons                                 bench
 insert.link                                  bench
 insert.picture                               excuse: reads files
-insert.pivotChart                            excuse: needs a PivotTable the prepared workbook does not carry
+insert.pivotChart                            bench
 insert.pivotTable                            bench
 insert.recommendedCharts                     bench
 insert.recommendedPivotTables                bench
 insert.shape                                 bench
 insert.slicer                                bench
-insert.slider                                excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
-insert.sparkline                             excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+insert.slider                                bench
+insert.sparkline                             bench
 insert.spinButton                            bench
 insert.symbol                                bench
 insert.table                                 bench
 insert.textBox                               bench
-insert.timeline                              excuse: needs a PivotTable the prepared workbook does not carry
-insert.wordArt                               excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+insert.timeline                              excuse: needs a date field the generated params do not name reliably
+insert.wordArt                               bench
 inspect.whatChanged                          bench
 link.open                                    bench
 macro.debug                                  excuse: holds an undo group open across calls
 macro.delete                                 bench
-macro.get                                    excuse: needs a recorded script (or an installed extension) in the workbook
+macro.get                                    bench
 macro.list                                   bench
 macro.record                                 bench
-macro.rename                                 excuse: needs a recorded script (or an installed extension) in the workbook
-macro.run                                    excuse: needs a recorded script (or an installed extension) in the workbook
+macro.rename                                 bench
+macro.run                                    bench
 object.delete                                bench
-object.format                                excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
-object.move                                  excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+object.format                                excuse: takes a dozen typed style keys the generator cannot shape
+object.move                                  bench
 object.setAltText                            bench
-object.setAnchorMode                         excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+object.setAnchorMode                         bench
 pageLayout.background                        excuse: reads files
 pageLayout.breaks                            bench
 pageLayout.headerFooter                      bench
@@ -324,48 +324,48 @@ pageLayout.printTitles                       bench
 pageLayout.scaleToFit                        bench
 pageLayout.size                              bench
 pageLayout.theme                             bench
-pageLayout.themeColors                       excuse: the generated params do not fit its doc (a curated param set is the next job)
+pageLayout.themeColors                       excuse: names a built-in theme the generator cannot know
 pageLayout.themeEffects                      bench
 pageLayout.themeFonts                        bench
-pivot.addField                               excuse: needs a PivotTable the prepared workbook does not carry
-pivot.calculatedField                        excuse: needs a PivotTable the prepared workbook does not carry
-pivot.calculatedItem                         excuse: needs a PivotTable the prepared workbook does not carry
-pivot.changeSource                           excuse: needs a PivotTable the prepared workbook does not carry
-pivot.collapse                               excuse: needs a PivotTable the prepared workbook does not carry
-pivot.delete                                 excuse: needs a PivotTable the prepared workbook does not carry
-pivot.fieldList                              excuse: needs a PivotTable the prepared workbook does not carry
-pivot.fields                                 excuse: needs a PivotTable the prepared workbook does not carry
-pivot.filter                                 excuse: needs a PivotTable the prepared workbook does not carry
-pivot.filterByLabel                          excuse: needs a PivotTable the prepared workbook does not carry
-pivot.filterByValue                          excuse: needs a PivotTable the prepared workbook does not carry
-pivot.getPivotData                           excuse: needs a PivotTable the prepared workbook does not carry
-pivot.grandTotals                            excuse: needs a PivotTable the prepared workbook does not carry
-pivot.group                                  excuse: needs a PivotTable the prepared workbook does not carry
-pivot.layout                                 excuse: needs a PivotTable the prepared workbook does not carry
+pivot.addField                               bench
+pivot.calculatedField                        bench
+pivot.calculatedItem                         bench
+pivot.changeSource                           bench
+pivot.collapse                               bench
+pivot.delete                                 bench
+pivot.fieldList                              bench
+pivot.fields                                 bench
+pivot.filter                                 bench
+pivot.filterByLabel                          bench
+pivot.filterByValue                          bench
+pivot.getPivotData                           bench
+pivot.grandTotals                            bench
+pivot.group                                  bench
+pivot.layout                                 bench
 pivot.list                                   bench
-pivot.moveField                              excuse: needs a PivotTable the prepared workbook does not carry
-pivot.options                                excuse: needs a PivotTable the prepared workbook does not carry
-pivot.refresh                                excuse: needs a PivotTable the prepared workbook does not carry
-pivot.removeField                            excuse: needs a PivotTable the prepared workbook does not carry
-pivot.reportLayout                           excuse: needs a PivotTable the prepared workbook does not carry
-pivot.showDetails                            excuse: needs a PivotTable the prepared workbook does not carry
-pivot.sort                                   excuse: needs a PivotTable the prepared workbook does not carry
-pivot.style                                  excuse: needs a PivotTable the prepared workbook does not carry
-pivot.subtotals                              excuse: needs a PivotTable the prepared workbook does not carry
-pivot.valueSettings                          excuse: needs a PivotTable the prepared workbook does not carry
+pivot.moveField                              bench
+pivot.options                                bench
+pivot.refresh                                bench
+pivot.removeField                            bench
+pivot.reportLayout                           bench
+pivot.showDetails                            bench
+pivot.sort                                   bench
+pivot.style                                  bench
+pivot.subtotals                              bench
+pivot.valueSettings                          bench
 range.fill                                   bench
 range.move                                   bench
 range.setValues                              bench
 review.addToDictionary                       bench
 review.allowEditRanges                       bench
-review.changeSpelling                        excuse: the generated params do not fit its doc (a curated param set is the next job)
+review.changeSpelling                        bench
 review.checkAccessibility                    bench
 review.convertToComments                     bench
 review.deleteComment                         bench
 review.newComment                            bench
 review.newNote                               bench
-review.nextComment                           excuse: the prepared workbook has no comments in it
-review.previousComment                       excuse: the prepared workbook has no comments in it
+review.nextComment                           bench
+review.previousComment                       bench
 review.protectSheet                          bench
 review.protectWorkbook                       bench
 review.replyComment                          bench
@@ -385,38 +385,38 @@ selection.nextCorner                         bench
 selection.row                                bench
 selection.set                                bench
 selection.stats                              bench
-shape.setText                                excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+shape.setText                                bench
 sheet.activate                               bench
 sheet.hide                                   bench
 sheet.move                                   bench
-sheet.moveColumns                            excuse: the generated params do not fit its doc (a curated param set is the next job)
+sheet.moveColumns                            bench
 sheet.next                                   bench
 sheet.previous                               bench
 sheet.read                                   bench
 sheet.rename                                 bench
 sheet.tabColor                               bench
 sheet.unhide                                 bench
-slicer.clear                                 excuse: needs a slicer the prepared workbook does not carry
-slicer.delete                                excuse: needs a slicer the prepared workbook does not carry
-slicer.move                                  excuse: needs a slicer the prepared workbook does not carry
-slicer.selectAll                             excuse: needs a slicer the prepared workbook does not carry
-slicer.setRange                              excuse: needs a slicer the prepared workbook does not carry
-slicer.setSelection                          excuse: needs a slicer the prepared workbook does not carry
-slicer.setStyle                              excuse: needs a slicer the prepared workbook does not carry
-slicer.toggle                                excuse: needs a slicer the prepared workbook does not carry
+slicer.clear                                 bench
+slicer.delete                                bench
+slicer.move                                  bench
+slicer.selectAll                             bench
+slicer.setRange                              bench
+slicer.setSelection                          bench
+slicer.setStyle                              bench
+slicer.toggle                                bench
 table.bandedColumns                          bench
 table.bandedRows                             bench
 table.convertToRange                         bench
 table.firstColumn                            bench
 table.headerRow                              bench
-table.insertSlicer                           excuse: needs a PivotTable the prepared workbook does not carry
+table.insertSlicer                           bench
 table.lastColumn                             bench
 table.removeDuplicates                       bench
 table.rename                                 bench
 table.resize                                 bench
 table.style                                  bench
 table.summarizePivot                         bench
-table.totalFunction                          excuse: the generated params do not fit its doc (a curated param set is the next job)
+table.totalFunction                          bench
 table.totalRow                               bench
 view.arrangeAll                              ui
 view.closeWindow                             excuse: closes a window, and with the last one the document under test
@@ -450,4 +450,4 @@ view.zoom100                                 ui
 view.zoomToSelection                         ui
 window.activate                              excuse: switches windows
 window.list                                  bench
-wordArt.set                                  excuse: needs an object (shape, text box, control, ink, WordArt) the workbook does not carry
+wordArt.set                                  bench

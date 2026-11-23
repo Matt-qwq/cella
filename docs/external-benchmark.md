@@ -30,6 +30,33 @@ evaluation down again). Memory was read from the running processes after the doc
 (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was
 measured interleaved (Excel, Cella, Excel, Cella) so both sides saw the same machine.
 
+## The four operations round 41 added (2026-11-23, one pass each)
+
+The command catalogue put Find/Replace, the AutoFilter and a six-million-cell paste at the top of
+what a session spends, so they became gate scenarios and were replayed in the other two products
+through COM (`plan/bench/gate_ext.ps1 -Only filter.apply,filter.clear,find.replaceAll,paste.block`).
+**One pass each** (the table above is three passes and a median); the same 70 MB file, the same
+machine, in this order — open, apply, clear, replace, paste:
+
+| operation, 1M rows | Excel 16.0 | WPS 12.1 | Cella |
+|---|---:|---:|---:|
+| **apply an AutoFilter to the body** | 0.059 s | 0.091 s | **0.0008 s** |
+| **clear it** | 0.007 s | 0.007 s | 0.0074 s |
+| **Replace All (`Item` -> `Product`, every used cell)** | 13.512 s | 6.886 s | **4.48 s** |
+| **paste 6M cells (copy `A1:F1000000`, paste at `L1`)** | 6.947 s | 3.881 s | **1.06 s** |
+| open the file (control, this session) | 9.4 s | 12.0 s | — |
+
+- **Applying a filter is not the same operation in the three products, and the numbers say so.**
+  Cella's `data.filter` marks the range as filtered and hides rows lazily (860 µs); Excel and WPS
+  build the filter structure and the dropdown state up front (59 ms and 91 ms). Both are honest for
+  "select the body and press Filter" — the 70x is a design difference, not a speed one, and the one
+  that matters to a person is the 7.4 ms to clear it, where all three agree.
+- **Replace All: Cella is 3x Excel and 1.5x WPS.** A million scans and a million rewrites each;
+  Excel's 13.5 s is the number that makes "find and replace in a big sheet" feel broken.
+- **Paste 6M cells: Cella is 6.5x Excel and 3.7x WPS.** (Cella's block carries values without styles
+  here — the workbook it runs on came back from a CSV; `paste_bench` measures the styled shape at
+  1.3 s.)
+
 ## What this says
 
 - **Cella opens this file 3.5x faster than Excel and 4.5x faster than WPS.** That has been true

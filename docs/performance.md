@@ -47,16 +47,20 @@ Two generated pages close that gap, and both are produced from the harnesses' ow
 - [`performance-commands.md`](performance-commands.md) — **one row per registered command**, at
   100,000 and 1,000,000 rows, each measured alone in a fresh session and given its parameters at two
   scales (near the cursor, and covering the whole used area). Of the 423 commands a throwaway
-  session can run, **321 have a usable number**; the other 102 are listed with what they said (a
-  PivotTable or a script the prepared workbook does not carry, or params the generator could not
-  shape). Regenerate with `cargo xtask bench-commands` (release, ~40 s at both row counts).
+  session can run, **405 have a usable number**; the other 18 are listed with what they said (a query
+  source, a data model relationship, a chart element object, a Style struct — params the generator
+  cannot shape). Regenerate with `cargo xtask bench-commands` (release, ~2.5 min at both row counts).
+- [`performance-ui.md`](performance-ui.md) — **the frame-time ruler**: one repaint of the whole
+  window at 1M rows, offscreen with no GPU (`cargo xtask bench-ui`). Three phases — an unchanged
+  repaint, a one-screen scroll, and a 60,000-row jump — each a median over 30 frames against a loose
+  budget (3 / 6 / 8 ms). Today: **idle 0.91 ms, page 1.6 ms, jump 1.5 ms** at 1440×900.
 - [`bench-coverage.txt`](../xtask/bench-coverage.txt) — the ledger: one line per registered command,
   `bench` (a usable number in the catalogue, or a gate scenario that prices it better), `ui` (its
-  cost is frame time, and the UI bench is the ruler that will hold it) or `excuse: why`.
+  cost is frame time, and the UI bench is the ruler that holds it) or `excuse: why`.
   `cargo xtask bench-coverage --check` is **step 10 of `cargo xtask ci`**: a command with no line,
   an unknown id, a duplicate, a `todo` left in place or a `bench` line the catalogue has no usable
-  number for fails the build, and the message says which id and how to fill it. Today: **290 bench,
-  31 ui, 117 excuse**. Adding a command therefore costs one line, and forgetting it costs a red CI.
+  number for fails the build, and the message says which id and how to fill it. Today: **374 bench,
+  31 ui, 33 excuse**. Adding a command therefore costs one line, and forgetting it costs a red CI.
 
 **What is still unmeasured, ranked by whether it can even be slow at 1M rows:**
 
@@ -111,29 +115,74 @@ A row's note says how it went: `params`/`refused` (the command turned the genera
 `no` (it ran and the answer was no), `no change` (an edit that changed nothing), `PANIC` (a caught
 panic — none today).
 
+**Where the other numbers come from.** A command the workbook turned down is retried with another
+draw, up to four times: the generator also produces deliberately wrong values (a sheet that does not
+exist, a name that is not valid), which is what the fuzzer wants and what a catalogue must look past.
+And the prepared workbook carries one of each object a command can name — a PivotTable with its
+slicer, timeline and pivot chart, a shape, a text box, an equation, a WordArt, a button, a slider, a
+sparkline, a checkbox, a note, a comment, an ink stroke, a saved script and an extension, a scenario,
+two formulas, and a data table — because a command given `pivot.refresh {pivot: "Data"}` on a workbook
+with no PivotTable prices a failed lookup, not its work. The generator knows those objects
+(`crates/engine/tests/param_gen` reads the workbook: `pivot`, `field`, `slicer`, `script`, `id`, …),
+so a command's params name what is really there.
+
 **What the first run found** (`docs/performance-commands.md`, 2026-11-23, 438 commands):
 
-- **Find and Replace are the two slowest commands in the program**: `edit.find` **2.8 s** and
-  `edit.replace` **2.4 s** at 1M rows — a scan of every used cell, twice the cost of a whole-column
-  `VLOOKUP` and 4× `COUNTIF`. Neither is in the gate yet; both are the next scenario batch.
-- **`range.move` costs 2.44 s** whole at 1M — moving a 6M-cell block. (Excel's drag-and-drop of a
+- **`data.subtotal` costs 28.4 seconds** over a million rows — Subtotal over the whole body is the
+  slowest command in the program by an order of magnitude, and nothing measured it before this
+  round. (The next batch's first name.)
+- **Find and Replace are the next two**: `edit.find` **4.0 s** and `edit.replace` **3.5 s** at 1M
+  rows — a scan of every used cell, twice the cost of a whole-column `VLOOKUP` and 4× `COUNTIF`.
+  Both are now gate scenarios (`find.replaceAll`).
+- **`range.move` costs 3.4 s** whole at 1M — moving a 6M-cell block. (Excel's drag-and-drop of a
   whole sheet is fast because it moves the *store*, not the cells; ours writes them again.)
-- **`home.autofitColumnWidth` is 1.12 s** at 1M in the `small` column, i.e. with the cursor on a
+- **`home.autofitColumnWidth` is 1.1 s** at 1M in the `small` column, i.e. with the cursor on a
   cell: AutoFit measures the whole column, not the part in view.
-- **`file.saveBytes` is 867 ms at 1M with no change to save** — the pack is dominated by the 6M
-  cells, not by anything the save path could skip.
+- **`file.saveBytes` is 1.3 s at 1M with no change to save** — the pack is dominated by the cells,
+  not by anything the save path could skip.
 - **A whole-sheet format is refused past 4,000,000 cells** (`format`, `home.borders`): a 1M × 6
   selection is 6M cells and the cell-by-cell path returns "selection too large". Excel formats a
   whole column by re-pointing the column's default style; we have no such path, so the honest
   reading is a *missing feature*, not a slow one.
-- **`data.advancedFilter` spent 22 s failing** at 10,000 rows ("the extract range can't overlap the
-  list range") before the 1M params were rejected outright. The catalogue does not care about
-  correctness, but a command that burns 22 s and then refuses is worth a look.
-- **The surface is not uniformly slow, which is the useful part of the answer** — 89 % of the
-  1,202 usable measurements are under 10 ms, and **259 of the 321 priced commands (81 %) are under
-  10 ms in every configuration**, i.e. the next round has **39 names over 100 ms** to work from
+- **`data.advancedFilter` used to spend 22 s failing** at 10,000 rows before the criteria were
+  shaped for it; with the generator naming real objects it now runs in 0.09 ms (small) and 0.9 ms
+  (1M) — proof that a refusal is not a cost and that the object zoo was worth building.
+- **The surface is not uniformly slow, which is the useful part of the answer** — 90 % of the
+  1,592 usable measurements are under 10 ms, and **332 of the 405 priced commands (82 %) are under
+  10 ms in every configuration**, i.e. the next round has **60 names over 100 ms** to work from
   instead of 438.
 
+
+## Frame time
+
+Throughput and frame time are different rulers, and mixing them is how a fast engine ends up
+feeling slow: `cargo xtask perf` measures milliseconds per *command*, while a person scrolling a
+million rows feels milliseconds per **frame** — the same budget at 60 Hz (16.7 ms) and 144 Hz
+(6.9 ms) whether or not the document changed.
+
+`cargo xtask bench-ui` runs `crates/ui-egui/examples/frame_time.rs`: the whole application
+(`SheetApp::logic` + `ui`, ribbon and panes included) rendered offscreen through an
+`egui_kittest` harness with **no GPU**, one frame a step, the clock around it, and writes
+[`performance-ui.md`](performance-ui.md). Three phases, 30 frames each after six warm-up frames:
+
+| phase | what it does | 1M rows, 1440×900 |
+|---|---|---|
+| `idle` | repaints with the document unchanged — the floor every frame pays | **0.91 ms** |
+| `page` | scrolls one screen a frame: a new band of rows laid out and painted | **1.6 ms** |
+| `jump` | jumps 60,000 rows a frame: cold bands, a new used-range origin | **1.5 ms** |
+
+The budget is a phase's **median**: 3 / 6 / 8 ms, three to five times the measurement, because this
+is the CPU half of a frame and it must not turn a shared or slower machine into a red gate that
+people learn to ignore (`CELLA_UI_SCALE=2` slackens every budget, like `CELLA_PERF_SCALE`). A real
+regression here — a store read per visible cell, a used-range walk every frame, layout that stopped
+being cached — is a multiple, not a percentage; the old frame audit's number (paint avg 1.59 ms,
+worst frame 3.94) sits where this ruler sits, which is how the two agree.
+
+What it does not measure: the GPU (no present, no vsync, no upload), the compositor, a real
+window's input latency, or any platform but this one. The `ui` lines of
+[`bench-coverage.txt`](../xtask/bench-coverage.txt) (31 commands) are the commands whose cost *is*
+this ruler — `view.zoom`, the freeze panes, the gridline toggles — and a throughput number for them
+would be a number about the wrong thing.
 
 ## Scenarios
 

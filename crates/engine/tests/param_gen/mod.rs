@@ -27,6 +27,18 @@ use serde_json::{Value as Json, json};
 /// SplitMix64: tiny, deterministic and good enough to pick params.
 pub struct Rng(u64);
 
+/// The script name the catalogue's prepared workbook saves (`automate.newScript`), so `macro.run`
+/// and `automate.runScript` have a real one to run. The fuzzer's sample workbooks carry no script,
+/// where those commands are refused either way.
+pub const SCRIPT_NAME: &str = "Monthly";
+
+/// The scenario name the catalogue's prepared workbook saves (`data.scenarioAdd`): scenarios live
+/// in the workbook's stashed metadata, which this module cannot read.
+pub const SCENARIO_NAME: &str = "Best";
+
+/// The extension name the catalogue's prepared workbook saves (`ext.add`).
+pub const EXTENSION_NAME: &str = "Refresh";
+
 impl Rng {
     pub fn new(seed: u64) -> Rng {
         Rng(seed)
@@ -164,6 +176,15 @@ pub fn other_sheet(rng: &mut Rng, wb: &Workbook) -> String {
     quoted(&wb.sheets[rng.below(wb.sheets.len())].name)
 }
 
+/// A sheet name as a formula names it: bare when it needs no quoting (`Sheet1`), quoted when it
+/// does. A defined name's `refersTo` is parsed rather than evaluated, and there a quoted simple
+/// name is not the same thing as a bare one.
+pub fn sheet_ref(rng: &mut Rng, wb: &Workbook) -> String {
+    let name = wb.sheets[rng.below(wb.sheets.len())].name.clone();
+    let bare = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.starts_with(|c: char| c.is_ascii_digit());
+    if bare { name } else { quoted(&name) }
+}
+
 pub fn formula(rng: &mut Rng, wb: &Workbook) -> String {
     let c = near_cell(rng).a1();
     let c2 = near_cell(rng).a1();
@@ -284,6 +305,135 @@ pub fn chart_ids(wb: &Workbook) -> Vec<u32> {
     wb.sheets.iter().flat_map(|s| s.charts.iter().map(|c| c.id)).collect()
 }
 
+// ---------------------------------------------------------------- the workbook's objects
+
+// A command that takes an object by name (`pivot.refresh {pivot}`, `macro.run {name}`) has to be
+// given a name the workbook actually holds: generating one prices a lookup that fails. The
+// catalogue's prepared workbook carries one of each object for this reason; the fuzzer's sample
+// workbooks carry none, and there these return empty and the key falls back to the hint.
+
+pub fn pivot_names(wb: &Workbook) -> Vec<String> {
+    wb.sheets.iter().flat_map(|s| s.pivots.iter().map(|p| p.name.clone())).collect()
+}
+
+/// The source columns a PivotTable or a table offers: `pivot.addField`, `slicer` tiles and
+/// `table.*` name them.
+pub fn field_names(wb: &Workbook) -> Vec<String> {
+    let mut out: Vec<String> = wb.sheets.iter().flat_map(|s| s.tables.iter().flat_map(|t| t.columns.iter().map(|c| c.name.clone()))).collect();
+    out.extend(wb.sheets.iter().flat_map(|s| {
+        s.pivots.iter().flat_map(|p| {
+            p.rows
+                .iter()
+                .map(|f| f.source_col.clone())
+                .chain(p.columns.iter().map(|f| f.source_col.clone()))
+                .chain(p.values.iter().map(|v| v.source_col.clone()))
+        })
+    }));
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Slicer names: a PivotTable slicer is named, a table slicer is addressed by id.
+pub fn slicer_names(wb: &Workbook) -> Vec<String> {
+    wb.sheets.iter().flat_map(|s| s.pivot_slicers.iter().map(|x| x.name.clone())).collect()
+}
+
+pub fn table_slicer_ids(wb: &Workbook) -> Vec<u32> {
+    wb.sheets.iter().flat_map(|s| s.slicers.iter().map(|x| x.id)).collect()
+}
+
+pub fn timeline_names(wb: &Workbook) -> Vec<String> {
+    wb.sheets.iter().flat_map(|s| s.pivot_timelines.iter().map(|x| x.name.clone())).collect()
+}
+
+pub fn query_names(wb: &Workbook) -> Vec<String> {
+    wb.queries.iter().map(|q| q.name.clone()).collect()
+}
+
+pub fn control_ids(wb: &Workbook) -> Vec<u32> {
+    wb.sheets.iter().flat_map(|s| s.controls.iter().map(|c| c.id)).collect()
+}
+
+/// The controls that hold a number (a slider, a spin button): what `control.setValue` is about.
+pub fn number_control_ids(wb: &Workbook) -> Vec<u32> {
+    wb.sheets
+        .iter()
+        .flat_map(|s| s.controls.iter())
+        .filter(|c| matches!(c.kind, cella_engine::model::ControlKind::Slider | cella_engine::model::ControlKind::Spin))
+        .map(|c| c.id)
+        .collect()
+}
+
+/// The buttons: what `control.press` is about.
+pub fn button_control_ids(wb: &Workbook) -> Vec<u32> {
+    wb.sheets.iter().flat_map(|s| s.controls.iter()).filter(|c| matches!(c.kind, cella_engine::model::ControlKind::Button)).map(|c| c.id).collect()
+}
+
+pub fn shape_ids(wb: &Workbook) -> Vec<u32> {
+    wb.sheets.iter().flat_map(|s| s.shapes.iter().map(|x| x.id)).collect()
+}
+
+/// Shapes of one kind, for the commands that only accept that kind (`shape.setText` a text box,
+/// `wordArt.set` a WordArt).
+pub fn shape_ids_of(wb: &Workbook, kind: cella_engine::model::ShapeKind) -> Vec<u32> {
+    wb.sheets.iter().flat_map(|s| s.shapes.iter().filter(|x| x.kind == kind).map(|x| x.id)).collect()
+}
+
+pub fn equation_ids(wb: &Workbook) -> Vec<u32> {
+    wb.sheets.iter().flat_map(|s| s.equations.iter().map(|x| x.id)).collect()
+}
+
+/// The source fields a PivotTable puts on its rows and columns: what `pivot.sort`, `pivot.filter`,
+/// `pivot.collapse` and `pivot.group` can act on (a value field is not on an axis).
+pub fn pivot_axis_fields(wb: &Workbook) -> Vec<String> {
+    let mut v: Vec<String> =
+        wb.sheets.iter().flat_map(|s| s.pivots.iter().flat_map(|p| p.rows.iter().chain(p.columns.iter()).map(|f| f.source_col.clone()))).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The captions of a PivotTable's value fields (`pivot.valueSettings {field}` takes one).
+pub fn value_captions(wb: &Workbook) -> Vec<String> {
+    let mut v: Vec<String> = wb.sheets.iter().flat_map(|s| s.pivots.iter().flat_map(|p| p.values.iter().map(|f| f.name.clone()))).collect();
+    v.retain(|n| !n.is_empty());
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The source columns a PivotTable could still add (`pivot.addField`).
+pub fn pivot_free_fields(wb: &Workbook) -> Vec<String> {
+    let used = pivot_axis_fields(wb);
+    let mut v: Vec<String> = field_names(wb).into_iter().filter(|f| !used.contains(f)).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The object kinds the workbook holds (`object.delete {kind, id}` names one).
+pub fn object_kinds(wb: &Workbook) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for s in &wb.sheets {
+        if !s.charts.is_empty() {
+            v.push("chart".into());
+        }
+        if !s.images.is_empty() {
+            v.push("image".into());
+        }
+        if !s.shapes.is_empty() {
+            v.push("shape".into());
+        }
+        if !s.equations.is_empty() {
+            v.push("equation".into());
+        }
+    }
+    v.sort();
+    v.dedup();
+    v
+}
+
 // ---------------------------------------------------------------- params docs
 
 /// Top-level keys of a params doc (`{range?, shift: right|down, count?}`): (key, optional, hint).
@@ -342,26 +492,180 @@ pub fn alternatives(hint: &str) -> Option<Vec<String>> {
 }
 
 /// Params from a command's params doc: values chosen by key name, then by the hint's shape.
-pub fn doc_params(rng: &mut Rng, wb: &Workbook, doc: &str, scale: Scale) -> Json {
+pub fn doc_params(rng: &mut Rng, wb: &Workbook, cmd: &str, doc: &str, scale: Scale) -> Json {
     let mut p = serde_json::Map::new();
     for (key, optional, hint) in doc_keys(doc) {
         if optional && rng.chance(40) {
             continue;
         }
-        if let Some(v) = doc_value(rng, wb, &key, &hint, scale) {
+        if let Some(v) = doc_value(rng, wb, cmd, &key, &hint, scale) {
             p.insert(key, v);
         }
     }
     Json::Object(p)
 }
 
-fn doc_value(rng: &mut Rng, wb: &Workbook, key: &str, hint: &str, scale: Scale) -> Option<Json> {
+/// An object the workbook holds, by the name or id its command takes — consulted before the generic
+/// rules, because `{name}` means a script to `macro.run` and a new sheet to `sheet.rename`, and
+/// `{field}` means a row field to `pivot.sort` and an unused column to `pivot.addField`.
+fn object_value(cmd: &str, key: &str, wb: &Workbook, rng: &mut Rng) -> Option<Json> {
+    let mut pick = |list: Vec<String>| -> Option<Json> { if list.is_empty() { None } else { Some(json!(list[rng.below(list.len())].clone())) } };
+    let first = |ids: Vec<u32>| -> Option<Json> { ids.first().map(|id| json!(id)) };
+    let k = key.to_ascii_lowercase();
+    match cmd {
+        "insert.pivotChart" | "insert.slicer" | "insert.timeline" | "table.insertSlicer" | "table.summarizePivot" | "insert.pivotTable"
+            if k == "pivot" || k == "field" || k == "slicer" || k == "timeline" || k == "style" =>
+        {
+            match k.as_str() {
+                "pivot" => pick(pivot_names(wb)),
+                "field" => pick(pivot_axis_fields(wb)),
+                "slicer" => pick(slicer_names(wb)),
+                "timeline" => pick(timeline_names(wb)),
+                _ => Some(json!("PivotStyleLight16")),
+            }
+        }
+        c if c.starts_with("pivot.") => match k.as_str() {
+            "pivot" => pick(pivot_names(wb)),
+            // A field the command can act on: a row or column field, or for `addField` one that is
+            // not on an axis yet.
+            "field" if c == "pivot.addField" => pick(pivot_free_fields(wb)),
+            "field" if c == "pivot.valueSettings" => pick(value_captions(wb)).or(Some(json!("Sum of Qty"))),
+            "field" => pick(pivot_axis_fields(wb)),
+            "style" => Some(json!("PivotStyleLight16")),
+            "selected" => Some(json!(["North"])),
+            "value" if c == "pivot.filterByValue" => Some(json!(1)),
+            "value" => Some(json!("North")),
+            // `moveField`'s `from`/`to` are areas, not a destination cell.
+            "from" if c == "pivot.moveField" => Some(json!("rows")),
+            "to" if c == "pivot.moveField" => Some(json!("columns")),
+            _ => None,
+        },
+        c if c.starts_with("slicer.") => match k.as_str() {
+            "slicer" => pick(slicer_names(wb)),
+            "timeline" => pick(timeline_names(wb)),
+            "style" => Some(json!("SlicerStyleLight1")),
+            "value" => Some(json!("North")),
+            "selected" => Some(json!(["North", "South"])),
+            _ => None,
+        },
+        c if c.starts_with("macro.") || c.starts_with("automate.") => match k.as_str() {
+            "name" | "script" => Some(json!(SCRIPT_NAME)),
+            "to" => Some(json!(format!("{SCRIPT_NAME} 2"))),
+            // The script the prepared workbook saved holds one step, so its index is 0.
+            "index" => Some(json!(0)),
+            "command" => Some(json!("cell.set")),
+            _ => None,
+        },
+        "ext.add" | "ext.run" | "ext.remove" => match k.as_str() {
+            "name" => Some(json!(EXTENSION_NAME)),
+            _ => None,
+        },
+        "data.scenarioShow" | "data.scenarioDelete" => match k.as_str() {
+            "name" | "scenario" => Some(json!(SCENARIO_NAME)),
+            _ => None,
+        },
+        c if c.starts_with("data.query.") => match k.as_str() {
+            "name" | "query" => pick(query_names(wb)),
+            _ => None,
+        },
+        c if c.starts_with("control.") => match k.as_str() {
+            // A button has no value; the slider the prepared workbook placed does. `press` is the
+            // other way round.
+            "id" | "control" if c == "control.press" => button_control_ids(wb).first().map(|id| json!(id)),
+            "id" | "control" if c == "control.setValue" => number_control_ids(wb).first().map(|id| json!(id)),
+            "id" | "control" => control_ids(wb).first().map(|id| json!(id)),
+            "value" if c == "control.setValue" => Some(json!(5)),
+            _ => None,
+        },
+        // A field that is a whole number in one command is an outline level in another.
+        "data.showLevels" => match k.as_str() {
+            "rows" | "cols" => Some(json!(1)),
+            _ => None,
+        },
+        "data.goalSeek" if k == "to" => Some(json!(100)),
+        "data.dataTable" if k == "rowinput" || k == "columninput" => Some(json!("B1")),
+        "sheet.move" if k == "to" => Some(json!(0)),
+        "pivot.moveField" => match k.as_str() {
+            "from" => Some(json!("rows")),
+            "to" => Some(json!("columns")),
+            _ => None,
+        },
+        "pivot.valueSettings" if k == "field" => pick(value_captions(wb)),
+        "pivot.filterByValue" if k == "value" => Some(json!(1)),
+        "pivot.filterByLabel" if k == "value" => Some(json!("North")),
+        "sheet.moveColumns" if k == "before" => Some(json!(0)),
+        "insert.wordArt" | "wordArt.set" => match k.as_str() {
+            "style" => Some(json!("Classic")),
+            "fill" => Some(json!("#1F4E79")),
+            "outline" => Some(json!(false)),
+            "shadow" => Some(json!(false)),
+            "id" | "shape" | "object" => first(shape_ids_of(wb, cella_engine::model::ShapeKind::WordArt)),
+            _ => None,
+        },
+        "object.format" => match k.as_str() {
+            "kind" => Some(json!("shape")),
+            "bold" | "italic" => Some(json!(true)),
+            "alt" => Some(json!("an object")),
+            _ => None,
+        },
+        "automate.appendStep" | "automate.editStep" if k == "params" => Some(json!({})),
+        "insert.timeline" if k == "field" => Some(json!("Date")),
+        "data.consolidate" if k == "sources" => Some(json!(["Sheet1!$A$1:$B$10"])),
+        "formulas.defineName" if k == "scope" => Some(json!("Workbook")),
+        // `oldName` means "edit that name", and a name that is not there is an error: the catalogue
+        // wants the define path, not the edit one.
+        "formulas.defineName" if k == "oldname" => Some(Json::Null),
+        "formulas.deleteName" => match k.as_str() {
+            "name" => Some(json!("Data")),
+            "scope" => Some(json!("Workbook")),
+            _ => None,
+        },
+        "shape.setText" => match k.as_str() {
+            "id" | "shape" | "object" => first(shape_ids_of(wb, cella_engine::model::ShapeKind::TextBox)),
+            _ => None,
+        },
+        "equation.setText" => match k.as_str() {
+            "id" | "shape" | "object" => first(equation_ids(wb)),
+            _ => None,
+        },
+        c if c.starts_with("object.") || c.starts_with("arrange.") => match k.as_str() {
+            // The kind and the id have to name the same object, so both come from the shape the
+            // prepared workbook placed first.
+            "kind" if !shape_ids(wb).is_empty() => Some(json!("shape")),
+            "kind" => pick(object_kinds(wb)),
+            "id" | "shape" | "object" => first(shape_ids(wb)).or_else(|| first(equation_ids(wb))).or_else(|| first(chart_ids(wb))),
+            _ => None,
+        },
+        c if c.starts_with("chart.") => match k.as_str() {
+            "series" => Some(json!(1)),
+            "point" => Some(json!(1)),
+            // A chart element's colours: what `formatPoint` and `setDataLabels` type.
+            "fill" => Some(json!("#1F4E79")),
+            "line" => Some(json!("#FF0000")),
+            "on" => Some(json!(true)),
+            _ => None,
+        },
+        // J5 = SUM(B2:B10) has precedents and is the precedent of J6, so either cell answers one.
+        "formulas.selectPrecedents" if k == "cell" => Some(json!("J5")),
+        "formulas.selectDependents" if k == "cell" => Some(json!("J5")),
+        _ => None,
+    }
+}
+
+fn doc_value(rng: &mut Rng, wb: &Workbook, cmd: &str, key: &str, hint: &str, scale: Scale) -> Option<Json> {
+    if let Some(v) = object_value(cmd, key, wb, rng) {
+        return Some(v);
+    }
     let lower = key.to_ascii_lowercase();
     let v = match lower.as_str() {
         "path" | "base64" | "password" | "html" => return None,
-        "range" | "source" | "target" | "destination" | "criteria" | "copyto" | "printarea" | "location" | "resultcells" | "changing"
-        | "rowinput" | "columninput" | "add" | "remove" | "apply" => json!(scale.range(rng)),
-        "refersto" => json!(format!("={}!$A$1:$B$4", other_sheet(rng, wb))),
+        "range" | "source" | "target" | "destination" | "criteria" | "copyto" | "printarea" | "add" | "remove" | "apply" => {
+            json!(scale.range(rng))
+        }
+        // Single cells that the old rules put in the region list: a Sparkline's `location`, a
+        // Goal Seek's `changing` cell and a data table's input cells are cells, not ranges.
+        "location" | "changing" | "rowinput" | "columninput" => json!(near_cell(rng).a1()),
+        "refersto" => json!(format!("={}!$A$1:$B$4", sheet_ref(rng, wb))),
         "cell" | "at" | "active" | "fromcell" | "set" | "reference" => json!(cell(rng).a1()),
         "rows" | "titlerows" if !hint.starts_with('[') => json!(rows_spec(rng)),
         "cols" | "titlecols" if !hint.starts_with('[') => json!(cols_spec(rng)),
@@ -376,11 +680,29 @@ fn doc_value(rng: &mut Rng, wb: &Workbook, key: &str, hint: &str, scale: Scale) 
         "color" => json!(color(rng)),
         "values" if hint.starts_with("[[") => values_2d(rng, wb),
         "keys" => json!([{"column": letter(rng.int(0, 9) as u32), "order": rng.pick(&["asc", "desc"])}]),
-        "column" | "groupby" => json!(letter(rng.int(0, 9) as u32)),
-        "columns" | "sources" if !hint.contains('|') => json!([letter(rng.int(0, 9) as u32)]),
+        "column" | "groupby" => json!(letter(rng.int(0, 7) as u32)),
+        "columns" | "sources" if !hint.contains('|') => json!([letter(rng.int(0, 7) as u32)]),
         "points" => json!([[10, 10], [40, 25], [70, 5]]),
         "commands" => json!([{"command": "cell.set", "params": {"cell": near_cell(rng).a1(), "input": input(rng, wb)}}]),
         "char" => json!("€"),
+        "level" => json!(1),
+        "confidence" => json!(0.95),
+        // A destination: a cell for the commands that move something, a name for the ones that
+        // rename (those are in `object_value`, which runs first).
+        "to" => json!(near_cell(rng).a1()),
+        // The workbook's objects, by the names it gave them. A key whose list is empty (the
+        // fuzzer's sample workbooks carry no PivotTable) falls through to the hint, which is the
+        // old behaviour.
+        "pivot" if !pivot_names(wb).is_empty() => json!(rng.pick(&pivot_names(wb))),
+        "field" if !field_names(wb).is_empty() => json!(rng.pick(&field_names(wb))),
+        "slicer" if !slicer_names(wb).is_empty() => json!(rng.pick(&slicer_names(wb))),
+        "timeline" if !timeline_names(wb).is_empty() => json!(rng.pick(&timeline_names(wb))),
+        "query" if !query_names(wb).is_empty() => json!(rng.pick(&query_names(wb))),
+        "control" if !control_ids(wb).is_empty() => json!(rng.pick(&control_ids(wb))),
+        "shape" if !shape_ids(wb).is_empty() => json!(rng.pick(&shape_ids(wb))),
+        "script" => json!(SCRIPT_NAME),
+        "height" | "width" => json!(rng.int(40, 200)),
+        "before" => json!(letter(rng.int(0, 10) as u32)),
         "name" | "oldname" if alternatives(hint).is_none() => json!(new_name(rng)),
         "text" | "title" | "comment" | "author" | "word" | "header" | "footer" | "what" if alternatives(hint).is_none() => {
             json!(rng.pick(&["North", "note", "&CPage &P", "x"]))
@@ -442,8 +764,8 @@ mod tests {
     fn whole_scale_points_a_range_at_the_used_area() {
         let wb = Workbook::default();
         let doc = "{range: A1:F, header?}";
-        let small = doc_params(&mut Rng::new(1), &wb, doc, Scale::Small);
-        let whole = doc_params(&mut Rng::new(1), &wb, doc, Scale::Whole { rows: 1_000_000, cols: 6 });
+        let small = doc_params(&mut Rng::new(1), &wb, "home.bold", doc, Scale::Small);
+        let whole = doc_params(&mut Rng::new(1), &wb, "home.bold", doc, Scale::Whole { rows: 1_000_000, cols: 6 });
         assert_eq!(whole["range"], json!("A1:F1000000"));
         // The same seed gives the same non-region keys, so a row of the catalogue differs from the
         // fuzzer's params only in where it points.
