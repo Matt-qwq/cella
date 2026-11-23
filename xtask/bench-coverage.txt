@@ -39,7 +39,7 @@ chart.addElement                             bench
 chart.changeColors                           bench
 chart.changeType                             bench
 chart.delete                                 bench
-chart.formatPoint                            excuse: takes a chart element object (fill/line/point) the generator cannot shape
+chart.formatPoint                            bench
 chart.formatSelection                        bench
 chart.move                                   bench
 chart.moveToObject                           excuse: needs a chart sheet (chart.moveToSheet puts a chart on one)
@@ -48,7 +48,7 @@ chart.quickLayout                            bench
 chart.selectData                             bench
 chart.set                                    bench
 chart.setAxis                                bench
-chart.setDataLabels                          excuse: takes a labelled-point object the generator cannot shape
+chart.setDataLabels                          bench
 chart.setErrorBars                           bench
 chart.setGridlines                           bench
 chart.setLegend                              bench
@@ -66,7 +66,7 @@ data.analysisToolPak                         excuse: its input range key is not 
 data.circleInvalid                           bench
 data.clearFilter                             bench
 data.consolidate                             bench
-data.dataTable                               excuse: needs inputs in formula edge cells and caps at 100,000 cells
+data.dataTable                               bench
 data.filter                                  bench
 data.filterBy                                bench
 data.flashFill                               bench
@@ -88,17 +88,17 @@ data.model.removeTable                       bench
 data.model.tables                            bench
 data.outlineSettings                         bench
 data.queriesConnections                      bench
-data.query.add                               excuse: needs a query source object the prepared workbook does not carry
-data.query.addStep                           excuse: needs a query and a step object
+data.query.add                               bench
+data.query.addStep                           bench
 data.query.delete                            bench
 data.query.list                              bench
 data.query.load                              bench
 data.query.preview                           bench
 data.query.refresh                           bench
-data.query.removeStep                        excuse: needs a query and a step index
+data.query.removeStep                        bench
 data.query.rename                            bench
-data.query.setSource                         excuse: needs a query and a source object
-data.query.setStep                           excuse: needs a query and a step index
+data.query.setSource                         bench
+data.query.setStep                           bench
 data.query.steps                             bench
 data.reapply                                 bench
 data.refreshAll                              bench
@@ -243,7 +243,7 @@ home.fontColor                               bench
 home.fontName                                bench
 home.fontSize                                bench
 home.formatAsTable                           bench
-home.formatCells                             excuse: takes a whole Style struct the generator cannot shape
+home.formatCells                             bench
 home.hideColumns                             bench
 home.hideRows                                bench
 home.increaseDecimal                         bench
@@ -295,7 +295,7 @@ insert.spinButton                            bench
 insert.symbol                                bench
 insert.table                                 bench
 insert.textBox                               bench
-insert.timeline                              excuse: needs a date field the generated params do not name reliably
+insert.timeline                              bench
 insert.wordArt                               bench
 inspect.whatChanged                          bench
 link.open                                    bench
@@ -307,7 +307,7 @@ macro.record                                 bench
 macro.rename                                 bench
 macro.run                                    bench
 object.delete                                bench
-object.format                                excuse: takes a dozen typed style keys the generator cannot shape
+object.format                                bench
 object.move                                  bench
 object.setAltText                            bench
 object.setAnchorMode                         bench
@@ -324,7 +324,7 @@ pageLayout.printTitles                       bench
 pageLayout.scaleToFit                        bench
 pageLayout.size                              bench
 pageLayout.theme                             bench
-pageLayout.themeColors                       excuse: names a built-in theme the generator cannot know
+pageLayout.themeColors                       bench
 pageLayout.themeEffects                      bench
 pageLayout.themeFonts                        bench
 pivot.addField                               bench

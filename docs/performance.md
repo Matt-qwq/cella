@@ -59,8 +59,10 @@ Two generated pages close that gap, and both are produced from the harnesses' ow
   cost is frame time, and the UI bench is the ruler that holds it) or `excuse: why`.
   `cargo xtask bench-coverage --check` is **step 10 of `cargo xtask ci`**: a command with no line,
   an unknown id, a duplicate, a `todo` left in place or a `bench` line the catalogue has no usable
-  number for fails the build, and the message says which id and how to fill it. Today: **374 bench,
-  31 ui, 33 excuse**. Adding a command therefore costs one line, and forgetting it costs a red CI.
+  number for fails the build, and the message says which id and how to fill it. Today: **386 bench,
+  31 ui, 21 excuse** (round 45 turned twelve stale excuses into numbers, and `--check` now refuses an
+  `excuse` line whose command the catalogue has since priced). Adding a command therefore costs one
+  line, and forgetting it costs a red CI.
   (The function catalogue has the same discipline one section down: `bench-functions --check` is
   step 11.)
 
@@ -123,10 +125,30 @@ exist, a name that is not valid), which is what the fuzzer wants and what a cata
 And the prepared workbook carries one of each object a command can name — a PivotTable with its
 slicer, timeline and pivot chart, a shape, a text box, an equation, a WordArt, a button, a slider, a
 sparkline, a checkbox, a note, a comment, an ink stroke, a saved script and an extension, a scenario,
-two formulas, and a data table — because a command given `pivot.refresh {pivot: "Data"}` on a workbook
-with no PivotTable prices a failed lookup, not its work. The generator knows those objects
-(`crates/engine/tests/param_gen` reads the workbook: `pivot`, `field`, `slicer`, `script`, `id`, …),
-so a command's params name what is really there.
+a query, two formulas, and a data table — because a command given `pivot.refresh {pivot: "Data"}` on
+a workbook with no PivotTable prices a failed lookup, not its work. The generator knows those objects
+(`crates/engine/tests/param_gen` reads the workbook: `pivot`, `field`, `slicer`, `script`, `query`,
+`id`, …), so a command's params name what is really there.
+
+**Two lists, not blanket rules** (round 45). A key the doc marks optional is skipped 40 % of the time —
+the fuzzer wants the odd refusal — but a command whose *only* working form needs that key is a
+command with no number. `forced_key` names those (a Timeline needs its PivotTable, a Data Table needs
+an input cell, a point's label needs `series`); `omitted_key` names the opposite, the keys whose
+*absence* is the valid call (`pageLayout.themeColors` recolours the workbook's own theme when it is
+given no name; `chart.setDataLabels` is refused when it is given a point's `text` without a point).
+Both are short lists keyed by command, so everything else keeps the fuzzer's thin params.
+
+**Twelve of the eighteen blanks were the generator, not the product** (round 45, same mechanism): the
+`Style` patch `home.formatCells` takes, the typeface and colours of `object.format`, the theme name,
+the all-series form of `chart.setDataLabels`, a marker colour on a *line* chart (`chart.formatPoint` —
+the prepared chart was a column, whose points refuse a marker), the `Date` field a Timeline filters
+on, an input cell for a Data Table, and the tagged `source` object, `QueryStep` string and existing
+pipeline that the five `data.query.*` commands need (the prepared workbook now carries one query that
+loads into the data model, not a sheet). **417 of the 423 runnable commands now carry a number**; the
+six left are each listed with what the engine said: `file.exportParquet` (needs a path),
+`data.relationship.add` and `.remove` (need two tables and a data model), `chart.moveToObject` (needs
+a chart sheet), `data.solverReport` (needs a solved model) and `data.analysisToolPak` (tool-specific
+inputs). The ledger went from **374 bench / 31 ui / 33 excuse** to **386 / 31 / 21**.
 
 **What the first run found** (`docs/performance-commands.md`, 2026-11-23, 438 commands):
 
@@ -150,7 +172,7 @@ so a command's params name what is really there.
   shaped for it; with the generator naming real objects it now runs in 0.09 ms (small) and 0.9 ms
   (1M) — proof that a refusal is not a cost and that the object zoo was worth building.
 - **The surface is not uniformly slow, which is the useful part of the answer** — 90 % of the
-  1,592 usable measurements are under 10 ms, and **332 of the 405 priced commands (82 %) are under
+  1,642 usable measurements are under 10 ms, and **344 of the 417 priced commands (82 %) are under
   10 ms in every configuration**, i.e. the next round has **60 names over 100 ms** to work from
   instead of 438.
 
@@ -1865,6 +1887,15 @@ Adding a **command** is two steps: one line in [`xtask/bench-coverage.txt`](../x
   restores the snapshot instead of recalculating** — a build that recalculated on undo would read
   ~27 ms. Every phase asserts its action happened (the editor opened, the watched `SUM` changed, no
   error message, the selection grew), because a phase that silently measured `idle` would be a lie.
+  **And the command catalogue closed twelve of its eighteen blanks**: they were the *generator*, not
+  the product — a `Style` patch, a typeface and colours, a theme name, the all-series label form, a
+  marker on a line chart, a `Date` field for a Timeline, an input cell for a Data Table, and the
+  tagged `query` source/`QueryStep`/existing pipeline. That needs two short lists keyed by command
+  (`forced_key`, `omitted_key`) rather than blanket rules, so the fuzzer keeps its thin params;
+  `prepare()` now carries one query and a line chart. **417 of the 423 runnable commands carry a
+  number** (from 405); the ledger reads **386 bench / 31 ui / 21 excuse**, and `bench-coverage
+  --check` grew one rule: an `excuse` line whose command the catalogue has since priced is now red,
+  which is what found the twelve.
 - **2026-11-23 (round 44, the functions):** the measuring net's fourth piece is the formula surface.
   `cargo xtask bench-functions` runs `crates/engine/examples/bench_functions.rs` and writes
   [`performance-functions.md`](performance-functions.md) — **one row per registered function, 517 of

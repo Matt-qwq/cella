@@ -139,6 +139,14 @@ pub fn check(entries: &[Entry], registered: &[&str], priced: Option<&BTreeSet<St
                 e.id
             )),
             Class::Excuse if e.reason.is_empty() => problems.push(format!("`{}` is excused for no stated reason", e.id)),
+            // An excuse that stopped being true: the catalogue now has a number, so the reason is
+            // stale and the line belongs in `bench`. (A stale excuse is how a ledger stops being
+            // read: it is the one direction the other checks cannot see.)
+            Class::Excuse if priced.is_some_and(|priced| priced.contains(&e.id)) => problems.push(format!(
+                "`{}` is excused (\"{}\") but docs/performance-commands.md now has a usable \
+                     number for it — change the line to `bench`",
+                e.id, e.reason
+            )),
             Class::Bench => {
                 if let Some(priced) = priced
                     && !priced.contains(&e.id)
