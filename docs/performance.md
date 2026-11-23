@@ -24,6 +24,51 @@ refuses a regression.
 The reference workbook throughout: **1,000,000 rows × 6 columns, 72 MB as .xlsx** — the shape of a
 real export, not a synthetic grid.
 
+## What the gate covers, and what it does not
+
+"Is fifteen operations enough?" has two honest answers, and they are different numbers.
+
+**Command surface: 11 of 299 commands are priced.** The gate's harness runs
+`cell.set`, `range.setValues`, `edit.autoFill`, `edit.undo`, `file.open`, `file.saveBytes`,
+`file.exportCsv`, `formulas.calculateNow`, `home.insertRows`, `home.deleteRows` and
+`data.sortDescending` — 11 of the 299 ids the parity check counts (**3.7 %**). Most of the other 288
+are formatting, dialogs, charts and view commands whose cost does not scale with the data, so that
+percentage says very little. Of the ~80 commands whose parameters name a region, a row or a column
+(the ones a user can point at a million rows), **6 are priced** — sorting, filling, both row edits,
+the bulk write and the cell write.
+
+**Session time: the data-scaled operations are covered.** The fifteen three-way actions are the
+operations a heavy session spends its machine seconds on — open, save, both fills, the drag,
+aggregates, lookups, COUNTIF/SUMPRODUCT, an edit and its recalculation, F9, both sorts, row
+insert/delete. What the gate cannot speak for is the *interactive* half: typing, scrolling,
+selection, dialogs and repaints are frame-time costs, not throughput, and they need a different
+harness (the UI's own measurement, not this one).
+
+**What is not priced yet, ranked by whether it can even be slow at 1M rows:**
+
+| operation | scales with data? | in the gate? |
+|---|---|---|
+| AutoFilter apply / clear over a million rows | yes | no — next batch |
+| Find / Replace all over a million rows | yes | no — next batch |
+| Paste a block (6M cells, styles and clipboard included) | yes | partly: `range.setValues` is the write half |
+| Insert / delete a column (a row is covered) | yes | no — next batch |
+| Print / PDF export of a million rows | yes | no — next batch |
+| Pivot refresh over a million rows | yes | no — next batch |
+| Conditional formatting applied over a million cells | yes (paint time) | no — next batch |
+| Remove duplicates / text-to-columns / flash fill | yes | no — next batch |
+| CSV / Parquet export at a million rows | yes | exportCsv only inside `open.csv` |
+| Charts over a large series | render-bound | no |
+| Scrolling, selection, dialogs, freeze panes | no (frame time) | out of scope: a UI bench |
+| Every command's *correctness* | — | yes: the fuzzer runs them all, not for speed |
+
+**How to get a usage-weighted number instead of a command count.** The engine journals every
+command it runs (id + params, `Session::journal`), so a real session's command mix is already
+recorded; what is missing is sessions to read. Two ways to get them without inventing weights:
+run the sample workbooks through a scripted "day of work" and weight the gate's rows by what that
+session actually spends, or collect journals from users (opt-in) and rank the gate's gaps by
+frequency. Until then, the honest claim is the command count above, not a percentage of "what users
+do".
+
 ## Scenarios
 
 `crates/engine/examples/perf.rs` runs one session through nineteen named scenarios, in this order,
