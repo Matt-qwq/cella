@@ -22,6 +22,14 @@
 //! - `page` — scrolls one screen a frame: every frame lays out and paints a new band of rows.
 //! - `jump` — jumps to a different region of the sheet every frame: cold bands, a new used-range
 //!   probe, the row/column headers at a new origin. The worst case a scrollbar drag creates.
+//! - `key` — a character typed into the selected cell: the frame that opens (or extends) the
+//!   in-cell editor. What a keystroke costs before anything is committed.
+//! - `commit` — Enter with the editor open: the value is written, every formula that reads it is
+//!   recalculated, and the frame paints the result. The workbook carries one `SUM` over the whole
+//!   edited column, so this is "type a number into a cell a million-row report watches".
+//! - `undo` — Ctrl+Z over one of those commits: the same recalculation, backwards.
+//! - `drag` — the pointer dragged across the grid with the button down: the selection grows and the
+//!   frame paints it, which is what selecting a block by hand costs per frame.
 //!
 //! What this does **not** measure: the GPU (no wgpu here, so no present, no vsync, no upload), the
 //! OS compositor, or a real window's input latency. It measures the CPU work of a frame, which is
@@ -56,6 +64,16 @@ const WINDOW: (f32, f32) = (1440.0, 900.0);
 const BUDGET_IDLE_MS: f64 = 3.0;
 const BUDGET_PAGE_MS: f64 = 6.0;
 const BUDGET_JUMP_MS: f64 = 8.0;
+/// A keystroke and a drag are a frame like any other, with a little room for the editor.
+const BUDGET_KEY_MS: f64 = 5.0;
+const BUDGET_DRAG_MS: f64 = 5.0;
+/// A commit and an undo pay the recalculation of the workbook's one watching `SUM` over a million
+/// values, so their budget is a guard against "the whole graph is rebuilt on every keystroke",
+/// not a frame budget: the number is the recalculation, and the recalculation is the product.
+const BUDGET_COMMIT_MS: f64 = 250.0;
+const BUDGET_UNDO_MS: f64 = 250.0;
+/// The cell the interaction phases edit: a number in the column the watching formula sums.
+const EDIT_CELL: &str = "B1";
 
 fn main() -> ExitCode {
     match run() {
@@ -157,6 +175,85 @@ fn run() -> Result<(), String> {
         }
     }));
 
+    // The interaction half. The workbook gains one formula first — a whole-column SUM over the
+    // column these phases edit — so a commit and an undo pay the recalculation a report cell pays,
+    // not a value write. Every phase checks that its action actually happened: a frame in which
+    // nothing was typed, committed or undone is a frame of `idle`, and timing it as `commit` would
+    // be a lie the page could not show.
+    harness
+        .state_mut()
+        .session
+        .run("cell.set", json!({"cell": "H1", "input": format!("=SUM(B1:B{rows_wanted})")}))
+        .map_err(|e| format!("place the watched formula: {e:?}"))?;
+    harness.state_mut().session.run("selection.set", json!({"range": EDIT_CELL})).map_err(|e| format!("select {EDIT_CELL}: {e:?}"))?;
+    harness.state_mut().editor = None;
+    harness.run_steps(1);
+
+    phases.push(phase("key", args.frames, &mut harness, |h| {
+        h.event(egui::Event::Text("5".to_string()));
+    }));
+    if harness.state().editor.is_none() {
+        return Err("the `key` phase typed a character and no editor opened — the frame it timed did nothing".to_string());
+    }
+
+    let before = watched_sum(&mut harness);
+    phases.push(phase("commit", args.frames, &mut harness, |h| {
+        // The editor is opened outside the timer: what is measured is Enter and what Enter costs.
+        if h.state().editor.is_none() {
+            h.event(egui::Event::Text("7".to_string()));
+            h.run_steps(1);
+        }
+        h.event(enter());
+    }));
+    if harness.state().message.is_some() {
+        return Err(format!("the `commit` phase raised a message: {:?}", harness.state().message.clone()));
+    }
+    if watched_sum(&mut harness) == before {
+        return Err("the `commit` phase committed nothing — the watching SUM did not change".to_string());
+    }
+
+    phases.push(phase("undo", args.frames, &mut harness, |h| {
+        if h.state().editor.is_none() {
+            h.event(egui::Event::Text("3".to_string()));
+            h.run_steps(1);
+        }
+        h.event(enter());
+        h.run_steps(1); // the commit this undo will step back over, untimed
+        h.event(ctrl_z());
+    }));
+    if harness.state().message.is_some() {
+        return Err(format!("the `undo` phase raised a message: {:?}", harness.state().message.clone()));
+    }
+
+    // The drag: press once at the grid's first cell, then move with the button held. Each frame is
+    // a pointer move, so the selection grows and the frame paints the new block.
+    let rect = harness.state().grid.rect.unwrap_or(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(WINDOW.0, WINDOW.1)));
+    let origin = rect.min + egui::vec2(48.0, 40.0);
+    harness.event(egui::Event::PointerMoved(origin));
+    harness.run_steps(1);
+    harness.event(egui::Event::PointerButton { pos: origin, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.run_steps(1);
+    let debug = std::env::var_os("CELLA_FRAME_DEBUG").is_some();
+    let path = |step: usize| origin + egui::vec2(30.0 * step as f32, 18.0 * step as f32);
+    let mut step = 0usize;
+    phases.push(phase("drag", args.frames, &mut harness, move |h| {
+        step = (step + 1) % 12;
+        let p = path(step);
+        if debug {
+            let sel = h.state().session.active().map(|d| (d.selection.active.a1(), d.selection.current().a1()));
+            eprintln!("frame_time: drag to {p:?}, selection {sel:?}");
+        }
+        h.event(egui::Event::PointerMoved(p));
+    }));
+    // The release carries the position the pointer is at: a release at the press origin reads as a
+    // click there, which would collapse the selection again before the check below.
+    let last = path(args.frames % 12);
+    harness.event(egui::Event::PointerButton { pos: last, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    harness.run_steps(1);
+    if harness.state().session.active().is_none_or(|d| d.selection.is_single_cell()) {
+        return Err("the `drag` phase moved the pointer and the selection stayed one cell — the frames it timed painted nothing new".to_string());
+    }
+
     let over: Vec<&Phase> = phases.iter().filter(|p| p.median() > p.budget).collect();
     if args.json {
         let doc = json!({
@@ -248,6 +345,10 @@ fn phase(
     let budget = match name {
         "idle" => BUDGET_IDLE_MS,
         "page" => BUDGET_PAGE_MS,
+        "key" => BUDGET_KEY_MS,
+        "drag" => BUDGET_DRAG_MS,
+        "commit" => BUDGET_COMMIT_MS,
+        "undo" => BUDGET_UNDO_MS,
         _ => BUDGET_JUMP_MS,
     } * scale;
     let mut times = Vec::with_capacity(frames);
@@ -258,6 +359,23 @@ fn phase(
         times.push(started.elapsed().as_secs_f64() * 1000.0);
     }
     Phase { name, frames: times, budget }
+}
+
+/// Enter, as the keyboard sends it: the editor commits on the pressed event.
+fn enter() -> egui::Event {
+    egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers: egui::Modifiers::NONE, repeat: false, physical_key: None }
+}
+
+/// Ctrl+Z as the grid's shortcut table sees it. `command` is set as well as `ctrl` because the grid
+/// routes Ctrl letters through `ribbon::shortcut` on `m.command`.
+fn ctrl_z() -> egui::Event {
+    let modifiers = egui::Modifiers { ctrl: true, command: true, ..egui::Modifiers::NONE };
+    egui::Event::Key { key: egui::Key::Z, pressed: true, modifiers, repeat: false, physical_key: None }
+}
+
+/// The value of the formula the interaction phases watch (`H1 = SUM(B1:B<rows>)`).
+fn watched_sum(harness: &mut egui_kittest::Harness<'static, SheetApp>) -> f64 {
+    harness.state_mut().session.run("cell.get", json!({"cell": "H1"})).ok().and_then(|v| v.get("value").and_then(Value::as_f64)).unwrap_or(f64::NAN)
 }
 
 fn round(ms: f64) -> f64 {
