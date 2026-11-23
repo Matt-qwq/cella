@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 40 — **the gate grows to 41 rows and the cross-product table to fifteen.** The owner's objection to the ten-row replay was right: ten operations hid where Cella actually stands. Five new scenarios — `COUNTIF`, `VLOOKUP`, `SUMPRODUCT`, and a row inserted and deleted above two million formulas — are now measured by the engine's harness *and* replayed in Excel and WPS through COM, so the report's three-way table has fifteen comparable rows. The new rows are not all wins: **`VLOOKUP` 68 ms against Excel's 7.3 (9x)**, **`COUNTIF` 47 against 17**, **`SUMPRODUCT` 91 against WPS's 62**, and **inserting a row costs 1.92 s against Excel's 0.96 s**. Gate **41/41**. Earlier: round 39 — **a whole-column `XLOOKUP` stops building the column.** The lookup in `aggregate` — `XLOOKUP("Item 77777", A:A, B:B)` over a million rows — read `A:A` into an `Array` first: **75 ms** building a million `Value`s and **45 ms** scanning them, to decide on the first pair. The evaluator's reference-returning `xlookup` now answers the narrow shape (a literal text needle without wildcards, exactly three arguments, one column each over the same rows) by walking the stored cells (`Host::first_text_in_column`: `visit_packed`, no `Value` a row, an ASCII byte compare that falls back to the Unicode-lowercasing order) and returning a reference to the matched row; everything else declines before evaluating a cell. **`aggregate` 184.7 → 126.7 ms (−31.4 %, faster in 6 of 6, p = 0.016)** and **`edit.recalc` 344.5 → 283.2 ms (−17.8 %, 6 of 6)** — an edit re-evaluates the same three aggregates — with the gate at **31/31** and a fresh report page on an idle machine (`aggregate` **117 ms / 10 %**, `edit.recalc` **283 ms / 20 %**, `f9.calculateNow` 481 ms / 30 %; the external replay: F9 **0.307 s against Excel's 0.073 s (4.2x)**, the edit **0.157 s against Excel's 0.171 s — under it for the first time**, open 2.46 s against 8.64 s; `plan/bench/f9-board/out/report/2026-11-23_v12/index.html`, every comparison table colour-coded green/amber/red). Earlier: round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 41 — **the measuring net: a catalogue row for every command.** `docs/performance-commands.md` prices **321 of the 423 commands a throwaway session can run** (438 are registered) at 100,000 and 1,000,000 rows, each alone in a fresh session and with its parameters pointed both near the cursor and over the whole used area; `xtask/bench-coverage.txt` is the ledger of where each command's cost is observed, and `cargo xtask bench-coverage --check` is now the tenth step of `cargo xtask ci`, so a command with no line — or a `bench` line the catalogue has no usable number for — fails the build. The first run found **`edit.find` 2.8 s and `edit.replace` 2.4 s at 1M rows, the slowest commands in the program, neither of them a gate scenario yet**, and that a whole-sheet format is *refused* past 4,000,000 cells rather than slow. Earlier: round 40 — **the gate grows to 41 rows and the cross-product table to fifteen.** The owner's objection to the ten-row replay was right: ten operations hid where Cella actually stands. Five new scenarios — `COUNTIF`, `VLOOKUP`, `SUMPRODUCT`, and a row inserted and deleted above two million formulas — are now measured by the engine's harness *and* replayed in Excel and WPS through COM, so the report's three-way table has fifteen comparable rows. The new rows are not all wins: **`VLOOKUP` 68 ms against Excel's 7.3 (9x)**, **`COUNTIF` 47 against 17**, **`SUMPRODUCT` 91 against WPS's 62**, and **inserting a row costs 1.92 s against Excel's 0.96 s**. Gate **41/41**. Earlier: round 39 — **a whole-column `XLOOKUP` stops building the column.** The lookup in `aggregate` — `XLOOKUP("Item 77777", A:A, B:B)` over a million rows — read `A:A` into an `Array` first: **75 ms** building a million `Value`s and **45 ms** scanning them, to decide on the first pair. The evaluator's reference-returning `xlookup` now answers the narrow shape (a literal text needle without wildcards, exactly three arguments, one column each over the same rows) by walking the stored cells (`Host::first_text_in_column`: `visit_packed`, no `Value` a row, an ASCII byte compare that falls back to the Unicode-lowercasing order) and returning a reference to the matched row; everything else declines before evaluating a cell. **`aggregate` 184.7 → 126.7 ms (−31.4 %, faster in 6 of 6, p = 0.016)** and **`edit.recalc` 344.5 → 283.2 ms (−17.8 %, 6 of 6)** — an edit re-evaluates the same three aggregates — with the gate at **31/31** and a fresh report page on an idle machine (`aggregate` **117 ms / 10 %**, `edit.recalc` **283 ms / 20 %**, `f9.calculateNow` 481 ms / 30 %; the external replay: F9 **0.307 s against Excel's 0.073 s (4.2x)**, the edit **0.157 s against Excel's 0.171 s — under it for the first time**, open 2.46 s against 8.64 s; `plan/bench/f9-board/out/report/2026-11-23_v12/index.html`, every comparison table colour-coded green/amber/red). Earlier: round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -28,37 +28,51 @@ real export, not a synthetic grid.
 
 "Is fifteen operations enough?" has two honest answers, and they are different numbers.
 
-**Command surface: 11 of 299 commands are priced.** The gate's harness runs
-`cell.set`, `range.setValues`, `edit.autoFill`, `edit.undo`, `file.open`, `file.saveBytes`,
-`file.exportCsv`, `formulas.calculateNow`, `home.insertRows`, `home.deleteRows` and
-`data.sortDescending` — 11 of the 299 ids the parity check counts (**3.7 %**). Most of the other 288
-are formatting, dialogs, charts and view commands whose cost does not scale with the data, so that
-percentage says very little. Of the ~80 commands whose parameters name a region, a row or a column
-(the ones a user can point at a million rows), **6 are priced** — sorting, filling, both row edits,
-the bulk write and the cell write.
-
-**Session time: the data-scaled operations are covered.** The fifteen three-way actions are the
-operations a heavy session spends its machine seconds on — open, save, both fills, the drag,
-aggregates, lookups, COUNTIF/SUMPRODUCT, an edit and its recalculation, F9, both sorts, row
-insert/delete. What the gate cannot speak for is the *interactive* half: typing, scrolling,
+**Session time: the scenario gate covers the data-scaled operations.** The fifteen three-way
+actions are the operations a heavy session spends its machine seconds on — open, save, both fills,
+the drag, aggregates, lookups, COUNTIF/SUMPRODUCT, an edit and its recalculation, F9, both sorts,
+row insert/delete. What the gate cannot speak for is the *interactive* half: typing, scrolling,
 selection, dialogs and repaints are frame-time costs, not throughput, and they need a different
 harness (the UI's own measurement, not this one).
 
-**What is not priced yet, ranked by whether it can even be slow at 1M rows:**
+**Command surface: the catalogue prices every command, and the ledger says where.** The gate's
+harness runs 11 command ids outright (`cell.set`, `range.setValues`, `edit.autoFill`, `edit.undo`,
+`file.open`, `file.saveBytes`, `file.exportCsv`, `formulas.calculateNow`, `home.insertRows`,
+`home.deleteRows`, `data.sortDescending`) — 11 of the **438 commands the engine registers**, which
+is what a user can invoke, not the 299 ids the parity checklist counts (that list is Excel's ribbon,
+and several of its entries are one command here).
 
-| operation | scales with data? | in the gate? |
+Two generated pages close that gap, and both are produced from the harnesses' own output:
+
+- [`performance-commands.md`](performance-commands.md) — **one row per registered command**, at
+  100,000 and 1,000,000 rows, each measured alone in a fresh session and given its parameters at two
+  scales (near the cursor, and covering the whole used area). Of the 423 commands a throwaway
+  session can run, **321 have a usable number**; the other 102 are listed with what they said (a
+  PivotTable or a script the prepared workbook does not carry, or params the generator could not
+  shape). Regenerate with `cargo xtask bench-commands` (release, ~40 s at both row counts).
+- [`bench-coverage.txt`](../xtask/bench-coverage.txt) — the ledger: one line per registered command,
+  `bench` (a usable number in the catalogue, or a gate scenario that prices it better), `ui` (its
+  cost is frame time, and the UI bench is the ruler that will hold it) or `excuse: why`.
+  `cargo xtask bench-coverage --check` is **step 10 of `cargo xtask ci`**: a command with no line,
+  an unknown id, a duplicate, a `todo` left in place or a `bench` line the catalogue has no usable
+  number for fails the build, and the message says which id and how to fill it. Today: **290 bench,
+  31 ui, 117 excuse**. Adding a command therefore costs one line, and forgetting it costs a red CI.
+
+**What is still unmeasured, ranked by whether it can even be slow at 1M rows:**
+
+| operation | scales with data? | where it stands |
 |---|---|---|
-| AutoFilter apply / clear over a million rows | yes | no — next batch |
-| Find / Replace all over a million rows | yes | no — next batch |
-| Paste a block (6M cells, styles and clipboard included) | yes | partly: `range.setValues` is the write half |
-| Insert / delete a column (a row is covered) | yes | no — next batch |
-| Print / PDF export of a million rows | yes | no — next batch |
-| Pivot refresh over a million rows | yes | no — next batch |
-| Conditional formatting applied over a million cells | yes (paint time) | no — next batch |
-| Remove duplicates / text-to-columns / flash fill | yes | no — next batch |
-| CSV / Parquet export at a million rows | yes | exportCsv only inside `open.csv` |
+| Find / Replace all over a million rows | yes | catalogue: **`edit.find` 2.8 s, `edit.replace` 2.4 s at 1M** — not yet a gate scenario (next batch) |
+| AutoFilter apply / clear over a million rows | yes | catalogue has it; the filter path itself is not a gate row yet (next batch) |
+| Paste a block (6M cells, styles and clipboard included) | yes | partly: `range.setValues` is the write half; `paste_bench` priced a 6M-cell paste at 1.3 s (round 27) |
+| Insert / delete a column (a row is covered) | yes | catalogue: `home.deleteColumns` 446 ms whole at 1M |
+| Print / PDF export of a million rows | yes | not measured (a gate row needs the PDF path's own harness) |
+| Pivot refresh over a million rows | yes | **no number yet**: the catalogue's workbook carries no PivotTable, so 35 pivot commands are excused |
+| Conditional formatting applied over a million cells | yes (paint time) | catalogue: a whole-sheet format **is refused past 4,000,000 cells** (a guard, not a crash) — the cell-by-cell path caps out and the column/Track-level path that Excel uses does not exist yet |
+| Remove duplicates / text-to-columns / flash fill | yes | catalogue: `data.removeDuplicates`, `data.textToColumns`, `edit.flashFill` have numbers; `edit.flashFill` refuses (`944 ms` at 1M to look and decline) |
+| CSV / Parquet export at a million rows | yes | `exportCsv` only inside `open.csv`; `file.exportParquet` wants a path param the generator does not supply |
 | Charts over a large series | render-bound | no |
-| Scrolling, selection, dialogs, freeze panes | no (frame time) | out of scope: a UI bench |
+| Scrolling, selection, dialogs, freeze panes | no (frame time) | out of scope here: the UI bench, and the 31 `ui` lines of the ledger |
 | Every command's *correctness* | — | yes: the fuzzer runs them all, not for speed |
 
 **How to get a usage-weighted number instead of a command count.** The engine journals every
@@ -68,6 +82,58 @@ run the sample workbooks through a scripted "day of work" and weight the gate's 
 session actually spends, or collect journals from users (opt-in) and rank the gate's gaps by
 frequency. Until then, the honest claim is the command count above, not a percentage of "what users
 do".
+
+## The command catalogue
+
+`cargo xtask bench-commands` runs `crates/engine/examples/bench_commands.rs` in release and writes
+[`performance-commands.md`](performance-commands.md). Its purpose is the owner's rule of
+2026-11-23 — *every operation, every feature, should be observable* — taken literally: the gate's
+eleven priced commands are 3.7 % of the surface, and an operation with no number is an operation
+nobody can claim is fast.
+
+What a row is: the command, alone, in a fresh session holding a copy of one prepared workbook —
+`rows` × 6 columns of values plus a table, a chart, a defined name, a clipboard block and one undo
+step, which is what makes formatting, table, chart and undo commands do real work. The workbook is
+prepared once per row count and shared by every command, so what is timed is the command (its
+params parsing, its work, and the workbook copy its first write pays for). Nothing else is.
+
+Every command is measured at **two scales**, because they answer different questions:
+
+- `small` — the command-sequence fuzzer's generator (`crates/engine/tests/param_gen`), which reads
+  the command's own `params` doc and points regions near the cursor. "What does it cost when the
+  user points it at a few cells."
+- `whole` — the same command with every region-naming parameter (`range`, `target`, `criteria`, …)
+  covering the used area. "Select the column and format it" on a million rows. Without this column
+  a command that walks its range shows a number that measures only its argument parsing.
+
+A command that names no region has the same cost at both scales; that is a fact about the command.
+A row's note says how it went: `params`/`refused` (the command turned the generated params down),
+`no` (it ran and the answer was no), `no change` (an edit that changed nothing), `PANIC` (a caught
+panic — none today).
+
+**What the first run found** (`docs/performance-commands.md`, 2026-11-23, 438 commands):
+
+- **Find and Replace are the two slowest commands in the program**: `edit.find` **2.8 s** and
+  `edit.replace` **2.4 s** at 1M rows — a scan of every used cell, twice the cost of a whole-column
+  `VLOOKUP` and 4× `COUNTIF`. Neither is in the gate yet; both are the next scenario batch.
+- **`range.move` costs 2.44 s** whole at 1M — moving a 6M-cell block. (Excel's drag-and-drop of a
+  whole sheet is fast because it moves the *store*, not the cells; ours writes them again.)
+- **`home.autofitColumnWidth` is 1.12 s** at 1M in the `small` column, i.e. with the cursor on a
+  cell: AutoFit measures the whole column, not the part in view.
+- **`file.saveBytes` is 867 ms at 1M with no change to save** — the pack is dominated by the 6M
+  cells, not by anything the save path could skip.
+- **A whole-sheet format is refused past 4,000,000 cells** (`format`, `home.borders`): a 1M × 6
+  selection is 6M cells and the cell-by-cell path returns "selection too large". Excel formats a
+  whole column by re-pointing the column's default style; we have no such path, so the honest
+  reading is a *missing feature*, not a slow one.
+- **`data.advancedFilter` spent 22 s failing** at 10,000 rows ("the extract range can't overlap the
+  list range") before the 1M params were rejected outright. The catalogue does not care about
+  correctness, but a command that burns 22 s and then refuses is worth a look.
+- **The surface is not uniformly slow, which is the useful part of the answer** — 89 % of the
+  1,202 usable measurements are under 10 ms, and **259 of the 321 priced commands (81 %) are under
+  10 ms in every configuration**, i.e. the next round has **39 names over 100 ms** to work from
+  instead of 438.
+
 
 ## Scenarios
 
@@ -207,6 +273,9 @@ release build; this gate builds the engine in release and takes minutes at 1M ro
 - **before a release** (see [releasing.md](releasing.md)),
 - **after any change to a hot path** — the cell store, recalculation, fill, sort, the xlsx reader
   and writer, `range.setValues` — where "it feels faster" is not a review comment.
+
+`cargo xtask bench-commands` follows the same rule for the same reason (it builds in release), while
+its ledger — `cargo xtask bench-coverage --check` — is cheap enough to be the tenth `ci` step.
 
 Slow or shared machine: `CELLA_PERF_SCALE=2 cargo xtask perf` (or `--scale=2`) multiplies
 every budget. Use it to make the gate fit the hardware it runs on, never to excuse a regression —
@@ -1582,7 +1651,28 @@ engine example, run as a subprocess) are the two patterns.
 The harness stays dependency-free (engine + serde_json only), opens no dialogs, and caps anything
 derived from its arguments — the row count at 5,000,000 and `--repeat` at 10.
 
+Adding a **command** is two steps: one line in [`xtask/bench-coverage.txt`](../xtask/bench-coverage.txt)
+(`bench`, `ui` or `excuse: why`), and — when it is `bench` — a row in the catalogue that
+`cargo xtask bench-commands` writes. `cargo xtask bench-coverage --write` appends a missing line as
+`todo`, which fails `cargo xtask ci` until a person fills it in.
+
 ## Revision history
+
+- **2026-11-23 (round 41, the measuring net):** the owner's rule — *every operation, every feature,
+  should be observable* — became two artefacts. **`docs/performance-commands.md`** is a generated
+  catalogue with **one row per registered command** (438 register; the 423 a throwaway session can
+  run are measured at 100,000 and 1,000,000 rows, each alone in a fresh session, its parameters
+  pointed both near the cursor and over the whole used area); **321 have a usable number**, the
+  other 102 are listed with what they said. **`xtask/bench-coverage.txt`** is the ledger — `bench`
+  / `ui` / `excuse: why` for every command — and `cargo xtask bench-coverage --check` is step 10 of
+  `cargo xtask ci`, so a command with no line, a `todo`, or a `bench` line without a usable number
+  fails the build with the id and what to do about it. Today: 290 bench, 31 ui, 117 excuse. The
+  first run put **`edit.find` (2.8 s) and `edit.replace` (2.4 s) at the top of the program's
+  slowest commands** at 1M rows — neither is a gate scenario yet — and found that a whole-sheet
+  format is *refused* past 4,000,000 cells rather than slow. The catalogue harness reuses the
+  command-sequence fuzzer's params generator (moved to `crates/engine/tests/param_gen`), so one
+  definition of "plausible params" serves both, with a `Scale` that only changes how big a region
+  naming key may be. Not run: the gate (no engine code changed), the report page (owner rule).
 
 - **2026-11-23 (round 39, the whole-column XLOOKUP):** the lookup read its column into an `Array`
   first (75 ms for a million `Value`s, 45 ms to scan) and now walks the stored cells, for the narrow

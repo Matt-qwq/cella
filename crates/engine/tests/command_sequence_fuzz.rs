@@ -73,15 +73,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, col_to_letters};
+use cella_core::{CellRef, RangeRef, Value};
 use cella_engine::calc::Calc;
 use cella_engine::model::{CalcMode, Formula, LineMap, Sheet, Style, StyleId, StyleTable, Workbook};
 use cella_engine::{EngineError, Session, command_specs, find_command, io};
 use serde_json::{Value as Json, json};
 
 mod fuzz_common;
+mod param_gen;
 
 use fuzz_common::{content_diff, has_content, watch_list, workbook_diff};
+// The params a command is given, generated from its `params` doc — the same generator the
+// per-command timing catalogue (`examples/bench_commands.rs`) uses, pointed at a small region.
+use param_gen::*;
 
 const SAMPLES: [&str; 3] = ["sales", "budget", "grades"];
 /// Episodes end (undo/redo checks, then a fresh history) before the engine's 100-step undo limit
@@ -120,34 +124,6 @@ const EXCLUDED: &[(&str, &str)] = &[
     ("formulas.calculationOptions", "manual and iterative calculation differ from a full recalc by design"),
     ("macro.debug", "holds an undo group open across calls, so undo cannot empty the history"),
 ];
-
-// ---------------------------------------------------------------- deterministic randomness
-
-/// SplitMix64: tiny, deterministic and good enough to pick commands.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
-    }
-    /// Inclusive range.
-    fn int(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + (self.next() % ((hi - lo + 1).max(1) as u64)) as i64
-    }
-    fn chance(&mut self, percent: u64) -> bool {
-        self.next() % 100 < percent
-    }
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
-    }
-}
 
 // ---------------------------------------------------------------- harness
 
@@ -326,7 +302,7 @@ struct SeedRun {
 #[allow(clippy::disallowed_methods)] // the clock times the seed; this test never runs on wasm
 fn run_seed(seed: u64, steps: usize, budget: Option<Duration>) -> SeedRun {
     let start = Instant::now();
-    let mut rng = Rng(seed.wrapping_mul(0xA24B_AED4_963E_E407) ^ 0x5EED);
+    let mut rng = Rng::new(seed.wrapping_mul(0xA24B_AED4_963E_E407) ^ 0x5EED);
     let sample = SAMPLES[(seed % SAMPLES.len() as u64) as usize];
     let mut h = Harness::new(sample);
     let mut sequence = Vec::new();
@@ -874,201 +850,8 @@ fn roundtrip_diff(wb: &Workbook) -> Result<(), String> {
 
 // ---------------------------------------------------------------- generation
 
-fn letter(c: u32) -> String {
-    col_to_letters(c)
-}
-
-/// A row/column index: mostly near the data, sometimes further out, rarely at the sheet's edge.
-fn coord(rng: &mut Rng, near: i64, far: i64, max: u32) -> u32 {
-    match rng.below(20) {
-        0 => max - 1 - rng.int(0, 2) as u32,
-        1 | 2 => rng.int(near, far) as u32,
-        _ => rng.int(0, near) as u32,
-    }
-}
-
-fn cell(rng: &mut Rng) -> CellRef {
-    CellRef::new(coord(rng, 24, 120, MAX_ROWS), coord(rng, 11, 40, MAX_COLS))
-}
-
-/// A cell near the data (formula references stay small).
-fn near_cell(rng: &mut Rng) -> CellRef {
-    CellRef::new(rng.int(0, 22) as u32, rng.int(0, 10) as u32)
-}
-
-fn near_range(rng: &mut Rng) -> RangeRef {
-    let a = near_cell(rng);
-    let b = CellRef::new(a.row + rng.int(0, 7) as u32, a.col + rng.int(0, 4) as u32);
-    RangeRef::new(a, b)
-}
-
-fn range(rng: &mut Rng) -> String {
-    match rng.below(20) {
-        0 | 1 => {
-            let c = rng.int(0, 10) as u32;
-            format!("{}:{}", letter(c), letter(c + rng.int(0, 2) as u32))
-        }
-        2 | 3 => {
-            let r = rng.int(1, 25);
-            format!("{r}:{}", r + rng.int(0, 2))
-        }
-        4 => cell(rng).a1(),
-        5 => {
-            let a = cell(rng);
-            RangeRef::new(a, a.offset_clamped(rng.int(0, 3), rng.int(0, 3))).a1()
-        }
-        _ => near_range(rng).a1(),
-    }
-}
-
-fn rows_spec(rng: &mut Rng) -> String {
-    let r = coord(rng, 24, 120, MAX_ROWS) as i64 + 1;
-    format!("{r}:{}", (r + rng.int(0, 2)).min(MAX_ROWS as i64))
-}
-
-fn cols_spec(rng: &mut Rng) -> String {
-    let c = coord(rng, 11, 40, MAX_COLS);
-    format!("{}:{}", letter(c), letter((c + rng.int(0, 1) as u32).min(MAX_COLS - 1)))
-}
-
-fn quoted(name: &str) -> String {
-    format!("'{}'", name.replace('\'', "''"))
-}
-
 fn wb_of(s: &Session) -> &Workbook {
     &s.doc().expect("document").wb
-}
-
-fn spill_anchors(wb: &Workbook) -> Vec<(usize, CellRef)> {
-    wb.sheets.iter().enumerate().flat_map(|(i, sh)| sh.spill_ranges.keys().map(move |c| (i, *c))).collect()
-}
-
-fn tables(wb: &Workbook) -> Vec<(usize, &cella_engine::model::Table)> {
-    wb.sheets.iter().enumerate().flat_map(|(i, sh)| sh.tables.iter().map(move |t| (i, t))).collect()
-}
-
-fn other_sheet(rng: &mut Rng, wb: &Workbook) -> String {
-    quoted(&wb.sheets[rng.below(wb.sheets.len())].name)
-}
-
-fn formula(rng: &mut Rng, wb: &Workbook) -> String {
-    let c = near_cell(rng).a1();
-    let c2 = near_cell(rng).a1();
-    let r = near_range(rng).a1();
-    let n = rng.int(1, 6);
-    let col = letter(rng.int(0, 9) as u32);
-    let tabs = tables(wb);
-    match rng.below(30) {
-        0 => format!("={c}+{n}"),
-        1 => format!("=SUM({r})"),
-        2 => format!("={c}*{c2}"),
-        3 => format!("={}!{c}*2", other_sheet(rng, wb)),
-        4 => format!("=SEQUENCE({n},{})", rng.int(1, 3)),
-        5 | 6 if !tabs.is_empty() => {
-            let (_, t) = rng.pick(&tabs);
-            let column = t.columns.get(rng.below(t.columns.len())).map(|c| c.name.clone()).unwrap_or_default();
-            match rng.below(4) {
-                0 => format!("=SUM({}[{column}])", t.name),
-                1 => format!("=ROWS({})", t.name),
-                2 => format!("={}[@{column}]", t.name),
-                _ => format!("=COUNTA({}[#All])", t.name),
-            }
-        }
-        7 => format!("=INDIRECT(\"{c}\")"),
-        8 => format!("=OFFSET({c},1,1)"),
-        9 => format!("=IF({c}>{n},\"big\",{c})"),
-        10 => {
-            let anchors = spill_anchors(wb);
-            match anchors.get(rng.below(anchors.len().max(1))) {
-                Some((si, a)) => format!("=SUM({}!{a}#)", quoted(&wb.sheets[*si].name)),
-                None => format!("={c}#"),
-            }
-        }
-        11 => format!("=SORT({r})"),
-        12 => format!("=UNIQUE({r})"),
-        13 => format!("=TRANSPOSE({r})"),
-        14 => format!("=COUNTIF({col}:{col},\">0\")"),
-        15 => format!("=SUM({}:{}!{c})", other_sheet(rng, wb), other_sheet(rng, wb)),
-        16 => format!("=LET(x,{c},x*2)"),
-        17 => format!("=XLOOKUP({c},{col}1:{col}20,{col}1:{col}20)"),
-        18 => format!("=FILTER({col}1:{col}20,{col}1:{col}20>{n})"),
-        19 => match wb.names.get(rng.below(wb.names.len().max(1))) {
-            Some(nm) => format!("=SUM({})", nm.name),
-            None => format!("={c}"),
-        },
-        20 => "=ROW()+COLUMN()".into(),
-        21 => format!("={c}&\"-\"&{c2}"),
-        22 => format!("=AVERAGE({r})*{n}"),
-        23 => format!("=MAX({r})-MIN({r})"),
-        24 => rng.pick(&["=1/0", "=NA()", "=#REF!+1", "=NOSUCHFN(1)", "=SUM(", "=\"text\""]).to_string(),
-        25 => format!("={r}"),
-        26 => format!("=INDEX({r},{n},1)"),
-        27 => format!("=VLOOKUP({c},{r},2,FALSE)"),
-        28 => format!("=SEQUENCE({n})*{c}"),
-        _ => format!("=TEXT({c},\"0.00\")"),
-    }
-}
-
-fn literal(rng: &mut Rng) -> String {
-    match rng.below(14) {
-        0..=3 => rng.int(-50, 500).to_string(),
-        4 => format!("{}.{}", rng.int(-9, 99), rng.int(0, 99)),
-        5 => rng.pick(&["North", "South", "East", "West", "abc", "Total", "x y"]).to_string(),
-        6 => rng.pick(&["TRUE", "FALSE"]).to_string(),
-        7 => format!("{}%", rng.int(0, 100)),
-        8 => format!("2026-{:02}-{:02}", rng.int(1, 12), rng.int(1, 28)),
-        9 => String::new(),
-        10 => "'007".into(),
-        11 => "$1,234.50".into(),
-        12 => "#N/A".into(),
-        _ => "1e3".into(),
-    }
-}
-
-fn input(rng: &mut Rng, wb: &Workbook) -> String {
-    if rng.chance(55) { formula(rng, wb) } else { literal(rng) }
-}
-
-fn json_input(rng: &mut Rng, wb: &Workbook) -> Json {
-    match rng.below(10) {
-        0..=1 => json!(rng.int(-20, 200)),
-        2 => Json::Null,
-        3 => json!(rng.chance(50)),
-        _ => json!(input(rng, wb)),
-    }
-}
-
-fn values_2d(rng: &mut Rng, wb: &Workbook) -> Json {
-    let (h, w) = (rng.int(1, 4), rng.int(1, 3));
-    Json::Array((0..h).map(|_| Json::Array((0..w).map(|_| json_input(rng, wb)).collect())).collect())
-}
-
-fn sheet_param(rng: &mut Rng, wb: &Workbook) -> Json {
-    match rng.below(10) {
-        0 => json!(wb.sheets.len() + rng.below(2)),
-        1..=4 => json!(wb.sheets[rng.below(wb.sheets.len())].name),
-        _ => json!(rng.below(wb.sheets.len())),
-    }
-}
-
-fn new_name(rng: &mut Rng) -> String {
-    rng.pick(&["Data", "Q4 2026", "Summary", "Sheet9", "x", "Sales", "Long name of a sheet 31 chars!", "it's", "Grades"]).to_string()
-}
-
-fn color(rng: &mut Rng) -> String {
-    rng.pick(&["#FF0000", "#00B050", "#FFFF00", "#1F4E79", "none"]).to_string()
-}
-
-fn table_param(rng: &mut Rng, wb: &Workbook) -> Json {
-    let tabs = tables(wb);
-    match tabs.get(rng.below(tabs.len() + 1)) {
-        Some((_, t)) => json!(t.name),
-        None => json!("NoSuchTable"),
-    }
-}
-
-fn chart_ids(wb: &Workbook) -> Vec<u32> {
-    wb.sheets.iter().flat_map(|s| s.charts.iter().map(|c| c.id)).collect()
 }
 
 /// Curated state-changing commands and their weights.
@@ -1140,7 +923,7 @@ fn generate(rng: &mut Rng, s: &Session) -> Step {
     }
     let specs: Vec<_> = command_specs().iter().filter(|c| !EXCLUDED.iter().any(|(x, _)| *x == c.id)).collect();
     let spec = specs[rng.below(specs.len())];
-    (spec.id.to_string(), doc_params(rng, wb, spec.params))
+    (spec.id.to_string(), doc_params(rng, wb, spec.params, Scale::Small))
 }
 
 fn curated_params(rng: &mut Rng, wb: &Workbook, id: &str) -> Json {
@@ -1269,145 +1052,6 @@ fn curated_params(rng: &mut Rng, wb: &Workbook, id: &str) -> Json {
         },
         "edit.replace" => json!({"what": rng.pick(&["North", "1", "A", "Sales"]), "with": rng.pick(&["South", "2", "B", ""]), "all": true}),
         _ => maybe_range(rng),
-    }
-}
-
-/// Top-level keys of a params doc (`{range?, shift: right|down, count?}`): (key, optional, hint).
-fn doc_keys(doc: &str) -> Vec<(String, bool, String)> {
-    let Some(start) = doc.find('{') else { return vec![] };
-    let mut parts = Vec::new();
-    let (mut depth, mut in_str, mut cur) = (0i32, false, String::new());
-    for ch in doc[start + 1..].chars() {
-        match ch {
-            '"' => {
-                in_str = !in_str;
-                cur.push(ch);
-            }
-            _ if in_str => cur.push(ch),
-            '{' | '[' | '(' => {
-                depth += 1;
-                cur.push(ch);
-            }
-            '}' | ']' | ')' if depth == 0 => break,
-            '}' | ']' | ')' => {
-                depth -= 1;
-                cur.push(ch);
-            }
-            ',' if depth == 0 => parts.push(std::mem::take(&mut cur)),
-            _ => cur.push(ch),
-        }
-    }
-    parts.push(cur);
-    let mut out = Vec::new();
-    for part in parts {
-        let part = part.trim();
-        let key: String = part.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-        if key.is_empty() {
-            continue;
-        }
-        let rest = &part[key.len()..];
-        let optional = rest.starts_with('?');
-        let hint = rest.trim_start_matches('?').trim_start();
-        let hint = hint.strip_prefix(':').unwrap_or(hint).trim().to_string();
-        out.push((key, optional, hint));
-    }
-    out
-}
-
-/// Bare-word alternatives in a hint (`asc|desc`, `"Good"|"Bad"`), if it is an enumeration.
-fn alternatives(hint: &str) -> Option<Vec<String>> {
-    if !hint.contains('|') {
-        return None;
-    }
-    let alts: Vec<String> = hint
-        .split('|')
-        .map(|a| a.split(" (").next().unwrap_or(a).trim().trim_matches('"').trim_end_matches('…').to_string())
-        .filter(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || " .".contains(c)))
-        .collect();
-    (!alts.is_empty()).then_some(alts)
-}
-
-/// Params from a command's params doc: values chosen by key name, then by the hint's shape.
-fn doc_params(rng: &mut Rng, wb: &Workbook, doc: &str) -> Json {
-    let mut p = serde_json::Map::new();
-    for (key, optional, hint) in doc_keys(doc) {
-        if optional && rng.chance(40) {
-            continue;
-        }
-        if let Some(v) = doc_value(rng, wb, &key, &hint) {
-            p.insert(key, v);
-        }
-    }
-    Json::Object(p)
-}
-
-fn doc_value(rng: &mut Rng, wb: &Workbook, key: &str, hint: &str) -> Option<Json> {
-    let lower = key.to_ascii_lowercase();
-    let v = match lower.as_str() {
-        "path" | "base64" | "password" | "html" => return None,
-        "range" | "source" | "target" | "destination" | "criteria" | "copyto" | "printarea" | "location" | "resultcells" | "changing"
-        | "rowinput" | "columninput" | "add" | "remove" | "apply" => json!(range(rng)),
-        "refersto" => json!(format!("={}!$A$1:$B$4", other_sheet(rng, wb))),
-        "cell" | "at" | "active" | "fromcell" | "set" | "reference" => json!(cell(rng).a1()),
-        "rows" | "titlerows" if !hint.starts_with('[') => json!(rows_spec(rng)),
-        "cols" | "titlecols" if !hint.starts_with('[') => json!(cols_spec(rng)),
-        "sheet" => sheet_param(rng, wb),
-        "input" | "formula" | "formula1" | "formula2" | "value" | "value2" | "with" => json!(input(rng, wb)),
-        "table" => table_param(rng, wb),
-        "chart" | "id" => {
-            let ids = chart_ids(wb);
-            json!(ids.get(rng.below(ids.len() + 1)).copied().unwrap_or(rng.int(0, 5) as u32))
-        }
-        "ids" => json!(chart_ids(wb)),
-        "color" => json!(color(rng)),
-        "values" if hint.starts_with("[[") => values_2d(rng, wb),
-        "keys" => json!([{"column": letter(rng.int(0, 9) as u32), "order": rng.pick(&["asc", "desc"])}]),
-        "column" | "groupby" => json!(letter(rng.int(0, 9) as u32)),
-        "columns" | "sources" if !hint.contains('|') => json!([letter(rng.int(0, 9) as u32)]),
-        "points" => json!([[10, 10], [40, 25], [70, 5]]),
-        "commands" => json!([{"command": "cell.set", "params": {"cell": near_cell(rng).a1(), "input": input(rng, wb)}}]),
-        "char" => json!("€"),
-        "name" | "oldname" if alternatives(hint).is_none() => json!(new_name(rng)),
-        "text" | "title" | "comment" | "author" | "word" | "header" | "footer" | "what" if alternatives(hint).is_none() => {
-            json!(rng.pick(&["North", "note", "&CPage &P", "x"]))
-        }
-        _ => return Some(hint_value(rng, wb, hint)),
-    };
-    Some(v)
-}
-
-fn hint_value(rng: &mut Rng, wb: &Workbook, hint: &str) -> Json {
-    if let Some(alts) = alternatives(hint) {
-        return json!(rng.pick(&alts));
-    }
-    if hint.contains("bool") || hint == "true" || hint == "false" {
-        return json!(rng.chance(50));
-    }
-    if let Some((a, b)) = hint.split_once("..")
-        && let (Ok(a), Ok(b)) = (a.trim().parse::<i64>(), b.trim().split(' ').next().unwrap_or("").parse::<i64>())
-    {
-        return json!(rng.int(a, b));
-    }
-    if let Ok(n) = hint.split(' ').next().unwrap_or("").parse::<f64>() {
-        return json!((n * rng.int(0, 3) as f64).round());
-    }
-    if hint.starts_with('[') {
-        let heads: Vec<String> = tables(wb).iter().flat_map(|(_, t)| t.columns.iter().map(|c| c.name.clone())).collect();
-        return match heads.get(rng.below(heads.len() + 1)) {
-            Some(h) => json!([h]),
-            None => json!([]),
-        };
-    }
-    if let Some(ex) = hint.strip_prefix('"').and_then(|h| h.split('"').next())
-        && rng.chance(60)
-    {
-        return json!(ex);
-    }
-    match rng.below(4) {
-        0 => json!(rng.chance(50)),
-        1 => json!(rng.int(0, 5)),
-        2 => json!(near_range(rng).a1()),
-        _ => json!(literal(rng)),
     }
 }
 

@@ -7,6 +7,8 @@
 
 mod assets;
 #[cfg(feature = "engine")]
+mod bench;
+#[cfg(feature = "engine")]
 mod corpus;
 mod eol;
 mod i18n;
@@ -30,8 +32,8 @@ usage: cargo xtask <command>
 
 commands:
   ci              fmt --check, clippy -D warnings, test, assets, layers, wasm, parity --check,
-                  keytips --check, i18n --check (stops at the first failure; the parity check runs
-                  only if docs/parity-checklist.md exists)
+                  keytips --check, i18n --check, bench-coverage --check (stops at the first
+                  failure; the parity check runs only if docs/parity-checklist.md exists)
   assets          check that every icon/image/font/sample file is attributed in ATTRIBUTION.md
   layers          enforce the crate dependency layering (AGENTS.md \"Layering\")
   wasm            cargo check --target wasm32-unknown-unknown for the L0-L5 crates (+ cella-web)
@@ -50,6 +52,13 @@ commands:
                   lookup, with a ratchet baseline in xtask/i18n-baseline.txt (--write: refresh it,
                   --check: fail on a new literal)
   perf [--update] [--rows=N,N] [--scenario=ID,...] [--repeat=N] [--budgets=PATH] [--scale=F]
+  bench-commands [--rows=N,N] [--repeat=N] [--only=ID,...] [--out PATH]
+                  time every registered command once, at 100k and 1M rows, with its params near the
+                  cursor and over the whole used area; write docs/performance-commands.md
+                  (release, minutes — NOT part of `ci`; see docs/performance.md)
+  bench-coverage [--check] [--write]
+                  the ledger xtask/bench-coverage.txt: where each command's cost is observed
+                  (--check fails on an unclassified command; a step of `ci`)
   perf-report     write docs/performance-report.md from the scenario gate and the live-heap example
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
                   1M rows and compare it with xtask/perf-budgets.txt, plus the mem_drift soak and
@@ -85,6 +94,14 @@ fn main() -> ExitCode {
         Some("keytips") => keytips::run(&root(), &rest),
         Some("i18n") => i18n::run(&root(), &rest),
         Some("perf") => perf::run(&root(), &rest),
+        #[cfg(feature = "engine")]
+        Some("bench-commands") => bench::run_commands(&root(), &rest),
+        #[cfg(not(feature = "engine"))]
+        Some("bench-commands") => Err("`bench-commands` needs the engine feature (on by default)".to_string()),
+        #[cfg(feature = "engine")]
+        Some("bench-coverage") => bench::run_coverage(&root(), &rest),
+        #[cfg(not(feature = "engine"))]
+        Some("bench-coverage") => Err("`bench-coverage` needs the engine feature (on by default)".to_string()),
         Some("perf-report") => perfreport::run(&root()),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),
@@ -244,6 +261,20 @@ fn cmd_ci() -> Result<(), String> {
         ),
         ("keytips", Box::new(|| keytips::run(&root(), &["--check"]))),
         ("i18n", Box::new(|| i18n::run(&root(), &["--check"]))),
+        (
+            "bench-coverage",
+            Box::new(|| {
+                #[cfg(feature = "engine")]
+                {
+                    bench::run_coverage(&root(), &["--check"])
+                }
+                #[cfg(not(feature = "engine"))]
+                {
+                    println!("bench-coverage: xtask was built without the engine feature; skipped");
+                    Ok(())
+                }
+            }),
+        ),
     ];
     let mut done = Vec::new();
     for (name, f) in &steps {
