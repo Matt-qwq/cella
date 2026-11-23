@@ -63,6 +63,13 @@ commands:
                   the frame-time ruler: one repaint of the whole window at 1M rows, offscreen,
                   no GPU; writes docs/performance-ui.md and fails over budget
                   (release, minutes the first time — NOT part of `ci`)
+  bench-functions [--rows=N,N] [--repeat=N] [--only=NAME,...] [--out PATH] [--json-out PATH]
+                  [--from PATH] | --check
+                  time every registered worksheet function once, at 100k and 1M rows, with its
+                  arguments near the cursor and over the whole column; write
+                  docs/performance-functions.md (release, seconds — NOT part of `ci`); `--check`
+                  verifies xtask/bench-functions.txt names every registered function (a step
+                  of `ci`)
   perf-report     write docs/performance-report.md from the scenario gate and the live-heap example
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
                   1M rows and compare it with xtask/perf-budgets.txt, plus the mem_drift soak and
@@ -110,6 +117,10 @@ fn main() -> ExitCode {
         Some("bench-ui") => bench::run_ui(&root(), &rest),
         #[cfg(not(feature = "engine"))]
         Some("bench-ui") => Err("`bench-ui` needs the engine feature (on by default)".to_string()),
+        #[cfg(feature = "engine")]
+        Some("bench-functions") => bench::run_functions(&root(), &rest),
+        #[cfg(not(feature = "engine"))]
+        Some("bench-functions") => Err("`bench-functions` needs the engine feature (on by default)".to_string()),
         Some("perf-report") => perfreport::run(&root()),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),
@@ -279,6 +290,20 @@ fn cmd_ci() -> Result<(), String> {
                 #[cfg(not(feature = "engine"))]
                 {
                     println!("bench-coverage: xtask was built without the engine feature; skipped");
+                    Ok(())
+                }
+            }),
+        ),
+        (
+            "bench-functions",
+            Box::new(|| {
+                #[cfg(feature = "engine")]
+                {
+                    bench::functions_check(&root())
+                }
+                #[cfg(not(feature = "engine"))]
+                {
+                    println!("bench-functions: xtask was built without the engine feature; skipped");
                     Ok(())
                 }
             }),

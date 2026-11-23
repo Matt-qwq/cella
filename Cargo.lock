@@ -5297,6 +5297,7 @@ name = "xtask"
 version = "0.13.0"
 dependencies = [
  "cella-engine",
+ "cella-functions",
  "serde_json",
 ]
 

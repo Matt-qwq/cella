@@ -13,8 +13,9 @@ workspace = true
 # `cargo xtask parity` reads the command catalog from the engine. CI steps that only need the
 # version or the layer/asset checks run with --no-default-features and skip compiling it.
 default = ["engine"]
-engine = ["dep:cella-engine"]
+engine = ["dep:cella-engine", "dep:cella-functions"]
 
 [dependencies]
 serde_json = { workspace = true }
 cella-engine = { workspace = true, optional = true }
+cella-functions = { workspace = true, optional = true }
