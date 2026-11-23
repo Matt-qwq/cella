@@ -1,6 +1,6 @@
 # Performance report
 
-> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `8c2401f` (2026-11-23).
+> **Generated** by `cargo xtask perf-report` for Cella 0.13.0 at `938c1df` (2026-11-24).
 > Machine: windows x86_64; rustc 1.97.1 (8bab26f4f 2026-07-14). Every number is wall clock on one idle machine, each
 > scenario's fastest of three passes (the machine's run-to-run spread is about 10 %, which is why
 > a gate budget is twice a quiet pass). Method and caveats: [performance.md](performance.md).
@@ -13,49 +13,67 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000       90 ms     250 ms     36%
-fill.formulas          100000      106 ms     290 ms     36%
-fill.chained           100000      141 ms     370 ms     38%
-fill.autofill          100000       72 ms     190 ms     38%
-aggregate              100000       14 ms     110 ms     12%
-calc.countif           100000      3.6 ms      20 ms     18%
-calc.vlookup           100000      5.0 ms      30 ms     17%
-calc.sumproduct        100000      5.9 ms      40 ms     15%
-edit.recalc            100000       37 ms     160 ms     23%
+fill.values            100000      112 ms     250 ms     45%
+fill.formulas          100000      130 ms     290 ms     45%
+fill.chained           100000      170 ms     370 ms     46%
+fill.autofill          100000       79 ms     190 ms     42%
+aggregate              100000       17 ms     110 ms     16%
+calc.countif           100000      5.3 ms      20 ms     26%
+calc.vlookup           100000      7.1 ms      30 ms     24%
+calc.sumproduct        100000      9.3 ms      40 ms     23%
+edit.recalc            100000       46 ms     160 ms     29%
 edit.undo              100000      100 us     3.0 ms      3%
-f9.calculateNow        100000       57 ms     180 ms     32%
-sort.desc              100000      160 ms     580 ms     28%
-sort.formulas          100000      229 ms     760 ms     30%
-struct.insertRow       100000      162 ms     420 ms     39%
-struct.deleteRow       100000      161 ms     420 ms     38%
-save.xlsx              100000      140 ms     300 ms     46%
-open.xlsx              100000      237 ms     520 ms     46%
-rebuild.graph          100000       47 ms     110 ms     43%
-open.csv               100000       70 ms     130 ms     54%
-fill.values           1000000      955 ms     3.05 s     31%
-fill.formulas         1000000      882 ms     2.55 s     35%
-fill.chained          1000000      1.27 s     3.55 s     36%
-fill.autofill         1000000      267 ms     885 ms     30%
-aggregate             1000000      113 ms     1.15 s     10%
-calc.countif          1000000       47 ms     160 ms     30%
-calc.vlookup          1000000       68 ms     220 ms     31%
-calc.sumproduct       1000000       91 ms     240 ms     38%
-edit.recalc           1000000      382 ms     1.45 s     26%
-edit.undo             1000000      1.4 ms      52 ms      3%
-f9.calculateNow       1000000      640 ms     1.60 s     40%
-sort.desc             1000000      1.67 s     6.70 s     25%
-sort.formulas         1000000      2.40 s     8.65 s     28%
-struct.insertRow      1000000      1.92 s     4.80 s     40%
-struct.deleteRow      1000000      1.90 s     4.40 s     43%
-save.xlsx             1000000      1.62 s     3.40 s     48%
-open.xlsx             1000000      2.52 s     5.90 s     43%
-rebuild.graph         1000000      623 ms     1.45 s     43%
-open.csv              1000000      663 ms     1.25 s     53%
-save.repeat            100000      137 ms     370 ms     37%
-save.repeat           1000000      1.57 s     3.20 s     49%
-mem_drift              100000      3.1 ms      11 ms     28%
+f9.calculateNow        100000       72 ms     180 ms     40%
+sort.desc              100000      188 ms     580 ms     32%
+sort.formulas          100000      267 ms     760 ms     35%
+struct.insertRow       100000      195 ms     420 ms     46%
+struct.deleteRow       100000      196 ms     420 ms     47%
+save.xlsx              100000      161 ms     300 ms     54%
+open.xlsx              100000      264 ms     520 ms     51%
+rebuild.graph          100000       57 ms     110 ms     52%
+open.csv               100000       77 ms     130 ms     59%
+filter.apply           100000      100 us     1.0 ms     10%
+filter.clear           100000      200 us     1.0 ms     20%
+find.replaceAll        100000      485 ms     890 ms     55%
+paste.block            100000      114 ms     210 ms     54%
+struct.insertColumn     100000      1.0 ms     2.0 ms     50%
+struct.deleteColumn     100000      500 us     1.0 ms     50%
+cf.apply               100000      100 us     1.0 ms     10%
+pivot.refresh          100000       82 ms     160 ms     51%
+print.pdf              100000      2.20 s     4.45 s     49%
+fill.values           1000000      1.21 s     3.05 s     40%
+fill.formulas         1000000      1.06 s     2.55 s     41%
+fill.chained          1000000      1.52 s     3.55 s     43%
+fill.autofill         1000000      292 ms     885 ms     33%
+aggregate             1000000      126 ms     1.15 s     11%
+calc.countif          1000000       52 ms     160 ms     33%
+calc.vlookup          1000000       75 ms     220 ms     34%
+calc.sumproduct       1000000       99 ms     240 ms     41%
+edit.recalc           1000000      433 ms     1.45 s     30%
+edit.undo             1000000      1.6 ms      52 ms      3%
+f9.calculateNow       1000000      751 ms     1.60 s     47%
+sort.desc             1000000      1.85 s     6.70 s     28%
+sort.formulas         1000000      2.73 s     8.65 s     32%
+struct.insertRow      1000000      2.33 s     4.80 s     49%
+struct.deleteRow      1000000      2.28 s     4.40 s     52%
+save.xlsx             1000000      1.87 s     3.40 s     55%
+open.xlsx             1000000      3.14 s     5.90 s     53%
+rebuild.graph         1000000      799 ms     1.45 s     55%
+open.csv              1000000      733 ms     1.25 s     59%
+filter.apply          1000000      900 us     1.6 ms     56%
+filter.clear          1000000      8.3 ms      15 ms     55%
+find.replaceAll       1000000      4.85 s     9.00 s     54%
+paste.block           1000000      1.19 s     2.15 s     55%
+struct.insertColumn    1000000       13 ms      26 ms     52%
+struct.deleteColumn    1000000       12 ms      18 ms     62%
+cf.apply              1000000      800 us     1.6 ms     50%
+pivot.refresh         1000000      831 ms     1.65 s     50%
+print.pdf             1000000      3.88 s     8.25 s     47%
+save.repeat            100000      163 ms     370 ms     44%
+save.repeat           1000000      1.78 s     3.20 s     56%
+mem_drift              100000      3.6 ms      11 ms     32%
 
-OK: all 41 scenarios within budget (xtask/perf-budgets.txt)
+OK: all 59 scenarios within budget (xtask/perf-budgets.txt)
 
 ```
 
@@ -216,6 +234,60 @@ round 36 — 1.046 → 0.406 s, certified on this file — and round 37's chain 
 evaluation down again). Memory was read from the running processes after the document was open
 (WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was
 measured interleaved (Excel, Cella, Excel, Cella) so both sides saw the same machine.
+
+### The four operations round 41 added (2026-11-23, one pass each)
+
+The command catalogue put Find/Replace, the AutoFilter and a six-million-cell paste at the top of
+what a session spends, so they became gate scenarios and were replayed in the other two products
+through COM (`plan/bench/gate_ext.ps1 -Only filter.apply,filter.clear,find.replaceAll,paste.block`).
+**One pass each** (the table above is three passes and a median); the same 70 MB file, the same
+machine, in this order — open, apply, clear, replace, paste:
+
+| operation, 1M rows | Excel 16.0 | WPS 12.1 | Cella |
+|---|---:|---:|---:|
+| **apply an AutoFilter to the body** | 0.059 s | 0.091 s | **0.0008 s** |
+| **clear it** | 0.007 s | 0.007 s | 0.0074 s |
+| **Replace All (`Item` -> `Product`, every used cell)** | 13.512 s | 6.886 s | **4.48 s** |
+| **paste 6M cells (copy `A1:F1000000`, paste at `L1`)** | 6.947 s | 3.881 s | **1.06 s** |
+| open the file (control, this session) | 9.4 s | 12.0 s | — |
+
+- **Applying a filter is not the same operation in the three products, and the numbers say so.**
+  Cella's `data.filter` marks the range as filtered and hides rows lazily (860 µs); Excel and WPS
+  build the filter structure and the dropdown state up front (59 ms and 91 ms). Both are honest for
+  "select the body and press Filter" — the 70x is a design difference, not a speed one, and the one
+  that matters to a person is the 7.4 ms to clear it, where all three agree.
+- **Replace All: Cella is 3x Excel and 1.5x WPS.** A million scans and a million rewrites each;
+  Excel's 13.5 s is the number that makes "find and replace in a big sheet" feel broken.
+- **Paste 6M cells: Cella is 6.5x Excel and 3.7x WPS.** (Cella's block carries values without styles
+  here — the workbook it runs on came back from a CSV; `paste_bench` measures the styled shape at
+  1.3 s.)
+
+### The second batch round 43 added (2026-11-23, one pass each)
+
+A column edit on the other axis, and a conditional-format rule over six million cells. Same protocol
+as above: same file, same machine, one pass each, in this order — open, insert a column at C, delete
+it, apply a data bar to `A1:F1000001`:
+
+| operation, 1M rows | Excel 16.0 | WPS 12.1 | Cella |
+|---|---:|---:|---:|
+| **insert a column at C** (shift 1M rows right) | 0.941 s | 0.497 s | **0.017 s** |
+| **delete it again** | 1.365 s | 0.452 s | **0.013 s** |
+| **apply a data bar over 6M cells** | 0.165 s | 0.035 s | **0.0011 s** |
+| open the file (control, this session) | 13.5 s | 12.3 s | — |
+
+- **A column insert/delete is 29–105× cheaper here**, and the reason is in the store: Cella keeps a
+  sheet's cells in row bands with a column offset, so moving a column is bookkeeping, while both
+  other products rewrite a million shifted cells. This is the one place in the comparison where the
+  data structure, not the code, is the answer.
+- **The data bar is not the same operation.** Cella stores the rule (1.1 ms) and builds its
+  statistics when the grid first paints it — the UI's ruler, in
+  [performance-ui.md](performance-ui.md). Excel's 165 ms and WPS's 35 ms include their own
+  structure build. The honest reading is "the rule costs Cella nothing measurable; what it costs to
+  *paint* is not in this table".
+- **Not replayed:** `pivot.refresh` (each product builds a PivotTable through a different API, so the
+  comparable operation is Insert PivotTable, not Refresh — Cella's own row is the engine's) and
+  `print.pdf` (pagination, fonts and page caps differ by product; the 1M row export stops at
+  Cella's 2,000-page cap).
 
 ### What this says
 
