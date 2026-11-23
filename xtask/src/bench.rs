@@ -184,6 +184,10 @@ pub struct Measurement {
     pub rows: usize,
     pub scale: String,
     pub ms: f64,
+    /// Live-heap bytes the command kept (after minus before, from the engine's own report).
+    pub bytes: i64,
+    /// Bytes the measurement's deferred-release drain freed right after the command.
+    pub dropped: usize,
     pub changed: bool,
     /// Whether the command is registered as an edit: a query that returns Ok without changing the
     /// workbook is doing its job, an edit that does so is not.
@@ -222,6 +226,8 @@ pub fn parse_catalogue(text: &str) -> Result<Catalogue, String> {
             rows: num(&m, "rows") as usize,
             scale: m.get("scale").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
             ms: m.get("ms").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+            bytes: m.get("bytes").and_then(serde_json::Value::as_i64).unwrap_or(0),
+            dropped: m.get("dropped").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize,
             changed: m.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(false),
             writes: m.get("writes").and_then(serde_json::Value::as_bool).unwrap_or(true),
             outcome: m.get("outcome").and_then(serde_json::Value::as_str).unwrap_or("ok").to_string(),
@@ -247,6 +253,22 @@ fn fmt_ms(ms: f64) -> String {
         format!("{ms:.1} ms")
     } else {
         format!("{:.0} us", (ms * 1_000.0).max(0.0))
+    }
+}
+
+/// Bytes, signed and rounded: `+12.4 MB`, `−3.1 MB`, `+840 KB`, `0`.
+fn fmt_bytes(bytes: i64) -> String {
+    if bytes == 0 {
+        return "0".to_string();
+    }
+    let sign = if bytes < 0 { "−" } else { "+" };
+    let n = bytes.unsigned_abs() as f64;
+    if n >= 1_048_576.0 {
+        format!("{sign}{:.1} MB", n / 1_048_576.0)
+    } else if n >= 1024.0 {
+        format!("{sign}{:.0} KB", n / 1024.0)
+    } else {
+        format!("{sign}{n:.0} B")
     }
 }
 
@@ -317,6 +339,11 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
           ran and the answer was no (nothing found, no such table), `no change` means an edit that \
           changed nothing, and `PANIC` would mean a caught panic. `-` means that configuration was \
           not measured at all.\n\n";
+    s += "The `kept` column is the second axis: the live-heap bytes a command adds, from the engine's \
+          own report (`Session::memory_report`) after minus before, with the deferred-release queue \
+          drained first. It is the memory a command keeps — the store's capacities, the graph, the \
+          history — not a heap census, so it reads as \"this operation costs a hundred and fifty \
+          megabytes while it runs\", which is what a machine with less RAM than the file feels.\n\n";
 
     // The slowest, which is the part a person reads first.
     let widest = c.rows.iter().copied().max().unwrap_or(0);
@@ -328,6 +355,22 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
         s += "| command | scale | time | note |\n|---|---|---|---|\n";
         for m in &slowest {
             s += &format!("| `{}` | {} | {} | {} |\n", m.id, m.scale, fmt_ms(m.ms), note(m));
+        }
+        s += "\n";
+    }
+
+    // The hungriest, same reading order: memory is the other axis a command costs.
+    let mut hungriest: Vec<&Measurement> = c.measurements.iter().filter(|m| m.rows == widest && m.bytes > 0).collect();
+    hungriest.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    hungriest.truncate(10);
+    if widest > 0 && !hungriest.is_empty() {
+        s += &format!("## The ten that keep the most memory at {} rows\n\n", thousands(widest));
+        s += "The engine's own report (the store's capacities, the graph, the history), after minus \
+              before the command, with the deferred-release queue drained first — the memory a \
+              command keeps, not a heap census.\n\n";
+        s += "| command | scale | kept | time |\n|---|---|---|---|\n";
+        for m in &hungriest {
+            s += &format!("| `{}` | {} | {} | {} |\n", m.id, m.scale, fmt_bytes(m.bytes), fmt_ms(m.ms));
         }
         s += "\n";
     }
@@ -348,8 +391,8 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
             sep += "---|";
         }
     }
-    head += " note |\n";
-    sep += "---|\n";
+    head += " kept | note |\n";
+    sep += "---|---|\n";
     s += &head;
     s += &sep;
     for id in &ids {
@@ -381,6 +424,13 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
         }
         let said: Vec<String> =
             notes.iter().map(|(body, scales)| if c.scales.len() > 1 { format!("{}: {body}", scales.join("/")) } else { body.clone() }).collect();
+        let kept = c
+            .measurements
+            .iter()
+            .filter(|m| m.id == *id)
+            .max_by(|a, b| a.bytes.cmp(&b.bytes))
+            .map_or_else(|| "0".to_string(), |m| fmt_bytes(m.bytes));
+        line += &format!(" {kept} |");
         line += &format!(" {} |\n", said.join("; "));
         s += &line;
     }
@@ -1298,8 +1348,8 @@ mod tests {
         assert_eq!((c.rows.clone(), c.scales.len(), c.commands), (vec![1000], 2, 2));
         let facts = Facts { version: "0.0.0", sha: "deadbeef", date: "2026-11-23", machine: "test".into() };
         let page = render_catalogue(&facts, &c);
-        assert!(page.contains("| `home.bold` | 12 us | 1.23 s |  |"), "{page}");
-        assert!(page.contains("| `data.sort` | 0 us | 4.5 ms | small: refused: nothing to sort |"), "{page}");
+        assert!(page.contains("| `home.bold` | 12 us | 1.23 s | 0 |  |"), "{page}");
+        assert!(page.contains("| `data.sort` | 0 us | 4.5 ms | 0 | small: refused: nothing to sort |"), "{page}");
         assert!(page.contains("## The twenty slowest commands at 1,000 rows"), "{page}");
         assert!(page.contains("| `file.open` | reads files |"), "{page}");
         assert!(page.contains("2 of them measured."), "{page}");
@@ -1313,6 +1363,15 @@ mod tests {
         assert_eq!(thousands(1_000_000), "1,000,000");
         assert_eq!(thousands(100_000), "100,000");
         assert_eq!(thousands(999), "999");
+    }
+
+    #[test]
+    fn bytes_read_signed_and_rounded() {
+        assert_eq!(fmt_bytes(0), "0");
+        assert_eq!(fmt_bytes(512), "+512 B");
+        assert_eq!(fmt_bytes(8 * 1024), "+8 KB");
+        assert_eq!(fmt_bytes(-3 * 1_048_576), "−3.0 MB");
+        assert_eq!(fmt_bytes(224 * 1_048_576), "+224.0 MB");
     }
 
     #[test]

@@ -131,6 +131,13 @@ struct Measurement {
     rows: usize,
     scale: &'static str,
     ms: f64,
+    /// What the command kept: the live-heap bytes after it minus before it, from the engine's own
+    /// report. Negative when the command released more than it kept (a command that shrinks the
+    /// sheet, or one whose deferred snapshots were drained by the measurement itself).
+    bytes: i64,
+    /// Bytes the deferred-release drain freed right after the command — normally zero, and a
+    /// number when the command left a snapshot waiting for a free().
+    dropped: usize,
     /// Whether the workbook's `Arc` moved: a command that returns Ok without writing anything
     /// (a menu that only opens a dialog, a search that finds nothing) is a 0 ms row for a reason
     /// the page has to be able to show.
@@ -317,6 +324,8 @@ fn report(args: &Args, wanted: &[&str], measurements: &[Measurement]) -> Json {
                 "rows": m.rows,
                 "scale": m.scale,
                 "ms": m.ms,
+                "bytes": m.bytes,
+                "dropped": m.dropped,
                 "changed": m.changed,
                 "writes": m.writes,
                 "outcome": m.outcome,
@@ -340,17 +349,48 @@ fn report(args: &Args, wanted: &[&str], measurements: &[Measurement]) -> Json {
 }
 
 fn render_table(measurements: &[Measurement]) -> String {
-    let mut s = format!("\n{:<32} {:>6} {:>7} {:>10} {:>6}  {}\n", "command", "rows", "scale", "time", "wrote", "outcome");
-    s +=
-        &format!("{:<32} {:>6} {:>7} {:>10} {:>6}  {}\n", "-".repeat(32), "-".repeat(6), "-".repeat(7), "-".repeat(10), "-".repeat(6), "-".repeat(7));
+    let mut s = format!("\n{:<32} {:>6} {:>7} {:>10} {:>10} {:>6}  {}\n", "command", "rows", "scale", "time", "kept", "wrote", "outcome");
+    s += &format!(
+        "{:<32} {:>6} {:>7} {:>10} {:>10} {:>6}  {}\n",
+        "-".repeat(32),
+        "-".repeat(6),
+        "-".repeat(7),
+        "-".repeat(10),
+        "-".repeat(10),
+        "-".repeat(6),
+        "-".repeat(7)
+    );
     for m in measurements {
         let outcome = match &m.error {
             Some(e) => format!("{}: {}", m.outcome, e),
             None => m.outcome.to_string(),
         };
-        s += &format!("{:<32} {:>6} {:>7} {:>10} {:>6}  {}\n", m.id, m.rows, m.scale, fmt_ms(m.ms), if m.changed { "yes" } else { "-" }, outcome);
+        let kept = if m.bytes == 0 { "-".to_string() } else { fmt_bytes(m.bytes) };
+        s += &format!(
+            "{:<32} {:>6} {:>7} {:>10} {:>10} {:>6}  {}\n",
+            m.id,
+            m.rows,
+            m.scale,
+            fmt_ms(m.ms),
+            kept,
+            if m.changed { "yes" } else { "-" },
+            outcome
+        );
     }
     s
+}
+
+/// Bytes, signed, with one decimal: `+12.4 MB`, `−3.1 MB`, `+840 KB`.
+fn fmt_bytes(bytes: i64) -> String {
+    let sign = if bytes < 0 { "−" } else { "+" };
+    let n = bytes.unsigned_abs() as f64;
+    if n >= 1_048_576.0 {
+        format!("{sign}{:.1} MB", n / 1_048_576.0)
+    } else if n >= 1024.0 {
+        format!("{sign}{:.0} KB", n / 1024.0)
+    } else {
+        format!("{sign}{n:.0} B")
+    }
 }
 
 fn fmt_ms(ms: f64) -> String {
@@ -531,10 +571,18 @@ fn measure_once(base: &DocState, id: &str, rows: usize, scale: &'static str, att
     let mut rng = Rng::new(seed_of(id, scale).wrapping_add((attempt as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
     let params = doc_params(&mut rng, &wb, id, spec.params, scale_for(scale, rows));
     let before = wb.clone();
+    // Memory is a second axis the same row can carry: what the command *keeps*, measured on the
+    // engine's own report (the store's capacities, the graph, the history) rather than on a heap
+    // census. The deferred-release queue is drained first, so a snapshot the previous setup
+    // dropped is not charged to this command.
+    s.release_deferred();
+    let mem_before = s.memory_report().total;
     let started = Instant::now();
     let result = s.execute(id, params);
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     let after = s.doc().map_err(err)?.wb.clone();
+    let dropped = s.release_deferred();
+    let mem_after = s.memory_report().total;
     let (outcome, error) = match result {
         Ok(_) => ("ok", None),
         Err(EngineError::Disabled(_, why)) => ("refused", Some(why)),
@@ -542,7 +590,18 @@ fn measure_once(base: &DocState, id: &str, rows: usize, scale: &'static str, att
         Err(EngineError::Internal(_, msg)) => ("panic", Some(msg)),
         Err(e) => ("no", Some(e.to_string())),
     };
-    Ok(Measurement { id: id.to_string(), rows, scale, ms, changed: !Arc::ptr_eq(&before, &after), writes: spec.undoable, outcome, error })
+    Ok(Measurement {
+        id: id.to_string(),
+        rows,
+        scale,
+        ms,
+        bytes: mem_after as i64 - mem_before as i64,
+        dropped,
+        changed: !Arc::ptr_eq(&before, &after),
+        writes: spec.undoable,
+        outcome,
+        error,
+    })
 }
 
 fn scale_for(name: &str, rows: usize) -> Scale {
