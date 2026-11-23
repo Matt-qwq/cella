@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 46 (11-23): **the shape ruler** entered three entries — **§28 `edit.clearAll` takes 9.13 s on a 1000-column sheet** (8,859× the same cells as a million rows; `edit.clearFormats` 3.21 s, `range.move` 14.48 s follow it) and **§29 saving a hundred sheets costs 18× the same cells in one** (23.72 s against 1.3 s) — and the per-command memory reading is attributable again (§26 is now the report's `undo` line). Earlier: round 45 (11-23): the round-44 memory reading was withdrawn and the `FORECAST.ETS` limit entered as §27. Earlier: round 27 (11-21): three sign-tested knives landed (§2) — the closure's second-dependent box (−18.4 % on the 2M-dirty edit), band-copy-tag pricing (−7.2 %), and the store's compare-before-write plus one-bit row find (−20.1 %/−21.4 %). Earlier: round 26 (11-20): the evaluator is refuted by measurement (§2) — bytecode built and equivalence-proven, sign-tested a no-win (the per-cell cost is kernel-bound, not traversal-bound); the chain edit's missing time was undo bookkeeping, and an evicted step now releases on later cheap commands (built-case edit −30 %, 8/8, p=0.0039; the gate's aggregate 443 ms). Earlier: round 25 (11-20): the 256 × 200 release soak's three findings are **fixed** with red-first regressions — two incremental-vs-full spill divergences in calc, and §3's suppressed-filter hidden rows, the same root cause as the seed-97 case, closed to its design question; the perf gate is locked at twice the 11-20 quiet pass and grew `mem_drift` and `save.repeat` (22 → 25 scenarios, all green); and the unmeasured workloads have numbers (performance.md). Earlier: round 23 closed the memory and performance line (§2): a 1M × 6 workbook is **0.884 GB** live / 0.683 GB reopened (2.90 GB before the round), the row side tables (144 → 72 MB), the band's number index (66 → 33 MB) and the journal (42 → 15 MB) taking the last steps; **measured against Excel 16 and WPS 12.1** on one 70 MB file (open 3.3 vs 8.0 / 10.7 s, recalc 0.75 vs 0.31 / 15.3 s, idle 246 vs 35 / 288 MB) with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); two recalculation changes took the 1M chain 0.85 → 0.75 s; and the soak found one reference bug (§6: a formula moved by Remove Duplicates kept its stale shape), fixed with its test. Earlier: the memory round (§2), three waves: byte accounting per part; the dependency graph compacted twice (dependents 478.2 → 142.6 MB, nodes 172 → 104.9, areas 201 → 125); the save build parallelised; formula **shape sharing** (2M formulas → 3 shapes, the per-cell tree deleted, `Formula` 48 B, `Node` 16 B); a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s); and an **undo that restores a paged store**, gated so it never costs the edit (a sort of a paged store used to take minutes and now takes the sheet back into memory). A 1M × 6 workbook is **2.90 → 0.971 GB** live (reopened 0.77 GB) and no scenario is slower: save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, rebuild 1.7 → 1.12 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
+> **Last reviewed:** 2026-11-24 · **Last updated:** 2026-11-24 · **Change:** round 47 (11-24): the measuring round closed its last three holes — **every one of the 517 functions has a number** (the nine that answered with an error were bad calls, not broken functions; the `FORECAST.ETS` family now says on the page that it is fitted at the engine's 200,000-point cap) and **the thirty-one `ui` commands are priced per setting** (**§30**: a right-to-left sheet costs 2.97× the baseline scrolling frame) — and **§28's first knife landed**: `edit.clearAll` 9.13 s → **1.40 s** on a 1000-column sheet, 1.14 s → 311 ms on a million rows, because the store's per-cell removal was quadratic in a row's width. The shape ruler's "1.0 ms tall" row was a params bug (the optional `range` was skipped) and is corrected. Earlier: round 46 (11-23): **the shape ruler** entered three entries — **§28 `edit.clearAll` takes 9.13 s on a 1000-column sheet** (8,859× the same cells as a million rows; `edit.clearFormats` 3.21 s, `range.move` 14.48 s follow it) and **§29 saving a hundred sheets costs 18× the same cells in one** (23.72 s against 1.3 s) — and the per-command memory reading is attributable again (§26 is now the report's `undo` line). Earlier: round 45 (11-23): the round-44 memory reading was withdrawn and the `FORECAST.ETS` limit entered as §27. Earlier: round 27 (11-21): three sign-tested knives landed (§2) — the closure's second-dependent box (−18.4 % on the 2M-dirty edit), band-copy-tag pricing (−7.2 %), and the store's compare-before-write plus one-bit row find (−20.1 %/−21.4 %). Earlier: round 26 (11-20): the evaluator is refuted by measurement (§2) — bytecode built and equivalence-proven, sign-tested a no-win (the per-cell cost is kernel-bound, not traversal-bound); the chain edit's missing time was undo bookkeeping, and an evicted step now releases on later cheap commands (built-case edit −30 %, 8/8, p=0.0039; the gate's aggregate 443 ms). Earlier: round 25 (11-20): the 256 × 200 release soak's three findings are **fixed** with red-first regressions — two incremental-vs-full spill divergences in calc, and §3's suppressed-filter hidden rows, the same root cause as the seed-97 case, closed to its design question; the perf gate is locked at twice the 11-20 quiet pass and grew `mem_drift` and `save.repeat` (22 → 25 scenarios, all green); and the unmeasured workloads have numbers (performance.md). Earlier: round 23 closed the memory and performance line (§2): a 1M × 6 workbook is **0.884 GB** live / 0.683 GB reopened (2.90 GB before the round), the row side tables (144 → 72 MB), the band's number index (66 → 33 MB) and the journal (42 → 15 MB) taking the last steps; **measured against Excel 16 and WPS 12.1** on one 70 MB file (open 3.3 vs 8.0 / 10.7 s, recalc 0.75 vs 0.31 / 15.3 s, idle 246 vs 35 / 288 MB) with **OpenGL the Windows default** (183 MB lighter at the same 144 Hz); two recalculation changes took the 1M chain 0.85 → 0.75 s; and the soak found one reference bug (§6: a formula moved by Remove Duplicates kept its stale shape), fixed with its test. Earlier: the memory round (§2), three waves: byte accounting per part; the dependency graph compacted twice (dependents 478.2 → 142.6 MB, nodes 172 → 104.9, areas 201 → 125); the save build parallelised; formula **shape sharing** (2M formulas → 3 shapes, the per-cell tree deleted, `Formula` 48 B, `Node` 16 B); a **structural edit rewritten once per shape** (insert a row above 2M formulas 8.29 → 3.97 s, delete 8.61 → 3.59 s, rename a sheet 8.58 → 4.86 s); and an **undo that restores a paged store**, gated so it never costs the edit (a sort of a paged store used to take minutes and now takes the sheet back into memory). A 1M × 6 workbook is **2.90 → 0.971 GB** live (reopened 0.77 GB) and no scenario is slower: save 3.7 → 2.05 s, open 5.5 → 4.02 s, fill formulas 2.8 → 1.77 s, recalc 2.3 → 1.80 s, rebuild 1.7 → 1.12 s. Earlier: minor (11-14: the per-cell half of the performance round — `MODE` 2.66 s → 15 ms, `VLOOKUP` 2.9–4.9× and text `MATCH` 7.2×, wildcard `COUNTIF` 2.0×, grid paint 1.60 → 1.07 ms/frame, all in §2; and §3's filtered-sheet save bugs were found by a 150-seed soak. 11-13: the performance round (§2) and three save-fidelity bugs in filtered sheets found by the command-sequence soak (§3), one case left recorded there with a six-step repro; round 18: a real-world corpus run — **3,084 workbooks opened, 635 save/reopen with 0 mismatches, 16 files identical in Excel 16** — so #1 is met for beta; the pinned corpus remains for CI. Round 17: `.xls` **embedded charts, autoshapes and text boxes** are read — group kind and variants, series ranges, cached names, title, legend and the `msosptChart` anchor — and **verified in Excel 16** (five chart kinds; five shapes with their text, fill and line); §7 loses its charts and shapes items and is met for beta, leaving OLE objects and chart sheets as full scope. **RC4 is not an ECMA-376 Standard cipher**: [MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 `.xlsx` at 40 and 128 bits, so "RC4 write" is really encrypted `.xls` output and waits for a `.xls` writer. No score change) · **Target:** Microsoft Excel (Microsoft 365); earlier: the accessibility check names every object without alternative text (WordArt and equations included) |
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using Cella for real work first). This is the work list: pick from the top, check the open
@@ -1151,23 +1151,34 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   Windows GPU/driver reports (#120, #76) and the macOS close/open reports (#117, #166) still need
   the hardware they were reported on; they cannot be closed here.
 - **Estimate:** 12–16 h for this soak and its fixes; done.
-### 28. `edit.clearAll` takes 9 seconds on a 1000-column sheet (P, measured 11-23)
+### 28. `edit.clearAll` took 9 seconds on a 1000-column sheet (P, measured 11-23, first cut 11-24)
 
 **What:** the shape ruler holds the cell count at eight million and moves it around. `edit.clearAll`
-over the used area costs **1.0 ms** as a million rows × 8 columns, **14 ms** as a hundred sheets of
-10,000 rows, and **9.13 s** as 8,000 rows × 1,000 columns — 8,859× the same cells. `edit.clearFormats`
-follows it (1.3 ms / 15 ms / **3.21 s**) and `range.move` is worse (**14.48 s** on the wide shape
-against 8.2 ms tall). The row-only catalogue reports `edit.clearAll` at 1.1 s and never saw the
-1000-column case.
+over the used area cost **9.13 s** as 8,000 rows × 1,000 columns, **14 ms** as a hundred sheets of
+10,000 rows, and **1.14 s** as a million rows × 8 columns (the row catalogue's number for the same
+eight million cells). `edit.clearFormats` followed it (3.45 s wide) and `range.move` is worse
+(15.91 s on the wide shape against 3.73 s tall).
+
+*Correction, 11-24:* the ruler's first tall row said **1.0 ms**, and that was the ruler, not the
+product — the param generator skipped the optional `range` on that shape, so the command cleared the
+one-cell selection. Region-naming keys are now always given (`crates/engine/tests/param_gen`), which
+is what made the tall and wide rows the same question.
 
 **Why it matters:** a 1000-column sheet is what an export from a database looks like, and "select all
-and delete" is the first thing anyone does to one. Nine seconds is the longest wait in the program
+and delete" is the first thing anyone does to one. Nine seconds was the longest wait in the program
 after Subtotal.
 
-**Fix (not diagnosed yet):** the commands walk the area per cell or per column; on a tall sheet that
-is a contiguous run, on a wide one it is a thousand column walks with a style or band table touched
-each time. The guess worth testing first is the store's column iteration (per-column headers, styles,
-and the band map), not the cell loop. **Estimate:** 3–6 h to diagnose and price.
+**First cut (11-24):** the cost was the store's per-cell removal. Every take shifts the band's row
+side tables, so a row of a thousand cells shifted the same 64-row band a thousand times — quadratic
+in a row's width, and the reason the wide shape was eight times the tall one. Clear All over the whole
+used area now reports every removed address in one walk and replaces the store instead of emptying it
+(`crates/engine/src/cmd/edit.rs`): **9.13 s → 1.40 s** on the wide shape, 1.14 s → **311 ms** on the
+tall one, 14 ms → **4.7 ms** on a hundred sheets. `cargo test -p cella-engine --lib -- clear` passes.
+
+**What remains:** the 1.40 s is now the enumeration of eight million addresses and the
+recalculation's marking of them, not the removal; a coarse "this sheet changed everywhere" signal for
+the recalc would take the rest. `edit.clearFormats` (3.45 s wide) keeps its cells and is untouched,
+and `range.move` (15.91 s) is its own knife. **Estimate:** 3–4 h for the recalc signal.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md) and
 [performance.md](performance.md) §"Shape: rows are not the only axis".
@@ -1185,6 +1196,55 @@ pays most often.
 **Fix (not diagnosed yet):** profile the writer per sheet (`crates/xlsx`): what is rebuilt for every
 sheet even when its style table is shared, and whether the sheet parts are assembled in parallel
 (the cells are independent). **Estimate:** 3–5 h to diagnose, then a knife.
+
+**Evidence:** [performance-shapes.md](performance-shapes.md).
+
+### 30. A right-to-left sheet costs three frames for one (P, measured 11-24)
+
+**What:** the frame ruler's second table turns each of the thirty-one view settings on and times the
+same two frames with it. `view.rightToLeft` is the only one that changes what a frame costs:
+**4.3 ms** to scroll one screen against **1.4 ms** with nothing changed (2.97×), and 1.2 ms for a
+still frame against 0.8 ms. The other thirty sit on the baseline; two are cheaper because they show
+fewer cells (`view.zoomToSelection` 0.5 ms, `view.pageLayout` 0.9 ms).
+
+**Why it matters:** a right-to-left sheet is what a Hebrew or Arabic workbook looks like, and 4.3 ms
+of CPU is a third of a 60 Hz frame before anything moves.
+
+**Fix (not diagnosed yet):** the renderer mirrors every cell's rectangle as it paints instead of
+laying the band out once in mirrored order, so the mirror is paid per cell per frame.
+**Estimate:** 2–4 h to diagnose and price.
+
+**Evidence:** [performance-ui.md](performance-ui.md) §"What a view setting costs per frame".
+
+### 31. `edit.find` materialises every match: 3.7–5.8 s in eight million cells (P, measured 11-24)
+
+**What:** `edit.find` over the whole used area takes **3.48 s** on a million rows × 8 columns and
+**5.68 s** on 8,000 rows × 1,000 columns (33 ms on a hundred sheets, where the search is scoped to
+the active sheet's 80,000 cells). A common word has a million matches, and the command builds a `Vec`
+of `(sheet, cell, text)` for every one of them before returning the first — so *Find Next*, which
+needs one hit, pays for all of them.
+
+**Why it matters:** Find is a first-class button (Ctrl+F) and a million-row sheet is the size this
+project benchmarks at.
+
+**Fix (not diagnosed yet):** the scan can stop at the first hit after the active cell for the default
+form, and only collect when `all` is set; the count it reports is a second pass or a flag.
+**Estimate:** 2–3 h.
+
+**Evidence:** [performance-shapes.md](performance-shapes.md).
+
+### 32. Formatting a range over four million cells is refused (P, measured 11-24)
+
+**What:** `home.formatCells` over the whole used area at 1M rows is an error — "selection too large to
+format cell by cell" (`crates/engine/src/cmd/format.rs`, a 4,000,000-cell cap). Excel applies a format
+to a whole sheet. The cap exists because a style is stored per cell, so the command is O(cells) and
+would be seconds.
+
+**Why it matters:** "select all, bold" on a large sheet is an ordinary action and it fails.
+
+**Fix (not diagnosed yet):** a range-level style (a rectangle or a column band) that the renderer, the
+writer and `cell.get` expand lazily, instead of one style id per cell. **Estimate:** 6–10 h; a design
+question, not a knife.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 

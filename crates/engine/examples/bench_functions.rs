@@ -11,12 +11,17 @@
 //! could type.
 //!
 //! The calls live in [`xtask/bench-functions.txt`](../../../xtask/bench-functions.txt), one per
-//! line: name, tab, template. A template uses `$R` (the id column), `$R2` (quantities), `$R3`
-//! (prices), `$RT` (item names), `$E` (regions), `$F`/`$RD` (dates), `$T` (a two-column text-key
-//! table), `$TN` (a three-column numeric-key table), `$KG` (the key column), `$RH` (the value
-//! column), `$K`/`$KN` (a key that exists in the table) and `$DATE` (a date serial); at the small
-//! scale every range token becomes ten rows, at the whole scale the whole column. A template with
-//! no token is scalar and is measured once, as the `scalar` scale.
+//! line: name, tab, template, optional tab, note. A template uses `$R` (the id column), `$R2`
+//! (quantities), `$R3` (prices), `$RT` (item names), `$E` (regions), `$F`/`$RD` (dates), `$T` (a
+//! two-column text-key table), `$TN` (a three-column numeric-key table), `$KG` (the key column),
+//! `$RH` (the value column), `$K`/`$KN` (a key that exists in the table) and `$DATE` (a date
+//! serial); at the small scale every range token becomes ten rows, at the whole scale the whole
+//! column. A template with no token is scalar and is measured once, as the `scalar` scale.
+//!
+//! `$RS`/`$TS` are the value column and the timeline of a series the FORECAST.ETS family fits, and
+//! `$LS` is that series' last point: they stop at [`SERIES_CAP`] rows, because the engine refuses a
+//! longer series (a whole column of a million rows is a `#NUM!`). The note a line can carry is how a
+//! row whose call is not what its shape suggests says so on the page.
 //!
 //! Like the command catalogue, this is deliberately outside `cargo xtask ci`: it is a release
 //! build against a million rows, and the page it feeds ([`docs/performance-functions.md`]) is
@@ -44,6 +49,10 @@ const SCALES: [&str; 2] = ["small", "whole"];
 const SMALL_ROWS: usize = 10;
 /// The four regions a data row carries, so criteria and grouping functions have values to find.
 const REGIONS: [&str; 4] = ["North", "South", "East", "West"];
+/// Longest series the FORECAST.ETS family accepts — `cella_functions::ets::MAX_POINTS`, restated
+/// here because the example measures a call a person could type, not the model behind it. A whole
+/// column of a million rows is more than this, so those four functions are fitted at the cap.
+const SERIES_CAP: usize = 200_000;
 
 /// The calls, one per function (edited by hand, checked by `cargo xtask bench-functions --check`).
 const CALLS: &str = include_str!("../../../xtask/bench-functions.txt");
@@ -75,6 +84,8 @@ struct Call {
     /// The function's documented answer is an error (CUBE functions without a connection,
     /// `NA`, `WEBSERVICE` with no network), so an error row is the right row.
     expect_error: bool,
+    /// Why the call is what it is, when the shape of the sheet says otherwise.
+    note: Option<String>,
 }
 
 /// One measurement.
@@ -91,6 +102,8 @@ struct Measurement {
     /// Whether that outcome is the documented answer (see [`Call::expect_error`]).
     expected: bool,
     detail: Option<String>,
+    /// The call's own note (see [`Call::note`]), printed in the page's note column.
+    note: Option<String>,
 }
 
 fn usage() -> String {
@@ -211,7 +224,7 @@ fn run() -> Result<(), String> {
         // The floor: what entering a formula that does nothing costs at this size, which is the
         // session's undo snapshot and the recalculation bookkeeping rather than the function. Every
         // scalar row is mostly this, so the page prints it once and the reader can subtract it.
-        let nothing = Call { name: "(floor)".to_string(), template: "1+1".to_string(), expect_error: false };
+        let nothing = Call { name: "(floor)".to_string(), template: "1+1".to_string(), expect_error: false, note: None };
         let floor = measure(&base, &nothing, rows, "scalar")?.ms;
         eprintln!("bench_functions: {rows} rows — the floor is {floor:.2} ms (entering `=1+1`)");
         floors.push((rows, floor));
@@ -255,9 +268,12 @@ fn run() -> Result<(), String> {
 
 /// Whether a template has a scale-dependent token.
 fn has_token(template: &str) -> bool {
-    ["$R2", "$R3", "$R", "$RT", "$RD", "$TN", "$T", "$KG", "$RH", "$E", "$F", "$KN", "$K", "$DATE", "$CR", "$CK", "$HT", "$Y", "$LAST"]
-        .iter()
-        .any(|t| template.contains(t))
+    [
+        "$R2", "$R3", "$R", "$RT", "$RD", "$TN", "$T", "$KG", "$RH", "$E", "$F", "$KN", "$K", "$DATE", "$CR", "$CK", "$HT", "$Y", "$LAST", "$RS",
+        "$TS", "$LS",
+    ]
+    .iter()
+    .any(|t| template.contains(t))
 }
 
 /// The call table: `name<TAB>template[<TAB>error]`, `#` comments and blank lines ignored.
@@ -277,8 +293,10 @@ fn parse_calls(text: &str) -> Result<Vec<Call>, String> {
         if name.is_empty() || template.is_empty() {
             return Err(format!("line {}: `{line}` is not `name<TAB>template`", n + 1));
         }
-        let expect_error = parts.next().map(str::trim) == Some("error");
-        calls.push(Call { name: name.to_string(), template: template.to_string(), expect_error });
+        let extra = parts.next().map(str::trim).unwrap_or("");
+        let expect_error = extra == "error";
+        let note = (!extra.is_empty() && !expect_error).then(|| extra.to_string());
+        calls.push(Call { name: name.to_string(), template: template.to_string(), expect_error, note });
     }
     Ok(calls)
 }
@@ -287,10 +305,16 @@ fn parse_calls(text: &str) -> Result<Vec<Call>, String> {
 fn expand(template: &str, rows: usize, scale: &str) -> String {
     let small = scale == "small";
     let last = if small { SMALL_ROWS + 1 } else { rows };
+    // A series stops at the cap: the FORECAST.ETS family refuses a longer timeline, and a template
+    // that asked for the whole column would be a row with no number at every large size.
+    let series = if small { SMALL_ROWS + 1 } else { rows.min(SERIES_CAP + 1) };
     let mut s = template.to_string();
     // Column letters of the prepared workbook: A id, B qty, C price, D item, E region, F date,
     // G key, H value.
-    let subs: [(&str, String); 19] = [
+    let subs: [(&str, String); 22] = [
+        ("$RS", format!("B2:B{series}")),
+        ("$TS", format!("A2:A{series}")),
+        ("$LS", format!("{series}")),
         ("$R3", format!("C2:C{last}")),
         ("$R2", format!("B2:B{last}")),
         ("$RT", format!("D2:D{last}")),
@@ -389,6 +413,7 @@ fn measure(base: &DocState, call: &Call, rows: usize, scale: &'static str) -> Re
         expected: call.expect_error && outcome == "error",
         outcome,
         detail,
+        note: call.note.clone(),
     })
 }
 
@@ -407,6 +432,9 @@ fn report(args: &Args, measurements: &[Measurement], floors: &[(usize, f64)]) ->
             });
             if let Some(d) = &m.detail {
                 o["detail"] = json!(d);
+            }
+            if let Some(n) = &m.note {
+                o["note"] = json!(n);
             }
             o
         })

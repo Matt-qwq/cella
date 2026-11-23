@@ -253,31 +253,41 @@ hundred sheets × 10,000 rows × 8 columns (`sheets`) — one command at a time 
 its region-naming params over the whole used area (the catalogue's own generator). The page is
 [`performance-shapes.md`](performance-shapes.md).
 
-**The first run found what two years of row-based benchmarks could not see:**
+**The second run (11-24) found what two years of row-based benchmarks could not see** — and the
+first run's headline row was the ruler's own bug: the param generator skipped the optional `range` on
+some shapes, so `edit.clearAll` cleared a one-cell selection on the tall sheet and eight million cells
+on the wide one. Region-naming keys are now always given, so every number below is the same work
+arranged differently:
 
 | command | 1M×8 | 1000×8k | 100×10k | spread |
 |---|---:|---:|---:|---:|
-| `edit.clearAll` | **1.0 ms** | **9.13 s** | 14 ms | **8,859×** |
-| `edit.clearFormats` | 1.3 ms | **3.21 s** | 15 ms | 2,404× |
-| `range.move` | 8.2 ms | **14.48 s** | 6.2 ms | 2,329× |
-| `edit.copy` | 100 ms | 896 ms | 28 ms | 32× |
-| `file.saveBytes` | 1.68 s | 1.34 s | **23.72 s** | 18× |
+| `data.sortAscending` | 1.46 s | **9.98 s** | 17 ms | **570×** |
+| `edit.clearAll` | 311 ms | **1.40 s** | 4.7 ms | 298× |
+| `range.move` | 3.73 s | **15.91 s** | 73 ms | 217× |
+| `edit.clearFormats` | 1.27 s | **3.45 s** | 16 ms | 210× |
+| `edit.find` | 3.48 s | **5.68 s** | 33 ms | 170× |
+| `file.saveBytes` | 1.81 s | 1.37 s | **18.59 s** | 14× |
 
-- **A thousand-column sheet turns three O(area) commands into seconds.** `edit.clearAll` is 9.1 s and
-  `range.move` 14.5 s on the *same eight million cells* that take 1 ms and 8 ms when they are
-  arranged as a million rows. The row-only catalogue reports `edit.clearAll` at 1.1 s — it never saw
-  the 1000-column case at all.
-- **A hundred sheets make saving 18× slower** (23.7 s against 1.3 s for the same cells): the workbook
-  writer's per-sheet cost, not the cell count, dominates.
-- **Two commands are flat, as they should be**: `home.formatCells` and `home.conditionalFormat` cost
-  the same on all three shapes (0.95–15 ms), which is the control that says the ruler measures the
-  shape and not just "a bigger number".
-- **`edit.find` fails on `tall` and `wide`** ("couldn't find what you're looking for") because the
-  text it is given is the header name of a `wide` sheet; that is a params question, not a finding,
-  and it is the one row of the page to fix next.
+- **A thousand columns turns four O(area) commands into seconds.** `data.sortAscending` is 10.0 s and
+  `range.move` 15.9 s on the *same eight million cells* that take 1.5 s and 3.7 s when they are
+  arranged as a million rows. The row-only catalogue never saw the 1000-column case at all.
+- **The first knife is in**: `edit.clearAll` was **9.13 s** and is **1.40 s** — the store's per-cell
+  removal was quadratic in a row's width (`gaps` §28). What is left is the enumeration of eight
+  million addresses and the recalculation's marking of them.
+- **A hundred sheets make saving 14× slower** (18.6 s against 1.4 s for the same cells): the workbook
+  writer's per-sheet cost, not the cell count, dominates (`gaps` §29).
+- **`edit.find` now answers on every shape** (3.48 s / 5.68 s / 33 ms): finding one word in eight
+  million cells costs seconds, because the command materialises every match — a million of them for a
+  common word — before it picks one (`gaps` §31).
+- **`home.formatCells` refuses the whole area** at 1M rows ("selection too large to format cell by
+  cell", a 4,000,000-cell cap in `crates/engine/src/cmd/format.rs`), which is why the control row
+  that used to be flat was really measuring a one-cell selection (`gaps` §32).
+- **The `sheets` column of a sheet-scoped command is one percent of the cells** (the active sheet's
+  80,000), so its spread against the other two is a smaller job, not a slower one; `file.saveBytes`
+  and `sheet.rename` are the rows whose axis really is the sheet count.
 
-None of this is a knife yet: the shape ruler is new, and its first job was to say which commands have
-a shape-sensitivity worth pricing.
+The shape ruler is still the newest ruler: it prices twelve commands, not the 422, and the twelve were
+chosen as the ones whose cost can plausibly follow columns or sheets.
 
 ## The function catalogue
 
@@ -299,32 +309,44 @@ is a formula a person could type, with `$R`, `$T`, `$K` … standing for those c
 names no registered function and when a line's call does not start with its own name — **step 11 of
 `cargo xtask ci`**, so a new function cannot ship unmeasured by accident. The first generation came
 from the signatures; a call the engine answered with an error is a line to fix, not a function to
-hide, and the page lists the ones still in that state.
+hide, and round 47 fixed the last nine: **every line now answers** (`bench-functions --check` still
+refuses a missing one). A line may carry a third tab-separated field — `error` when an error is the
+documented answer, or a note the page prints beside the row — which is how a row whose call is not
+what the sheet's shape suggests says so.
 
 **The floor matters here.** Entering `=1+1` costs **0.19 ms at 100,000 rows and 0.90 ms at
 1,000,000** — the session's undo snapshot, not the function. Every `scalar` row is mostly this, so
 read a scalar number as "the floor plus what the function added"; the `whole` column is where the
 function's own cost shows.
 
-**What the first run found** (2026-11-23, 517 functions × 2 row counts, 30 s of measuring):
+**What the first run found** (2026-11-23, 517 functions × 2 row counts, re-measured 11-24):
 
-- **498 of 517 functions answer at 1M rows**; nine do not, and each is listed with what it said
-  (the `FORECAST.ETS` family refuses a whole-column series, `T.TEST` divides by zero on ten rows,
-  `TOROW`/`TRANSPOSE`/`VSTACK` spill past the 16,384-column limit).
-- **The four-second club is the dynamic-array groupers**: `PIVOTBY` **5.21 s** and `GROUPBY`
-  **2.43 s** over a million values — the slowest formulas in the program, and nothing measured them
-  before. `UNIQUE` **1.43 s** and `BYROW` (a `LAMBDA` per row) **1.15 s** follow. `DROP` **771 ms**,
-  `SCAN` 601 ms, `MAP` 538 ms, `PHONETIC` 522 ms, `HSTACK` 370 ms, `SORT` 268 ms.
+- **All 517 functions answer** (round 47): 505 with a number at 1M rows, 12 whose documented
+  answer is an error (a CUBE function with no connection, `NA`; they show the work done before the
+  error). The nine that used to show `-` were the *calls*, and three of them were not fixable by
+  rewriting the formula: `FORECAST.ETS` and its three companions refuse a series longer than the
+  engine's 200,000-point cap, so they are fitted at exactly that cap (**790 / 770 / 762 / 712 ms**)
+  and the row says so; `TOROW` and `TRANSPOSE` cannot take a whole column at all (the result would
+  pass the 16,384-column limit), so their call is an eight-cell block and the number is the floor;
+  `VSTACK` of one whole column spills a million rows and costs **201 ms**. `T.TEST`/`TTEST` were
+  asked for a *paired* test over two columns whose ten-row differences are constant — a `#DIV/0!`
+  that was the data, not the function — and a two-sample test reads 57 ms.
+- **The four-second club is the dynamic-array groupers**: `PIVOTBY` **5.16 s** and `GROUPBY`
+  **2.48 s** over a million values — the slowest formulas in the program, and nothing measured them
+  before. `UNIQUE` **1.49 s** and `BYROW` (a `LAMBDA` per row) **1.18 s** follow. `DROP` **791 ms**,
+  `SCAN` 617 ms, `MAP` 554 ms, `PHONETIC` 533 ms, `HSTACK` 390 ms, `SORT` 269 ms.
 - **A whole-column argument costs 25–80 ms before the function does anything**: `SUM` 51 ms,
-  `COUNTIF` 26 ms, `SUMIFS` 40 ms, `SUMPRODUCT` 25 ms, `MATCH` 55 ms, `VLOOKUP` 76 ms,
-  `XLOOKUP` 80 ms over a million values. That is the range being materialised into `Value`s — the
+  `COUNTIF` 27 ms, `SUMIFS` 40 ms, `SUMPRODUCT` 26 ms, `MATCH` 56 ms, `VLOOKUP` 80 ms,
+  `XLOOKUP` 82 ms over a million values. That is the range being materialised into `Value`s — the
   same shape round 39's XLOOKUP fix removed for the reference path — and it is why every one of
   these reads tens of milliseconds where the arithmetic itself is a few.
 - **Array lifting is not free**: `BITAND`/`BITOR`/`BITXOR` over two million-value columns cost
-  **230 ms** each, i.e. ~115 ns per element for the lift alone, independent of what the function
-  does.
-- **Most of the surface is cheap**: 363 of the 516 calls at 1M cost **under 1 ms**, 112 between
-  1 and 10 ms. The long tail is names a session uses once, not per cell.
+  **243 / 246 / 240 ms** each, i.e. ~120 ns per element for the lift alone, independent of what the
+  function does.
+- **Most of the surface is cheap, and the expensive part is the arguments**: 357 of the 517 calls at
+  1M cost **under 1 ms**, 18 more between 1 and 10 ms, and the remaining **142 — the ones whose
+  argument is a whole column — cost 10–80 ms** because the range is materialised before the function
+  runs. The long tail is names a session uses once, not per cell.
 - **Excel and WPS were not asked yet**: this ruler is new and the 3-way page has no function rows.
   `PIVOTBY`/`GROUPBY` have no Excel equivalent to compare with (they are Excel 365 functions, which
   Excel 16.0 does have — a comparison belongs to the next round's COM replay).
@@ -378,10 +400,32 @@ the old frame audit's number (paint avg 1.59 ms, worst frame 3.94) sits where th
 which is how the two agree.
 
 What it does not measure: the GPU (no present, no vsync, no upload), the compositor, a real
-window's input latency, or any platform but this one. The `ui` lines of
-[`bench-coverage.txt`](../xtask/bench-coverage.txt) (31 commands) are the commands whose cost *is*
-this ruler — `view.zoom`, the freeze panes, the gridline toggles — and a throughput number for them
-would be a number about the wrong thing.
+window's input latency, or any platform but this one.
+
+### What a view setting costs per frame (round 47)
+
+The `ui` lines of [`bench-coverage.txt`](../xtask/bench-coverage.txt) are the thirty-one commands
+whose cost *is* a frame — `view.zoom`, the freeze panes, the gridline toggles — and a throughput
+number for them would be a number about the wrong thing. The ruler's second table now prices them:
+each setting is turned on in a session of its own holding a copy of the same workbook, and the same
+two frames are timed with it — a **still** repaint and a **scrolling** one — against `(none)`, the
+same measurement with nothing changed. At 1M rows, 1440×900, thirty frames:
+
+| setting | still | scroll | vs `(none)` |
+|---|---:|---:|---:|
+| `(none)` | 819 us | 1.4 ms | 1.00× |
+| `view.rightToLeft` | **1.2 ms** | **4.3 ms** | **2.97×** |
+| `view.zoom` (125 %) | 694 us | 1.2 ms | 0.80× |
+| `view.zoomToSelection` | 368 us | 507 us | 0.35× |
+| `view.pageLayout` | 780 us | 910 us | 0.63× |
+| the other twenty-seven | 830–930 us | 1.4–1.6 ms | 0.98–1.11× |
+
+**The sheet's frame cost is where the data is, not how it is shown** — except for one setting. A
+right-to-left sheet costs **three frames for one**: the renderer mirrors every cell's rectangle as
+it paints instead of laying the band out once in mirrored order (`gaps` §30). The three rows below
+the baseline are the opposite finding, and they are honest: zoom and page layout show *fewer
+cells*, so the frame is cheaper — a setting can only change this number by changing how much is
+painted.
 
 ## Scenarios
 
@@ -1922,6 +1966,25 @@ Adding a **command** is two steps: one line in [`xtask/bench-coverage.txt`](../x
 
 ## Revision history
 
+- **2026-11-24 (round 47, the measuring round closed — and the first knife):** the three holes the
+  round-46 report named are gone. **Every one of the 517 functions has a number** (505 at 1M rows, 12 by
+  design): the nine that showed `-` were calls, not functions — the `FORECAST.ETS` family is fitted at the
+  engine's **200,000-point cap** and says so in a new per-line *note* field the page prints, `TOROW` and
+  `TRANSPOSE` take an eight-cell block because a whole column cannot spill past 16,384 columns,
+  `VSTACK($R)` spills a million rows at 201 ms, and `T.TEST` was a *paired* test over two columns whose
+  ten-row differences are constant (a two-sample test reads 57 ms). **The 31 `ui` commands are priced per
+  view setting** — each turned on in a session of its own, a still and a scrolling frame against `(none)`
+  — and **`view.rightToLeft` is the one that costs: 4.3 ms against 1.4 ms, 2.97×** (`gaps` §30); zoom and
+  page layout are *cheaper* because they paint fewer cells. **The shape ruler's params were fixed**
+  (`edit.find` searched for text no sheet held; an *optional* `range` was skipped 40 % of the time, so
+  round 46's "1.0 ms tall" clear was a one-cell clear — corrected here and in `gaps` §28). **The first
+  knife: `edit.clearAll` 9.13 s → 1.40 s** on a 1000-column sheet (1.14 s → 311 ms on a million rows,
+  14 ms → 4.7 ms on a hundred sheets): clearing the whole used area now reports every address in one walk
+  and replaces the store instead of taking cells one at a time, because each take shifts the band's row
+  side tables and that is quadratic in a row's width. The shape page reads `data.sortAscending` 9.98 s and
+  `range.move` 15.91 s as the next two knives; `gaps` §31 (`edit.find` materialises a million matches) and
+  §32 (formatting over four million cells is refused) are new; and the function catalogue's distribution
+  moved with the re-measure (357 of the 517 calls at 1M cost under 1 ms).
 - **2026-11-23 (round 46, the shape and the memory):** two fixes to the rulers. **The shape ruler**:
   `cargo xtask bench-shapes` puts the same eight million cells in three arrangements — a million
   rows, a thousand columns, a hundred sheets — and finds what a row-only ruler cannot: **`edit.clearAll`

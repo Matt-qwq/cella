@@ -516,6 +516,9 @@ pub struct FnMeasurement {
     /// connection, `NA`, a stub).
     pub expected: bool,
     pub detail: Option<String>,
+    /// The call's own note from `xtask/bench-functions.txt`, for a row whose call is not what the
+    /// sheet's shape suggests (a series stopped at the engine's cap, an impossible spill).
+    pub note: Option<String>,
 }
 
 /// What the example's `--json` document says, parsed.
@@ -553,6 +556,7 @@ pub fn parse_functions(text: &str) -> Result<FunctionCatalogue, String> {
             outcome: m.get("outcome").and_then(serde_json::Value::as_str).unwrap_or("ok").to_string(),
             expected: m.get("expected").and_then(serde_json::Value::as_bool).unwrap_or(false),
             detail: m.get("detail").and_then(serde_json::Value::as_str).map(str::to_string),
+            note: m.get("note").and_then(serde_json::Value::as_str).map(str::to_string),
         });
     }
     for f in doc.get("floors").and_then(serde_json::Value::as_array).cloned().unwrap_or_default() {
@@ -632,8 +636,11 @@ pub fn render_functions(f: &Facts, c: &FunctionCatalogue) -> String {
           [../xtask/bench-functions.txt](../xtask/bench-functions.txt).\n\n";
     s += "A note reads `error by design` for a function whose documented answer is an error here \
           (a CUBE function with no connection, `NA`), `error` for a call the engine answered with a \
-          `#` error (the call is the thing to fix, not the function), and `refused` when the \
-          formula would not go in at all.\n\n";
+          `#` error, and `refused` when the formula would not go in at all. Otherwise the note is the \
+          line's own words in [../xtask/bench-functions.txt](../xtask/bench-functions.txt), for a call \
+          that is not what the sheet's shape suggests: a FORECAST.ETS series stops at the engine's \
+          200,000-point cap, and a transpose or TOROW cannot take a whole column because the result \
+          would pass the 16,384-column limit.\n\n";
     if !c.floors.is_empty() {
         let said: Vec<String> = c.floors.iter().map(|(rows, ms)| format!("{} ms at {} rows", fmt_ms(*ms), thousands(*rows))).collect();
         s += &format!(
@@ -667,7 +674,7 @@ pub fn render_functions(f: &Facts, c: &FunctionCatalogue) -> String {
     };
     let fn_note = |name: &str| -> String {
         let rows: Vec<&FnMeasurement> = c.measurements.iter().filter(|m| m.name == name).collect();
-        let mut said = Vec::new();
+        let mut said: Vec<String> = rows.iter().find_map(|m| m.note.clone()).into_iter().collect();
         if let Some(m) = rows.iter().find(|m| m.outcome == "error" && m.expected) {
             said.push(format!("error by design: {}", m.detail.clone().unwrap_or_default()));
         } else if let Some(m) = rows.iter().find(|m| m.outcome == "error") {
@@ -1020,6 +1027,12 @@ pub fn render_shapes(f: &Facts, c: &ShapeCatalogue) -> String {
     s += "\nA cell is the command's own wall clock, run alone in a fresh session holding a copy of that \
           shape, with its region-naming params over the whole used area — the same generator the \
           command catalogue uses.\n\n";
+    s += "Two things to read with care. **A command that works on one sheet sees only the active \
+          sheet's cells in the `sheets` shape** (10,000 × 8 = 80,000 of the eight million), so its \
+          `sheets` cell is a smaller job, not the same one; `file.saveBytes` and `sheet.rename` are \
+          the rows whose axis really is the sheet count. And **`home.formatCells` refuses a range over \
+          4,000,000 cells** (`crates/engine/src/cmd/format.rs`), so its two big shapes show that \
+          refusal instead of a number.\n\n";
 
     s += "| command | what it does |";
     for (name, ..) in &c.shapes {
@@ -1065,7 +1078,10 @@ pub fn render_shapes(f: &Facts, c: &ShapeCatalogue) -> String {
     worst.sort_by(|a, b| (b.4 / b.2).total_cmp(&(a.4 / a.2)));
     if !worst.is_empty() {
         s += "## Where the shape changes the answer\n\n";
-        s += "Same cells, same command, a different arrangement — and more than four times apart:\n\n";
+        s += "Same cells, same command, a different arrangement — and more than four times apart. A row \
+              whose `sheets` cell is one percent of the cells (`data.sortAscending`, `edit.clearAll`, \
+              `edit.clearFormats`, `edit.find`) is a spread between the tall and wide columns, not \
+              across all three:\n\n";
         s += "| command | fastest shape | slowest shape | times |\n|---|---|---|---:|\n";
         for (id, fast, fast_ms, slow, slow_ms) in &worst {
             s += &format!("| `{id}` | {fast} ({}) | {slow} ({}) | **{:.0}×** |\n", fmt_ms(*fast_ms), fmt_ms(*slow_ms), slow_ms / fast_ms);
@@ -1332,6 +1348,52 @@ fn render_ui(f: &Facts, doc: &serde_json::Value) -> String {
     s += "What a regression looks like: a frame that reads the store per visible cell, a used-range \
           walk per frame, or layout work that stopped being cached shows up in `page` and `jump` \
           long before it shows up in any command's time.\n\n";
+
+    // The view settings: the coverage ledger's `ui` commands, priced as the frame they change.
+    let configs = doc.get("configs").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+    if !configs.is_empty() {
+        let num = |c: &serde_json::Value, key: &str| c.get(key).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let text = |c: &serde_json::Value, key: &str| c.get(key).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        let baseline = configs.iter().find(|c| text(c, "id") == "(none)").map(|c| num(c, "page_ms")).unwrap_or(0.0);
+        s += "## What a view setting costs per frame\n\n";
+        s += "A view setting is a state a frame paints, not a command that does work: setting it is free, \
+              and the cost is the repaint afterwards. Every command the coverage ledger marks `ui` is \
+              here. Each row turns its setting on in a session of its own holding a copy of the same \
+              workbook and times the same two frames the phases above time: `still` is a repaint with \
+              nothing moving, `scroll` scrolls one screen a frame. `(none)` is the same measurement \
+              with no setting changed.\n\n";
+        s += "| command | still | scroll | scroll vs `(none)` | what it shows |\n|---|---|---|---|---|\n";
+        let mut heavier: Vec<(String, f64)> = Vec::new();
+        for c in &configs {
+            let id = text(c, "id");
+            let (still, scroll) = (num(c, "idle_ms"), num(c, "page_ms"));
+            let ratio = if baseline > 0.0 { scroll / baseline } else { 0.0 };
+            let outcome = text(c, "outcome");
+            let mut what = text(c, "what");
+            if outcome != "on" && outcome != "baseline" {
+                what = format!("{what} — {outcome}");
+            }
+            if ratio > 1.4 {
+                heavier.push((id.clone(), ratio));
+            }
+            s += &format!("| `{id}` | {} | {} | {ratio:.2}× | {what} |\n", fmt_ms(still), fmt_ms(scroll));
+        }
+        s += "\n";
+        if heavier.is_empty() {
+            s += "No setting makes the scrolling frame more than 1.4 times the baseline: the frame cost \
+                  of the sheet is where the data is, not how it is shown.\n";
+        } else {
+            heavier.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let said: Vec<String> = heavier.iter().map(|(id, r)| format!("`{id}` {r:.2}×")).collect();
+            s += &format!(
+                "**Settings whose scrolling frame costs more than 1.4 times the baseline:** {}. A \
+                 setting that changes nothing painted shows the baseline number, which is a fact about \
+                 frames and not about whether the setting is useful.\n",
+                said.join(", ")
+            );
+        }
+        s += "\n";
+    }
     s += "## What this does not measure\n\n";
     s += "- **The GPU**: no wgpu here, so no present, no vsync, no texture upload. The repository \
           owns the CPU half of a frame; the graphics driver owns the other one.\n";

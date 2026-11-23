@@ -8,7 +8,9 @@
 # One line per registered command, three choices:
 #   bench           a number in docs/performance-commands.md (or, where a scenario prices it
 #                   better, in xtask/perf-budgets.txt)
-#   ui              frame time, not throughput — the UI bench is the ruler for it (not built yet)
+#   ui              frame time, not throughput: a row in the "What a view setting costs per
+#                   frame" table of docs/performance-ui.md, which times a still and a scrolling
+#                   frame with the setting on (ui-egui/examples/frame_time.rs)
 #
 # Check with `cargo xtask bench-coverage --check`; regenerate the missing lines as `todo` with
 # `cargo xtask bench-coverage --write` and fill them in.

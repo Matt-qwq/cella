@@ -31,6 +31,12 @@
 //! - `drag` — the pointer dragged across the grid with the button down: the selection grows and the
 //!   frame paints it, which is what selecting a block by hand costs per frame.
 //!
+//! A second table prices the **view settings** — every command the coverage ledger marks `ui`
+//! because its cost is a frame, not a command: frozen panes, Page Layout, gridlines off, a ruler,
+//! zoom, right-to-left. Each one is turned on in a session of its own and the same two frames are
+//! timed with it on — a still repaint and a scrolling one — so the answer is "a frame with this
+//! setting costs X ms", and the baseline row (`(none)`) is what it costs with nothing changed.
+//!
 //! What this does **not** measure: the GPU (no wgpu here, so no present, no vsync, no upload), the
 //! OS compositor, or a real window's input latency. It measures the CPU work of a frame, which is
 //! the part this repository owns.
@@ -40,7 +46,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use cella_engine::Session;
+use cella_engine::{DocState, Session};
 use cella_ui_egui::SheetApp;
 use serde_json::{Value, json};
 
@@ -75,6 +81,110 @@ const BUDGET_UNDO_MS: f64 = 250.0;
 /// The cell the interaction phases edit: a number in the column the watching formula sums.
 const EDIT_CELL: &str = "B1";
 
+/// The view settings the coverage ledger marks `ui`: every one of them is a state a frame paints,
+/// so the command itself is free and the *repaint with it on* is the cost. Each is turned on in a
+/// session of its own and the same still frame is timed with it; `(none)` is the baseline.
+const CONFIGS: &[(&str, &str, &str)] = &[
+    ("(none)", "no setting: the baseline", "{}"),
+    ("formulas.showFormulas", "every cell shows its formula instead of its value", "{\"on\":true}"),
+    ("pageLayout.printGridlines", "gridlines are printed", "{\"on\":true}"),
+    ("pageLayout.printHeadings", "headings are printed", "{\"on\":true}"),
+    ("view.arrangeAll", "every window arranged", "{}"),
+    ("view.customViews", "the workbook's custom views", "{}"),
+    ("view.formulaBar", "the formula bar is shown", "{\"on\":true}"),
+    ("view.freezeFirstColumn", "column A frozen", "{}"),
+    ("view.freezePanes", "panes frozen at B2", "{\"cell\":\"B2\"}"),
+    ("view.freezeTopRow", "row 1 frozen", "{}"),
+    ("view.gridlines", "gridlines off", "{\"on\":false}"),
+    ("view.headings", "headings off", "{\"on\":false}"),
+    ("view.hideWindow", "the window hidden", "{}"),
+    ("view.macros", "the list of scripts", "{}"),
+    ("view.normal", "Normal view", "{}"),
+    ("view.pageBreakPreview", "Page Break Preview", "{}"),
+    ("view.pageLayout", "Page Layout view", "{}"),
+    ("view.rightToLeft", "the sheet right-to-left", "{\"on\":true}"),
+    ("view.ruler", "rulers on", "{\"on\":true}"),
+    ("view.showHorizontalScrollBar", "the horizontal scroll bar off", "{\"on\":false}"),
+    ("view.showObjects", "objects hidden", "{\"on\":false}"),
+    ("view.showOutlineSymbols", "outline symbols hidden", "{\"on\":false}"),
+    ("view.showSheetTabs", "the sheet tabs off", "{\"on\":false}"),
+    ("view.showVerticalScrollBar", "the vertical scroll bar off", "{\"on\":false}"),
+    ("view.showZeros", "zeros hidden", "{\"on\":false}"),
+    ("view.split", "split at the active cell", "{}"),
+    ("view.switchWindows", "the window list", "{}"),
+    ("view.unfreezePanes", "panes unfrozen", "{}"),
+    ("view.unhideWindow", "a hidden window shown again", "{}"),
+    ("view.zoom", "125% zoom", "{\"percent\":125}"),
+    ("view.zoom100", "100% zoom", "{}"),
+    ("view.zoomToSelection", "zoom to fit the selection", "{}"),
+];
+
+/// One view setting's frames: a still repaint, and a repaint while the sheet scrolls, because a
+/// setting that changes nothing in a still frame can still change what scrolling lays out.
+struct ConfigRow {
+    id: &'static str,
+    what: &'static str,
+    /// `baseline`, `on`, or why the command would not turn it on.
+    outcome: String,
+    idle: Vec<f64>,
+    page: Vec<f64>,
+}
+
+impl ConfigRow {
+    fn idle_median(&self) -> f64 {
+        median(&self.idle)
+    }
+    fn page_median(&self) -> f64 {
+        median(&self.page)
+    }
+}
+
+fn median(v: &[f64]) -> f64 {
+    let mut v = v.to_vec();
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied().unwrap_or(0.0)
+}
+
+/// A still repaint and a scrolling repaint with each view setting on, in a session of its own.
+fn measure_configs(doc: &DocState, frames: usize) -> Result<Vec<ConfigRow>, String> {
+    let mut out = Vec::with_capacity(CONFIGS.len());
+    for (id, what, params) in CONFIGS {
+        let mut s = Session::new();
+        s.add_document(doc.clone());
+        let mut h = app_harness(s);
+        h.run_steps(6);
+        let outcome = if *id == "(none)" {
+            "baseline".to_string()
+        } else {
+            let p = serde_json::from_str(params).map_err(|e| format!("{id} params: {e}"))?;
+            match h.state_mut().session.run(id, p) {
+                Ok(_) => "on".to_string(),
+                Err(e) => format!("not turned on: {e}"),
+            }
+        };
+        h.run_steps(2);
+        let row_px = h.state().grid.rect.map(|r| r.height()).unwrap_or(WINDOW.1);
+        let mut idle = Vec::with_capacity(frames);
+        for _ in 0..frames {
+            let started = Instant::now();
+            h.run_steps(1);
+            idle.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        let mut page = Vec::with_capacity(frames);
+        for _ in 0..frames {
+            let y = h.state().view().scroll.y + row_px;
+            if let Some(view) = h.state_mut().view_mut() {
+                view.scroll.y = y;
+            }
+            let started = Instant::now();
+            h.run_steps(1);
+            page.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        out.push(ConfigRow { id, what, outcome, idle, page });
+    }
+    Ok(out)
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -90,10 +200,12 @@ struct Args {
     frames: usize,
     json: bool,
     check: bool,
+    /// Price the view settings too (on unless `--no-configs`).
+    configs: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
-    let mut out = Args { rows: 1_000_000, frames: DEFAULT_FRAMES, json: false, check: false };
+    let mut out = Args { rows: 1_000_000, frames: DEFAULT_FRAMES, json: false, check: false, configs: true };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let (flag, inline) = match a.split_once('=') {
@@ -114,8 +226,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             }
             "--json" => out.json = true,
             "--check" => out.check = true,
+            "--no-configs" => out.configs = false,
             "-h" | "--help" => {
-                println!("usage: frame_time [--rows=N] [--frames=N] [--json] [--check]");
+                println!("usage: frame_time [--rows=N] [--frames=N] [--json] [--check] [--no-configs]");
                 return Err(String::new());
             }
             other => return Err(format!("unknown argument `{other}`")),
@@ -142,15 +255,8 @@ fn run() -> Result<(), String> {
     if cfg!(debug_assertions) {
         eprintln!("frame_time: this is a debug build — the numbers are not comparable (use --release)");
     }
-    let session = workbook(args.rows)?;
-    let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(WINDOW.0, WINDOW.1)).with_pixels_per_point(1.0).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        SheetApp::new(session, Default::default()),
-    );
+    let (session, doc) = workbook(args.rows)?;
+    let mut harness = app_harness(session);
     // Warm-up: the first frames build the layout, the fonts and the caches every later frame
     // reuses. They are not what a session pays per frame.
     harness.run_steps(6);
@@ -254,6 +360,10 @@ fn run() -> Result<(), String> {
         return Err("the `drag` phase moved the pointer and the selection stayed one cell — the frames it timed painted nothing new".to_string());
     }
 
+    // The view settings: every command the ledger marks `ui` is a state a frame paints, so what it
+    // costs is a repaint with it on, not the command that set it.
+    let configs = if args.configs { measure_configs(&doc, args.frames)? } else { Vec::new() };
+
     let over: Vec<&Phase> = phases.iter().filter(|p| p.median() > p.budget).collect();
     if args.json {
         let doc = json!({
@@ -264,6 +374,16 @@ fn run() -> Result<(), String> {
             "window": [WINDOW.0, WINDOW.1],
             "release": !cfg!(debug_assertions),
             "phases": phases.iter().map(Phase::json).collect::<Vec<_>>(),
+            "configs": configs
+                .iter()
+                .map(|c| json!({
+                    "id": c.id,
+                    "what": c.what,
+                    "outcome": c.outcome,
+                    "idle_ms": round(c.idle_median()),
+                    "page_ms": round(c.page_median()),
+                }))
+                .collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?);
     } else {
@@ -279,6 +399,13 @@ fn run() -> Result<(), String> {
                 fmt_ms(p.max()),
                 fmt_ms(p.budget)
             );
+        }
+        if !configs.is_empty() {
+            println!("\nview settings — {} frames each, still and scrolling\n", args.frames);
+            println!("{:<34} {:>9} {:>9}  what", "command", "still", "scroll");
+            for c in &configs {
+                println!("{:<34} {:>9} {:>9}  {} ({})", c.id, fmt_ms(c.idle_median()), fmt_ms(c.page_median()), c.what, c.outcome);
+            }
         }
     }
     if !over.is_empty() {
@@ -387,7 +514,20 @@ fn fmt_ms(ms: f64) -> String {
 }
 
 /// The workbook the phases run on: `rows` × 6 columns of values, one selection at `A1`.
-fn workbook(rows: usize) -> Result<Session, String> {
+/// The offscreen application: the same `SheetApp` the window runs, driven by `egui_kittest`, with
+/// no GPU (see the module doc).
+fn app_harness(session: Session) -> egui_kittest::Harness<'static, SheetApp> {
+    egui_kittest::Harness::builder().with_size(egui::vec2(WINDOW.0, WINDOW.1)).with_pixels_per_point(1.0).build_ui_state(
+        |ui, app: &mut SheetApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        SheetApp::new(session, Default::default()),
+    )
+}
+
+fn workbook(rows: usize) -> Result<(Session, DocState), String> {
     let mut s = Session::new();
     s.new_workbook();
     let mut r = 0;
@@ -403,5 +543,7 @@ fn workbook(rows: usize) -> Result<Session, String> {
         r += n;
     }
     s.execute("selection.set", json!({"range": "A1"})).map_err(|e| e.to_string())?;
-    Ok(s)
+    // The document, so the view-setting table can build a session of its own per setting.
+    let doc = s.doc().map_err(|e| e.to_string())?.clone();
+    Ok((s, doc))
 }

@@ -1796,20 +1796,28 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
         })
     };
     edit(s, |cx| {
-        for r in &ranges {
-            let r = match cx.wb.sheet(sheet).and_then(|sh| sh.used_range()) {
-                Some(u) => match r.intersection(&u) {
-                    Some(x) => x,
-                    None => continue,
-                },
-                None => continue,
-            };
-            let cells: Vec<(CellRef, Cell)> =
-                cx.wb.sheet(sheet).map(|sh| sh.cells.iter_range(r).map(|(c, x)| (c, x.clone())).collect()).unwrap_or_default();
-            // Report every stored cell we touch, even beyond a million coordinates in a sparse
-            // selection. Removed formula anchors must also reach calc so their spills disappear.
-            cx.changed.extend(cells.iter().map(|(c, _)| (sheet, *c)));
-            let mut cells = cells;
+        for wanted in &ranges {
+            let Some(used) = cx.wb.sheet(sheet).and_then(|sh| sh.used_range()) else { continue };
+            let Some(r) = wanted.intersection(&used) else { continue };
+            // Clear All over the whole used area: nothing survives, so the store is replaced rather
+            // than emptied a cell at a time. A take per cell shifts every row of the band's side
+            // tables, which is quadratic in a row's width: the thousand-column shape took 9.13 s
+            // against 14 ms for a hundred sheets of the same eight million cells.
+            let mut cells: Vec<(CellRef, Cell)> = Vec::new();
+            if what == "all" && r == used {
+                // Report every stored cell we touch, even beyond a million coordinates in a sparse
+                // selection. Removed formula anchors must also reach calc so their spills disappear.
+                let keys = cx.wb.sheet(sheet).map(|sh| sh.cells.iter_range(r).map(|(c, _)| (sheet, c)).collect::<Vec<_>>());
+                cx.changed.extend(keys.unwrap_or_default());
+                let sh = cx.sheet_mut(sheet)?;
+                sh.cell_pictures.retain(|c, _| !r.contains(*c));
+                sh.cells = cella_model::CellStore::default();
+            } else {
+                cells = cx.wb.sheet(sheet).map(|sh| sh.cells.iter_range(r).map(|(c, x)| (c, x.clone())).collect()).unwrap_or_default();
+                // Report every stored cell we touch, even beyond a million coordinates in a sparse
+                // selection. Removed formula anchors must also reach calc so their spills disappear.
+                cx.changed.extend(cells.iter().map(|(c, _)| (sheet, *c)));
+            }
             if what == "contents" {
                 for (_, cell) in cells.iter_mut() {
                     let checkbox = cx.wb.styles.get(cell.style).num_fmt.as_str() == "checkbox";

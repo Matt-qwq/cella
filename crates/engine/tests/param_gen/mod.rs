@@ -505,7 +505,11 @@ pub fn doc_params(rng: &mut Rng, wb: &Workbook, cmd: &str, doc: &str, scale: Sca
         if omitted_key(cmd, &key) {
             continue;
         }
-        if optional && !forced_key(cmd, &key) && rng.chance(40) {
+        // A region-naming key is always given. Without it the command works on the *selection*,
+        // which is the same one cell at every scale: "Clear All" then reads 1 microsecond on a
+        // million-row sheet and 9 seconds on the same cells spread over a thousand columns, and
+        // the two rows are not the same question. The scale's meaning is the region it names.
+        if optional && !forced_key(cmd, &key) && !names_a_region(&key) && rng.chance(40) {
             continue;
         }
         if let Some(v) = doc_value(rng, wb, cmd, &key, &hint, scale) {
@@ -542,6 +546,11 @@ fn extra_params(cmd: &str, _wb: &Workbook, _rng: &mut Rng, scale: Scale) -> Vec<
         ],
         _ => Vec::new(),
     }
+}
+
+/// Whether the key names the region a command works on, so the scale means something.
+fn names_a_region(key: &str) -> bool {
+    matches!(key.to_ascii_lowercase().as_str(), "range" | "ranges")
 }
 
 /// Keys a command needs even though its doc marks them optional.
@@ -581,6 +590,10 @@ fn omitted_key(cmd: &str, key: &str) -> bool {
         || (cmd == "chart.setDataLabels" && matches!(k.as_str(), "text" | "point" | "deletepoint" | "showpoint"))
         || (cmd == "data.query.add" && k == "name")
         || (cmd == "data.solverReport" && matches!(k.as_str(), "model" | "values" | "original"))
+        // A Find is the call that scans and reports the next match; `all` is Find All, which builds
+        // one JSON object per match — at a million hits the row would time the JSON, not the scan.
+        // `byColumns` sorts the hits before picking one, another cost that is not the search.
+        || (cmd == "edit.find" && matches!(k.as_str(), "all" | "bycolumns"))
 }
 
 /// An object the workbook holds, by the name or id its command takes — consulted before the generic
@@ -591,6 +604,11 @@ fn object_value(cmd: &str, key: &str, wb: &Workbook, rng: &mut Rng) -> Option<Js
     let first = |ids: Vec<u32>| -> Option<Json> { ids.first().map(|id| json!(id)) };
     let k = key.to_ascii_lowercase();
     match cmd {
+        // A search that finds nothing is an error, and a row the command said no to is a row with
+        // no number. The needle is a word every prepared sheet holds (its region column), and the
+        // search spans the workbook: the scan whose cost follows columns and sheets.
+        "edit.find" if k == "what" => Some(json!("North")),
+        "edit.find" if k == "within" => Some(json!("workbook")),
         "insert.pivotChart" | "insert.slicer" | "insert.timeline" | "table.insertSlicer" | "table.summarizePivot" | "insert.pivotTable"
             if k == "pivot" || k == "field" || k == "slicer" || k == "timeline" || k == "style" =>
         {

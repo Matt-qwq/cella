@@ -1,6 +1,6 @@
 # The function catalogue's calls: one line per registered worksheet function.
 #
-#   name<TAB>template
+#   name<TAB>template[<TAB>error|note]
 #
 # Read by `crates/engine/examples/bench_functions.rs` (which measures it) and by
 # `cargo xtask bench-functions --check` (which fails when a registered function has no line).
@@ -15,8 +15,13 @@
 #   $TN   A1:C{last}  a table (number key) $KG   G2:G{last}  the key column
 #   $RH   H2:H{last}  the value column     $K    a key in $T      $KN  its number
 #   $DATE 46317       a date serial
+#   $RS   B2:B{cap}   a series' values    $TS   A2:A{cap}   its timeline
+#   $LS   {cap}       the series' last point. The cap is 200,000 rows — the longest series the
+#                     FORECAST.ETS family accepts — so a whole column of a million rows is not
+#                     what $RS/$TS expand to.
 # `small` makes each range ten rows, `whole` the whole column; a template with no token is
-# scalar and is measured once.
+# scalar and is measured once. The optional third field is `error` (the function's documented
+# answer is an error here) or a note the page prints beside the row.
 ABS	ABS(2)
 ACCRINT	ACCRINT(($DATE-365),($DATE-180),$DATE,0.05,1000,1,0,1)
 ACCRINTM	ACCRINTM(($DATE-365),$DATE,0.05,1000,0)
@@ -199,10 +204,10 @@ FLOOR	FLOOR(2,0.05)
 FLOOR.MATH	FLOOR.MATH(2,0.05,0)
 FLOOR.PRECISE	FLOOR.PRECISE(2,0.05)
 FORECAST	FORECAST(1,$R2,$R)
-FORECAST.ETS	FORECAST.ETS($LAST,$RH,$R)
-FORECAST.ETS.CONFINT	FORECAST.ETS.CONFINT($LAST,$RH,$R,0.95)
-FORECAST.ETS.SEASONALITY	FORECAST.ETS.SEASONALITY($RH,$R)
-FORECAST.ETS.STAT	FORECAST.ETS.STAT($RH,$R,1)
+FORECAST.ETS	FORECAST.ETS($LS,$RS,$TS)	series of 200,000 points, the engine's cap: a whole column is #NUM!
+FORECAST.ETS.CONFINT	FORECAST.ETS.CONFINT($LS,$RS,$TS,0.95)	series of 200,000 points, the engine's cap: a whole column is #NUM!
+FORECAST.ETS.SEASONALITY	FORECAST.ETS.SEASONALITY($RS,$TS)	series of 200,000 points, the engine's cap: a whole column is #NUM!
+FORECAST.ETS.STAT	FORECAST.ETS.STAT($RS,$TS,1)	series of 200,000 points, the engine's cap: a whole column is #NUM!
 FORECAST.LINEAR	FORECAST.LINEAR(1,$R2,$R)
 FORMULATEXT	FORMULATEXT($Y)
 FREQUENCY	FREQUENCY($R,$R)
@@ -469,7 +474,7 @@ T.DIST.2T	T.DIST.2T(1,10)
 T.DIST.RT	T.DIST.RT(1,10)
 T.INV	T.INV(0.5,10)
 T.INV.2T	T.INV.2T(0.5,10)
-T.TEST	T.TEST($R,$R2,2,1)
+T.TEST	T.TEST($R,$R2,2,2)
 TAKE	TAKE($R,1,1)
 TAN	TAN(2)
 TANH	TANH(2)
@@ -487,15 +492,15 @@ TIMEVALUE	TIMEVALUE("12:00")
 TINV	TINV(0.5,10)
 TOCOL	TOCOL($R,TRUE,FALSE)
 TODAY	TODAY()
-TOROW	TOROW($R)
-TRANSPOSE	TRANSPOSE($R)
+TOROW	TOROW(M1:P2)	an 8-cell block: a whole column would spill past the 16,384-column limit
+TRANSPOSE	TRANSPOSE(M1:P2)	an 8-cell block: a whole column would spill past the 16,384-column limit
 TREND	TREND($R2,$R,$R,1)
 TRIM	TRIM("abc")
 TRIMMEAN	TRIMMEAN($R,0.5)
 TRIMRANGE	TRIMRANGE($R,1,1)
 TRUE	TRUE()
 TRUNC	TRUNC(2,2)
-TTEST	TTEST($R,$R2,2,1)
+TTEST	TTEST($R,$R2,2,2)
 TYPE	TYPE(1)
 UNICHAR	UNICHAR(2)
 UNICODE	UNICODE("abc")
@@ -512,7 +517,7 @@ VARP	VARP($R,$R2)
 VARPA	VARPA($R,$R2)
 VDB	VDB(1000,100,5,1,1,1,FALSE)
 VLOOKUP	VLOOKUP($K,$T,2,FALSE)
-VSTACK	VSTACK($R,$R)
+VSTACK	VSTACK($R)
 WEBSERVICE	WEBSERVICE("https://example.invalid/a")	error
 WEEKDAY	WEEKDAY(1,1)
 WEEKNUM	WEEKNUM(1,1)
