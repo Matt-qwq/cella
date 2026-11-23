@@ -1,6 +1,6 @@
 # 性能报告
 
-> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `9deb026`（2026-11-23）。
+> 由 `cargo xtask perf-report` 生成，对象是 Cella 0.13.0，提交 `8c2401f`（2026-11-23）。
 > 机器：windows x86_64；rustc 1.97.1 (8bab26f4f 2026-07-14)。所有数字都是同一台空闲机器上的墙钟时间，每个场景取三次中最快的一次
 > （本机跑动之间波动约 10%，这也是门禁预算取"安静一次的两倍"的原因）。方法与口径见
 > [performance.md](performance.md)。
@@ -13,39 +13,49 @@ budgets xtask/perf-budgets.txt (scale 1.00)
 
 scenario                 rows    measured     budget      of
 ------------------  ---------  ----------  ---------  ------
-fill.values            100000      100 ms     250 ms     40%
-fill.formulas          100000      118 ms     290 ms     41%
-fill.chained           100000      157 ms     370 ms     42%
-fill.autofill          100000       76 ms     190 ms     40%
-aggregate              100000       16 ms     110 ms     15%
-edit.recalc            100000       31 ms     160 ms     20%
+fill.values            100000       90 ms     250 ms     36%
+fill.formulas          100000      106 ms     290 ms     36%
+fill.chained           100000      141 ms     370 ms     38%
+fill.autofill          100000       72 ms     190 ms     38%
+aggregate              100000       14 ms     110 ms     12%
+calc.countif           100000      3.6 ms      20 ms     18%
+calc.vlookup           100000      5.0 ms      30 ms     17%
+calc.sumproduct        100000      5.9 ms      40 ms     15%
+edit.recalc            100000       37 ms     160 ms     23%
 edit.undo              100000      100 us     3.0 ms      3%
-f9.calculateNow        100000       46 ms     180 ms     26%
-sort.desc              100000      152 ms     580 ms     26%
-sort.formulas          100000      225 ms     760 ms     30%
-save.xlsx              100000      152 ms     300 ms     51%
-open.xlsx              100000      259 ms     520 ms     50%
-rebuild.graph          100000       54 ms     110 ms     50%
-open.csv               100000       74 ms     130 ms     57%
-fill.values           1000000      1.07 s     3.05 s     35%
-fill.formulas         1000000      975 ms     2.55 s     38%
-fill.chained          1000000      1.41 s     3.55 s     40%
-fill.autofill         1000000      274 ms     885 ms     31%
-aggregate             1000000      117 ms     1.15 s     10%
-edit.recalc           1000000      283 ms     1.45 s     20%
+f9.calculateNow        100000       57 ms     180 ms     32%
+sort.desc              100000      160 ms     580 ms     28%
+sort.formulas          100000      229 ms     760 ms     30%
+struct.insertRow       100000      162 ms     420 ms     39%
+struct.deleteRow       100000      161 ms     420 ms     38%
+save.xlsx              100000      140 ms     300 ms     46%
+open.xlsx              100000      237 ms     520 ms     46%
+rebuild.graph          100000       47 ms     110 ms     43%
+open.csv               100000       70 ms     130 ms     54%
+fill.values           1000000      955 ms     3.05 s     31%
+fill.formulas         1000000      882 ms     2.55 s     35%
+fill.chained          1000000      1.27 s     3.55 s     36%
+fill.autofill         1000000      267 ms     885 ms     30%
+aggregate             1000000      113 ms     1.15 s     10%
+calc.countif          1000000       47 ms     160 ms     30%
+calc.vlookup          1000000       68 ms     220 ms     31%
+calc.sumproduct       1000000       91 ms     240 ms     38%
+edit.recalc           1000000      382 ms     1.45 s     26%
 edit.undo             1000000      1.4 ms      52 ms      3%
-f9.calculateNow       1000000      481 ms     1.60 s     30%
-sort.desc             1000000      1.57 s     6.70 s     23%
-sort.formulas         1000000      2.36 s     8.65 s     27%
-save.xlsx             1000000      1.65 s     3.40 s     48%
-open.xlsx             1000000      2.88 s     5.90 s     49%
-rebuild.graph         1000000      745 ms     1.45 s     51%
-open.csv              1000000      685 ms     1.25 s     55%
-save.repeat            100000      153 ms     370 ms     41%
-save.repeat           1000000      1.66 s     3.20 s     52%
-mem_drift              100000      3.3 ms      11 ms     30%
+f9.calculateNow       1000000      640 ms     1.60 s     40%
+sort.desc             1000000      1.67 s     6.70 s     25%
+sort.formulas         1000000      2.40 s     8.65 s     28%
+struct.insertRow      1000000      1.92 s     4.80 s     40%
+struct.deleteRow      1000000      1.90 s     4.40 s     43%
+save.xlsx             1000000      1.62 s     3.40 s     48%
+open.xlsx             1000000      2.52 s     5.90 s     43%
+rebuild.graph         1000000      623 ms     1.45 s     43%
+open.csv              1000000      663 ms     1.25 s     53%
+save.repeat            100000      137 ms     370 ms     37%
+save.repeat           1000000      1.57 s     3.20 s     49%
+mem_drift              100000      3.1 ms      11 ms     28%
 
-OK: all 31 scenarios within budget (xtask/perf-budgets.txt)
+OK: all 41 scenarios within budget (xtask/perf-budgets.txt)
 
 ```
 
@@ -177,7 +187,7 @@ the same workbook saved as xlsx (70371330 bytes) and opened again
 
 ## 与 Excel、WPS、上游 GridCraft 的横评
 
-> **Measured 2026-11-22** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
+> **Measured 2026-11-23** on the development machine (Windows 11, AMD Ryzen 7 9700X 8-core, 32 GB),
 > release builds, one session, in this order: every product ran the same file, the same edit and the
 > same full recalculation, and all three agreed on the answer cell. Three runs each; medians below,
 > ranges in the notes. Run-to-run spread on this machine is about 10 %.
@@ -192,40 +202,42 @@ were driven through COM; Cella through its control channel (`plan/bench/external
 
 | | Excel 16.0 | WPS 12.1 | Cella (this build) |
 |---|---:|---:|---:|
-| open the 70 MB file | 8.67 s | 10.86 s | **2.69 s** |
-| **edit B1 -> the dependent chain** | **0.236 s** | 16.36 s | 0.270 s |
-| **full recalculation (F9), 2M formulas** | **0.072 s** | — | 0.40 s |
-| working set after opening | **580 MB** | 1,001 MB | 879 MB |
-| private working set after opening | **530 MB** | 894 MB | 1,137 MB |
+| open the 70 MB file | 8.64 s | 11.05 s | **2.46 s** |
+| **edit B1 -> the dependent chain** | 0.171 s | 14.94 s | **0.157 s** |
+| **full recalculation (F9), 2M formulas** | **0.073 s** | — | 0.307 s |
+| working set after opening | **577 MB** | 981 MB | 857 MB |
+| private working set after opening | **518 MB** | 873 MB | 1,049 MB |
 | H1000000 after the edit | 23,999,823,993,691 | the same | the same |
 
-Ranges: Excel open 8.62–8.72 s, edit 0.144–0.242 s, F9 0.062–0.082 s (median 0.072); WPS open
-10.84–11.15 s, edit 15.23–16.92 s (WPS was not asked for F9 — its edit already takes 15 s); Cella
-open 2.63–2.73 s, edit 0.253–0.276 s, F9 **0.396–0.438 s** (median 0.401 — re-measured after
-round 36, which removed the graph rebuild from the command; it was 1.03–1.07 s before). Memory was
-read from the running processes after the document was open (WMI/Get-Process), Excel as
-`EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was measured interleaved
-(Excel, Cella, Excel, Cella) so both sides saw the same machine; the removal itself is certified by
-a four-round alternating A/B on this file — **1.046 s → 0.406 s, −61.2 %, faster in 12 of 12
-runs**.
+Ranges: Excel open 8.63–8.65 s, edit 0.160–0.192 s, F9 0.064–0.087 s; WPS open
+10.89–11.26 s, edit 14.67–15.20 s (WPS was not asked for F9 — its edit already takes 15 s); Cella
+open 2.43–2.49 s, edit 0.154–0.160 s, F9 **0.304–0.309 s** (the graph rebuild left the command in
+round 36 — 1.046 → 0.406 s, certified on this file — and round 37's chain cursor took the
+evaluation down again). Memory was read from the running processes after the document was open
+(WMI/Get-Process), Excel as `EXCEL.EXE`, WPS as `et.exe`, Cella as `cella.exe`. The F9 pair was
+measured interleaved (Excel, Cella, Excel, Cella) so both sides saw the same machine.
 
 ### What this says
 
-- **Cella opens this file 3.2x faster than Excel and 4x faster than WPS.** That has been true
+- **Cella opens this file 3.5x faster than Excel and 4.5x faster than WPS.** That has been true
   since the read path was rewritten and it is not close.
-- **Excel still wins the edit, but by 1.1x.** 0.236 s against our 0.270 s, on an operation that
-  recalculates a million chained formulas inside the assignment (Excel is synchronous here:
+- **Cella's edit is under Excel's for the first time: 0.157 s against 0.171 s.** Both recalculate
+  the million-deep `H` chain inside the assignment (Excel is synchronous here:
   `CalculationState` is already `xlDone` when `Range.Value = 3` returns, so both numbers mean "the
   chain is up to date").
-- **Full recalculation: 0.40 s against Excel's 0.072 s (5.6x), down from 1.05 s (16x).** Round 36
+- **Full recalculation: 0.307 s against Excel's 0.073 s (4.2x), down from 1.05 s (16x) and 0.40 s
+  (5.6x) in the two rounds before.** Round 36
   stopped `formulas.calculateNow` rebuilding the dependency graph — every edit already maintains
   it, and the rebuild was 0.69 s of a 1.05 s F9 in the gate. What is left is the evaluation of
-  2,000,000 formulas, a million of them one chain deep: ~0.40 s, and the chain is why it does not
+  2,000,000 formulas, a million of them one chain deep: ~0.31 s, and the chain is why it does not
   parallelise. Excel keeps its tree across a recalculation too, so the remaining 5.6x is
   per-formula and per-command cost — round 37's subject, not a rebuild question (the evaluator was
   already refuted as the target in round 26).
-- **Memory**: 879 MB of working set against Excel's 580, and 1,137 MB private against 530 — 1.5x and
-  2.1x, where the 11-21 build was 988 / 1,249. The round-34 change (the formula text is printed, not
+  The 0.270 s of the 11-22 session is not attributed to one round here: this file is not the gate's
+  workbook, and the gate's own paired A/B is what certifies a change (its `edit.recalc` went
+  693 → 594 ms with round 37's chain cursor, 344 → 283 ms with round 39's lookup).
+- **Memory**: 857 MB of working set against Excel's 577, and 1,049 MB private against 518 — 1.5x and
+  2.0x, where the 11-22 build was 879 / 1,137. The round-34 change (the formula text is printed, not
   stored) took ~110 MB out of both; what remains is the undo step (~174 MB at 1M rows), the
   replayable journal (~15 MB) and the calculation graph (~286 MB), each of which buys something.
 - Every product agrees on `H1000000`, which is the point of running the same file through all

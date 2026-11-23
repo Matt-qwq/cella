@@ -7,6 +7,9 @@
 #
 # Format: <scenario> <rows> <budget ms>
 aggregate           100000  110
+calc.countif        100000  20
+calc.sumproduct     100000  40
+calc.vlookup        100000  30
 edit.recalc         100000  160
 edit.undo           100000  3
 f9.calculateNow     100000  180
@@ -22,6 +25,8 @@ save.repeat         100000  370
 save.xlsx           100000  300
 sort.desc           100000  580
 sort.formulas       100000  760
+struct.deleteRow    100000  420
+struct.insertRow    100000  420
 aggregate          1000000  1150
 edit.recalc        1000000  1450
 edit.undo          1000000  52
@@ -37,3 +42,8 @@ save.repeat        1000000  3200
 save.xlsx          1000000  3400
 sort.desc          1000000  6700
 sort.formulas      1000000  8650
+calc.countif       1000000  160
+calc.sumproduct    1000000  240
+calc.vlookup       1000000  220
+struct.deleteRow   1000000  4400
+struct.insertRow   1000000  4800

@@ -383,6 +383,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   and the gate's three whole-column aggregates add **613 / 848 / 773 ms** as they are added — the
   same 139 / 109 / 116 ms they measure on their own. **The aggregate kernels are the pool**, not the
   chain and not the command's wrapper (0.5 ms); that is K1 in `plan/PERF-STAGE-2.md`.
+- **Measured (11-23, round 40): the three-way table grows to fifteen actions — and shows four
+  places where Cella is behind.** `calc.countif`, `calc.vlookup`, `calc.sumproduct`,
+  `struct.insertRow` and `struct.deleteRow` are now in the gate (**41 rows**) and replayed in Excel
+  and WPS. On 1M rows: **VLOOKUP 68 ms against Excel's 7.3 (9x)**, **COUNTIF 47 against 17**,
+  **SUMPRODUCT 91 against WPS's 62**, and **inserting a row above two million formulas 1.92 s
+  against Excel's 0.96 s** (delete 1.90 against 0.87). The first two are the round-39 `XLOOKUP` fix
+  not yet applied to `VLOOKUP`/`COUNTIF` (their whole-column paths still materialise the column);
+  the row insert rewrites every reference below it where Excel moves rows and adjusts the graph
+  incrementally. Each is a round of its own; the gate now refuses to lose ground on any of them.
 - **Measured (11-23, round 39): a whole-column `XLOOKUP` stops building the column.**
   `aggregate`'s lookup read `A:A` into an `Array` before comparing anything — 75 ms to build a
   million `Value`s, 45 ms to scan them — so a needle on the first row paid for the whole column.

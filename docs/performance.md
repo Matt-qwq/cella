@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 39 — **a whole-column `XLOOKUP` stops building the column.** The lookup in `aggregate` — `XLOOKUP("Item 77777", A:A, B:B)` over a million rows — read `A:A` into an `Array` first: **75 ms** building a million `Value`s and **45 ms** scanning them, to decide on the first pair. The evaluator's reference-returning `xlookup` now answers the narrow shape (a literal text needle without wildcards, exactly three arguments, one column each over the same rows) by walking the stored cells (`Host::first_text_in_column`: `visit_packed`, no `Value` a row, an ASCII byte compare that falls back to the Unicode-lowercasing order) and returning a reference to the matched row; everything else declines before evaluating a cell. **`aggregate` 184.7 → 126.7 ms (−31.4 %, faster in 6 of 6, p = 0.016)** and **`edit.recalc` 344.5 → 283.2 ms (−17.8 %, 6 of 6)** — an edit re-evaluates the same three aggregates — with the gate at **31/31** and a fresh report page on an idle machine (`aggregate` **117 ms / 10 %**, `edit.recalc` **283 ms / 20 %**, `f9.calculateNow` 481 ms / 30 %; the external replay: F9 **0.307 s against Excel's 0.073 s (4.2x)**, the edit **0.157 s against Excel's 0.171 s — under it for the first time**, open 2.46 s against 8.64 s; `plan/bench/f9-board/out/report/2026-11-23_v12/index.html`, every comparison table colour-coded green/amber/red). Earlier: round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** round 40 — **the gate grows to 41 rows and the cross-product table to fifteen.** The owner's objection to the ten-row replay was right: ten operations hid where Cella actually stands. Five new scenarios — `COUNTIF`, `VLOOKUP`, `SUMPRODUCT`, and a row inserted and deleted above two million formulas — are now measured by the engine's harness *and* replayed in Excel and WPS through COM, so the report's three-way table has fifteen comparable rows. The new rows are not all wins: **`VLOOKUP` 68 ms against Excel's 7.3 (9x)**, **`COUNTIF` 47 against 17**, **`SUMPRODUCT` 91 against WPS's 62**, and **inserting a row costs 1.92 s against Excel's 0.96 s**. Gate **41/41**. Earlier: round 39 — **a whole-column `XLOOKUP` stops building the column.** The lookup in `aggregate` — `XLOOKUP("Item 77777", A:A, B:B)` over a million rows — read `A:A` into an `Array` first: **75 ms** building a million `Value`s and **45 ms** scanning them, to decide on the first pair. The evaluator's reference-returning `xlookup` now answers the narrow shape (a literal text needle without wildcards, exactly three arguments, one column each over the same rows) by walking the stored cells (`Host::first_text_in_column`: `visit_packed`, no `Value` a row, an ASCII byte compare that falls back to the Unicode-lowercasing order) and returning a reference to the matched row; everything else declines before evaluating a cell. **`aggregate` 184.7 → 126.7 ms (−31.4 %, faster in 6 of 6, p = 0.016)** and **`edit.recalc` 344.5 → 283.2 ms (−17.8 %, 6 of 6)** — an edit re-evaluates the same three aggregates — with the gate at **31/31** and a fresh report page on an idle machine (`aggregate` **117 ms / 10 %**, `edit.recalc` **283 ms / 20 %**, `f9.calculateNow` 481 ms / 30 %; the external replay: F9 **0.307 s against Excel's 0.073 s (4.2x)**, the edit **0.157 s against Excel's 0.171 s — under it for the first time**, open 2.46 s against 8.64 s; `plan/bench/f9-board/out/report/2026-11-23_v12/index.html`, every comparison table colour-coded green/amber/red). Earlier: round 38 — **the fill's store write is not the splice.** A batched column write — `CellStore::set_column` and one rebuild of a band's stripes instead of a splice a cell — measured **−5 %** on `fill.autofill` (1M, faster in 6 of 6 in-binary alternating runs, p = 0.016) and **was reverted**: the per-cell cost is resolving each cell against the band's tables and touching stripes a million rows pushed out of cache, and the splice is only ~20–40 ns of the 274 ns a cell. Earlier: round 37 — **a whole-column read stops building a Cell a cell.** The three aggregates (`SUM`/`SUMIFS`/`XLOOKUP` over a million rows) were the pool behind both `aggregate` (364 ms) and `edit.recalc` (610 ms): a formula column's `SUM` fell back to `Sheet::value` a cell, the block builder walked with `iter_range` (a `Cell` and a band `Vec` a cell), and the stability check walked every formula cell again. All three are gone — the store grew a `visit_values` walk (half the time) and a `visit_packed_settled` one (a formula's stored value, when the pass owes it nothing) — for **`aggregate` 348 → 175 ms (−49.7 %)**, **`edit.recalc` 567 → 400 ms (−29.5 %)** and **`fill.autofill` 550 → 388 ms (−29.5 %)**, i.e. 6.97x → 3.5x and 4.39x → 3.1x Excel, with the gate at **31/31**. Earlier: round 36 — **Calculate Now keeps the dependency graph.** F9 was 1.05 s against Excel's 0.064 s (16x) because `formulas.calculateNow` rebuilt the graph first — 0.69 s of it — for a graph every edit already maintains. It now evaluates and keeps it: **1.046 → 0.406 s (−61.2 %, faster in 12 of 12 alternating runs)**, **0.40 s against Excel's 0.072 s (5.6x)**, and the gate stands at **31/31** with `f9.calculateNow` as a new scenario (100k 82 ms, 1M 832 ms, 52 % of its budget). Earlier: round 35 closed the line — **gate 29/29** on an idle machine, the round-34 save cost
 measured by A/B at **+2.5 %** (1.59 → 1.63 s best of six), and **F9 measured against Excel for the
 first time on the same file**: 1.05 s against 0.064 s (16x), of which 0.71 s is the dependency-graph
 rebuild the command does and Excel does not — the evaluation proper is ~0.34 s (≈5x). Process memory
@@ -26,7 +26,7 @@ real export, not a synthetic grid.
 
 ## Scenarios
 
-`crates/engine/examples/perf.rs` runs one session through fourteen named scenarios, in this order,
+`crates/engine/examples/perf.rs` runs one session through nineteen named scenarios, in this order,
 because that is how a real session looks (values, formulas over them, edits, sort, save, open).
 Each reports one number: its own wall-clock time in ms.
 
@@ -37,11 +37,16 @@ Each reports one number: its own wall-clock time in ms.
 | `fill.chained` | fills a running sum `H = H(n-1)+G(n)` — every row depends on the row above | the worst case for the dependency graph: one chain a million deep |
 | `fill.autofill` | copies one value down a whole column through `edit.autoFill` | **the drag a person makes.** `fill.values` above is a hundred `range.setValues` calls and pays a command's fixed cost a hundred times; this is what a fill handle does |
 | `aggregate` | `SUM(G1:G{n})`, `SUMIFS(B:B,C:C,">50")`, `XLOOKUP(...)` | whole-column aggregates and lookups, the queries analysts actually run |
+| `calc.countif` | `COUNTIF(B:B,">3")` over a million values | the criteria walk, the most common conditional formula in a report; Excel and WPS replay it too, so it is a three-way row |
+| `calc.vlookup` | `VLOOKUP(7,B:C,2,FALSE)` over a million keys | exact lookup down a whole column — the formula that used to dominate a report's recalculation |
+| `calc.sumproduct` | `SUMPRODUCT(B2:B{n},C2:C{n})` | two whole columns multiplied pairwise: the array-shaped arithmetic path |
 | `edit.recalc` | edits `B1` (every `G`, hence every `H`, depends on it) | incremental recalculation after one keystroke — the number a user feels |
 | `edit.undo` | undoes that edit | undo restores a snapshot, so it must not recalculate or rebuild anything |
 | `f9.calculateNow` | `formulas.calculateNow`: recalculates every formula of the workbook | the full recalculation a user asks for with F9. It keeps the dependency graph, which every edit maintains — rebuilding it here was 0.69 s of a 1.05 s F9 (round 36) |
 | `sort.desc` | `data.sortDescending` over `A1:F{n}` by one column | sort is the slowest interactive operation we have (see below) |
 | `sort.formulas` | `data.sortDescending` over `A1:H{n}` by column B, so the `G` and `H` formulas move with their rows | a real table's sorted block holds formulas; the values sort above cannot see the graph and formula-text work this costs |
+| `struct.insertRow` | `home.insertRows` at row 2, above two million formulas | a structural edit moves every reference below it: what a user waits for after Insert Row |
+| `struct.deleteRow` | `home.deleteRows` of that row | the inverse edit; it must not leave the graph, the bands or the undo snapshot worse off |
 | `save.xlsx` | `file.saveBytes` as xlsx | the write path: pack, compress, stream |
 | `open.xlsx` | opens those bytes again | the read path, the dependency-graph build, and whatever recalculation the file asks for (a package with `calcId` and no `fullCalcOnLoad` asks for none, which is the normal case) |
 | `rebuild.graph` | `Calc::rebuild` over every formula of the workbook, and nothing evaluated | the dependency-graph build on its own: an open and a structural edit both pay it, and it used to be the larger half of an open |
@@ -952,6 +957,38 @@ redo recalculate nothing.
 be translated by a permutation instead of re-walking the tree), and gather (706 ms) / write
 (652 ms), whose next step is a band-level row-replacement kernel.
 
+## Round 40: the gate grows to 41 rows, the cross-product table to fifteen (2026-11-23)
+
+- **Why.** The three-way table had ten rows — the ones a session happens to do in the gate's order —
+  and the owner's objection was that ten is too few to judge three engines. It was: the ten hid four
+  operations where Cella is behind.
+- **What was added (each measured by the engine's harness *and* replayed in Excel and WPS):**
+  `calc.countif` (`COUNTIF(B:B,">3")` over a million values), `calc.vlookup`
+  (`VLOOKUP(7,B:C,2,FALSE)` over a million keys), `calc.sumproduct`
+  (`SUMPRODUCT(B2:B{n},C2:C{n})`), `struct.insertRow` (one row inserted at row 2, above two
+  million formulas) and `struct.deleteRow` (its inverse). The gate is **41 rows** (15 scenarios ×
+  100k/1M, plus four that only run at one size), the replay 15 actions.
+- **What it exposed (1M, engine harness against the COM replay):**
+
+  | operation | Cella | Excel | WPS |
+  |---|---:|---:|---:|
+  | `VLOOKUP` exact, 1M keys | 68 ms | **7.3 ms** | 12 ms |
+  | `COUNTIF`, 1M values | 47 ms | **17 ms** | 40 ms |
+  | `SUMPRODUCT`, 2 × 1M | 91 ms | 73 ms | **62 ms** |
+  | insert a row above 2M formulas | 1.92 s | **0.96 s** | 6.06 s |
+  | delete it again | 1.90 s | **0.87 s** | 6.36 s |
+
+  The rest of the table is unchanged in shape: Cella wins the bulk operations (open 2.52 s against
+  8.38 / 10.24, save 1.62 against 3.32 / 4.47, both fills), loses the per-formula ones (`aggregate`
+  113 against Excel's 47, `edit.recalc` 382 against 121) and now has two structural edits priced.
+- **Where the gaps come from (priced, not yet cut):** `VLOOKUP`/(COUNTIF)'s whole-column paths still
+  materialise the column (round 39 did that for `XLOOKUP` only), `SUMPRODUCT` walks two arrays
+  without fusing, and a row insert rewrites every reference below it — SH4's shape rewrite — where
+  Excel appears to move rows and adjust the graph incrementally. Each is its own round; the gate now
+  refuses to lose ground on any of them.
+- **Page and gate:** `2026-11-23_v14` (1,028 KB, 0 warnings), gate **41/41**, `cargo xtask ci`
+  green; `docs/performance-report.md` regenerated with the 41 rows.
+
 ## Round 39: a whole-column XLOOKUP stops building the column (2026-11-23)
 
 - **Where the time was.** `aggregate` — `SUM(G:G)`, `SUMIFS(B:B, C:C, ">50")` and
@@ -979,7 +1016,7 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
   path. They are held equal across case (`Alpha`/`alpha`/`ALPHA`), a wildcard needle in exact mode,
   `match_mode` 2 with a pattern, a blank return cell reading 0, a formula in the lookup column, a
   number needle, a miss (`#N/A`) and a 5,000-row column.
-- **Gate and page (idle machine, the page is `2026-11-23_v12`; all three products in the gate table — WPS's 1M bulk write is capped and shown as ">15 min", the other nine actions are its own 2026-11-23 replay):** **31/31**; `aggregate` 1M **117 ms / 10 %**,
+- **Gate and page (idle machine, the page is `2026-11-23_v14`; all three products in the gate table — WPS's 1M bulk write is capped and shown as ">15 min", the other nine actions are its own 2026-11-23 replay):** **31/31**; `aggregate` 1M **117 ms / 10 %**,
   `edit.recalc` **283 ms / 20 %**, `fill.autofill` 274 ms / 31 %, `f9.calculateNow` 481 ms / 30 %.
   The external replay of the same file: F9 **0.307 s against Excel's 0.073 s (4.2x)**, the edit
   **0.157 s against 0.171 s** (under Excel's for the first time), open 2.46 s against 8.64 s (WPS
@@ -987,7 +1024,7 @@ be translated by a permutation instead of re-walking the tree), and gather (706 
 - **What is left of the three aggregates:** `SUM` (~55 ms of the aggregate command) and `SUMIFS`
   (~63 ms) now dominate; both are one packed pass each over a million values, and neither has an
   obvious next knife. `aggregate` against Excel's 50 ms is 2.5x.
-- **The page:** `plan/bench/f9-board/out/report/2026-11-23_v12/index.html` (1,027 KB, 0 warnings),
+- **The page:** `plan/bench/f9-board/out/report/2026-11-23_v14/index.html` (1,028 KB, 0 warnings),
   generated from this build's gate run and the Excel/WPS replays. Every comparison table is
   colour-coded by the row: green is the fastest of the products on that row, amber is within 1.5x,
   red is further behind (the spec's `colors:` rules; the gate's `占用（%）` column bands at 30 % /

@@ -42,11 +42,16 @@ const STEPS: &[(&str, &str, Step)] = &[
     ("fill.chained", "fill a running sum H = H(n-1) + G(n) down rows", fill_chained),
     ("fill.autofill", "copy one value down a whole column through edit.autoFill, the drag a user makes", fill_autofill),
     ("aggregate", "three aggregate formulas over the filled columns", aggregate),
+    ("calc.countif", "COUNTIF over a million values", calc_countif),
+    ("calc.vlookup", "VLOOKUP exact over a million keys", calc_vlookup),
+    ("calc.sumproduct", "SUMPRODUCT over two million-value columns", calc_sumproduct),
     ("edit.recalc", "edit one cell and recalculate what depends on it", edit_recalc),
     ("edit.undo", "undo that edit", edit_undo),
     ("f9.calculateNow", "Calculate Now: recalculate every formula, keeping the dependency graph", f9_calculate_now),
     ("sort.desc", "sort rows by one column, descending", sort_desc),
     ("sort.formulas", "sort a body that holds formulas, so they move with their rows", sort_formulas),
+    ("struct.insertRow", "insert one row above a body of two million formulas", struct_insert_row),
+    ("struct.deleteRow", "delete that row again (the inverse edit)", struct_delete_row),
     ("save.xlsx", "save the workbook as xlsx", save_xlsx),
     ("open.xlsx", "open those bytes again (full recalc)", open_xlsx),
     ("rebuild.graph", "rebuild the dependency graph from the workbook (no recalculation)", rebuild_graph),
@@ -337,6 +342,24 @@ fn aggregate(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
     Ok((format!("SUM, SUMIFS and XLOOKUP over {rows} rows"), ms))
 }
 
+/// COUNTIF over a whole column of values: the criteria walk, which a spreadsheet spends a real
+/// fraction of its life in. Excel and WPS run the same formula through COM (`gate_ext.ps1`), so
+/// this row compares all three engines.
+fn calc_countif(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("cell.set", json!({"cell": "J4", "input": "=COUNTIF(B:B,\">3\")"})).map(|_| ()))?;
+    Ok(("COUNTIF over a column of a million values".to_string(), ms))
+}
+
+fn calc_vlookup(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("cell.set", json!({"cell": "J5", "input": "=VLOOKUP(7,B:C,2,FALSE)"})).map(|_| ()))?;
+    Ok(("VLOOKUP exact over a million keys".to_string(), ms))
+}
+
+fn calc_sumproduct(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("cell.set", json!({"cell": "J6", "input": format!("=SUMPRODUCT(B2:B{rows},C2:C{rows})")})).map(|_| ()))?;
+    Ok((format!("SUMPRODUCT over two columns of {rows} values"), ms))
+}
+
 /// The edit: `B1` feeds `G` through `B*C+D`, and every `H` chains off the `G` above it.
 fn edit_recalc(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
     let ((), ms) = timed(|| b.exec("cell.set", json!({"cell": "B1", "input": "5"})).map(|_| ()))?;
@@ -379,6 +402,19 @@ fn sort_formulas(b: &mut Bench, rows: usize) -> Result<(String, f64), String> {
         b.exec("data.sortDescending", json!({ "range": format!("A1:H{rows}"), "column": "B" })).map(|_| ())
     })?;
     Ok((format!("{rows} rows with formulas by column B, descending"), ms))
+}
+
+/// Inserting a row above a body of two million formulas: every reference below the edit moves, so
+/// this is the structural-edit cost a spreadsheet cannot avoid. Excel's `Rows(2).Insert()` and the
+/// engine's `home.insertRows` do the same thing, which is why the report can compare them.
+fn struct_insert_row(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("home.insertRows", json!({"rows": "2:2"})).map(|_| ()))?;
+    Ok(("insert one row above two million formulas".to_string(), ms))
+}
+
+fn struct_delete_row(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
+    let ((), ms) = timed(|| b.exec("home.deleteRows", json!({"rows": "2:2"})).map(|_| ()))?;
+    Ok(("delete it again: the inverse edit".to_string(), ms))
 }
 
 fn save_xlsx(b: &mut Bench, _rows: usize) -> Result<(String, f64), String> {
