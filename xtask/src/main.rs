@@ -70,6 +70,11 @@ commands:
                   docs/performance-functions.md (release, seconds — NOT part of `ci`); `--check`
                   verifies xtask/bench-functions.txt names every registered function (a step
                   of `ci`)
+  bench-shapes [--only=ID,...] [--out PATH] [--json-out PATH] [--from PATH]
+                  the shape ruler: the same commands on three eight-million-cell workbooks (a
+                  million rows × 8 columns, a thousand columns × 8k rows, a hundred sheets ×
+                  10k rows); writes docs/performance-shapes.md
+                  (release, a couple of minutes — NOT part of `ci`)
   perf-report     write docs/performance-report.md from the scenario gate and the live-heap example
                   the performance gate: run crates/engine/examples/perf.rs in release at 100k and
                   1M rows and compare it with xtask/perf-budgets.txt, plus the mem_drift soak and
@@ -121,6 +126,10 @@ fn main() -> ExitCode {
         Some("bench-functions") => bench::run_functions(&root(), &rest),
         #[cfg(not(feature = "engine"))]
         Some("bench-functions") => Err("`bench-functions` needs the engine feature (on by default)".to_string()),
+        #[cfg(feature = "engine")]
+        Some("bench-shapes") => bench::run_shapes(&root(), &rest),
+        #[cfg(not(feature = "engine"))]
+        Some("bench-shapes") => Err("`bench-shapes` needs the engine feature (on by default)".to_string()),
         Some("perf-report") => perfreport::run(&root()),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),

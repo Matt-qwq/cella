@@ -243,6 +243,42 @@ costs the styles it writes, and a solver report or a pivot summary writes a smal
 earlier table's "167 MB for a 10 ms command" was the history artefact, and the question it asked is
 now `gaps` §26's.
 
+## Shape: rows are not the only axis
+
+Every ruler above varies **rows**. A command that is O(columns) or O(sheets) has no way to show it in
+a row count, and a row-only ruler reports such a command as fast. `cargo xtask bench-shapes` runs
+`crates/engine/examples/bench_shapes.rs`: the same commands on three workbooks of **eight million
+cells each** — a million rows × 8 columns (`tall`), a thousand columns × 8,000 rows (`wide`), and a
+hundred sheets × 10,000 rows × 8 columns (`sheets`) — one command at a time in a fresh session, with
+its region-naming params over the whole used area (the catalogue's own generator). The page is
+[`performance-shapes.md`](performance-shapes.md).
+
+**The first run found what two years of row-based benchmarks could not see:**
+
+| command | 1M×8 | 1000×8k | 100×10k | spread |
+|---|---:|---:|---:|---:|
+| `edit.clearAll` | **1.0 ms** | **9.13 s** | 14 ms | **8,859×** |
+| `edit.clearFormats` | 1.3 ms | **3.21 s** | 15 ms | 2,404× |
+| `range.move` | 8.2 ms | **14.48 s** | 6.2 ms | 2,329× |
+| `edit.copy` | 100 ms | 896 ms | 28 ms | 32× |
+| `file.saveBytes` | 1.68 s | 1.34 s | **23.72 s** | 18× |
+
+- **A thousand-column sheet turns three O(area) commands into seconds.** `edit.clearAll` is 9.1 s and
+  `range.move` 14.5 s on the *same eight million cells* that take 1 ms and 8 ms when they are
+  arranged as a million rows. The row-only catalogue reports `edit.clearAll` at 1.1 s — it never saw
+  the 1000-column case at all.
+- **A hundred sheets make saving 18× slower** (23.7 s against 1.3 s for the same cells): the workbook
+  writer's per-sheet cost, not the cell count, dominates.
+- **Two commands are flat, as they should be**: `home.formatCells` and `home.conditionalFormat` cost
+  the same on all three shapes (0.95–15 ms), which is the control that says the ruler measures the
+  shape and not just "a bigger number".
+- **`edit.find` fails on `tall` and `wide`** ("couldn't find what you're looking for") because the
+  text it is given is the header name of a `wide` sheet; that is a params question, not a finding,
+  and it is the one row of the page to fix next.
+
+None of this is a knife yet: the shape ruler is new, and its first job was to say which commands have
+a shape-sensitivity worth pricing.
+
 ## The function catalogue
 
 The command catalogue prices what a person *does*; a spreadsheet is mostly what the cells *say*.
@@ -1886,6 +1922,17 @@ Adding a **command** is two steps: one line in [`xtask/bench-coverage.txt`](../x
 
 ## Revision history
 
+- **2026-11-23 (round 46, the shape and the memory):** two fixes to the rulers. **The shape ruler**:
+  `cargo xtask bench-shapes` puts the same eight million cells in three arrangements — a million
+  rows, a thousand columns, a hundred sheets — and finds what a row-only ruler cannot: **`edit.clearAll`
+  1.0 ms on a tall sheet against 9.13 s on a 1000-column one (8,859×)**, `edit.clearFormats` 3.21 s,
+  `range.move` 14.48 s, `file.saveBytes` 23.72 s on a hundred sheets (18× the same cells in one).
+  `home.formatCells` and `home.conditionalFormat` are flat across shapes — the control. **The memory
+  reading** is attributable again after round 45's withdrawal: the jump was the report's `undo` line
+  charging every command ~693 MB at 100k rows, so the catalogue now publishes the document's own
+  memory (`sheets + workbook + calc`); a sort grows a million-row document by **57.9 MB** while it
+  runs, a whole-column font step by 1.0 MB, a solver report by 10 KB. `gaps` §26 is the `undo`
+  accounting bug; §28–§29 are the shape-sensitive commands.
 - **2026-11-23 (round 45, the interaction phases):** the frame-time ruler grew the half it was
   missing — what a keystroke, a commit, an undo and a drag cost. `frame_time.rs` now drives real
   input through the whole app offscreen (an `egui_kittest` `Event::Text` opens the editor, a `Key`
