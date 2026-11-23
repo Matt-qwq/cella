@@ -551,6 +551,19 @@ fn best_effort(s: &mut Session, id: &str, params: Json) {
     }
 }
 
+/// The live document's own bytes — the sheets, the workbook's parts and the calculation state —
+/// and **not** the history.
+///
+/// The catalogue wants "did this command make the document heavier": more cells, more styles, a
+/// graph, a model. The undo snapshot is a different question (and `memory_report`'s `undo` line is
+/// not usable per command yet: after the first write in a session it charges ~693 MB at 100,000
+/// rows for every command, whatever the command did — see `docs/performance.md`). So the report is
+/// read part by part: `sheets + workbook + calc`.
+fn document_bytes(s: &Session) -> usize {
+    let r = s.memory_report();
+    let sheets: usize = r.sheets.iter().map(cella_engine::SheetMemory::total).sum();
+    sheets + r.workbook.total() + r.calc.total()
+}
 /// [`best_effort`] for the objects whose id or name a later command has to name (a PivotTable's
 /// name, a control's id).
 fn best_effort_value(s: &mut Session, id: &str, params: Json) -> Option<Json> {
@@ -636,13 +649,28 @@ fn measure_once(base: &DocState, id: &str, rows: usize, scale: &'static str, att
     let params = doc_params(&mut rng, &wb, id, spec.params, scale_for(scale, rows));
     let before = wb.clone();
     s.release_deferred();
-    let mem_before = s.memory_report().total;
+    let mem_before = document_bytes(&s);
     let started = Instant::now();
     let result = s.execute(id, params);
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     let after = s.doc().map_err(err)?.wb.clone();
     let dropped = s.release_deferred();
-    let mem_after = s.memory_report().total;
+    let mem_after = document_bytes(&s);
+    if std::env::var_os("CELLA_BENCH_MEM").is_some() {
+        // The parts, not just the total: a ruler that is off by a constant has to say which part.
+        let r = s.memory_report();
+        eprintln!(
+            "bench_commands: {id} {scale} {rows} — document before {mem_before}, after {mem_after}: workbook {}, calc {}, saved {}, undo {}, pending {}, redo {}, journal {}, sheets {:?}",
+            r.workbook.total(),
+            r.calc.total(),
+            r.saved,
+            r.undo,
+            r.pending_release,
+            r.redo,
+            r.journal,
+            r.sheets.iter().map(|s| s.total()).collect::<Vec<_>>()
+        );
+    }
     let (outcome, error) = match result {
         Ok(_) => ("ok", None),
         Err(EngineError::Disabled(_, why)) => ("refused", Some(why)),

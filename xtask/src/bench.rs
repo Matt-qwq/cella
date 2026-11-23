@@ -347,11 +347,13 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
           ran and the answer was no (nothing found, no such table), `no change` means an edit that \
           changed nothing, and `PANIC` would mean a caught panic. `-` means that configuration was \
           not measured at all.\n\n";
-    s += "The `kept` column this page carried in round 44 is **withdrawn**: the memory reading \
-          charges a command's first write with the session's copy of the shared bands, and three \
-          unrelated commands (a sort, a font step, a solver report) all read the same ~700 MB at \
-          100,000 rows. The measurement still runs into the JSON; [performance.md](performance.md) \
-          says what has to be understood before it is published.\n\n";
+    s += "The `doc` column is the **document's own memory**: the live sheets, the workbook's parts \
+          and the calculation state, after minus before the command (`Session::memory_report`, read \
+          part by part). It answers \"did this make the document heavier\" — more cells, more \
+          styles, a graph, a model. The *history* is deliberately not in it: `memory_report`'s undo \
+          line charges the session's first write with ~693 MB at 100,000 rows for every command, \
+          whatever the command did, so it is not attributable per command yet \
+          ([performance.md](performance.md) says what that is and what fixing it needs).\n\n";
 
     // The slowest, which is the part a person reads first.
     let widest = c.rows.iter().copied().max().unwrap_or(0);
@@ -367,7 +369,21 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
         s += "\n";
     }
 
-    // The hungriest table is withdrawn with the column it was built from: see the paragraph above.
+    // The heaviest documents, same reading order: which commands grow the sheet itself.
+    let mut hungriest: Vec<&Measurement> = c.measurements.iter().filter(|m| m.rows == widest && m.bytes > 0).collect();
+    hungriest.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    hungriest.truncate(10);
+    if widest > 0 && !hungriest.is_empty() {
+        s += &format!("## The ten that grow the document most at {} rows\n\n", thousands(widest));
+        s += "The document's own memory (sheets, workbook parts, calculation state) after minus \
+              before the command — not the undo snapshot, which the engine's report cannot yet \
+              attribute per command.\n\n";
+        s += "| command | scale | grew by | time |\n|---|---|---|---|\n";
+        for m in &hungriest {
+            s += &format!("| `{}` | {} | {} | {} |\n", m.id, m.scale, fmt_bytes(m.bytes), fmt_ms(m.ms));
+        }
+        s += "\n";
+    }
 
     // The whole catalogue, in registration order (the order the example measured).
     let mut ids: Vec<&str> = Vec::new();
@@ -385,8 +401,8 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
             sep += "---|";
         }
     }
-    head += " note |\n";
-    sep += "---|\n";
+    head += " doc | note |\n";
+    sep += "---|---|\n";
     s += &head;
     s += &sep;
     for id in &ids {
@@ -418,6 +434,13 @@ pub fn render_catalogue(f: &Facts, c: &Catalogue) -> String {
         }
         let said: Vec<String> =
             notes.iter().map(|(body, scales)| if c.scales.len() > 1 { format!("{}: {body}", scales.join("/")) } else { body.clone() }).collect();
+        let doc = c
+            .measurements
+            .iter()
+            .filter(|m| m.id == *id)
+            .max_by(|a, b| a.bytes.cmp(&b.bytes))
+            .map_or_else(|| "0".to_string(), |m| fmt_bytes(m.bytes));
+        line += &format!(" {doc} |");
         line += &format!(" {} |\n", said.join("; "));
         s += &line;
     }
@@ -1343,8 +1366,8 @@ mod tests {
         assert_eq!((c.rows.clone(), c.scales.len(), c.commands), (vec![1000], 2, 2));
         let facts = Facts { version: "0.0.0", sha: "deadbeef", date: "2026-11-23", machine: "test".into() };
         let page = render_catalogue(&facts, &c);
-        assert!(page.contains("| `home.bold` | 12 us | 1.23 s |  |"), "{page}");
-        assert!(page.contains("| `data.sort` | 0 us | 4.5 ms | small: refused: nothing to sort |"), "{page}");
+        assert!(page.contains("| `home.bold` | 12 us | 1.23 s | 0 |  |"), "{page}");
+        assert!(page.contains("| `data.sort` | 0 us | 4.5 ms | 0 | small: refused: nothing to sort |"), "{page}");
         assert!(page.contains("## The twenty slowest commands at 1,000 rows"), "{page}");
         assert!(page.contains("| `file.open` | reads files |"), "{page}");
         assert!(page.contains("2 of them measured."), "{page}");
