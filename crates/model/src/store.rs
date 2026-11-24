@@ -27,7 +27,7 @@
 //! A band that overflows the index (more than 65,535 distinct numbers in 64 rows) falls back to
 //! `NUMBER_WIDE`, which keeps the bits in the row's side table.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -628,6 +628,10 @@ impl Default for BandTag {
     }
 }
 
+/// How many texts a band's sorted pointer index holds before it becomes a map: below this the
+/// vector's cache friendliness wins, above it the insertion cost (`gaps` §38).
+const TEXT_INDEX_MAX: usize = 256;
+
 /// A process-unique band identity (see [`BandTag`]): 64-bit so it never repeats in a session.
 fn next_band_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -665,8 +669,12 @@ struct Band {
     texts: Vec<Arc<str>>,
     /// Pointer of each kept text → its slot, sorted by pointer, so one shared `Arc` is stored once
     /// per band. A band holds a handful of texts: a sorted vector beats a hash map's bookkeeping at
-    /// that size, which is why the number table (hundreds of entries) is a hash and this is not.
+    /// that size, which is why the number table (hundreds of entries) is a hash and this is not —
+    /// until a band holds more than [`TEXT_INDEX_MAX`], where `text_map` takes over.
     text_index: Vec<(usize, u32)>,
+    /// The same index as a map, once the band holds enough texts that inserting into the sorted
+    /// vector costs more than hashing (see [`Band::text_slot`]).
+    text_map: Option<HashMap<usize, u32>>,
     /// The distinct styles of this band; the `styles` stripe holds indexes into it.
     style_ids: Vec<StyleId>,
     /// Who this band was copied from, for pricing without a row walk (see [`BandTag`]).
@@ -688,6 +696,7 @@ impl Clone for Band {
             number_slots: self.number_slots.clone(),
             texts: self.texts.clone(),
             text_index: self.text_index.clone(),
+            text_map: self.text_map.clone(),
             style_ids: self.style_ids.clone(),
             tag: BandTag { id: next_band_id(), parent: self.tag.id, rows_touched: false },
         }
@@ -1162,25 +1171,49 @@ impl Band {
 
     /// The band's slot for `s`, adding it when new. A band that has been finished has no index;
     /// the first edit that needs one rebuilds it from the texts the band still holds.
+    ///
+    /// A sorted vector of pointers is the right index while a band holds a handful of texts, which
+    /// is what a sheet of repeated labels looks like. A band can also hold **one text per cell** —
+    /// a column of unique keys, or a sort's write-back, where the same word arrives from thirty
+    /// source bands as thirty `Arc`s — and inserting into the sorted vector is O(texts) there, so a
+    /// wide band spent 401 ns a cell against 24 when the text repeatss. Past [`TEXT_INDEX_MAX`] the
+    /// index becomes a map, where both a hit and a new text are O(1).
     fn text_slot(&mut self, s: &Arc<str>) -> u32 {
-        if self.text_index.is_empty() && !self.texts.is_empty() {
-            self.reindex_texts();
-        }
         let key = Arc::as_ptr(s) as *const u8 as usize;
-        match self.text_index.binary_search_by_key(&key, |(at, _)| *at) {
-            Ok(i) => self.text_index[i].1,
-            Err(at) => {
-                let slot = self.texts.len() as u32;
-                self.texts.push(s.clone());
-                self.text_index.insert(at, (key, slot));
-                slot
+        if let Some(map) = &self.text_map {
+            if let Some(slot) = map.get(&key) {
+                return *slot;
+            }
+        } else {
+            if self.text_index.is_empty() && !self.texts.is_empty() {
+                self.reindex_texts();
+            }
+            if let Ok(i) = self.text_index.binary_search_by_key(&key, |(at, _)| *at) {
+                return self.text_index[i].1;
             }
         }
+        let slot = self.texts.len() as u32;
+        self.texts.push(s.clone());
+        if let Some(map) = &mut self.text_map {
+            map.insert(key, slot);
+        } else if let Err(at) = self.text_index.binary_search_by_key(&key, |(at, _)| *at) {
+            self.text_index.insert(at, (key, slot));
+            if self.text_index.len() > TEXT_INDEX_MAX {
+                self.text_map = Some(self.text_index.iter().map(|(k, v)| (*k, *v)).collect());
+                self.text_index = Vec::new();
+            }
+        }
+        slot
     }
 
     /// Rebuilds the pointer index from the band's text table. The table is kept after the band is
     /// finished; the index is only needed while cells are being added.
     fn reindex_texts(&mut self) {
+        if self.texts.len() > TEXT_INDEX_MAX {
+            self.text_map = Some(self.texts.iter().enumerate().map(|(i, t)| (Arc::as_ptr(t) as *const u8 as usize, i as u32)).collect());
+            self.text_index = Vec::new();
+            return;
+        }
         self.text_index = self.texts.iter().enumerate().map(|(i, t)| (Arc::as_ptr(t) as *const u8 as usize, i as u32)).collect();
         self.text_index.sort_unstable_by_key(|(at, _)| *at);
     }
@@ -1190,6 +1223,7 @@ impl Band {
     /// and every band would otherwise keep a 16-byte sorted entry per text forever.
     fn drop_text_index(&mut self) {
         self.text_index = Vec::new();
+        self.text_map = None;
     }
 
     /// The band's slot for `v`, adding it when new — `None` once the band holds more numbers than
@@ -6854,6 +6888,7 @@ mod page {
             number_slots: Vec::new(),
             texts,
             text_index: Vec::new(),
+            text_map: None,
             style_ids,
             tag: BandTag::default(),
         };

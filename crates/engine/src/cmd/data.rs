@@ -612,6 +612,10 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         let mut formulas_in_body = 0usize;
         let row_reader = (!by_cols).then(|| sh.cells.row_reader(body.start.col, body.end.col));
         let has_pictures = !sh.cell_pictures.is_empty();
+        // A sheet that has never held a formula cannot move a dependency-graph node, so the pattern
+        // book above has nothing to describe: skipping it drops two pushes per cell (sixteen
+        // million over a wide block), which is a tenth of the gather.
+        let track_shapes = sh.cells.has_formulas();
         if let Some(read) = &row_reader {
             // The read runs in **source** order and scatters each line into its destination slot.
             // A destination-order read of a permutation lands in a different band every line, and
@@ -631,10 +635,12 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     let mut cell = slot.take();
                     // What this lane held before the move, for the pattern comparison below.
                     let held = shape_identity(cell.as_ref());
-                    shapes.lane_before.push(held);
-                    // A formula that carries no shape has no identity a pointer can compare; the
-                    // block takes the cell-by-cell path.
-                    shapes.gave_up |= held == NO_SHAPE;
+                    if track_shapes {
+                        shapes.lane_before.push(held);
+                        // A formula that carries no shape has no identity a pointer can compare; the
+                        // block takes the cell-by-cell path.
+                        shapes.gave_up |= held == NO_SHAPE;
+                    }
                     let had_formula = cell.as_ref().is_some_and(|c| c.formula.is_some());
                     body_had_formula |= had_formula;
                     if had_formula {
@@ -650,17 +656,21 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                         // private shape with the `#REF!` Excel shows (SHAPE-SHARING.md §4.9).
                         match f.copied_to(line(src_i, k), line(dst_i, k)) {
                             Some(moved) => {
-                                shapes.lane_after.push(shape_of(&moved));
+                                if track_shapes {
+                                    shapes.lane_after.push(shape_of(&moved));
+                                }
                                 c.formula = Some(Arc::new(moved));
                             }
                             // The formula cannot be moved at all (its text does not parse): the
                             // cell keeps the one it has, which this path cannot describe.
                             None => {
                                 shapes.gave_up = true;
-                                shapes.lane_after.push(held);
+                                if track_shapes {
+                                    shapes.lane_after.push(held);
+                                }
                             }
                         }
-                    } else {
+                    } else if track_shapes {
                         shapes.lane_after.push(NO_FORMULA);
                     }
                     if has_pictures && let Some(picture) = sh.cell_pictures.get(&line(src_i, k)) {
@@ -670,7 +680,9 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                         *slot = cell;
                     }
                 }
-                shapes.end();
+                if track_shapes {
+                    shapes.end();
+                }
             }
         } else {
             // A column sort moves whole columns; there is no row reader, and the cells go in one

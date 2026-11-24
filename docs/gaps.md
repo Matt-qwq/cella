@@ -1350,21 +1350,31 @@ at all (today it reports every cell it touched).
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
-### 37. The command catalogue cannot finish: `formulas.createFromSelection` runs for 20+ minutes (P, found 11-24)
+### 37. The command catalogue could not finish: `formulas.createFromSelection` ran for 20+ minutes — **fixed 11-24**
 
-**What:** `cargo xtask bench-commands` priced 413 of the 422 commands and then stopped moving on
-`formulas.createFromSelection` with the whole used area (a million rows × 6 columns) as its range.
-Isolated, the same command alone did not finish in four minutes; the full run was killed after
-twenty. It is not one of the commands this round touched — the page it blocks is
-[performance-commands.md](performance-commands.md), which is therefore still round 47's.
+**Was:** `cargo xtask bench-commands` priced 413 of the 422 commands and then stopped moving on
+`formulas.createFromSelection` with the whole used area (a million rows × 6 columns) as its range;
+isolated, the command alone did not finish in four minutes. It is not one of the commands this round
+touched, and the page it blocked stayed at round 47's.
 
-**Why it matters:** a command that does not return in twenty minutes on the size the project
-benchmarks at is a hang a person can meet, and it blocks the catalogue from finishing.
+**Why:** "Create from Selection" with a left column of labels makes **one defined name per row**. The
+edit wrote them one at a time, and each write walked the whole growing name list:
 
-**Not diagnosed:** whether it creates one defined name per row (a million names), or whether some
-part of it is quadratic. **Estimate:** 1–2 h to diagnose, then it is its own knife.
+    for (name, f) in made {
+        cx.wb.names.retain(|x| !(x.name.eq_ignore_ascii_case(&name) && x.scope.is_none()));
+        ...
+    }
 
-**Evidence:** the run itself (`bench_commands --only=formulas.createFromSelection`).
+A million names is a million walks of a list growing to a million: quadratic, µs per name, hours.
+
+**Now:** the replacement is one pass — a `HashSet` of the names being written, one `retain` over the
+existing list, then the extend. Measured with the catalogue's own params: **698 ms** at a million
+rows (was: no answer), 54 ms at a hundred thousand. The document grows by **126.5 MB**, which is what
+a million defined names cost — that is the command's real price, not a bug.
+
+**The catalogue finishes**: 422 commands × 2 row counts × 2 scales, `docs/performance-commands.md`
+redrawn. Test: ten thousand rows beside a label column create ten thousand names, and asking again
+creates none.
 
 ## After beta
 
