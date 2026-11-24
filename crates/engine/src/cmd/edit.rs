@@ -1938,7 +1938,16 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
                 sh.cell_pictures.retain(|c, _| !r.contains(*c));
                 sh.cells = cella_model::CellStore::default();
             } else {
-                cells = cx.wb.sheet(sheet).map(|sh| sh.cells.iter_range(r).map(|(c, x)| (c, x.clone())).collect()).unwrap_or_default();
+                // A cell the clear would leave exactly as it is costs nothing to leave alone:
+                // "clear formats" over a block that carries none used to rewrite every one of its
+                // cells through the store. The scan is the store's flat one, so it builds no
+                // per-band vector either.
+                let target = (what == "formats").then_some(StyleId::DEFAULT);
+                cells = cx
+                    .wb
+                    .sheet(sheet)
+                    .map(|sh| sh.cells.iter_scan(r).filter(|(_, x)| target.is_none_or(|t| x.style != t)).collect())
+                    .unwrap_or_default();
                 // Report every stored cell we touch, even beyond a million coordinates in a sparse
                 // selection. Removed formula anchors must also reach calc so their spills disappear.
                 cx.changed.extend(cells.iter().map(|(c, _)| (sheet, *c)));

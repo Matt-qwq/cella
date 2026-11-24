@@ -1320,6 +1320,22 @@ clipboard — build the text when somebody reads it, the way Excel's delayed-ren
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
+### 36. `edit.clearFormats` reads every cell to learn its style (P, measured 11-24)
+
+**What:** `edit.clearFormats` over eight million cells took **3.45 s** on 8,000 rows × 1,000 columns
+(Excel 0.203 s, WPS 0.788 s) and now takes **1.72 s**: the clear skips every cell whose style is
+already the default, so a block that carries no formats is no longer rewritten cell by cell, and the
+scan is the store's flat one (no per-band vector).
+
+**What remains:** 215 ns a cell, and it is all in *reading* the style: the scan builds a whole `Cell`
+— value `Arc`, formula `Arc`, style — to throw all but the style away. Styles are run-length encoded
+in the store, so the honest fix is a run-level walk: "which column runs in this range hold a style
+other than the default" answers in O(runs), and a whole-row answer rewrites the row's run slice in
+one go. That also settles whether a formats-only change has to reach the recalculation's changed list
+at all (today it reports every cell it touched).
+
+**Evidence:** [performance-shapes.md](performance-shapes.md).
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
