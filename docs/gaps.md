@@ -1151,13 +1151,12 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   Windows GPU/driver reports (#120, #76) and the macOS close/open reports (#117, #166) still need
   the hardware they were reported on; they cannot be closed here.
 - **Estimate:** 12–16 h for this soak and its fixes; done.
-### 28. `edit.clearAll` took 9 seconds on a 1000-column sheet (P, measured 11-23, first cut 11-24)
+### 28. `edit.clearAll` took 9 seconds on a 1000-column sheet — **done 11-24** (1.2 ms)
 
 **What:** the shape ruler holds the cell count at eight million and moves it around. `edit.clearAll`
 over the used area cost **9.13 s** as 8,000 rows × 1,000 columns, **14 ms** as a hundred sheets of
 10,000 rows, and **1.14 s** as a million rows × 8 columns (the row catalogue's number for the same
-eight million cells). `edit.clearFormats` followed it (3.45 s wide) and `range.move` is worse
-(15.91 s on the wide shape against 3.73 s tall).
+eight million cells).
 
 *Correction, 11-24:* the ruler's first tall row said **1.0 ms**, and that was the ruler, not the
 product — the param generator skipped the optional `range` on that shape, so the command cleared the
@@ -1171,14 +1170,19 @@ after Subtotal.
 **First cut (11-24):** the cost was the store's per-cell removal. Every take shifts the band's row
 side tables, so a row of a thousand cells shifted the same 64-row band a thousand times — quadratic
 in a row's width, and the reason the wide shape was eight times the tall one. Clear All over the whole
-used area now reports every removed address in one walk and replaces the store instead of emptying it
-(`crates/engine/src/cmd/edit.rs`): **9.13 s → 1.40 s** on the wide shape, 1.14 s → **311 ms** on the
-tall one, 14 ms → **4.7 ms** on a hundred sheets. `cargo test -p cella-engine --lib -- clear` passes.
+used area now replaces the store instead of emptying it (`crates/engine/src/cmd/edit.rs`):
+**9.13 s → 1.40 s** on the wide shape, 1.14 s → **311 ms** on the tall one, 14 ms → **4.7 ms**.
 
-**What remains:** the 1.40 s is now the enumeration of eight million addresses and the
-recalculation's marking of them, not the removal; a coarse "this sheet changed everywhere" signal for
-the recalc would take the rest. `edit.clearFormats` (3.45 s wide) keeps its cells and is untouched,
-and `range.move` (15.91 s) is its own knife. **Estimate:** 3–4 h for the recalc signal.
+**Second cut (11-24):** the remaining 1.40 s was not the clear at all — it was building the eight
+million addresses the recalculation would be told about, and the recalculation then marking them one
+by one. Nothing survives a clear of the whole used area, so the command now says so in one word: the
+commit takes the structural path and rebuilds the graph instead of being handed a list. **1.40 s →
+1.2 ms** wide, 311 ms → **7.4 ms** tall, 4.7 ms → **3.4 ms** on a hundred sheets.
+
+**The trade:** a workbook whose *other* sheets hold many formulas now pays a full recalculation after
+such a clear, where before it paid only for the dependents of the cleared cells. That is the honest
+reading of "this sheet is empty now", and the case it costs is a workbook big enough that its other
+sheets' formulas are the work.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md) and
 [performance.md](performance.md) §"Shape: rows are not the only axis".

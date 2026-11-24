@@ -1930,13 +1930,13 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
             // against 14 ms for a hundred sheets of the same eight million cells.
             let mut cells: Vec<(CellRef, Cell)> = Vec::new();
             if what == "all" && r == used {
-                // Report every stored cell we touch, even beyond a million coordinates in a sparse
-                // selection. Removed formula anchors must also reach calc so their spills disappear.
-                let keys = cx.wb.sheet(sheet).map(|sh| sh.cells.iter_range(r).map(|(c, _)| (sheet, c)).collect::<Vec<_>>());
-                cx.changed.extend(keys.unwrap_or_default());
+                // Nothing survives, so the recalculation is told the sheet changed shape rather
+                // than handed one address per stored cell: building that list was eight million
+                // entries, and it walked the store to find them.
                 let sh = cx.sheet_mut(sheet)?;
                 sh.cell_pictures.retain(|c, _| !r.contains(*c));
                 sh.cells = cella_model::CellStore::default();
+                cx.structural = true;
             } else {
                 // A cell the clear would leave exactly as it is costs nothing to leave alone:
                 // "clear formats" over a block that carries none used to rewrite every one of its
