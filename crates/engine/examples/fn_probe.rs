@@ -66,6 +66,15 @@ const CALLS: &[(&str, &str)] = &[
     ("VLOOKUP middle", "=VLOOKUP(500000,A2:B{last},2,FALSE)"),
     ("XLOOKUP middle", "=XLOOKUP(500000,A2:A{last},B2:B{last})"),
     ("XLOOKUP text key", "=XLOOKUP(\"Item 500000\",D2:D{last},A2:A{last})"),
+    // The LAMBDA helpers: what a call costs before the body does anything (`LAMBDA(x,1)`), what a
+    // row's own array costs (`x`), and what a worksheet function in the body costs (`SUM(x)`).
+    ("MAP constant", "=MAP(A2:A{last},LAMBDA(x,1))"),
+    ("MAP multiply", "=MAP(A2:A{last},LAMBDA(x,x*2))"),
+    ("MAP sum of one", "=MAP(A2:A{last},LAMBDA(x,SUM(x)))"),
+    ("BYROW constant", "=BYROW(A2:A{last},LAMBDA(x,1))"),
+    ("BYROW identity", "=BYROW(A2:A{last},LAMBDA(x,x))"),
+    ("BYROW sum", "=BYROW(A2:A{last},LAMBDA(x,SUM(x)))"),
+    ("BYROW sum of 3", "=BYROW(A2:C{last},LAMBDA(x,SUM(x)))"),
 ];
 
 fn main() -> ExitCode {

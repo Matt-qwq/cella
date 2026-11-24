@@ -494,18 +494,22 @@ impl<'h> Evaluator<'h> {
                 other => return Err(Ev::V(other)),
             }
         }
-        let (Some(sum), Some(count)) = (cella_functions::lookup("SUM"), cella_functions::lookup("COUNT")) else {
-            return Err(err(CellError::Name));
+        // Each kind needs the function it adds by, and nothing else: `SUM` and `AVERAGE` add with
+        // `SUM`, `COUNT` counts with `COUNT`. Looking both up for every argument was two name
+        // lookups a call — a million of them for `MAP(A1:A1000000, LAMBDA(x, SUM(x)))`.
+        let mut call_one = |name: &str, value: &Value| -> Result<Value, Ev> {
+            let Some(f) = cella_functions::lookup(name) else { return Err(err(CellError::Name)) };
+            let args = [Arg { value: value.clone(), from_ref }];
+            Ok(cella_functions::call(f, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }))
         };
-        let args = [Arg { value, from_ref }];
         if kind != Agg::Count {
-            match cella_functions::call(sum, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
+            match call_one("SUM", &value)? {
                 Value::Number(n) => acc.sum += n,
                 other => return Err(Ev::V(other)),
             }
         }
         if kind != Agg::Sum {
-            match cella_functions::call(count, &args, &mut FnCtx { ev: self, criteria: None, lambda: None }) {
+            match call_one("COUNT", &value)? {
                 Value::Number(n) => acc.count = acc.count.saturating_add(n as u64),
                 other => return Err(Ev::V(other)),
             }
@@ -545,10 +549,47 @@ impl<'h> Evaluator<'h> {
             None => return err(CellError::Calc),
         };
         self.calls += 1;
-        let saved = std::mem::replace(&mut self.env, l.env.clone());
-        self.env.extend(bound);
+        let r = if l.env.is_empty() {
+            // The common case — a literal `LAMBDA(x, …)` captured nothing — keeps the environment
+            // it has: swapping it out dropped the vector (and its capacity) every call, so a
+            // million-call helper paid a malloc and a free a call for a vector it then rebuilt.
+            let base = self.env.len();
+            self.env.extend(bound);
+            let r = self.eval(&l.body);
+            self.env.truncate(base);
+            r
+        } else {
+            let saved = std::mem::replace(&mut self.env, l.env.clone());
+            self.env.extend(bound);
+            let r = self.eval(&l.body);
+            self.env = saved;
+            r
+        };
+        self.calls -= 1;
+        r
+    }
+
+    /// [`call_lambda_values`](Self::call_lambda_values) for the helpers that call a one-parameter
+    /// LAMBDA once per row or element (`BYROW`, `BYCOL`, `MAP`): the bound argument goes straight
+    /// into the environment instead of through a one-entry vector and its allocation.
+    pub(super) fn call_lambda_one(&mut self, l: &Lambda, param: &str, arg: Ev) -> Ev {
+        if self.calls >= MAX_LAMBDA_CALLS {
+            return err(CellError::Num);
+        }
+        self.fuel = match self.fuel.checked_sub(1) {
+            Some(f) => f,
+            None => return err(CellError::Calc),
+        };
+        self.calls += 1;
+        // A captured environment is only reachable through `call_lambda_values`, which replaces the
+        // environment as lexical scope requires; these helpers take a lambda a cell wrote inline.
+        let base = self.env.len();
+        if !l.env.is_empty() {
+            self.env.extend(l.env.iter().cloned());
+        }
+        self.env.push((param.to_string(), arg));
         let r = self.eval(&l.body);
-        self.env = saved;
+        self.env.truncate(base);
         self.calls -= 1;
         r
     }
@@ -622,6 +663,19 @@ impl<'h> Evaluator<'h> {
                     return err(CellError::Value);
                 }
                 let mut out = Vec::with_capacity(n);
+                if arrays.len() == 1 && l.params.len() == 1 {
+                    // One array, one parameter — the shape `MAP(A1:A1000000, LAMBDA(x, …))` has:
+                    // the element goes straight into the environment, with no one-entry vector.
+                    let (p, a) = (&l.params[0], &arrays[0]);
+                    for r in 0..rows {
+                        for c in 0..cols {
+                            let v = self.call_lambda_one(&l, p, Ev::V(a.get_broadcast(r, c)));
+                            let Some(one) = single(self.deref(v)) else { return err(CellError::Calc) };
+                            out.push(one);
+                        }
+                    }
+                    return Ev::V(Array::new(rows, cols, out).map(Value::from).unwrap_or(Value::Error(CellError::Calc)));
+                }
                 for r in 0..rows {
                     for c in 0..cols {
                         let bound = l.params.iter().zip(arrays.iter()).map(|(p, a)| (p.clone(), Ev::V(a.get_broadcast(r, c)))).collect();
@@ -678,7 +732,9 @@ impl<'h> Evaluator<'h> {
                         (0..arr.rows).map(|r| arr.get(r, i).cloned().unwrap_or_default()).collect()
                     };
                     let a = if by_row { Array::row(slice) } else { Array::column(slice) };
-                    let r = self.call_lambda_values(&l, vec![(p.clone(), Ev::V(a.into()))]);
+                    // The row's array goes in as it is: a one-entry bound vector here costs a
+                    // million allocations for a million rows.
+                    let r = self.call_lambda_one(&l, &p, Ev::V(a.into()));
                     let Some(one) = single(self.deref(r)) else { return err(CellError::Calc) };
                     out.push(one);
                 }
