@@ -1472,6 +1472,28 @@ impl Band {
         }
     }
 
+    /// What a packed walk hands out for the `i`th stored cell of a row, given its kind.
+    ///
+    /// `None` when the cell holds no value at all — a styled blank, which a walk never hands out —
+    /// `Some(None)` for a cell whose value the evaluator owns (an array), and the value otherwise.
+    /// Shared by the row walk and the one-column walk so the two cannot disagree about what a kind
+    /// means.
+    fn packed_at<'a>(&'a self, row: &BandRow, i: usize, kind: u8) -> Option<Option<Packed<'a>>> {
+        let payload = row.payload_at(self, i);
+        Some(match kind {
+            // An empty slot is not a stored value (no value, a style at most), and `iter_range`
+            // does not hand one out either.
+            EMPTY => return None,
+            NUMBER => Some(Packed::Number(self.number(payload))),
+            NUMBER_WIDE => Some(Packed::Number(f64::from_bits(row.wide_at(self, i)))),
+            TEXT => self.texts.get(payload as usize).map(|t| Packed::Text(t.as_ref())),
+            TEXT_WIDE => self.texts.get(row.wide_at(self, i) as usize).map(|t| Packed::Text(t.as_ref())),
+            BOOL => Some(Packed::Bool(payload != 0)),
+            ERROR => Some(Packed::Error(*ERRORS.get(payload as usize).unwrap_or(&CellError::Value))),
+            _ => None,
+        })
+    }
+
     /// Rebuilds the `Cell` at `col` from the packed row.
     fn cell_at(&self, row: &BandRow, i: usize, col: u32) -> Cell {
         self.cell_of(row, i, col, row.kind_at(self, i), row.style_at(self, i))
@@ -4367,7 +4389,61 @@ impl CellStore {
         self.visit_packed_impl(r, true, f)
     }
 
+    /// Calls `f` on the stored cell of one column in each row of `r` that holds one, in row order.
+    ///
+    /// One column is the shape a whole-column formula takes — `SUM(A:A)`, a lookup's answer column,
+    /// `MATCH`'s key — and the general row walk pays its setup once **a cell** for it: 16.9 ns a cell
+    /// against 4.4 for a row of eight, measured on a million rows × eight columns
+    /// (`crates/model/examples/read_probe.rs`). Here the row walk's invariants are hoisted: a row
+    /// costs the band lookup (once a band), the row's bit test, its rank and the payload.
+    ///
+    /// Identity column maps only: a mapped column is a different physical column per logical one,
+    /// and the general walk already resolves that. `r` must be one column wide.
+    fn visit_column_cells(&self, r: RangeRef, f: &mut dyn FnMut(&Band, &BandRow, usize, CellRef) -> bool) -> bool {
+        let col = r.start.col;
+        let mut current: Option<(u32, Option<Arc<Band>>)> = None;
+        for rows in self.row_map.segments_in(r.start.row, r.end.row) {
+            for offset in 0..rows.len {
+                let physical = rows.physical.saturating_add(offset);
+                let at_row = rows.logical.saturating_add(offset);
+                if at_row < r.start.row || at_row > r.end.row {
+                    continue;
+                }
+                let key = physical / BAND;
+                if current.as_ref().is_none_or(|(k, _)| *k != key) {
+                    current = Some((key, self.band_arc(key)));
+                }
+                let Some(band) = current.as_ref().and_then(|(_, band)| band.as_ref()) else { continue };
+                let Some(row) = band.row(physical % BAND) else { continue };
+                let Some(i) = row.index_of(band, col) else { continue };
+                if !f(band, row, i, CellRef::new(at_row, col)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     fn visit_packed_impl(&self, r: RangeRef, settled: bool, f: &mut dyn FnMut(CellRef, Option<Packed<'_>>) -> bool) -> bool {
+        // One column with no column edits between it and the store: the peeled walk (see
+        // [`visit_column_cells`](Self::visit_column_cells)), which is the shape a whole-column
+        // formula takes.
+        if self.col_map.identity && r.start.col == r.end.col {
+            return self.visit_column_cells(r, &mut |band, row, i, at| {
+                let kind = row.kind_at(band, i);
+                // A formula hands out `None` — its value is the evaluator's — and that test comes
+                // first: one whose cached value is blank has no stored value to look up.
+                let handed = if !settled && row.formula_at(at.col).is_some() {
+                    None
+                } else {
+                    match band.packed_at(row, i, kind) {
+                        Some(packed) => packed,
+                        None => return true,
+                    }
+                };
+                f(at, handed)
+            });
+        }
         let col_runs = self.col_map.segments_in(r.start.col, r.end.col);
         // A sheet with many column edits would repeat the row walk once per column run; past a
         // handful of runs build each cell once instead, so the work stays bounded by the range.
@@ -4448,21 +4524,14 @@ impl CellStore {
                     break 'words;
                 }
                 let has_formula = formulas.is_some_and(|f| f.binary_search_by_key(&col, |(c, _)| *c).is_ok());
-                let payload = row.payload_at(band, index);
+                // A formula hands out `None` (its value is the evaluator's), and that comes first:
+                // one whose cached value is blank has no stored value to look up.
                 let packed = if has_formula && !settled {
                     None
                 } else {
-                    match kinds.at(index) as u8 {
-                        // An empty slot is not a stored value (no value, a style at most),
-                        // and `iter_range` does not hand one out either.
-                        EMPTY => continue,
-                        NUMBER => Some(Packed::Number(band.number(payload))),
-                        NUMBER_WIDE => Some(Packed::Number(f64::from_bits(row.wide_at(band, index)))),
-                        TEXT => band.texts.get(payload as usize).map(|t| Packed::Text(t)),
-                        TEXT_WIDE => band.texts.get(row.wide_at(band, index) as usize).map(|t| Packed::Text(t)),
-                        BOOL => Some(Packed::Bool(payload != 0)),
-                        ERROR => Some(Packed::Error(*ERRORS.get(payload as usize).unwrap_or(&CellError::Value))),
-                        _ => None,
+                    match band.packed_at(row, index, kinds.at(index) as u8) {
+                        Some(packed) => packed,
+                        None => continue,
                     }
                 };
                 if !f(CellRef::new(at_row, logical.saturating_add(col - first)), packed) {
@@ -4508,6 +4577,18 @@ impl CellStore {
     /// 116 ms for a million-cell column against 78 ms of value reads alone (measured 2026-11-22).
     /// Returns false when `f` asked to stop.
     pub fn visit_values(&self, r: RangeRef, f: &mut dyn FnMut(CellRef, Value, bool) -> bool) -> bool {
+        // One column with no column edits: the peeled walk, as `visit_packed` takes for itself
+        // (see [`visit_column_cells`](Self::visit_column_cells)). This is the walk the block
+        // builder pays for every function argument that needs its values in hand.
+        if self.col_map.identity && r.start.col == r.end.col {
+            return self.visit_column_cells(r, &mut |band, row, i, at| {
+                let kind = row.kind_at(band, i);
+                // An empty slot is still handed out, as a styled blank: the block builder wants its
+                // formula flag even when the cell it replaced held no value.
+                let value = band.value_of(row, i, at.col, kind);
+                f(at, value, row.formula_at(at.col).is_some())
+            });
+        }
         let col_segments = self.col_map.segments_in(r.start.col, r.end.col);
         for segment in self.row_map.segments_in(r.start.row, r.end.row) {
             if segment.len == 0 {

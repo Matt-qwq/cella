@@ -31,7 +31,7 @@ impl Agg {
 }
 
 /// What a folded aggregate carries from one value to the next.
-#[derive(Default)]
+#[derive(Clone, Default)]
 /// The running total of an aggregate. A host folds a block into it with `add_packed`.
 pub struct Acc {
     pub(super) sum: f64,

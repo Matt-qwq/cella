@@ -226,14 +226,20 @@ impl<'h> Evaluator<'h> {
         }
     }
 
-    /// The whole-column exact text lookup, as a reference to the matched row of the return column:
+    /// The whole-column exact lookup, as a reference to the matched row of the return column:
     /// `Some(Err(_))` when the shape applies and the answer is an error, `None` when the shape does
     /// not apply and the general path below must run. Never evaluates the block.
-    fn xlookup_text_column(&mut self, args: &[Expr]) -> Option<Ev> {
-        let [Expr::Text(needle), _, _] = args else { return None };
-        if needle.is_empty() || needle.contains(['*', '?', '~']) {
+    fn xlookup_scalar_column(&mut self, args: &[Expr]) -> Option<Ev> {
+        // The needle has to be a literal: a pattern (`*`, `?`, `~`) is not a key, and evaluating an
+        // argument here would run arguments out of order with the general path.
+        if args.len() != 3 {
             return None;
         }
+        let key = match args.first()? {
+            Expr::Text(t) if !t.is_empty() && !t.contains(['*', '?', '~']) => Value::Text(Arc::clone(t)),
+            Expr::Number(n) => Value::Number(*n),
+            _ => return None,
+        };
         let (Ev::R(look), Ev::R(ret)) = (self.eval(&args[1]), self.eval(&args[2])) else { return None };
         let ([l], [r]) = (look.as_slice(), ret.as_slice()) else { return None };
         let (l, r) = (*l, *r);
@@ -245,7 +251,7 @@ impl<'h> Evaluator<'h> {
         if self.work < work {
             return None;
         }
-        let found = self.host.first_text_in_column(l.sheet, l.range, needle)?;
+        let found = self.host.first_match_in_column(l.sheet, l.range, &key)?;
         if !self.spend(work) {
             return Some(err(CellError::Calc));
         }
@@ -255,6 +261,109 @@ impl<'h> Evaluator<'h> {
             }
             None => err(CellError::NA),
         })
+    }
+
+    /// `MATCH(key, column, 0)`: the position of the first stored cell an exact match compares equal,
+    /// read as a scan that stops at the hit.
+    ///
+    /// The general path builds the whole column into an `Array` first — a million `Value`s, 25 ms at
+    /// a million rows — and then finds the key on the first row. Excel answers it in microseconds,
+    /// and so does this: the block is never materialised, and a miss costs one pass over the stored
+    /// cells instead of the array plus the pass.
+    ///
+    /// `None` when the shape is not this one (a wildcard key, a horizontal block, an approximate
+    /// match type, a block holding formulas), so the library answers as it always did.
+    pub(super) fn match_exact_column(&mut self, args: &[Expr]) -> Option<Ev> {
+        let [key, block, Expr::Number(match_type)] = args else { return None };
+        if *match_type != 0.0 {
+            return None;
+        }
+        let key = self.exact_key(key)?;
+        let (sheet, range) = self.one_column(block)?;
+        if range.height() <= 1 {
+            return None;
+        }
+        let rows = u64::from(range.height());
+        let work = rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let found = self.host.first_match_in_column(sheet, range, &key)?;
+        if !self.spend(work) {
+            return Some(err(CellError::Calc));
+        }
+        Some(match found {
+            Some(row) => Ev::V(Value::number(f64::from(row.saturating_sub(range.start.row).saturating_add(1)))),
+            None => err(CellError::NA),
+        })
+    }
+
+    /// `VLOOKUP(key, table, n, FALSE)`: a reference to the found row's `n`th table column, found by
+    /// scanning the table's first column and never building the table.
+    ///
+    /// This is the shape a report writes ten thousand times — `VLOOKUP(A2, Codes!A:B, 2, FALSE)` —
+    /// and the general path pays for the table twice over (two million `Value`s for `A:B` at a
+    /// million rows, 38 ms) to find a key in the first hundred rows. Returning a *reference* is what
+    /// makes it cheap and what `XLOOKUP`'s narrow path already does: the cell is read when its value
+    /// is wanted, and a formula there stays a formula.
+    pub(super) fn vlookup_exact_column(&mut self, args: &[Expr]) -> Option<Ev> {
+        let [key, table, index, exact] = args else { return None };
+        // Only an exact match — `FALSE` or `0` — and a literal column, so the answer is one cell.
+        if !matches!(exact, Expr::Bool(false) | Expr::Number(0.0)) {
+            return None;
+        }
+        let Expr::Number(index) = index else { return None };
+        if *index < 1.0 || index.fract() != 0.0 || *index > f64::from(cella_core::MAX_COLS) {
+            return None;
+        }
+        let col = *index as u32 - 1;
+        let key = self.exact_key(key)?;
+        let Ev::R(areas) = self.eval(table) else { return None };
+        let [t] = areas.as_slice() else { return None };
+        let (sheet, t) = (t.sheet, t.range);
+        // The key column is the table's first one; a table narrower than the column asked for is
+        // the general path's `#REF!` to answer.
+        if t.width() <= col || t.height() <= 1 {
+            return None;
+        }
+        let key_column = RangeRef::new(t.start, CellRef::new(t.end.row, t.start.col));
+        let rows = u64::from(key_column.height());
+        let work = rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let found = self.host.first_match_in_column(sheet, key_column, &key)?;
+        if !self.spend(work) {
+            return Some(err(CellError::Calc));
+        }
+        Some(match found {
+            Some(row) => {
+                // The value, not a reference: the library's answer for a table cell is its value,
+                // and a blank there reads the way the general path reads it.
+                let at = CellRef::new(row, t.start.col.saturating_add(col));
+                Ev::V(self.host.cell_value(sheet, at))
+            }
+            None => err(CellError::NA),
+        })
+    }
+
+    /// The scalar an exact lookup can compare in one pass: a number, or text that holds no wildcard
+    /// (`*`, `?`, `~` — those are patterns the library expands) and is not empty (`MATCH("", A:A, 0)`
+    /// matches a *blank* cell, which no stored cell is). `None` for anything else.
+    fn exact_key(&mut self, e: &Expr) -> Option<Value> {
+        match self.value(e) {
+            Value::Number(n) => Some(Value::Number(n)),
+            Value::Text(t) if !t.is_empty() && !t.contains(['*', '?', '~']) => Some(Value::Text(t)),
+            _ => None,
+        }
+    }
+
+    /// The one-column block an exact scan needs: its sheet and range, `None` when the expression is
+    /// not a plain one-column reference.
+    fn one_column(&mut self, e: &Expr) -> Option<(usize, RangeRef)> {
+        let Ev::R(areas) = self.eval(e) else { return None };
+        let [a] = areas.as_slice() else { return None };
+        (a.range.width() == 1).then_some((a.sheet, a.range))
     }
 
     /// XLOOKUP whose result range is a reference returns a reference, as in Excel, so that it can
@@ -267,7 +376,7 @@ impl<'h> Evaluator<'h> {
         // below pays — 75 ms to build a million `Value`s and 45 ms to scan them, to compare the
         // first pair (2026-11-23). The stored cells answer it in one pass, case-insensitively, the
         // way an exact lookup compares text.
-        if let Some(found) = self.xlookup_text_column(args) {
+        if let Some(found) = self.xlookup_scalar_column(args) {
             return found;
         }
         if args.len() == 3

@@ -157,3 +157,98 @@ fn a_long_column_answers_like_the_general_path() {
         }
     }
 }
+
+/// `MATCH`'s two spellings: the literal key (the scan over the stored cells) and the key in `Z1`
+/// (the general path, which builds the column into an array first). Every case must answer alike.
+#[test]
+fn match_exact_answers_like_the_general_path() {
+    let mut s = sheet();
+    let mut keys = ["Alpha", "alpha", "ALPHA", "beta", "Gamma", "Delta", "blankrow", "nowhere"].to_vec();
+    for key in keys.drain(..) {
+        set(&mut s, "Z1", key);
+        set(&mut s, "C1", &format!("=MATCH(\"{key}\",A1:A10,0)"));
+        set(&mut s, "C2", "=MATCH(Z1,A1:A10,0)");
+        assert_eq!(value(&s, "C1"), value(&s, "C2"), "key {key}");
+    }
+    set(&mut s, "C1", "=MATCH(\"Delta\",A1:A10,0)");
+    assert_eq!(value(&s, "C1"), Value::Number(8.0), "Delta is the eighth row");
+    // A number key finds a number and never a text that spells the same digits: A7 holds the number
+    // 7 (typed as `7`), A12 the text `7` (typed with a quote).
+    set(&mut s, "A12", "'7");
+    set(&mut s, "C1", "=MATCH(7,A1:A12,0)");
+    assert_eq!(value(&s, "C1"), Value::Number(7.0), "the first number 7");
+    set(&mut s, "Z1", "'7");
+    set(&mut s, "C2", "=MATCH(\"7\",A1:A12,0)");
+    set(&mut s, "C3", "=MATCH(Z1,A1:A12,0)");
+    assert_eq!(value(&s, "C2"), value(&s, "C3"), "a text key compares as text");
+    assert_eq!(value(&s, "C2"), Value::Number(12.0), "the text 7 is the twelfth row");
+    // A number key over a numeric column still works, and its position is the range's own.
+    set(&mut s, "Z1", "70");
+    set(&mut s, "C2", "=MATCH(Z1,B1:B10,0)");
+    set(&mut s, "C3", "=MATCH(70,B1:B10,0)");
+    assert_eq!(value(&s, "C2"), value(&s, "C3"));
+    assert_eq!(value(&s, "C3"), Value::Number(7.0), "B7 holds 70");
+    // A wildcard key is a pattern, not a key: both spellings let the library expand it.
+    set(&mut s, "Z1", "Al*");
+    set(&mut s, "C1", "=MATCH(\"Al*\",A1:A10,0)");
+    set(&mut s, "C2", "=MATCH(Z1,A1:A10,0)");
+    assert_eq!(value(&s, "C1"), value(&s, "C2"));
+    assert_eq!(value(&s, "C1"), Value::Number(1.0), "the pattern matches Alpha");
+    // An approximate match type is not the narrow shape.
+    set(&mut s, "Z1", "Alpha");
+    set(&mut s, "C1", "=MATCH(\"Alpha\",A1:A10,1)");
+    set(&mut s, "C2", "=MATCH(Z1,A1:A10,1)");
+    assert_eq!(value(&s, "C1"), value(&s, "C2"));
+}
+
+/// `VLOOKUP`'s two spellings, over a table whose key column is text in A and values in B.
+#[test]
+fn vlookup_exact_answers_like_the_general_path() {
+    let mut s = sheet();
+    for (key, expect) in [("Alpha", Some(10.0)), ("alpha", Some(10.0)), ("beta", Some(20.0)), ("Gamma", Some(60.0)), ("nowhere", None)] {
+        set(&mut s, "Z1", key);
+        set(&mut s, "C1", &format!("=VLOOKUP(\"{key}\",A1:B8,2,FALSE)"));
+        set(&mut s, "C2", "=VLOOKUP(Z1,A1:B8,2,FALSE)");
+        assert_eq!(value(&s, "C1"), value(&s, "C2"), "key {key}");
+        match expect {
+            Some(n) => assert_eq!(value(&s, "C1"), Value::Number(n), "key {key}"),
+            None => assert_eq!(value(&s, "C1"), Value::Error(cella_core::CellError::NA), "key {key}"),
+        }
+    }
+    // The key column itself, a column past the table (#REF!), and a blank return cell (A4's row).
+    for (col, key) in [("1", "beta"), ("3", "beta"), ("2", "blankrow")] {
+        set(&mut s, "Z1", key);
+        set(&mut s, "C1", &format!("=VLOOKUP(\"{key}\",A1:B8,{col},FALSE)"));
+        set(&mut s, "C2", &format!("=VLOOKUP(Z1,A1:B8,{col},FALSE)"));
+        assert_eq!(value(&s, "C1"), value(&s, "C2"), "key {key} column {col}");
+    }
+    // An approximate match (no fourth argument) and a `TRUE` one stay on the general path.
+    set(&mut s, "Z1", "beta");
+    set(&mut s, "C1", "=VLOOKUP(\"beta\",A1:B8,2)");
+    set(&mut s, "C2", "=VLOOKUP(Z1,A1:B8,2)");
+    assert_eq!(value(&s, "C1"), value(&s, "C2"));
+    set(&mut s, "C3", "=VLOOKUP(\"beta\",A1:B8,2,TRUE)");
+    set(&mut s, "C4", "=VLOOKUP(Z1,A1:B8,2,TRUE)");
+    assert_eq!(value(&s, "C3"), value(&s, "C4"));
+}
+
+/// A numeric key column: the scan compares numbers by value and never matches a text that spells
+/// the same digits.
+#[test]
+fn vlookup_exact_on_a_numeric_key_column_answers_like_the_general_path() {
+    let mut s = workbook();
+    for i in 0..5_000u32 {
+        set(&mut s, &format!("A{}", i + 1), &format!("{}", i * 3));
+        set(&mut s, &format!("B{}", i + 1), &format!("row {i}"));
+    }
+    for (needle, expect) in [("0", Some("row 0")), ("4321", None), ("4320", Some("row 1440")), ("15000", None)] {
+        set(&mut s, "Z1", needle);
+        set(&mut s, "C1", &format!("=VLOOKUP({needle},A1:B5000,2,FALSE)"));
+        set(&mut s, "C2", "=VLOOKUP(Z1,A1:B5000,2,FALSE)");
+        assert_eq!(value(&s, "C1"), value(&s, "C2"), "needle {needle}");
+        match expect {
+            Some(text) => assert_eq!(value(&s, "C1"), Value::text(text), "needle {needle}"),
+            None => assert_eq!(value(&s, "C1"), Value::Error(cella_core::CellError::NA), "needle {needle}"),
+        }
+    }
+}

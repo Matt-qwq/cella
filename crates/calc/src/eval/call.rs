@@ -215,6 +215,12 @@ impl<'h> Evaluator<'h> {
             "INDIRECT" => self.indirect(args),
             "GETPIVOTDATA" => self.getpivotdata(args),
             "INDEX" => self.index(args),
+            // The two exact lookups answer from a scan of the key column when their shape allows it
+            // (a literal or scalar key, one column, an exact match): the general path builds the
+            // whole block into an `Array` first, which is 25-40 ms at a million rows to read the
+            // first hundred — `eval/reference_fns.rs`.
+            "MATCH" => self.match_exact_column(args).unwrap_or_else(|| self.builtin("MATCH", args)),
+            "VLOOKUP" => self.vlookup_exact_column(args).unwrap_or_else(|| self.builtin("VLOOKUP", args)),
             "XLOOKUP" => self.xlookup(args),
             "CELL" => self.cell_info(args),
             "MEASURE" => self.measure(args),

@@ -1544,12 +1544,37 @@ impl Host for PassHost<'_> {
         if self.spill_index.has_sheet(sheet) || sh.spill.range(range.start..=range.end).any(|(c, _)| range.contains(*c)) {
             return None;
         }
-        let owned = sh.cells.has_owned_cells(range);
+        // The packed fold first, without asking the block whether it owns a cell: a block of values
+        // hands out every cell and finishes here, and the first cell whose value the evaluator owns
+        // (a formula, an array) sends the fold to the paths below with the trial's total thrown
+        // away. Asking `has_owned_cells` up front instead walks the whole block to answer what this
+        // walk finds in its first owned cell — 6-10 ms a million rows on a column of values, which
+        // is the block every `SUM(A:A)` over data is.
+        let mut trial = acc.clone();
+        let mut error = None;
+        let mut saw_owned = false;
+        sh.cells.visit_packed(range, &mut |_, packed| match packed {
+            Some(v) => match trial.add_packed(kind, v) {
+                Ok(()) => true,
+                Err(e) => {
+                    error = Some(e);
+                    false
+                }
+            },
+            None => {
+                saw_owned = true;
+                false
+            }
+        });
+        if !saw_owned {
+            *acc = trial;
+            return Some(error.map_or(Ok(()), Err));
+        }
         // A settled block of one column is the shape of a whole-column SUM over formulas: the
         // formulas hold the values the last calculation left, this pass owes none of them, so the
         // fold reads them packed — no prepass, no `Sheet::value` a cell (139 ms → 55 ms at 1M).
         let settled_owned =
-            owned && kind == crate::eval::Agg::Sum && range.width() == 1 && range.height() >= 4096 && !self.iterate && self.settled_in(sheet, range);
+            kind == crate::eval::Agg::Sum && range.width() == 1 && range.height() >= 4096 && !self.iterate && self.settled_in(sheet, range);
         if settled_owned {
             let mut needs_host = false;
             let mut error = None;
@@ -1568,7 +1593,7 @@ impl Host for PassHost<'_> {
             });
             return (!needs_host).then_some(error.map_or(Ok(()), Err));
         }
-        if owned {
+        {
             // On a large formula column, avoid rebuilding its cells twice or staging formula
             // coordinates. Keep the small/multi-column and iterative cases on the old path.
             if kind != crate::eval::Agg::Sum || range.width() != 1 || range.height() < 4096 || self.iterate {
@@ -1590,18 +1615,15 @@ impl Host for PassHost<'_> {
                 return None;
             }
         }
-        let mut needs_host = false;
         let mut error = None;
         sh.cells.visit_packed(range, &mut |at, packed| {
             let result = match packed {
                 Some(v) => acc.add_packed(kind, v),
-                // Clean formulas read their cached workbook value; stored arrays and empty values
-                // are ignored by add_cell, as in the original fold. The spill check is now final.
-                None if owned => acc.add_cell(kind, &self.cell_value(sheet, at)),
-                None => {
-                    needs_host = true;
-                    return false;
-                }
+                // The trial fold stopped at a cell whose value the evaluator owns, so a formula or
+                // an array reads through the host — clean formulas read their cached workbook
+                // value, and stored arrays and empty values are ignored by `add_cell`, as in the
+                // original fold. A spill would have declined above.
+                None => acc.add_cell(kind, &self.cell_value(sheet, at)),
             };
             match result {
                 Ok(()) => true,
@@ -1611,7 +1633,7 @@ impl Host for PassHost<'_> {
                 }
             }
         });
-        (!needs_host).then_some(error.map_or(Ok(()), Err))
+        Some(error.map_or(Ok(()), Err))
     }
     fn sumifs_numeric_columns(
         &self,
@@ -1727,7 +1749,7 @@ impl Host for PassHost<'_> {
         complete.then(|| error.map_or_else(|| Value::number(sum), Value::Error))
     }
 
-    fn first_text_in_column(&mut self, sheet: usize, range: RangeRef, needle: &str) -> Option<Option<u32>> {
+    fn first_match_in_column(&mut self, sheet: usize, range: RangeRef, key: &cella_core::Value) -> Option<Option<u32>> {
         use cella_model::Packed;
 
         let sh = self.wb.sheet(sheet)?;
@@ -1736,22 +1758,40 @@ impl Host for PassHost<'_> {
         if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill.is_empty() || range.width() != 1 {
             return None;
         }
+        // Only the two kinds an exact lookup compares by value here. A boolean key, an error key or
+        // an empty one (`MATCH("", …)` matches a blank, which no stored cell is) goes the general way.
+        let text_key = match key {
+            cella_core::Value::Text(t) => Some(t.as_ref()),
+            _ => None,
+        };
+        let number_key = match key {
+            cella_core::Value::Number(n) => Some(*n),
+            _ => None,
+        };
+        if text_key.is_none() && number_key.is_none() {
+            return None;
+        }
         let mut found = None;
         let mut complete = true;
         // Text equality as an exact lookup compares it: case-insensitive. ASCII — what a report's
         // keys are — answers with a byte compare that fails on the first difference; anything else
         // goes through the Unicode-lowercasing order, which is the rule itself.
+        let needle = text_key.unwrap_or_default();
         let ascii = needle.is_ascii();
         let equal = |t: &str| {
             if ascii && t.is_ascii() { needle.eq_ignore_ascii_case(t) } else { cella_core::compare_text(needle, t) == std::cmp::Ordering::Equal }
         };
         sh.cells.visit_packed(range, &mut |at, packed| match packed {
-            Some(Packed::Text(t)) if equal(t) => {
+            Some(Packed::Text(t)) if text_key.is_some() && equal(t) => {
+                found = Some(at.row);
+                false
+            }
+            Some(Packed::Number(n)) if number_key.is_some_and(|k| n == k) => {
                 found = Some(at.row);
                 false
             }
             Some(_) => true,
-            // A formula or an array may compute a matching text: only the general path knows.
+            // A formula or an array may compute a matching value: only the general path knows.
             None => {
                 complete = false;
                 false
