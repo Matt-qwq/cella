@@ -102,6 +102,14 @@ fn err(e: CellError) -> Ev {
     Ev::V(Value::Error(e))
 }
 
+/// Which answer a one-pair criteria aggregate reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CriteriaFold {
+    /// `SUMIF`/`SUMIFS`: the matched numbers added up.
+    Sum,
+    /// `AVERAGEIF`/`AVERAGEIFS`: the matched numbers averaged (`#DIV/0!` when none matched).
+    Average,
+}
 /// What the evaluator needs from its surroundings.
 pub trait Host {
     fn workbook(&self) -> &Workbook;
@@ -173,11 +181,13 @@ pub trait Host {
         None
     }
 
-    /// `SUMIF`'s answer for one column summed over another: both blocks one column over the same
-    /// rows, one on a sheet with no spill. `None` when the shape is anything else.
-    fn sumif_columns(&mut self, _target: Area, _criteria: Area, _criterion: &cella_functions::Criterion) -> Option<Value> {
+    /// The one-pair criteria aggregate (`SUMIF`, `AVERAGEIF`): `target` summed — or averaged over
+    /// its matched numbers — over the rows where `criteria` satisfies `criterion`. Both blocks one
+    /// column over the same rows, on a sheet with no spill. `None` when the shape is anything else.
+    fn criteria_columns(&mut self, _target: Area, _criteria: Area, _criterion: &cella_functions::Criterion, _fold: CriteriaFold) -> Option<Value> {
         None
     }
+
     /// While a formula is calculated on demand inside another one: [`stack_position`] where the
     /// outermost one started, which the stack budget is counted from.
     fn stack_top(&self) -> Option<usize> {

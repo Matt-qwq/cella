@@ -143,6 +143,38 @@ fn a_formula_in_the_column_still_answers() {
     assert_eq!(value(&s, "D3"), value(&s, "D4"));
 }
 
+/// `AVERAGEIF` and `AVERAGEIFS` with one pair ask the same question, and both now answer from the
+/// scan: every criterion must give the same answer (an error included, since a matched `#DIV/0!`
+/// target is the answer).
+#[test]
+fn averageif_answers_like_averageifs_with_one_pair() {
+    let mut s = sheet();
+    for (i, crit) in CRITERIA.iter().enumerate() {
+        let at = format!("D{}", i + 1);
+        set(&mut s, &at, &format!("=AVERAGEIF(A1:A10, \"{crit}\", B1:B10)"));
+        set(&mut s, &format!("E{}", i + 1), &format!("=AVERAGEIFS(B1:B10, A1:A10, \"{crit}\")"));
+        assert_eq!(value(&s, &at), value(&s, &format!("E{}", i + 1)), "criterion `{crit}`");
+    }
+    // Nothing matched is `#DIV/0!`, as AVERAGE of no numbers is.
+    set(&mut s, "D1", "=AVERAGEIF(A1:A10, \">1000\", B1:B10)");
+    assert_eq!(value(&s, "D1"), Value::Error(CellError::Div0));
+}
+
+/// The one difference Excel documents between the two families: a text criterion past 255 UTF-16
+/// units is `#VALUE!` for `COUNTIF`/`SUMIF` and is **truncated** for the `*IFS` forms. Both paths
+/// now parse the criterion themselves, so both have to keep that difference.
+#[test]
+fn an_overlong_criterion_truncates_in_the_ifs_forms() {
+    let mut s = sheet();
+    let long = "a".repeat(260);
+    set(&mut s, "D1", &format!("=COUNTIFS(A1:A10, \"{long}\")"));
+    set(&mut s, "D2", &format!("=SUMIFS(B1:B10, A1:A10, \"{long}\")"));
+    set(&mut s, "D3", &format!("=AVERAGEIFS(B1:B10, A1:A10, \"{long}\")"));
+    assert_eq!(value(&s, "D1"), Value::Number(0.0), "truncated, so nothing matches");
+    assert_eq!(value(&s, "D2"), Value::Number(0.0));
+    assert_eq!(value(&s, "D3"), Value::Error(CellError::Div0), "nothing matched, so the average is #DIV/0!");
+}
+
 /// A criterion over 255 UTF-16 units is `#VALUE!` for the single-criterion functions; the scan
 /// parses with the same parser, so it is `#VALUE!` there too rather than a different answer.
 #[test]

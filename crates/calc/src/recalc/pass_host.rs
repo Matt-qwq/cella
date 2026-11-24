@@ -1793,7 +1793,13 @@ impl Host for PassHost<'_> {
         Some(matched)
     }
 
-    fn sumif_columns(&mut self, target: crate::eval::Area, criteria: crate::eval::Area, criterion: &cella_functions::Criterion) -> Option<Value> {
+    fn criteria_columns(
+        &mut self,
+        target: crate::eval::Area,
+        criteria: crate::eval::Area,
+        criterion: &cella_functions::Criterion,
+        fold: crate::eval::CriteriaFold,
+    ) -> Option<Value> {
         use cella_functions::CellView;
         use cella_model::Packed;
 
@@ -1810,12 +1816,15 @@ impl Host for PassHost<'_> {
         if t.width() != 1 || c.width() != 1 || t.height() != c.height() || t.start.row != c.start.row {
             return None;
         }
+        // The sum, or the sum and the count of the matched numbers an average divides by.
+        let average = fold == crate::eval::CriteriaFold::Average;
+        let mut sum = 0.0f64;
+        let mut count = 0u64;
+        let mut complete = true;
+        let mut error: Option<CellError> = None;
         if t.start.col == c.start.col {
             // One column twice — `SUMIF(A:A, ">0", A:A)`, or the two-argument form where the range is
             // both what is tested and what is added: one walk, no second pass over the same rows.
-            let mut sum = 0.0f64;
-            let mut complete = true;
-            let mut error: Option<CellError> = None;
             sh.cells.visit_packed(t, &mut |_, packed| {
                 let Some(packed) = packed else {
                     complete = false;
@@ -1831,7 +1840,10 @@ impl Host for PassHost<'_> {
                     // A matched cell that holds an error is the answer, as it is for the library:
                     // only numbers add.
                     match value {
-                        Ok(n) => sum += n,
+                        Ok(n) => {
+                            sum += n;
+                            count += 1;
+                        }
                         Err(e) => {
                             error = Some(e);
                             return false;
@@ -1840,72 +1852,80 @@ impl Host for PassHost<'_> {
                 }
                 true
             });
-            if let Some(e) = error {
-                return Some(Value::Error(e));
-            }
-            return complete.then_some(Value::Number(sum));
-        }
-        // Both columns in one walk: a row's two cells arrive together, so the second pass over the
-        // same rows is not paid. A row is flushed when the next one starts.
-        let box_ = RangeRef::new(CellRef::new(t.start.row, t.start.col.min(c.start.col)), CellRef::new(t.end.row, t.start.col.max(c.start.col)));
-        let mut sum = 0.0f64;
-        let mut error: Option<CellError> = None;
-        let mut row: Option<u32> = None;
-        let mut matched = false;
-        let mut row_sum = 0.0f64;
-        let mut row_error: Option<CellError> = None;
-        let mut complete = true;
-        // A row is complete when the next one starts: a target cell may arrive before the criteria
-        // one (B:B sums, A:A tests), so its error waits for the verdict on the row.
-        let flush = |matched: bool, row_sum: f64, row_error: Option<CellError>, sum: &mut f64, error: &mut Option<CellError>| {
-            if matched && error.is_none() {
-                match row_error {
-                    // A matched row whose target holds an error is the answer: only numbers add.
-                    Some(e) => *error = Some(e),
-                    None => *sum += row_sum,
+        } else {
+            // Both columns in one walk: a row's two cells arrive together, so the second pass over
+            // the same rows is not paid. A row is flushed when the next one starts.
+            let box_ = RangeRef::new(CellRef::new(t.start.row, t.start.col.min(c.start.col)), CellRef::new(t.end.row, t.start.col.max(c.start.col)));
+            let mut row: Option<u32> = None;
+            let mut matched = false;
+            let mut row_sum = 0.0f64;
+            let mut row_numbers = 0u64;
+            let mut row_error: Option<CellError> = None;
+            let flush = |matched: bool,
+                         row_sum: f64,
+                         row_numbers: u64,
+                         row_error: Option<CellError>,
+                         sum: &mut f64,
+                         count: &mut u64,
+                         error: &mut Option<CellError>| {
+                if matched && error.is_none() {
+                    match row_error {
+                        // A matched row whose target holds an error is the answer: only numbers add.
+                        Some(e) => *error = Some(e),
+                        None => {
+                            *sum += row_sum;
+                            *count += row_numbers;
+                        }
+                    }
                 }
-            }
-        };
-        sh.cells.visit_packed(box_, &mut |at, packed| {
-            if row != Some(at.row) {
-                flush(matched, row_sum, row_error, &mut sum, &mut error);
-                row = Some(at.row);
-                matched = false;
-                row_sum = 0.0;
-                row_error = None;
-            }
-            let Some(packed) = packed else {
-                complete = false;
-                return false;
             };
-            if at.col == c.start.col {
-                matched = match packed {
-                    Packed::Number(n) => criterion.matches_view(CellView::Number(n)),
-                    Packed::Text(t) => criterion.matches_view(CellView::Text(t)),
-                    Packed::Bool(b) => criterion.matches_view(CellView::Bool(b)),
-                    Packed::Error(e) => criterion.matches_view(CellView::Error(e)),
-                };
-            } else if at.col == t.start.col {
-                match packed {
-                    Packed::Number(n) => row_sum += n,
-                    Packed::Error(e) => row_error = Some(e),
-                    _ => {}
+            sh.cells.visit_packed(box_, &mut |at, packed| {
+                if row != Some(at.row) {
+                    flush(matched, row_sum, row_numbers, row_error, &mut sum, &mut count, &mut error);
+                    row = Some(at.row);
+                    matched = false;
+                    row_sum = 0.0;
+                    row_numbers = 0;
+                    row_error = None;
                 }
-            }
-            true
-        });
-        flush(matched, row_sum, row_error, &mut sum, &mut error);
+                let Some(packed) = packed else {
+                    complete = false;
+                    return false;
+                };
+                if at.col == c.start.col {
+                    matched = match packed {
+                        Packed::Number(n) => criterion.matches_view(CellView::Number(n)),
+                        Packed::Text(s) => criterion.matches_view(CellView::Text(s)),
+                        Packed::Bool(b) => criterion.matches_view(CellView::Bool(b)),
+                        Packed::Error(e) => criterion.matches_view(CellView::Error(e)),
+                    };
+                } else if at.col == t.start.col {
+                    match packed {
+                        Packed::Number(n) => {
+                            row_sum += n;
+                            row_numbers += 1;
+                        }
+                        Packed::Error(e) => row_error = Some(e),
+                        _ => {}
+                    }
+                }
+                true
+            });
+            flush(matched, row_sum, row_numbers, row_error, &mut sum, &mut count, &mut error);
+        }
         if let Some(e) = error {
             return Some(Value::Error(e));
         }
         if !complete {
             return None;
         }
-        // A blank slot is not stored, so neither a blank criteria cell nor a blank target is seen:
-        // the library's answer for such a row is the blank target's 0, which adds nothing.
+        if average {
+            return Some(if count == 0 { Value::Error(CellError::Div0) } else { Value::Number(sum / count as f64) });
+        }
+        // A blank slot is not stored, so a blank target is not seen: the library's answer for such a
+        // row is the blank's 0, which adds nothing.
         Some(Value::Number(sum))
     }
-
     fn first_match_in_column(&mut self, sheet: usize, range: RangeRef, key: &cella_core::Value) -> Option<Option<u32>> {
         use cella_model::Packed;
 

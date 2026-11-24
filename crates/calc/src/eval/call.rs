@@ -224,7 +224,11 @@ impl<'h> Evaluator<'h> {
             // The single-criterion family answers from a scan of the stored cells; the array the
             // library takes is built only when the shape is something else.
             "COUNTIF" => self.countif(args).unwrap_or_else(|| self.builtin("COUNTIF", args)),
+            "COUNTIFS" => self.countifs(args).unwrap_or_else(|| self.builtin("COUNTIFS", args)),
             "SUMIF" => self.sumif(args).unwrap_or_else(|| self.builtin("SUMIF", args)),
+            "SUMIFS" => self.sumifs(args).unwrap_or_else(|| self.builtin("SUMIFS", args)),
+            "AVERAGEIF" => self.averageif(args).unwrap_or_else(|| self.builtin("AVERAGEIF", args)),
+            "AVERAGEIFS" => self.averageifs(args).unwrap_or_else(|| self.builtin("AVERAGEIFS", args)),
             "VLOOKUP" => self.vlookup_exact_column(args).unwrap_or_else(|| self.builtin("VLOOKUP", args)),
             "XLOOKUP" => self.xlookup(args),
             "CELL" => self.cell_info(args),

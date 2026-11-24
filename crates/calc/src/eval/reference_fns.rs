@@ -329,6 +329,20 @@ impl<'h> Evaluator<'h> {
     /// once, by the same parser the library uses) is asked of the stored cells as the walk meets
     /// them; blanks are the slots the walk does not meet.
     pub(super) fn countif(&mut self, args: &[Expr]) -> Option<Ev> {
+        self.countif_with(args, false)
+    }
+
+    /// `COUNTIFS` with one criteria pair is `COUNTIF`'s question, with one difference Excel
+    /// documents: a text criterion past 255 UTF-16 units is `#VALUE!` for `COUNTIF` and is
+    /// **truncated** for the *IFS family. `truncate` is that difference.
+    pub(super) fn countifs(&mut self, args: &[Expr]) -> Option<Ev> {
+        if args.len() != 2 {
+            return None;
+        }
+        self.countif_with(args, true)
+    }
+
+    fn countif_with(&mut self, args: &[Expr], truncate: bool) -> Option<Ev> {
         if args.len() != 2 {
             return None;
         }
@@ -337,7 +351,12 @@ impl<'h> Evaluator<'h> {
         if range.height() <= 1 {
             return None;
         }
-        let criterion = match cella_functions::Criterion::parse_arg(&self.value(args.get(1)?)) {
+        let parsed = if truncate {
+            Ok(cella_functions::Criterion::parse_arg_truncated(&self.value(args.get(1)?)))
+        } else {
+            cella_functions::Criterion::parse_arg(&self.value(args.get(1)?))
+        };
+        let criterion = match parsed {
             Ok(c) => c,
             Err(e) => return Some(err(e)),
         };
@@ -359,13 +378,49 @@ impl<'h> Evaluator<'h> {
         if !(2..=3).contains(&args.len()) {
             return None;
         }
-        let (criteria_sheet, criteria) = self.one_column(args.first()?)?;
-        let criterion = match cella_functions::Criterion::parse_arg(&self.value(args.get(1)?)) {
+        self.criteria_fold(args.first()?, args.get(1)?, args.get(2), false, false)
+    }
+
+    /// `AVERAGEIF` is the same walk with an average at the end (and `#DIV/0!` when nothing matched).
+    pub(super) fn averageif(&mut self, args: &[Expr]) -> Option<Ev> {
+        if !(2..=3).contains(&args.len()) {
+            return None;
+        }
+        self.criteria_fold(args.first()?, args.get(1)?, args.get(2), false, true)
+    }
+
+    /// `SUMIFS(sum_range, criteria_range, criterion)` and `AVERAGEIFS` with one pair are the same
+    /// question in another argument order.
+    pub(super) fn sumifs(&mut self, args: &[Expr]) -> Option<Ev> {
+        if args.len() != 3 {
+            return None;
+        }
+        self.criteria_fold(args.get(1)?, args.get(2)?, args.first(), true, false)
+    }
+
+    pub(super) fn averageifs(&mut self, args: &[Expr]) -> Option<Ev> {
+        if args.len() != 3 {
+            return None;
+        }
+        self.criteria_fold(args.get(1)?, args.get(2)?, args.first(), true, true)
+    }
+
+    /// The one-pair criteria aggregate: `criteria` cells are tested with `criterion`, and the
+    /// matching rows of `target` (the criteria column itself when there is none) are summed or
+    /// averaged.
+    fn criteria_fold(&mut self, criteria: &Expr, criterion: &Expr, target: Option<&Expr>, truncate: bool, average: bool) -> Option<Ev> {
+        let (criteria_sheet, criteria) = self.one_column(criteria)?;
+        let parsed = if truncate {
+            Ok(cella_functions::Criterion::parse_arg_truncated(&self.value(criterion)))
+        } else {
+            cella_functions::Criterion::parse_arg(&self.value(criterion))
+        };
+        let criterion = match parsed {
             Ok(c) => c,
             Err(e) => return Some(err(e)),
         };
-        // Without a sum range the range is both what is tested and what is added.
-        let (target_sheet, target) = match args.get(2) {
+        // Without a target the criteria column is both what is tested and what is added.
+        let (target_sheet, target) = match target {
             Some(e) => self.one_column(e)?,
             None => (criteria_sheet, criteria),
         };
@@ -377,12 +432,17 @@ impl<'h> Evaluator<'h> {
         if self.work < work {
             return None;
         }
-        let sum =
-            self.host.sumif_columns(Area { sheet: target_sheet, range: target }, Area { sheet: criteria_sheet, range: criteria }, &criterion)?;
+        let target = Area { sheet: target_sheet, range: target };
+        let criteria = Area { sheet: criteria_sheet, range: criteria };
+        let fold = if average {
+            self.host.criteria_columns(target, criteria, &criterion, crate::eval::CriteriaFold::Average)?
+        } else {
+            self.host.criteria_columns(target, criteria, &criterion, crate::eval::CriteriaFold::Sum)?
+        };
         if !self.spend(work) {
             return Some(err(CellError::Calc));
         }
-        Some(Ev::V(sum))
+        Some(Ev::V(fold))
     }
 
     /// `MATCH(key, column, 0)`: the position of the first stored cell an exact match compares equal,
