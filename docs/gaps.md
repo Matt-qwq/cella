@@ -1543,6 +1543,40 @@ parameter name — a microsecond a row, which is the evaluator's next item, not 
 errors and mixed-type rows — and the two groupings must be identical, which is what a hash or a
 comparison that disagrees with the rule would break.
 
+### 42. A LAMBDA call cost a microsecond before the body ran (P, found and fixed 11-25)
+
+**What:** `BYROW` over a million rows cost **1.15 s** — a microsecond a row — and `MAP`'s elements
+**0.53 µs** each. `fn_probe`'s new rows said the body was not the problem: a LAMBDA whose body is a
+constant (`LAMBDA(x,1)`) still cost **0.48–0.59 µs a call**, and a body that calls a worksheet
+function (`LAMBDA(x,SUM(x))`) added another ~0.3 µs.
+
+**Why, three things a call:**
+1. `call_lambda_values` swapped the whole environment out on every call —
+   `mem::replace(&mut self.env, l.env.clone())` — and for a `LAMBDA(x, …)` written inline, `l.env`
+   is empty: the vector the call was about to use was **dropped (capacity and all) and rebuilt**,
+   a call, for a million calls.
+2. Every helper built a one-entry `Vec` to bind the argument (`vec![(p.clone(), …)]`), a String
+   clone included.
+3. `aggregate_value` looked up `SUM` **and** `COUNT` by name for every argument, though `SUM` and
+   `AVERAGE` add with `SUM` alone and `COUNT` counts with `COUNT` alone.
+
+**Now:** the environment is kept when the lambda captured nothing (a captured one still replaces it,
+which is what lexical scope needs), `call_lambda_one` binds the parameter straight into it, and
+`aggregate_value` looks up only the function a kind adds by. `MAP` with one array and one parameter
+takes the same path.
+
+**Measured (five passes a row):** `BYROW(A1:C1000001, LAMBDA(x,SUM(x)))` **1.15 s → 984 ms (−14 %)**;
+`BYROW` with one column **988 → 825 ms**; a constant body **592 → 525 ms**; `MAP(x,SUM(x))`
+**885 → 705 ms (−20 %)**; `MAP(x,x*2)` **541 → 432**; `SCAN` **601 → 526 (−13 %)**; `REDUCE`
+**170 → 133 ms**. The rows that do not run a LAMBDA did not move (`PIVOTBY` 989 → 990, `GROUPBY`
+785 → 782, `UNIQUE` 310 → 305, `SORT` 256 → 257, `VSTACK` 192 → 190), which is what says the
+machine was steady.
+
+**Left:** one `String` is still allocated a call for the parameter's name in the environment; the
+environment would have to carry `Arc<str>` for that to go, which is a type change across the
+evaluator for a few percent. `BYROW`'s remaining microsecond is mostly the row's own `Vec` and
+`Arc<Array>` — the argument has to be an owned array because the LAMBDA may keep it.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2006,6 +2040,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §42 (new): a LAMBDA call cost a microsecond before the body ran — the environment was swapped out and rebuilt every call, the bound argument went through a one-entry `Vec`, and `aggregate_value` looked up `SUM` and `COUNT` for every argument. **BYROW 1.15 s → 984 ms, MAP 532 → 422 ms, SCAN 601 → 524 ms, REDUCE 170 → 133 ms**, and the rows that run no LAMBDA did not move |
 | 2026-11-24 | minor | §41 (new): the groupers keyed every row by a string they built. `row_key` spelled a row's values out as text and the key-to-rows map was keyed by it — a million allocations at a million rows. A hashed `KeyIds` (two `Vec`s, a map of first ids and a collision chain) took **PIVOTBY 5.16 s → 989 ms, GROUPBY 2.48 → 785 ms, UNIQUE 1.49 → 310 ms**, with the old string key kept as the reference a test compares the ids against. `BYROW`'s 1.14 s is the evaluator's per-row LAMBDA cost and is left named |
 | 2026-11-24 | minor | §40 (new): a formula's block argument was built before the formula could say it needed three cells. The exact lookups (`MATCH`, `VLOOKUP`, `XLOOKUP` with a scalar key) now scan the key column and stop at the hit — **VLOOKUP 78 → 17 ms, MATCH 56 → 17 ms** at a million rows, and a hit on row 1 costs 0.6–0.9 ms; a fold of a values column stops asking `has_owned_cells` first (**SUM 51 → 30 ms, MAX/MIN −40 %, COUNT −38 %**), and one-column reads take a peeled walk. The rest of the catalogue's rows move by 4–15 % with them; two untouched control rows sat still (−1 %, +1 %) |
 | 2026-11-24 | minor | §39 (new) and §33/§34/§35/§38 updated: a row walk asked the kind and style run stripes for **every cell from the first run**, so a thousand-column row was quadratic — the cut half of a move cost 1.20 s where the same cells cost 0.30 s on eight-column rows. A run position on the walk cursor took the move **2.04 → 1.11 s**, the sort **1.81 → 0.83 s**, the save **1.32 → 0.86 s** and the copy **852 → 557 ms**. Round 51's "the cut is the store's per-cell price, so packed rows are next" is retracted: moving packed rows is still the guess for the *write* side, and nothing needs it for the move's target |
