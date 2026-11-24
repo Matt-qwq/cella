@@ -1281,14 +1281,15 @@ map past 256 texts, which is the shape a write-back produces: one word arriving 
 as its own `Arc` (`gaps` §38) — 3.35 → 2.08 s. And the gather skips its `LineShapes` bookkeeping on a
 sheet that has never held a formula.
 
-**Now: 1.75–1.80 s** wide and **1.16–1.20 s** tall over four quiet runs (the shape page's single
-sample read 2.04 s on a loaded machine) — the ≤2 s target. What is left is the gather (~1.27 s):
-reading eight million cells out of the store through `row_reader` at ~150 ns a cell, which is the
-store's per-cell read price (`gaps` §38's last paragraph).
+**Now: 0.83 s** wide and **1.19 s** tall (round 52: the shape page's five-sample run, on a machine that
+read 8–20 % slower than round 51's on the rows this change does not touch). The gather was not paying
+"the store's per-cell read price" — it was paying a quadratic row walk (`gaps` §39), and fixing that
+took the sort's wide sheet from **1.81 → 0.83 s** without touching the sort. Excel is 0.146 s; what is
+left is the gather's remaining per-cell cost and the formula relabel for a body that holds formulas.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
-### 34. Moving a block took 16 s — **five causes, all removed 11-24** (now 2.2 s, target 2 s)
+### 34. Moving a block took 16 s — **target met 11-24** (was 15.9 s, now 1.11 s)
 
 **Was:** `range.move` over eight million cells took **15.9 s** on 8,000 rows × 1,000 columns and
 **3.7 s** on a million rows × 8 columns (Excel 0.507 s and 0.676 s, WPS 1.380 s and 1.334 s). Five
@@ -1311,12 +1312,21 @@ holds is dropped instead of edited); `range.move` cuts without building the clip
 overwrite check walks only the strips of the destination the source does not cover; the paste writes
 each destination row in one store call; and the moved block is a sorted `Vec` walked by a cursor.
 
-**Measured:** **2.03–2.04 s** wide and **1.30–1.31 s** tall — the ruler's best of three (15.9 and 3.7 before), stable to 10 ms between runs where single samples had spread over 2.2–2.9 s. That is 1.5 % over its 2 s target. The 2 s target
-is met on the tall shape and missed on the wide one. The profile of what is left, per the
-`CELLA_PROFILE` lines: the cut (taking the block out of the store) **1.22 s**, building the pasted
-cells 0.57 s, writing them back 0.33 s, and the commit's full recalculation the rest. Cut and paste
-are one read and one write of eight million cells at the store's per-cell price (`gaps` §38), so the
-next step is the same packed-row work `gaps` §33 needs.
+**Measured (round 51):** **2.03–2.04 s** wide and **1.30–1.31 s** tall — the ruler's best of three (15.9
+and 3.7 before), stable to 10 ms between runs where single samples had spread over 2.2–2.9 s. That was
+1.5 % over the 2 s target, and the profile said the cut was **1.22 s** of it.
+
+**The sixth cause, found by doubting that attribution (round 52):** the cut was not paying "the
+store's per-cell price" — it was paying a **quadratic row walk** (`gaps` §39). Every row walker asked
+the kind and style run stripes for each cell from the first run, and a thousand-column row carries a
+couple of hundred runs. A run position on the cursor: the cut **1.22 → 0.25 s**, and a move's paste
+loop stopped asking per cell for notes, hyperlinks, validations and pictures a whole paste cannot
+change.
+
+**Measured (round 52):** **1.11 s** wide and 1.39 s tall (that row spread 1.28–1.39 s across three
+passes of the same code — nothing in this change touches the tall shape's eight-column rows), against
+a 2 s target and Excel's 0.507 s. What is left of the wide move is the pasted cells' construction
+(~0.38 s), the store write (~0.32 s) and the changed list — not one read or one write of the block.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
@@ -1332,6 +1342,11 @@ shape from 100 ms to 8.5 ms and the wide one from 0.89 s to 0.78 s.
 `String` per cell that is then copied into the tab-separated text. Two ways out, both outside the
 command layer: a formatter that writes into the caller's buffer (a `numfmt` API change), or a lazy
 clipboard — build the text when somebody reads it, the way Excel's delayed-render clipboard does.
+
+**Round 52:** **557 ms** wide (was 852), from the row-walk fix in `gaps` §39 — `range_text` reads its
+rows through the cursor that was walking the run stripes per cell. This is the page's noisiest row: an
+allocation-bound `String` per cell has measured 540, 944 and 557 ms in three passes of the same code,
+so its five-sample value is the one published.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
@@ -1399,11 +1414,46 @@ write-back on a thousand-column sheet: **1835 → 628 ms**, and `data.sortAscend
 
 **What remains:** the same probe shows the numbers case at width 1,000 costs **120 ns a cell against
 49 at width 8**, with nothing per-cell changed — a band a thousand columns wide no longer fits L1 and
-every cell touches four stripes. Moving packed rows instead of rebuilding cells is the fix (`gaps`
-§33/§34), and this entry is why the *text* half of that gap is closed.
+every cell touches four stripes. That is the **write** side; the read side's wide/tall gap had a
+different cause, found a round later (`gaps` §39). Moving packed rows instead of rebuilding cells is
+still the guess for the write, and it is a page-format change.
 
 **Evidence:** a probe over `CellStore::set_row` (removed after the measurement) and
 [performance-shapes.md](performance-shapes.md).
+
+### 39. A row walk asked the run stripes for every cell from the first run (P, found and fixed 11-24)
+
+**What:** taking eight million cells out of a store — the cut half of a move — cost **1.20 s** on
+8,000 rows × 1,000 columns against **0.30 s** on 1,000,000 rows × 8 columns. Same cells, same code,
+four times the price. Round 51 wrote that 1.20 s off as "the store's per-cell price, so the next step
+is packed rows" (`§33`/`§34`). It was not a price: it was **quadratic in the cells a row holds**.
+
+**Why:** a row's kinds and its styles are run-length encoded — `(value, length)` pairs in cell order —
+and `PackCursor`, the cursor every row walk goes through (`iter_range`, `row`, `row_reader`,
+`iter_scan`, `visit_values`, and a cut's `take_rows`), asked `BandRow::kind_at` and
+`BandRow::style_at` for each cell. Both walked the row's runs **from the first** to answer, so a cell
+cost the runs before it. A row of the shape ruler's wide sheet alternates a number, a quantity, a
+price, a name, a region, a date, a key and a value, so it carries a couple of hundred kind runs:
+1,000 cells × ~125 runs a cell = 125,000 run steps a row, × 8,000 rows = 10⁹ steps.
+
+**Now:** the cursor carries a run position per stripe (`RunPos`: the run it last answered from and
+that run's first cell — two words, borrowing nothing, so a walker that owns its band across
+`next()` calls can hold it), and a cell's kind and style are read off it in O(1) amortised.
+`Band::cell_at`/`value_at` split into `cell_of`/`value_of`, which take the kind (and style) the walk
+already knows, so the single-cell readers keep their own one-run walk.
+
+**Measured:** the cut **1.20 s → 0.25 s** on the wide shape. `range.move` **2.04 s → 1.11 s** (target
+2 s, met with half to spare), `data.sortAscending` **1.81 s → 0.83 s**, `file.saveBytes` **1.32 s →
+0.86 s**, `edit.copy` **852 ms → 557 ms**. Every one of those walks rows. The untouched rows on the
+same page read 8–20 % *slower* than round 51's (`edit.clearFormats` 34 → 39 ms, `edit.clearAll` 1.1 →
+1.4, `sheet.rename` 65 → 148 µs), so the machine was the slower one and the wins above are floors.
+
+**Test:** a row of four hundred alternating kinds (a text every third cell) and four styles is read
+whole and through windows that start and end **inside** a run, through `row()`, `iter_range` and
+`visit_values`, against the value and the style each column must hold.
+
+**Left:** the same run walk in `Band::compact_wide` and in `row_same_as`/`diff_bands` (both ask
+`kind_at` per cell); neither is on a measured path, so neither was changed.
 
 ## After beta
 
@@ -1868,6 +1918,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-24 | minor | §39 (new) and §33/§34/§35/§38 updated: a row walk asked the kind and style run stripes for **every cell from the first run**, so a thousand-column row was quadratic — the cut half of a move cost 1.20 s where the same cells cost 0.30 s on eight-column rows. A run position on the walk cursor took the move **2.04 → 1.11 s**, the sort **1.81 → 0.83 s**, the save **1.32 → 0.86 s** and the copy **852 → 557 ms**. Round 51's "the cut is the store's per-cell price, so packed rows are next" is retracted: moving packed rows is still the guess for the *write* side, and nothing needs it for the move's target |
 | 2026-11-16 | minor | §18/§17: the accessibility check lists every object without alternative text — **WordArt and equations included** — with the reason it is there and the name a screen reader reads (the object's own text when it carries one); the PDF export draws a WordArt's text outline (eight offset copies) and drop shadow (one) the way the grid paints them. Two tests, one per half |
 | 2026-11-03 | minor | §1: a local real-world corpus (9.6 GB, 3,199 workbooks) was run: 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches (digest now covers formula text, merges, comments, links, CF/DV, tables, names, charts, shapes, pictures), and Excel 16 found Cella's copies identical on 16 `.xlsx` files plus all 37 readable `.xls`. #1 is met for beta; 4 invalid files (openpyxl also refuses), 111 encrypted and 449 cloud placeholders were out of reach, and the pinned corpus remains for CI (0–1 h) |
 | 2026-11-03 | minor | §7: `.xls` autoshapes and text boxes are read — Excel 2007+'s DrawingML fragment when present (geometry, fill, line, text, formatting), otherwise the OfficeArt type and anchor — and verified in Excel 16 with five shapes (same text/fill/line/positions; a block arrow becomes the model's arrowheaded line). The reader now tolerates drawings split across records and a trailing shape stored in a text box's Continue records. #7 is met for beta; OLE objects and chart sheets are full scope |

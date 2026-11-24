@@ -1,6 +1,6 @@
 # Performance
 
-> **Last reviewed:** 2026-11-24 · **Last updated:** 2026-11-24 · **Change:** round 48 — **the seven P0 knives: find 5.68 s → 81 µs, clearAll 1.40 s → 1.1 ms, move 15.91 s → 3.50 s, sort 9.98 s → 3.35 s, copy 100 ms → 9.8 ms on a tall sheet, clearFormats 3.45 s → 1.80 s, and the hundred-sheet save retracted as a ruler bug (18.59 s → 1.97 s, faster than Excel)**; the queue is [performance-plan.md](performance-plan.md) and the ranked list is `gaps` §28–§36; earlier numbers below are kept as written. Earlier: round 45 — **the frame-time ruler grew its interaction half.** `crates/ui-egui/examples/frame_time.rs` now drives real input through the whole app offscreen: `key` types a character into the selected cell (**1.2 ms a frame**), `commit` presses Enter and pays the recalculation of the one `SUM` that watches the edited column (**27 ms** at a million rows), `undo` steps back over it (**3.4 ms** — the snapshot is restored, nothing recalculated), and `drag` moves the pointer with the button down (**1.2 ms**). They join `idle` 1.0, `page` 1.7 and `jump` 1.6 ms, all within budget (5 ms for the frame-shaped phases, 250 ms for the two engine-shaped ones), and each phase asserts its action happened. Earlier: round 44 — **the function catalogue: all 517 worksheet functions priced, and the formulas that take seconds.** `cargo xtask bench-functions` writes [`performance-functions.md`](performance-functions.md): one row per registered function — the library's 492 specs and the 25 forms the evaluator implements itself — measured as the `cell.set` that enters the formula, at 100,000 and 1,000,000 rows, with its range arguments ten rows wide and whole-column wide. **498 of 517 answer at 1M**; the worst are the dynamic-array groupers — **`PIVOTBY` 5.21 s and `GROUPBY` 2.43 s over a million values**, `UNIQUE` 1.43 s, `BYROW` 1.15 s, `DROP` 771 ms, `SORT` 268 ms — and a whole-column argument costs **25–80 ms before the function runs at all** (`SUM` 51 ms, `COUNTIF` 26, `SUMIFS` 40, `SUMPRODUCT` 25, `MATCH` 55, `VLOOKUP` 76, `XLOOKUP` 80). Array lifting alone is ~115 ns per element (`BITAND` 230 ms over two columns). The floor — entering `=1+1` — is 0.19 ms at 100k and **0.90 ms at 1M** (the undo snapshot), which every scalar row sits on. `cargo xtask bench-functions --check` is **step 11 of `cargo xtask ci`**: a registered function with no call in `xtask/bench-functions.txt` fails the build. **The command catalogue's memory axis was fixed a round after it was added**: it publishes the
+> **Last reviewed:** 2026-11-24 · **Last updated:** 2026-11-24 · **Change:** round 52 — **the row-walk quadratic behind every wide-sheet second: move 2.03 → 1.11 s, sort 1.81 → 0.83 s, save 1.32 → 0.86 s, copy 852 → 557 ms** (the cut half of a move was paying 1.20 s wide against 0.30 s tall for the same cells, and round 51's "it is the store's per-cell price, so packed rows are next" is retracted — `gaps` §39). Earlier: round 48 — **the seven P0 knives: find 5.68 s → 81 µs, clearAll 1.40 s → 1.1 ms, move 15.91 s → 3.50 s, sort 9.98 s → 3.35 s, copy 100 ms → 9.8 ms on a tall sheet, clearFormats 3.45 s → 1.80 s, and the hundred-sheet save retracted as a ruler bug (18.59 s → 1.97 s, faster than Excel)**; the queue is [performance-plan.md](performance-plan.md) and the ranked list is `gaps` §28–§39; earlier numbers below are kept as written. Earlier: round 45 — **the frame-time ruler grew its interaction half.** `crates/ui-egui/examples/frame_time.rs` now drives real input through the whole app offscreen: `key` types a character into the selected cell (**1.2 ms a frame**), `commit` presses Enter and pays the recalculation of the one `SUM` that watches the edited column (**27 ms** at a million rows), `undo` steps back over it (**3.4 ms** — the snapshot is restored, nothing recalculated), and `drag` moves the pointer with the button down (**1.2 ms**). They join `idle` 1.0, `page` 1.7 and `jump` 1.6 ms, all within budget (5 ms for the frame-shaped phases, 250 ms for the two engine-shaped ones), and each phase asserts its action happened. Earlier: round 44 — **the function catalogue: all 517 worksheet functions priced, and the formulas that take seconds.** `cargo xtask bench-functions` writes [`performance-functions.md`](performance-functions.md): one row per registered function — the library's 492 specs and the 25 forms the evaluator implements itself — measured as the `cell.set` that enters the formula, at 100,000 and 1,000,000 rows, with its range arguments ten rows wide and whole-column wide. **498 of 517 answer at 1M**; the worst are the dynamic-array groupers — **`PIVOTBY` 5.21 s and `GROUPBY` 2.43 s over a million values**, `UNIQUE` 1.43 s, `BYROW` 1.15 s, `DROP` 771 ms, `SORT` 268 ms — and a whole-column argument costs **25–80 ms before the function runs at all** (`SUM` 51 ms, `COUNTIF` 26, `SUMIFS` 40, `SUMPRODUCT` 25, `MATCH` 55, `VLOOKUP` 76, `XLOOKUP` 80). Array lifting alone is ~115 ns per element (`BITAND` 230 ms over two columns). The floor — entering `=1+1` — is 0.19 ms at 100k and **0.90 ms at 1M** (the undo snapshot), which every scalar row sits on. `cargo xtask bench-functions --check` is **step 11 of `cargo xtask ci`**: a registered function with no call in `xtask/bench-functions.txt` fails the build. **The command catalogue's memory axis was fixed a round after it was added**: it publishes the
 **document's own memory** (sheets, workbook parts, calculation state), not the report's total, because
 the undo line charges every command ~693 MB at 100k rows (gaps §26). What it sees is honest: a sort
 grows the document by **57.9 MB** at a million rows while it runs, a whole-column font step by 1.0 MB,
@@ -169,7 +169,9 @@ went from **374 bench / 31 ui / 33 excuse** to **391 / 31 / 16**.
   rows — a scan of every used cell, twice the cost of a whole-column `VLOOKUP` and 4× `COUNTIF`.
   Both are now gate scenarios (`find.replaceAll`).
 - **`range.move` costs 3.4 s** whole at 1M — moving a 6M-cell block. (Excel's drag-and-drop of a
-  whole sheet is fast because it moves the *store*, not the cells; ours writes them again.)
+  whole sheet is fast because it moves the *store*, not the cells; ours writes them again. Round 52:
+  **1.39 s**, and the store was still the problem — but as a quadratic row walk, not as the copy:
+  `gaps` §39.)
 - **`home.autofitColumnWidth` is 1.1 s** at 1M in the `small` column, i.e. with the cursor on a
   cell: AutoFit measures the whole column, not the part in view.
 - **`file.saveBytes` is 1.3 s at 1M with no change to save** — the pack is dominated by the cells,
@@ -263,24 +265,33 @@ some shapes, so `edit.clearAll` cleared a one-cell selection on the tall sheet a
 on the wide one. Region-naming keys are now always given, so every number below is the same work
 arranged differently:
 
-The **before** column below is that run; the **now** column is the same ruler after round 48's seven
-knives.
+The **before** column below is that run; the **now** column is the same ruler after rounds 48 and 52.
 
 | command | 1M×8 before → now | 1000×8k before → now | 100×10k before → now |
 |---|---:|---:|---:|
-| `data.sortAscending` | 1.46 s → **1.17 s** | 9.98 s → **1.81 s** ✅ | 17 ms → **15 ms** |
-| `range.move` | 3.73 s → **1.30 s** | 15.91 s → **2.03 s** | 73 ms → **22 ms** |
-| `edit.find` | 3.48 s → **214 µs** | 5.68 s → **81 µs** | 33 ms → **37 µs** |
-| `edit.clearAll` | 1.14 s → **7.9 ms** | 1.40 s → **1.1 ms** | 4.7 ms → **3.5 ms** |
-| `edit.clearFormats` | 1.27 s → **154 ms** | 3.45 s → **34 ms** ✅ | 16 ms → **998 µs** |
-| `edit.copy` | 100 ms → **9.5 ms** | 0.92 s → **852 ms** | 25 ms → **22 ms** |
-| `file.saveBytes` | 1.81 s → **1.63 s** | 1.37 s → **1.32 s** | 18.59 s → **1.24 s** |
+| `data.sortAscending` | 1.46 s → **1.19 s** | 9.98 s → **0.83 s** ✅ | 17 ms → **17 ms** |
+| `range.move` | 3.73 s → **1.39 s** | 15.91 s → **1.11 s** ✅ | 73 ms → **23 ms** |
+| `edit.find` | 3.48 s → **182 µs** | 5.68 s → **124 µs** | 33 ms → **38 µs** |
+| `edit.clearAll` | 1.14 s → **11 ms** | 1.40 s → **1.4 ms** | 4.7 ms → **3.3 ms** |
+| `edit.clearFormats` | 1.27 s → **167 ms** | 3.45 s → **39 ms** ✅ | 16 ms → **1.1 ms** |
+| `edit.copy` | 100 ms → **10 ms** | 0.92 s → **557 ms** | 25 ms → **25 ms** |
+| `file.saveBytes` | 1.81 s → **1.83 s** | 1.37 s → **0.86 s** | 18.59 s → **1.42 s** |
 
-- **A thousand columns is still where the seconds are**, but three of the commands that lived there
-  are down hard: the sort 9.98 s → 3.35 s, the move 15.91 s → 3.50 s, the find 5.68 s → 81 µs. What
-  is left in the sort and the move is the store's per-cell write (`gaps` §33): building the same
-  eight million cells straight into a store costs 119 ns a cell on a thousand-column sheet against
-  31 ns on a tall one.
+- **Round 52 found the cause of the wide-sheet seconds, and it was not memory layout.** Every row walk
+  asked the kind and style run stripes for each cell **from the first run**, so a row of a thousand
+  columns (a couple of hundred kind runs) was quadratic: the cut half of a move cost 1.20 s wide
+  against 0.30 s tall for the same eight million cells. A run position on the cursor (`gaps` §39) took
+  the move **2.03 → 1.11 s**, the sort **1.81 → 0.83 s**, the save **1.32 → 0.86 s** and the copy
+  **852 → 557 ms** — all four rows walk rows. The round-51 reading of that 1.20 s as "the store's
+  per-cell price, so packed rows are next" is retracted with it.
+- **Read this page's rows against each other, not against an older page.** The same code made three
+  full passes: `edit.copy` read 540, 944 and 557 ms wide, `file.saveBytes` 1.64–2.04 s tall. Round
+  52's page is the fastest of **five** samples a row (`CELLA_SHAPE_SAMPLES`), and every row that change
+  cannot touch read 8–20 % slower than round 51's, so the wins above are floors.
+- **A thousand columns is still where the seconds are**, but two of the commands that lived there are
+  down hard: the sort 9.98 s → 0.83 s, the move 15.91 s → 1.11 s, the find 5.68 s → 124 µs. What is
+  left in the move is building and writing the pasted cells (`gaps` §34); what is left in the sort is
+  its gather and a formula body's relabel (`gaps` §33).
 - **The clear is free now.** `edit.clearAll` went 9.13 s → 1.40 s → **1.1 ms** across two cuts: the
   store is replaced in one assignment, and the commit is told the sheet changed in one word instead
   of being handed eight million addresses (`gaps` §28).
