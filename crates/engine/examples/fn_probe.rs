@@ -66,6 +66,9 @@ const CALLS: &[(&str, &str)] = &[
     ("VLOOKUP middle", "=VLOOKUP(500000,A2:B{last},2,FALSE)"),
     ("XLOOKUP middle", "=XLOOKUP(500000,A2:A{last},B2:B{last})"),
     ("XLOOKUP text key", "=XLOOKUP(\"Item 500000\",D2:D{last},A2:A{last})"),
+    // The catalogue's own spelling: the defaults spelled out, so the scan has to know that
+    // `match_mode 0` and `search_mode 1` are the same lookup.
+    ("XLOOKUP defaults spelled", "=XLOOKUP(\"K500000\",G2:G{last},B2:B{last},1,0,1)"),
     // The LAMBDA helpers: what a call costs before the body does anything (`LAMBDA(x,1)`), what a
     // row's own array costs (`x`), and what a worksheet function in the body costs (`SUM(x)`).
     ("MAP constant", "=MAP(A2:A{last},LAMBDA(x,1))"),

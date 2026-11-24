@@ -139,6 +139,64 @@ fn a_wildcard_needle_answers_like_the_general_path() {
     assert_eq!(value(&s, "C1"), Value::Number(10.0), "the pattern matches Alpha");
 }
 
+/// `XMATCH`'s two spellings: the literal key (the scan) and the key in `Z1` (the general path).
+#[test]
+fn xmatch_exact_answers_like_the_general_path() {
+    let mut s = sheet();
+    for key in ["Alpha", "alpha", "beta", "Gamma", "blankrow", "nowhere"] {
+        set(&mut s, "Z1", key);
+        set(&mut s, "C1", &format!("=XMATCH(\"{key}\",A1:A10)"));
+        set(&mut s, "C2", "=XMATCH(Z1,A1:A10)");
+        assert_eq!(value(&s, "C1"), value(&s, "C2"), "key {key}");
+    }
+    assert_eq!(value(&s, "C1"), Value::Error(cella_core::CellError::NA), "the last key is not there");
+    // A number finds only a number.
+    set(&mut s, "C1", "=XMATCH(70,B1:B10)");
+    set(&mut s, "Z1", "70");
+    set(&mut s, "C2", "=XMATCH(Z1,B1:B10)");
+    assert_eq!(value(&s, "C1"), value(&s, "C2"));
+    assert_eq!(value(&s, "C1"), Value::Number(7.0), "B7 holds 70");
+    // The mode arguments spelled at their defaults are still the scan; anything else is not.
+    set(&mut s, "Z1", "Gamma");
+    set(&mut s, "C1", "=XMATCH(\"Gamma\",A1:A10,0,1)");
+    set(&mut s, "C2", "=XMATCH(Z1,A1:A10,0,1)");
+    assert_eq!(value(&s, "C1"), value(&s, "C2"));
+    assert_eq!(value(&s, "C1"), Value::Number(6.0));
+    set(&mut s, "C3", "=XMATCH(\"G*\",A1:A10,2)");
+    set(&mut s, "C4", "=XMATCH(Z1,A1:A10,2)");
+    assert_eq!(value(&s, "C3"), value(&s, "C4"), "a wildcard mode and a pattern stay on the general path");
+}
+
+/// The documented defaults may be spelled out, and `if_not_found` may be given: the same lookup
+/// written that way is still the scan, and every case answers like the key-in-a-cell spelling.
+#[test]
+fn the_spelled_out_defaults_answer_like_the_general_path() {
+    let mut s = sheet();
+    for (fast, slow) in [
+        ("=XLOOKUP(\"Gamma\",A1:A10,B1:B10,0,0,1)", "=XLOOKUP(Z1,A1:A10,B1:B10,0,0,1)"),
+        ("=XLOOKUP(\"nowhere\",A1:A10,B1:B10,\"missing\")", "=XLOOKUP(Z1,A1:A10,B1:B10,\"missing\")"),
+        ("=XLOOKUP(\"nowhere\",A1:A10,B1:B10,7,0,1)", "=XLOOKUP(Z1,A1:A10,B1:B10,7,0,1)"),
+    ] {
+        set(&mut s, "Z1", if fast.contains("Gamma") { "Gamma" } else { "nowhere" });
+        set(&mut s, "C1", fast);
+        set(&mut s, "C2", slow);
+        assert_eq!(value(&s, "C1"), value(&s, "C2"), "{fast}");
+    }
+    assert_eq!(value(&s, "C1"), Value::Number(7.0), "a miss answers if_not_found");
+    // `Gamma` is row 6, and its B is 60.
+    set(&mut s, "Z1", "Gamma");
+    set(&mut s, "C1", "=XLOOKUP(\"Gamma\",A1:A10,B1:B10,0,0,1)");
+    assert_eq!(value(&s, "C1"), Value::Number(60.0));
+    // Last-to-first and the lower-than mode are not the scan's shape.
+    set(&mut s, "Z1", "Alpha");
+    set(&mut s, "C1", "=XLOOKUP(\"Alpha\",A1:A10,B1:B10,,0,-1)");
+    set(&mut s, "C2", "=XLOOKUP(Z1,A1:A10,B1:B10,,0,-1)");
+    assert_eq!(value(&s, "C1"), value(&s, "C2"));
+    set(&mut s, "C3", "=XLOOKUP(\"Alpha\",A1:A10,B1:B10,,-1,1)");
+    set(&mut s, "C4", "=XLOOKUP(Z1,A1:A10,B1:B10,,-1,1)");
+    assert_eq!(value(&s, "C3"), value(&s, "C4"));
+}
+
 /// The shape the fast path exists for: a column of a few thousand texts. The answer is the general
 /// path's, and the lookup is over more rows than the block would cache.
 #[test]

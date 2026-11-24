@@ -230,11 +230,26 @@ impl<'h> Evaluator<'h> {
     /// `Some(Err(_))` when the shape applies and the answer is an error, `None` when the shape does
     /// not apply and the general path below must run. Never evaluates the block.
     fn xlookup_scalar_column(&mut self, args: &[Expr]) -> Option<Ev> {
-        // The needle has to be a literal: a pattern (`*`, `?`, `~`) is not a key, and evaluating an
-        // argument here would run arguments out of order with the general path.
-        if args.len() != 3 {
+        // Three to six arguments: `if_not_found` may be given (argument 4), and the documented
+        // defaults — exact match, first to last — may be spelled out (arguments 5 and 6). A
+        // report's `XLOOKUP($A2, Codes!A:A, Codes!B:B, "?" , 0, 1)` is the same lookup as the
+        // three-argument form, and it used to fall to the general path, which builds both columns.
+        if !(3..=6).contains(&args.len()) {
             return None;
         }
+        let default_number = |e: Option<&Expr>, want: f64| match e {
+            None | Some(Expr::Missing) => true,
+            Some(Expr::Number(n)) => *n == want,
+            _ => false,
+        };
+        // match_mode 0 (exact) and search_mode 1 (first to last) are the only modes the scan can
+        // answer: last-to-first, a binary search or a wildcard/lower-than mode needs the block.
+        if !default_number(args.get(4), 0.0) || !default_number(args.get(5), 1.0) {
+            return None;
+        }
+        let if_not_found = args.get(3).filter(|e| !matches!(e, Expr::Missing));
+        // The needle has to be a literal: a pattern (`*`, `?`, `~`) is not a key, and evaluating an
+        // argument here would run arguments out of order with the general path.
         let key = match args.first()? {
             Expr::Text(t) if !t.is_empty() && !t.contains(['*', '?', '~']) => Value::Text(Arc::clone(t)),
             Expr::Number(n) => Value::Number(*n),
@@ -259,6 +274,49 @@ impl<'h> Evaluator<'h> {
             Some(row) => {
                 Ev::R(vec![Area { sheet: r.sheet, range: RangeRef::new(CellRef::new(row, r.range.start.col), CellRef::new(row, r.range.end.col)) }])
             }
+            // A miss answers `if_not_found` only when it was given, and only now — the general path
+            // evaluates that argument lazily too.
+            None => match if_not_found {
+                Some(e) => self.eval(e),
+                None => err(CellError::NA),
+            },
+        })
+    }
+
+    /// `XMATCH(key, column)`: the position of the first stored cell the exact match compares equal,
+    /// read as a scan that stops at the hit — the same walk `MATCH(k, col, 0)` takes, with
+    /// XMATCH's own argument order and its own defaults spelled out.
+    pub(super) fn xmatch_exact_column(&mut self, args: &[Expr]) -> Option<Ev> {
+        if !(2..=4).contains(&args.len()) {
+            return None;
+        }
+        let default_number = |e: Option<&Expr>, want: f64| match e {
+            None | Some(Expr::Missing) => true,
+            Some(Expr::Number(n)) => *n == want,
+            _ => false,
+        };
+        // match_mode 0 is the exact match; 2 is a wildcard and ±1 an approximate one, and
+        // search_mode 1 is first-to-last. Anything else needs the block.
+        if !default_number(args.get(2), 0.0) || !default_number(args.get(3), 1.0) {
+            return None;
+        }
+        let key = self.exact_key(args.first()?)?;
+        let block = args.get(1)?;
+        let (sheet, range) = self.one_column(block)?;
+        if range.height() <= 1 {
+            return None;
+        }
+        let rows = u64::from(range.height());
+        let work = rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let found = self.host.first_match_in_column(sheet, range, &key)?;
+        if !self.spend(work) {
+            return Some(err(CellError::Calc));
+        }
+        Some(match found {
+            Some(row) => Ev::V(Value::number(f64::from(row.saturating_sub(range.start.row).saturating_add(1)))),
             None => err(CellError::NA),
         })
     }

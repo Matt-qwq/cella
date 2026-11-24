@@ -220,6 +220,7 @@ impl<'h> Evaluator<'h> {
             // whole block into an `Array` first, which is 25-40 ms at a million rows to read the
             // first hundred — `eval/reference_fns.rs`.
             "MATCH" => self.match_exact_column(args).unwrap_or_else(|| self.builtin("MATCH", args)),
+            "XMATCH" => self.xmatch_exact_column(args).unwrap_or_else(|| self.builtin("XMATCH", args)),
             "VLOOKUP" => self.vlookup_exact_column(args).unwrap_or_else(|| self.builtin("VLOOKUP", args)),
             "XLOOKUP" => self.xlookup(args),
             "CELL" => self.cell_info(args),
