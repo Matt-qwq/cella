@@ -39,7 +39,7 @@
 
 | # | 刀 | 现在 | 目标 | 根因猜想 | 工时 |
 |---|---|---|---:|---|---|
-| 8 | **整列参数物化**（142 个函数 ≥ 10 ms 的系统性原因） | `VLOOKUP` 78 → **17 ms** ✅、`MATCH` 56 → **16** ✅、`XLOOKUP` 74 → **16** ✅、`XMATCH` 53 → **16** ✅、`COUNTIF` 23 → **18**、`SUMIF` 27 → **18**、`SUM` 51 → **29**（round 53–57，`gaps` §40/§43/§44） | ≤ 10 ms | 精确查找（含带选项的写法）已改成"扫列命中即停"；剩下的：`AVERAGEIF`（27 ms，仍走库）、必须要全部值的 `MEDIAN`/`SUMPRODUCT`（50/22 ms）。一次扫描的底价是 ~19 ms（一列 100 万行的读取价），要到 10 ms 得在存储层再把一列读做紧（单独一刀） | 8–14 h |
+| 8 | **整列参数物化**（142 个函数 ≥ 10 ms 的系统性原因） | `VLOOKUP` 78 → **17 ms** ✅、`MATCH` 56 → **16** ✅、`XLOOKUP` 74 → **16** ✅、`XMATCH` 53 → **16** ✅、`COUNTIF` 23 → **18**、`SUMIF` 27 → **18**、`AVERAGEIF` 27 → **17**、`COUNTIFS` 24 → **18**、`SUMIFS` 31 → **18**、`SUM` 51 → **29**（round 53–59，`gaps` §40/§43/§44） | ≤ 10 ms | 精确查找（含带选项的写法）已改成"扫列命中即停"；剩下的：必须要全部值的 `MEDIAN`/`SUMPRODUCT`（52/23 ms）。一次扫描的底价是 ~19 ms（一列 100 万行的读取价），要到 10 ms 得在存储层再把一列读做紧（单独一刀） | 8–14 h |
 | 9 | **动态数组分组** | `PIVOTBY` ~~5.16 s~~ **989 ms** ✅、`GROUPBY` ~~2.48 s~~ **785 ms** ✅、`UNIQUE` ~~1.49 s~~ **310 ms** ✅、`BYROW` ~~1.18 s~~ **984 ms** ✅（round 54–55，`gaps` §41/§42） | 各 ≤ 1 s | 已做：组键不再拼字符串（值哈希的 `KeyIds`）；`PIVOTBY` 分桶不再先攒引用数组；LAMBDA 调用不再每次换/重建环境、不再每次两个名字查找。剩下：环境里的参数名每次仍分配一个 `String`（要 `Arc<str>` 全链改动，收益几个百分点） | 6–10 h |
 | 10 | **数组抬升** | `BITAND/BITOR/BITXOR` 240/240/240 ms（round 58 复测） | ≤ 80 ms | **假设被推翻**（`gaps` §45）：230 ms 里抬升只占 ~71，**~143 是"铺开 100 万格 spill"**（其中 ~48 是 `BTreeMap<CellRef,Value>` 插 100 万节点，~95 是足迹检查 + 克隆 + 依赖查询）。所以这一刀不是抬升，是**换 spill 的存储**（按区间存 `Arc<Array>` 而不是逐格 BTreeMap），会牵动 save/显示/calc/清 spill 的每一处读取 | 4–8 h |
 
@@ -343,3 +343,20 @@
 - **结论**：第 10 项要动的是**spill 的存储表示**（按区间存 `Arc<Array>`），不是抬升的循环。
   这一刀会牵动所有读 `sheet.spill` 的地方（保存、显示、calc 宿主、清 spill 的命令），需要单独一轮设计。
 - **留下的仪器**：`fn_probe` 的三行（`SUM of a lift`、`BITAND, spilling`、`SUM of a column`）。
+## 18. round 59：单条件家族全部走扫描（11-25）
+
+- round 57 把 `COUNTIF`/`SUMIF` 改成扫存储，但带一对条件的复数写法（`COUNTIFS`/`SUMIFS`/`AVERAGEIFS`）
+  和 `AVERAGEIF` 还是走库（先物化整列）。
+- **改法**：宿主的钩子合成一个 —— `criteria_columns(target, criteria, criterion, fold)`，`fold` 是
+  `Sum` 或 `Average`；求和、平均要用的计数、同列写法（`SUMIF(A:A,">0",A:A)`）和双列写法是同一段身体。
+  求值器按每个函数自己的参数顺序传：`SUMIF(range, crit, [sum_range])` 对 `SUMIFS(sum_range, range, crit)`。
+- **保留的差异**：Excel 文档写明的差异——超过 255 个 UTF-16 单位的文本条件，单条件函数是 `#VALUE!`，
+  复数形式**截断**。两条路各自解析自己的条件，测试把两种行为都钉住（`COUNTIFS` 260 字符 = 0，
+  `COUNTIF` 同样文本 = `#VALUE!`，`AVERAGEIFS` 没命中 = `#DIV/0!`）。
+- **数字（函数页，每行五次采样）**：`AVERAGEIF` 27 → **17 ms**、`AVERAGEIFS` 28 → **18**、
+  `COUNTIFS` 24 → **18**、`SUMIFS` 31 → **18**；`COUNTIF`/`SUMIF` 保持 18。
+  **单条件家族的七种写法现在都在 17–18 ms**（就是"扫一列 100 万格"的价）。
+  对照未动（`SUM` 29→29、`MEDIAN` 50→52、`SUMPRODUCT` 22→23、`MATCH` 17→17、`BYROW` 966→978、
+  `PIVOTBY` 990→1.00 s、`BITAND` 229→227、`VSTACK` 192→200）。
+- **P1 第一项剩下的**：本来就要每个值的 `MEDIAN`/`SUMPRODUCT`（52/23 ms）；要整体进 10 ms，得再拧紧
+  存储层"读一列"（`gaps` §39/§40）。
