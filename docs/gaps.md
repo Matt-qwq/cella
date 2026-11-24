@@ -1724,6 +1724,19 @@ change of `gaps` §45.
 **Test:** the model suite (174) and the two differentials that read columns through the walk
 (`criteria_scan`, `xlookup_column`) pass unchanged — the walk is the one every one of them uses.
 
+**Three more ways to the same 11.9 ns, tried and refuted** (measured, reverted):
+- skipping the presence bitmap for a row that is full from column 0 (`cells == columns`) — the
+  bitmap test and rank it replaces are not where the time is: **12.0 ns, no change**;
+- skipping the formula search for a row with no side table (`extras.is_none()`) — part of the same
+  1.1 ns the ablation attributed to the formula test: no change;
+- inlining the row loop into the packed path so the per-cell work is not passed back through a
+  closure — **14.5 ns, worse** (the loop no longer fits the inliner's budget the way the closure
+  version does).
+
+So the 11.9 ns is the callback dispatch plus the row iteration itself: a column read hands a million
+cells to a caller's closure, and that is the floor of this shape. Going under it means handing over
+something other than a cell at a time — the dense-band stride read or the spill store.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
