@@ -1395,6 +1395,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                     if let Some(prof) = profile.as_mut() {
                         prof.row_started();
                     }
+                    // A sheet with no pictures anywhere — the ordinary sheet — has nothing to read
+                    // for a cell's old picture, and asking its map eight million times is a tenth of
+                    // the build. Checked once a row: the row's own writes only land at the flush.
+                    let dest_pictures = cx.wb.sheet(dest_sheet).is_some_and(|sh| !sh.cell_pictures.is_empty());
                     for c in 0..src.width() {
                         let sc = CellRef::new(src.start.row + r, src.start.col + c);
                         let (dr, dc) = if transpose { (c, r) } else { (r, c) };
@@ -1433,7 +1437,8 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         // the dispatch on a wide block.
                         let fresh = what == What::All && op == "none" && !link;
                         let old = if fresh { Cell::default() } else { cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell(dest)).unwrap_or_default() };
-                        let old_picture = cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell_pictures.get(&dest)).cloned();
+                        let old_picture =
+                            if dest_pictures { cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell_pictures.get(&dest)).cloned() } else { None };
                         let mut new_picture = old_picture.clone();
                         let mut new = old.clone();
                         let mut shift = |cell: &Cell| -> Option<std::sync::Arc<Formula>> {
@@ -1667,7 +1672,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                 cella_formula::adjust::Edit::MoveToSheet { from: src, to_sheet: dest_name, to_row: at.row, to_col: at.col }
             };
             rewrite_all_formulas(&mut cx.wb, &src_sheet_name, &e);
-            cx.structural = true;
+            // A workbook that holds no formula has nothing to re-evaluate and no spill to lay out
+            // again, and the changed list was skipped above (a move says so in one flag instead):
+            // asking for a full recalculation would rebuild an empty graph over eight million cells.
+            cx.structural = cx.wb.sheets.iter().any(|s| s.cells.has_formulas());
         }
         let end = at.offset_clamped((tiles_r * h) as i64 - 1, (tiles_c * w) as i64 - 1);
         *cx.sel = crate::Selection { active: at, anchor: at, ranges: vec![RangeRef::new(at, end)] };
