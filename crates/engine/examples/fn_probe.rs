@@ -78,6 +78,11 @@ const CALLS: &[(&str, &str)] = &[
     ("BYROW identity", "=BYROW(A2:A{last},LAMBDA(x,x))"),
     ("BYROW sum", "=BYROW(A2:A{last},LAMBDA(x,SUM(x)))"),
     ("BYROW sum of 3", "=BYROW(A2:C{last},LAMBDA(x,SUM(x)))"),
+    // Lifting against spilling: the same million-element result, once folded into a scalar (no
+    // spill is laid out) and once left as an array (a million spilled cells).
+    ("SUM of a lift", "=SUM(BITAND(A2:A{last},B2:B{last}))"),
+    ("BITAND, spilling", "=BITAND(A2:A{last},B2:B{last})"),
+    ("SUM of a column", "=SUM(A2:A{last})"),
 ];
 
 fn main() -> ExitCode {

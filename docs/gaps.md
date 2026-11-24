@@ -1642,6 +1642,46 @@ remember a target's error until its row's criterion is known — both fixed and 
 `MEDIAN`/`SUMPRODUCT` (50/22 ms) need every value in hand. The 10 ms target for the criteria family
 is the store's one-column walk, not theirs.
 
+### 45. A million-cell dynamic array pays for its **spill**, not its lift (P, measured 11-25; the plan's guess refuted)
+
+**What the plan said** (`performance-plan.md` item 10): "array lifting — `BITAND`/`BITOR`/`BITXOR`
+243/246/240 ms at a million rows, ≈120 ns an element; the lifting is element-wise boxing; process it
+in blocks (SIMD-friendly) — ≤80 ms". So the next knife was supposed to be a tighter lift.
+
+**What the instruments said.** `fn_probe` grew three rows that separate the halves of one call —
+the same million-element result folded into a scalar (no spill laid out) and left as an array:
+
+| call | ms | what it is |
+|---|---:|---|
+| `SUM(A2:A1000001)` | **16** | reading one column and folding it |
+| `SUM(BITAND(A2:A, B2:B))` | **87** | the same, plus a million-element **lift** (≈71 ms of it) |
+| `BITAND(A2:A, B2:B)` | **230** | the same **plus a million spilled cells** (≈143 ms of it) |
+
+So of the 230 ms, **~71 is the lift and ~143 is laying the spill out** — the plan's 120-ns-an-element
+premise is wrong, and a faster lift could not have reached 80 ms.
+
+**Where the 143 goes** (by ablation, one thing at a time): **~48 ms** inserting a million values into
+`Sheet::spill`, which is a `BTreeMap<CellRef, Value>` — a node a cell — and **~95 ms** the rest of the
+lay-out: the footprint check (a walk of the area asking whether anything is in the way), the block
+iteration and value clones, and the dependency query over the area.
+
+**Two fixes built, measured, reverted** (the rule this repository writes down):
+- The footprint check asked "is anything in the way" a cell at a time — `holds_content` plus a
+  `spill` map lookup a cell. Rewritten as a bitmap walk plus a range query over the spill map it
+  measured **231 → 223 ms**, inside this machine's noise. (It did find a real bug in the range query:
+  a `BTreeMap` keyed by cell answers a *superset* for a one-column rectangle, since it also finds keys
+  in other columns of the rows it spans — fixed while it lived, then reverted with the rest.)
+- Laying the spill out through one sorted block (`BTreeMap::extend`) measured **229 → 234**: no win,
+  reverted.
+
+**What it means:** item 10's target needs the **spill store** changed, not the lift — a per-range
+array (`RangeRef` + `Arc<Array>`) instead of a per-cell `BTreeMap`, with every reader of `sheet.spill`
+(save, display, the calc host, the commands that clear a spill) moved to it. That is a design knife
+of its own, and this round is the measurement that scopes it.
+
+**Instrument left behind:** the three `fn_probe` rows above, and `SPILL_NO_INSERT`-style ablation is
+not kept — the numbers are in this entry.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2105,6 +2145,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §45 (new): a million-cell dynamic array pays for its **spill**, not its lift. One call measured three ways: `SUM(A2:A)` 16 ms, `SUM(BITAND(A2:A,B2:B))` 87 (the lift ≈71), `BITAND(A2:A,B2:B)` 230 (the spill ≈143). Plan item 10's ≤80 ms target therefore needs the spill store (`BTreeMap<CellRef, Value>`, a node a cell) redesigned, not a tighter lift. Two fixes were built, measured (231 → 223 and 229 → 234 — both inside the noise) and reverted |
 | 2026-11-25 | minor | §44 (new): the criteria functions tested a copy of the column — the criterion matcher takes a `CellView` now (a number, a borrowed text, a boolean, an error, a blank) so a host can ask it of a stored cell with no allocation, and `COUNTIF`/`SUMIF` answer from one walk: **COUNTIF 23 → 18 ms, SUMIF 27 → 18 ms**. The differential test (`criteria_scan.rs`) caught two bugs of the new path — a matched error must be the answer, and a target's error must wait for its row's verdict |
 | 2026-11-25 | minor | §43 (new): the lookups only answered the short spellings — `XLOOKUP(k,A:A,B:B,1,0,1)` and `XMATCH(k,A:A,0,1)` fell to the general path and built the block, while the three-argument `MATCH`/`VLOOKUP` scanned. **XLOOKUP 74 → 16 ms, XMATCH 53 → 16 ms**, with the rows the round cannot touch unmoved |
 | 2026-11-25 | minor | §42 (new): a LAMBDA call cost a microsecond before the body ran — the environment was swapped out and rebuilt every call, the bound argument went through a one-entry `Vec`, and `aggregate_value` looked up `SUM` and `COUNT` for every argument. **BYROW 1.15 s → 984 ms, MAP 532 → 422 ms, SCAN 601 → 524 ms, REDUCE 170 → 133 ms**, and the rows that run no LAMBDA did not move |
