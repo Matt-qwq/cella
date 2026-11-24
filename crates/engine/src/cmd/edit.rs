@@ -1359,7 +1359,14 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             // Remove the source first (contents and formats), and fix references to it.
             let source = cx.sheet_mut(clip.sheet)?;
             moved_pictures = source.cell_pictures.iter().filter(|(c, _)| src.contains(**c)).map(|(c, p)| (*c, p.clone())).collect();
+            #[allow(clippy::disallowed_methods)]
+            let cut_started = (!cfg!(target_arch = "wasm32")).then(std::time::Instant::now).filter(|_| std::env::var_os("CELLA_PROFILE").is_some());
             let taken = source.take_cells(src);
+            if let Some(started) = cut_started {
+                #[allow(clippy::disallowed_methods)]
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                eprintln!("cut: take {ms:.0} ms, {} cells", taken.len());
+            }
             // Notes, hyperlinks and merged areas sit beside the cells, and a cut takes them
             // with the block: the destination is written from the clipboard snapshot taken
             // before the cut, so removing them here loses nothing and leaves the old place
@@ -1408,7 +1415,12 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         if skip_blanks && src_picture.is_none() && src_val.is_empty() && src_cell.as_ref().is_none_or(|x| x.formula.is_none()) {
                             continue;
                         }
-                        let old = cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell(dest)).unwrap_or_default();
+                        // The destination's own cell has to be read only when the paste keeps part
+                        // of it: `all` with no operation writes every field from the source, and
+                        // asking the store for eight million cells to throw them away is a third of
+                        // the dispatch on a wide block.
+                        let fresh = what == What::All && op == "none" && !link;
+                        let old = if fresh { Cell::default() } else { cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell(dest)).unwrap_or_default() };
                         let old_picture = cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell_pictures.get(&dest)).cloned();
                         let mut new_picture = old_picture.clone();
                         let mut new = old.clone();
