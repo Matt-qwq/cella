@@ -943,8 +943,11 @@ fn copy_impl(s: &mut Session, p: &Json, cut: bool) -> Result<Json> {
 /// one command, so the text it would put on the system clipboard is never read — and building it
 /// formats every cell of the block: seconds on a thousand-column sheet.
 fn copy_impl_with(s: &mut Session, p: &Json, cut: bool, with_text: bool) -> Result<Json> {
+    // The clock is read only off wasm, where `Instant::now` traps (the `cfg!` is a constant, so the
+    // branch does not survive compilation there), and only when `CELLA_PROFILE` asks for it.
+    let probe = !cfg!(target_arch = "wasm32") && std::env::var_os("CELLA_PROFILE").is_some();
     #[allow(clippy::disallowed_methods)]
-    let t_copy_start = std::time::Instant::now();
+    let t_copy_start = probe.then(std::time::Instant::now);
     let multiple = || EngineError::Other("This action won't work on multiple selections.".into());
     let sheet = target_sheet(s, p)?;
     let ranges = target_ranges(s, p)?;
@@ -971,9 +974,9 @@ fn copy_impl_with(s: &mut Session, p: &Json, cut: bool, with_text: bool) -> Resu
         (d.wb.clone(), trim(ranges.first().copied().unwrap_or_default()), Vec::new())
     };
     #[allow(clippy::disallowed_methods)]
-    let t_probe = std::time::Instant::now();
+    let t_probe = probe.then(std::time::Instant::now);
     let text = if with_text { crate::display::range_text(&wb, sheet, range) } else { String::new() };
-    if std::env::var_os("CELLA_PROFILE").is_some() {
+    if let (Some(t_probe), Some(t_copy_start)) = (t_probe, t_copy_start) {
         #[allow(clippy::disallowed_methods)]
         let (text_ms, all_ms) = (t_probe.elapsed().as_secs_f64() * 1000.0, t_copy_start.elapsed().as_secs_f64() * 1000.0);
         eprintln!("copy: text {text_ms:.0} ms, whole {all_ms:.0} ms, {} cells", range.count());
@@ -1252,12 +1255,12 @@ fn range_move(s: &mut Session, p: &Json) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
     let to = cell_param_on(s, p, "to", sheet)?.ok_or_else(|| bad("range.move", "missing `to`: the cell the range is dropped on"))?;
     let kept = s.clipboard.take();
-    let probe = std::env::var_os("CELLA_PROFILE").is_some();
+    let probe = !cfg!(target_arch = "wasm32") && std::env::var_os("CELLA_PROFILE").is_some();
     #[allow(clippy::disallowed_methods)]
-    let started = std::time::Instant::now();
+    let started = probe.then(std::time::Instant::now);
     let moved = copy_impl_with(s, p, true, false).and_then(|_| {
-        #[allow(clippy::disallowed_methods)]
-        let t_copy = started.elapsed().as_secs_f64();
+        let now = |at: Option<std::time::Instant>| at.map(|t| t.elapsed().as_secs_f64());
+        let t_copy = now(started).unwrap_or_default();
         let src = s.clipboard.as_ref().map(|c| c.range).unwrap_or_default();
         let dest = to.offset(i64::from(src.height()) - 1, i64::from(src.width()) - 1).map(|end| RangeRef::new(to, end));
         if bool_param(p, "overwrite") != Some(true)
@@ -1268,15 +1271,12 @@ fn range_move(s: &mut Session, p: &Json) -> Result<Json> {
         {
             return Err(EngineError::Other("There's already data here. Pass `overwrite: true` to replace it.".into()));
         }
-        #[allow(clippy::disallowed_methods)]
-        let t_check = started.elapsed().as_secs_f64();
+        let t_check = now(started).unwrap_or_default();
         // On the range's sheet, which `paste` would leave to the active one. The selection
         // belongs to the active sheet: it follows the moved cells only when they are on it.
         let selection = s.doc()?.selection.clone();
         let pasted = paste_special(s, &json!({"what": "all", "at": to.a1(), "sheet": sheet}))?;
-        if probe {
-            #[allow(clippy::disallowed_methods)]
-            let now = started.elapsed().as_secs_f64();
+        if let Some(now) = now(started) {
             eprintln!("move: copy {:.0} ms, check {:.0} ms, paste {:.0} ms", t_copy * 1000.0, (t_check - t_copy) * 1000.0, (now - t_check) * 1000.0);
         }
         if sheet != s.doc()?.wb.active_sheet {
