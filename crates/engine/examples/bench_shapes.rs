@@ -1,6 +1,6 @@
 //! The shape ruler: the same commands at three sheet *shapes*, because rows are not the only axis.
 //!
-//! `cargo run --release -p cella-engine --example bench_shapes -- [--json] [--only=ID,...]`
+//! `cargo run --release -p cella-engine --example bench_shapes -- [--json] [--only=ID,...] [--shape=NAME]`
 //!
 //! Every other ruler in this repository varies **rows**: 100,000 to 1,000,000 of them, six columns
 //! wide. That answers "does this scan the body faster or slower", and it cannot answer "does this
@@ -96,6 +96,14 @@ fn run() -> Result<(), String> {
     // `--save=DIR` writes the three shapes out as .xlsx and stops: the external replay (Excel, WPS)
     // needs the same workbooks on disk, and this ruler is the thing that defines them.
     let save_dir = args.iter().find_map(|a| a.strip_prefix("--save=")).map(|v| v.trim_end_matches(['\\', '/']).to_string());
+    // `--shape=wide` prices one shape alone: a change that only touches a wide sheet is that
+    // shape's question, and building the other two to answer it is two thirds of the wait.
+    let shape_only = args.iter().find_map(|a| a.strip_prefix("--shape=")).map(|v| v.trim().to_string());
+    if let Some(want) = &shape_only
+        && !SHAPES.iter().any(|s| s.name == want)
+    {
+        return Err(format!("no such shape `{want}` (tall, wide, sheets)"));
+    }
     if args.iter().any(|a| a == "--list") {
         for (id, what) in COMMANDS {
             println!("{id}\t{what}");
@@ -103,7 +111,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("usage: bench_shapes [--json] [--only=ID,...] [--list] [--save=DIR]");
+        println!("usage: bench_shapes [--json] [--only=ID,...] [--shape=NAME] [--list] [--save=DIR]");
         return Ok(());
     }
     if cfg!(debug_assertions) {
@@ -127,6 +135,9 @@ fn run() -> Result<(), String> {
     }
     let mut measurements: Vec<Json> = Vec::new();
     for shape in SHAPES {
+        if shape_only.as_deref().is_some_and(|want| want != shape.name) {
+            continue;
+        }
         eprintln!("bench_shapes: building {} — {} ({} cells)", shape.name, shape.why, shape.rows * shape.cols * shape.sheets);
         let base = prepare(shape)?;
         eprintln!("bench_shapes: {} — {} commands", shape.name, wanted.len());
@@ -196,6 +207,14 @@ struct Measured {
 const SAMPLES: usize = 3;
 const SLOW_MS: f64 = 50.0;
 
+/// How many samples a slow row gets: [`SAMPLES`], or `CELLA_SHAPE_SAMPLES` when a page run on a busy
+/// machine needs more. The rows it matters for are the allocation-bound ones — `edit.copy` formats a
+/// block of cells into one `String` and has measured 540 ms and 944 ms in two full passes of the
+/// same code — where a single best-of-three still inherits the machine it woke up on.
+fn samples_wanted() -> usize {
+    std::env::var("CELLA_SHAPE_SAMPLES").ok().and_then(|v| v.trim().parse::<usize>().ok()).map_or(SAMPLES, |n| n.clamp(1, 15))
+}
+
 fn measure(base: &DocState, id: &str, shape: &Shape) -> Result<Measured, String> {
     let mut best: Option<Measured> = None;
     for attempt in 0..TRIES {
@@ -211,7 +230,7 @@ fn measure(base: &DocState, id: &str, shape: &Shape) -> Result<Measured, String>
         // A row that ran is the answer. A slow one is measured again — the same params, the fastest
         // of [`SAMPLES`] runs — because a single sample of it is the machine, not the command.
         if found.ms >= SLOW_MS
-            && let Ok(sampled) = measure_attempt(base, id, shape, attempt, SAMPLES)
+            && let Ok(sampled) = measure_attempt(base, id, shape, attempt, samples_wanted())
         {
             best = Some(sampled);
         }

@@ -318,6 +318,40 @@ impl<'a> RunCursor<'a> {
     }
 }
 
+/// Where a walk over one row's run slice stands: the run it last answered from.
+///
+/// [`RunCursor`] borrows the slice, which a walker that owns its band across `next()` calls cannot
+/// do — `ScanWalk` holds an `Arc<Band>`, not a borrow of one. This one is two plain words, so the
+/// walker re-supplies the slice on every ask. Like `RunCursor` it answers in **non-decreasing**
+/// cell order, which is exactly what a row walk gives it; a walk that went back would still get
+/// the right answer, by starting the run search over.
+#[derive(Clone, Copy, Debug, Default)]
+struct RunPos {
+    /// The run the last answer came from.
+    idx: usize,
+    /// First cell of that run.
+    start: usize,
+}
+
+impl RunPos {
+    /// The value of cell `i`, for asks in non-decreasing order.
+    fn at(&mut self, runs: &[(u16, u16)], i: usize, default: u16) -> u16 {
+        if i < self.start {
+            self.idx = 0;
+            self.start = 0;
+        }
+        loop {
+            let Some(&(value, n)) = runs.get(self.idx) else { return default };
+            let end = self.start.saturating_add(n as usize);
+            if i < end {
+                return value;
+            }
+            self.start = end;
+            self.idx += 1;
+        }
+    }
+}
+
 /// `v[at..at + n]`, empty when the range runs off the end: a stripe's offsets and its rows are
 /// built together, so this only guards against a bug becoming a panic.
 fn slice<T>(v: &[T], at: u32, n: u32) -> &[T] {
@@ -1440,14 +1474,26 @@ impl Band {
 
     /// Rebuilds the `Cell` at `col` from the packed row.
     fn cell_at(&self, row: &BandRow, i: usize, col: u32) -> Cell {
-        Cell { value: self.value_at(row, i, col), formula: row.formula_at(col).cloned(), style: self.style(row.style_at(self, i)) }
+        self.cell_of(row, i, col, row.kind_at(self, i), row.style_at(self, i))
+    }
+
+    /// [`cell_at`](Self::cell_at) when the caller already knows the cell's kind and style — a walk
+    /// that visits a row in order reads them off a run cursor and must not pay a second walk of the
+    /// run stripes for every cell.
+    fn cell_of(&self, row: &BandRow, i: usize, col: u32, kind: u8, style: u16) -> Cell {
+        Cell { value: self.value_of(row, i, col, kind), formula: row.formula_at(col).cloned(), style: self.style(style) }
     }
 
     /// The value of the `i`th stored cell alone, without the formula `Arc` and the style a
     /// [`Cell`] also carries: a read that wants the value pays for nothing else.
     fn value_at(&self, row: &BandRow, i: usize, col: u32) -> Value {
+        self.value_of(row, i, col, row.kind_at(self, i))
+    }
+
+    /// [`value_at`](Self::value_at) for a walker that already knows the cell's kind.
+    fn value_of(&self, row: &BandRow, i: usize, col: u32, kind: u8) -> Value {
         let payload = row.payload_at(self, i);
-        match row.kind_at(self, i) {
+        match kind {
             NUMBER => Value::Number(self.number(payload)),
             NUMBER_WIDE => Value::Number(f64::from_bits(row.wide_at(self, i))),
             TEXT => Value::Text(self.text(u64::from(payload))),
@@ -2616,13 +2662,20 @@ impl PartialEq for CellStore {
 }
 
 /// Where a walk over one packed row is: the column it will look at next, the last column the walk
-/// was asked for, and the index of the next stored cell. Plain numbers, so a walker can own the
-/// band its row lives in and still keep its place across `next()` calls.
+/// was asked for, the index of the next stored cell, and where its two run stripes stand.
+///
+/// Plain numbers, so a walker can own the band its row lives in and still keep its place across
+/// `next()` calls. The run positions are the whole point of the type: a row of a thousand columns
+/// can hold a couple of hundred kind runs, and asking `BandRow::kind_at` per cell walked them from
+/// the first every time — a thousand columns and a hundred and fifty runs a cell made the row
+/// **quadratic**, which is what a cut of a wide block spent most of its second on (`gaps` §39).
 #[derive(Clone, Copy, Debug)]
 struct PackCursor {
     col: u32,
     hi: u32,
     i: usize,
+    kind: RunPos,
+    style: RunPos,
 }
 
 impl PackCursor {
@@ -2634,7 +2687,12 @@ impl PackCursor {
         };
         let col = lo.max(cells.first);
         let i = cells.rank_before(band, col);
-        PackCursor { col, hi, i }
+        PackCursor { col, hi, i, kind: RunPos::default(), style: RunPos::default() }
+    }
+
+    /// The kind of the next cell to hand out, from this cursor's run position.
+    fn kind_at(&mut self, band: &Band, cells: &BandRow) -> u8 {
+        self.kind.at(cells.kind_runs(band), self.i, u16::from(EMPTY)) as u8
     }
 
     /// [`PackCursor::next`] for a read that wants the value and the formula flag alone: no
@@ -2653,7 +2711,8 @@ impl PackCursor {
             if col > self.hi {
                 return None;
             }
-            let value = band.value_at(cells, self.i, col);
+            let kind = self.kind_at(band, cells);
+            let value = band.value_of(cells, self.i, col, kind);
             let formula = cells.formula_at(col).is_some();
             self.col = col + 1;
             self.i += 1;
@@ -2677,7 +2736,9 @@ impl PackCursor {
             if col > self.hi {
                 return None;
             }
-            let cell = band.cell_at(cells, self.i, col);
+            let kind = self.kind_at(band, cells);
+            let style = self.style.at(cells.style_runs(band), self.i, 0);
+            let cell = band.cell_of(cells, self.i, col, kind, style);
             self.col = col + 1;
             self.i += 1;
             return Some((CellRef::new(row, col), cell));
@@ -5702,6 +5763,40 @@ mod packed_tests {
             });
             assert_eq!(got, want, "range {}", range.a1());
         }
+    }
+
+    /// A row's kinds and styles are runs, and a walk reads them off a run cursor ([`RunPos`]).
+    /// Every cell must still come out holding its own value and its own style: the cursor's place
+    /// and the cell index are two counts that have to stay in step, and a window that starts and
+    /// ends **inside** a run is where they part company if they can. A row of alternating kinds is
+    /// the shape a wide report has (a number, a name, a number, a name), and the one where asking
+    /// the run stripe per cell was quadratic (`gaps` §39).
+    #[test]
+    fn a_row_of_alternating_kinds_and_styles_walks_in_order() {
+        let want = |col: u32| Cell {
+            value: if col.is_multiple_of(3) { Value::text(format!("t{col}")) } else { Value::Number(f64::from(col)) },
+            formula: None,
+            style: StyleId(col % 4),
+        };
+        let mut s = CellStore::new();
+        for col in 0..400u32 {
+            s.set(CellRef::new(2, col), want(col));
+        }
+        for (c0, c1) in [(0u32, 399u32), (0, 0), (1, 2), (63, 66), (128, 191), (398, 399)] {
+            let expected: Vec<(u32, Cell)> = (c0..=c1).map(|col| (col, want(col))).collect();
+            assert_eq!(s.row(2, c0, c1).collect::<Vec<_>>(), expected, "row() over {c0}..={c1}");
+            let walked: Vec<(CellRef, Cell)> = s.iter_range(RangeRef::new(CellRef::new(2, c0), CellRef::new(2, c1))).collect();
+            let walked: Vec<(u32, Cell)> = walked.into_iter().map(|(at, cell)| (at.col, cell)).collect();
+            assert_eq!(walked, expected, "iter_range over {c0}..={c1}");
+        }
+        // The value-only walk reads the same kinds through its own cursor and no style at all.
+        let mut values = Vec::new();
+        let done = s.visit_values(RangeRef::new(CellRef::new(2, 0), CellRef::new(2, 399)), &mut |at, value, _| {
+            values.push((at.col, value));
+            true
+        });
+        assert!(done);
+        assert_eq!(values, (0..400u32).map(|col| (col, want(col).value)).collect::<Vec<_>>());
     }
 
     /// A row built through `BandBatch` may hold a slot with a style and no value: the packed walk

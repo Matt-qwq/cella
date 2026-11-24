@@ -1384,6 +1384,17 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             moved_cells = taken;
         }
         let mut profile = WriteProfile::start("paste");
+        // What a pasted cell can carry beside its value, asked once for the whole paste: a sheet
+        // with no comment, hyperlink or validation rule on either side has nothing to look up and
+        // nothing to clear, and asking once per cell was eight million answers to a question that
+        // cannot change its shape mid-paste.
+        let carry_notes = !src_sheet.comments.is_empty();
+        let carry_links = !src_sheet.hyperlinks.is_empty();
+        let carry_rules = !src_sheet.validations.is_empty() || cx.wb.sheet(dest_sheet).is_some_and(|sh| !sh.validations.is_empty());
+        let takes_pictures = !moved_pictures.is_empty() || !src_sheet.cell_pictures.is_empty();
+        // `all` with no operation writes every field of a cell from the source, so the destination's
+        // own cell is never read. Decided once, not once per cell.
+        let fresh_paste = what == What::All && op == "none" && !link;
         // A paste without a transpose writes each destination row left to right, so the row can go
         // to the store in one call: a row the cut emptied is then built in one pass, where a cell at
         // a time inserts into the middle of the band's stripes and shifts the rows after it.
@@ -1431,7 +1442,11 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         } else {
                             Value::Empty
                         };
-                        let src_picture = if cut_move { moved_pictures.get(&sc) } else { src_sheet.cell_pictures.get(&sc) }.cloned();
+                        let src_picture = if takes_pictures {
+                            if cut_move { moved_pictures.get(&sc) } else { src_sheet.cell_pictures.get(&sc) }.cloned()
+                        } else {
+                            None
+                        };
                         if skip_blanks && src_picture.is_none() && src_val.is_empty() && src_cell.as_ref().is_none_or(|x| x.formula.is_none()) {
                             continue;
                         }
@@ -1439,8 +1454,8 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         // of it: `all` with no operation writes every field from the source, and
                         // asking the store for eight million cells to throw them away is a third of
                         // the dispatch on a wide block.
-                        let fresh = what == What::All && op == "none" && !link;
-                        let old = if fresh { Cell::default() } else { cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell(dest)).unwrap_or_default() };
+                        let old =
+                            if fresh_paste { Cell::default() } else { cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell(dest)).unwrap_or_default() };
                         let old_picture =
                             if dest_pictures { cx.wb.sheet(dest_sheet).and_then(|sh| sh.cell_pictures.get(&dest)).cloned() } else { None };
                         let mut new_picture = old_picture.clone();
@@ -1581,7 +1596,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             }
                         }
                         // The copied cell's validation rule replaces whatever rule the destination had.
-                        if !link && matches!(what, What::All | What::AllExceptBorders | What::Validation) {
+                        if carry_rules && !link && matches!(what, What::All | What::AllExceptBorders | What::Validation) {
                             let rule = src_sheet.validations.iter().find(|dv| dv.ranges.iter().any(|r| r.contains(sc))).cloned();
                             let sh = cx.sheet_mut(dest_sheet)?;
                             super::data::remove_validation_cells(&mut sh.validations, &[RangeRef::new(dest, dest)]);
@@ -1609,10 +1624,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 }
                             }
                             What::All => {
-                                if let Some(cm) = src_sheet.comments.get(&sc).cloned() {
+                                if carry_notes && let Some(cm) = src_sheet.comments.get(&sc).cloned() {
                                     cx.sheet_mut(dest_sheet)?.comments.insert(dest, cm);
                                 }
-                                if let Some(h) = src_sheet.hyperlinks.get(&sc).cloned() {
+                                if carry_links && let Some(h) = src_sheet.hyperlinks.get(&sc).cloned() {
                                     cx.sheet_mut(dest_sheet)?.hyperlinks.insert(dest, h);
                                 }
                                 write_cell(&mut cx.wb, dest_sheet, dest, new, new_picture.take(), batch, &mut buf, &mut pics)?;
