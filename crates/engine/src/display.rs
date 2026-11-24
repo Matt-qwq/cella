@@ -1,5 +1,6 @@
 //! How cells look as text: number formats applied, for the grid, clipboard, CSV and agents.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -127,7 +128,14 @@ pub fn value_text(wb: &Workbook, sheet: &Sheet, c: CellRef) -> String {
 /// [`value_text`] for a value and a format code given apart from a cell (print takes the code
 /// from the cell's effective look, which a conditional format can override).
 pub fn value_text_as(wb: &Workbook, v: &Value, code: &str) -> String {
-    let f = format(v, code, wb);
+    value_text_with(wb, v, &number_format(code))
+}
+
+/// [`value_text_as`] for a format that is already parsed. The clipboard formats a million cells
+/// under a handful of styles, and parsing the code per cell — through a global lock and a string
+/// hash — was most of what a copy of a wide block cost.
+fn value_text_with(wb: &Workbook, v: &Value, fmt: &NumberFormat) -> String {
+    let f = format_value(v, fmt, wb.date_system);
     match f.fill {
         Some((_, pos)) => {
             let mut t = f.text;
@@ -141,21 +149,45 @@ pub fn value_text_as(wb: &Workbook, v: &Value, code: &str) -> String {
 }
 
 /// Tab-separated text of a range, as the system clipboard gets it.
+///
+/// Read a row at a time through the store's own row reader. Asking the sheet for a cell's text ranks
+/// the packed row once for the value and once for the style, and a row of a thousand columns holds
+/// 125 kind runs: 2M cells of a wide block took 0.89 s, one per-cell text at a time.
 pub fn range_text(wb: &Workbook, sheet: usize, r: RangeRef) -> String {
     let Some(sh) = wb.sheet(sheet) else { return String::new() };
     let mut out = String::new();
     let r = clipboard_range(r);
-    for row in r.start.row..=r.end.row {
-        if sh.is_row_hidden(row) {
+    let has_spill = !sh.spill.is_empty();
+    let read = sh.cells.row_reader(r.start.col, r.end.col);
+    let mut row: Vec<Option<cella_model::Cell>> = Vec::with_capacity(r.width() as usize);
+    let mut formats: HashMap<cella_model::StyleId, NumberFormat> = HashMap::new();
+    for at in r.start.row..=r.end.row {
+        if sh.is_row_hidden(at) {
             continue;
         }
+        row.clear();
+        read(at, &mut row);
         let mut first = true;
-        for col in r.start.col..=r.end.col {
+        for (i, slot) in row.iter().enumerate() {
             if !first {
                 out.push('\t');
             }
             first = false;
-            let t = cell_text(wb, sh, CellRef::new(row, col));
+            let col = r.start.col + i as u32;
+            let c = CellRef::new(at, col);
+            let t: Cow<'_, str> = match slot {
+                // A stored cell carries its own value and style, so its text needs no lookup.
+                Some(cell) => match &cell.formula {
+                    Some(f) if sh.show_formulas && !formula_hidden(wb, sh, c) => Cow::Owned(format!("={}", f.text_at(c).unwrap_or_default())),
+                    _ => {
+                        let fmt = formats.entry(cell.style).or_insert_with(|| number_format(wb.styles.get(cell.style).num_fmt.as_str()));
+                        Cow::Owned(value_text_with(wb, &cell.value, fmt))
+                    }
+                },
+                // No stored cell: nothing to show, unless a spill reaches here.
+                None if has_spill => Cow::Owned(cell_text(wb, sh, c)),
+                None => Cow::Borrowed(""),
+            };
             if t.contains(['\t', '\n', '"']) {
                 out.push('"');
                 out.push_str(&t.replace('"', "\"\""));

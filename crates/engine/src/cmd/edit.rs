@@ -943,6 +943,8 @@ fn copy_impl(s: &mut Session, p: &Json, cut: bool) -> Result<Json> {
 /// one command, so the text it would put on the system clipboard is never read — and building it
 /// formats every cell of the block: seconds on a thousand-column sheet.
 fn copy_impl_with(s: &mut Session, p: &Json, cut: bool, with_text: bool) -> Result<Json> {
+    #[allow(clippy::disallowed_methods)]
+    let t_copy_start = std::time::Instant::now();
     let multiple = || EngineError::Other("This action won't work on multiple selections.".into());
     let sheet = target_sheet(s, p)?;
     let ranges = target_ranges(s, p)?;
@@ -968,7 +970,14 @@ fn copy_impl_with(s: &mut Session, p: &Json, cut: bool, with_text: bool) -> Resu
     } else {
         (d.wb.clone(), trim(ranges.first().copied().unwrap_or_default()), Vec::new())
     };
+    #[allow(clippy::disallowed_methods)]
+    let t_probe = std::time::Instant::now();
     let text = if with_text { crate::display::range_text(&wb, sheet, range) } else { String::new() };
+    if std::env::var_os("CELLA_PROFILE").is_some() {
+        #[allow(clippy::disallowed_methods)]
+        let (text_ms, all_ms) = (t_probe.elapsed().as_secs_f64() * 1000.0, t_copy_start.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("copy: text {text_ms:.0} ms, whole {all_ms:.0} ms, {} cells", range.count());
+    }
     // The HTML rendering is for the host clipboard (UI); it can reach 4 MB, so agents and
     // scripts get it only when they ask for it.
     let html = if p.get("html").and_then(Json::as_bool) == Some(true) { crate::io::range_html(&wb, sheet, range, &text) } else { None };

@@ -1305,6 +1305,21 @@ writing it back (1.2 s before the read) — the same per-cell store floor `gaps`
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
+### 35. `edit.copy` still formats a million cells to make the clipboard text (P, measured 11-24)
+
+**What:** `edit.copy` over eight million cells takes **0.78 s** on 8,000 rows × 1,000 columns and
+**8.5 ms** on a million rows × 8 columns (Excel 0.043 s and 0.004 s). The block is capped at two
+million cells of clipboard text (`display::clipboard_range`), and that text is now read a row at a
+time with the number format parsed once per style rather than once per cell — which took the tall
+shape from 100 ms to 8.5 ms and the wide one from 0.89 s to 0.78 s.
+
+**What remains:** about **390 ns a cell** in `range_text`, almost all of it `format_value` building a
+`String` per cell that is then copied into the tab-separated text. Two ways out, both outside the
+command layer: a formatter that writes into the caller's buffer (a `numfmt` API change), or a lazy
+clipboard — build the text when somebody reads it, the way Excel's delayed-render clipboard does.
+
+**Evidence:** [performance-shapes.md](performance-shapes.md).
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
