@@ -1,7 +1,9 @@
 //! Cell entry, selection, undo/redo, clipboard, clear, fill, find & replace.
 
+use std::borrow::Cow;
+
 use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use cella_model::{Cell, Formula, StyleId};
+use cella_model::{Cell, Formula, Sheet, StyleId, Workbook};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -1995,20 +1997,79 @@ fn flash_fill(s: &mut Session, p: &Json) -> Result<Json> {
 
 // ---------------------------------------------------------------- find & replace
 
-fn matches(hay: &str, what: &str, case: bool, whole: bool) -> bool {
-    let (h, w) = if case { (hay.to_string(), what.to_string()) } else { (hay.to_lowercase(), what.to_lowercase()) };
-    let has_wild = w.contains(['*', '?']);
-    if has_wild {
-        let pat = if whole { w } else { format!("*{w}*") };
-        return wildcard(&h, &pat);
+/// One `what`, prepared once for a whole scan: lowered when the search ignores case, and the
+/// wildcard pattern parsed once instead of once per cell. A scan calls [`hit`](Self::hit) on every
+/// stored cell — eight million of them — so nothing here allocates per call.
+struct Needle {
+    /// `what` as given: what a case-sensitive search compares against.
+    what: String,
+    /// `what.to_lowercase()`: what a case-insensitive search compares against.
+    lower: Option<String>,
+    /// The wildcard pattern as `(char, escaped)`, wrapped in `*…*` when the whole cell is not
+    /// required. `None` when `what` holds no `*` or `?`.
+    pattern: Option<Vec<(char, bool)>>,
+    whole: bool,
+}
+
+impl Needle {
+    fn new(what: &str, case: bool, whole: bool) -> Needle {
+        let lower = (!case).then(|| what.to_lowercase());
+        let pattern = what.contains(['*', '?']).then(|| {
+            let mut p = parse_pattern(lower.as_deref().unwrap_or(what));
+            if !whole {
+                p.insert(0, ('*', false));
+                p.push(('*', false));
+            }
+            p
+        });
+        Needle { what: what.to_string(), lower, pattern, whole }
     }
-    if whole { h == w } else { h.contains(&w) }
+
+    /// Whether `hay` matches: a substring, the whole cell, or a `*`/`?` pattern, ignoring case
+    /// unless the search asked to match it.
+    fn hit(&self, hay: &str) -> bool {
+        if let Some(pattern) = &self.pattern {
+            return match &self.lower {
+                Some(_) => wildcard_chars(&hay.to_lowercase(), pattern),
+                None => wildcard_chars(hay, pattern),
+            };
+        }
+        match &self.lower {
+            Some(needle) if self.whole => eq_ignore_case(hay, needle),
+            Some(needle) => contains_ignore_case(hay, needle),
+            None if self.whole => hay == self.what,
+            None => hay.contains(self.what.as_str()),
+        }
+    }
+}
+
+/// `hay == needle` ignoring case. Two ASCII strings compare byte by byte; anything else lowers the
+/// text, which is what ignoring case means for the rest of Unicode.
+fn eq_ignore_case(hay: &str, needle: &str) -> bool {
+    if hay.is_ascii() && needle.is_ascii() { hay.eq_ignore_ascii_case(needle) } else { hay.to_lowercase() == needle }
+}
+
+/// `hay` contains `needle`, ignoring case.
+fn contains_ignore_case(hay: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if hay.is_ascii() && needle.is_ascii() {
+        let (h, n) = (hay.as_bytes(), needle.as_bytes());
+        h.len() >= n.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+    } else {
+        hay.to_lowercase().contains(needle)
+    }
 }
 
 /// `*`/`?` wildcard match with `~` escapes.
 pub(crate) fn wildcard(text: &str, pat: &str) -> bool {
-    let t: Vec<char> = text.chars().collect();
-    let mut p: Vec<(char, bool)> = Vec::new();
+    wildcard_chars(text, &parse_pattern(pat))
+}
+
+/// The pattern of [`wildcard`], parsed once: each entry is a character and whether `~` escaped it.
+fn parse_pattern(pat: &str) -> Vec<(char, bool)> {
+    let mut p = Vec::new();
     let mut it = pat.chars();
     while let Some(c) = it.next() {
         if c == '~' {
@@ -2019,6 +2080,12 @@ pub(crate) fn wildcard(text: &str, pat: &str) -> bool {
             p.push((c, false));
         }
     }
+    p
+}
+
+/// [`wildcard`] against a pattern that was already parsed.
+fn wildcard_chars(text: &str, p: &[(char, bool)]) -> bool {
+    let t: Vec<char> = text.chars().collect();
     let (mut ti, mut pi) = (0usize, 0usize);
     let (mut star, mut mark) = (None, 0usize);
     while ti < t.len() {
@@ -2043,6 +2110,78 @@ pub(crate) fn wildcard(text: &str, pat: &str) -> bool {
     pi == p.len()
 }
 
+/// Every stored cell of a sheet: the range `find` and `replace` walk.
+fn whole_sheet() -> RangeRef {
+    RangeRef::new(CellRef::new(0, 0), CellRef::new(MAX_ROWS - 1, MAX_COLS - 1))
+}
+
+/// The text a stored cell shows, for matching: the formula when formulas are what is searched and
+/// the sheet shows them, else the value with the cell's number format applied.
+///
+/// A text value under a format that leaves text alone is **borrowed** rather than rebuilt. A scan
+/// that rebuilds it allocates one string per cell — eight million for a full sheet, and most of what
+/// `edit.find` used to spend its time on.
+fn text_of<'a>(wb: &Workbook, sh: &Sheet, c: CellRef, cell: &'a Cell, values: bool) -> Cow<'a, str> {
+    if !values
+        && sh.show_formulas
+        && let Some(f) = &cell.formula
+        && !crate::display::formula_hidden(wb, sh, c)
+    {
+        return Cow::Owned(format!("={}", f.text_at(c).unwrap_or_default()));
+    }
+    let code = wb.styles.get(cell.style).num_fmt.as_str();
+    // A format's fourth section is its text section (`@`); with fewer than four sections
+    // `format_text` hands the text back unchanged, so the cell's own text is what it shows. Counting
+    // `;` can only over-count (a quoted literal may hold one), which takes the slow path.
+    if let Value::Text(t) = &cell.value
+        && code.matches(';').count() < 3
+    {
+        return Cow::Borrowed(t);
+    }
+    // A stored cell with no value and no formula still displays a spilled value, which is what
+    // `Sheet::value` adds.
+    let v = if cell.value.is_empty() && cell.formula.is_none() { sh.value(c) } else { cell.value.clone() };
+    Cow::Owned(crate::display::value_text_as(wb, &v, code))
+}
+
+/// Where a cell sits in the scan order: row-major (`row`, `col`), or `col` first when the search
+/// walks columns.
+fn scan_key(si: usize, c: CellRef, by_cols: bool) -> (usize, u32, u32) {
+    if by_cols { (si, c.col, c.row) } else { (si, c.row, c.col) }
+}
+
+/// The first matching cell of `sh` in row-major order, inside `rows` and accepted by `keep`, with
+/// the text it matched on. Stops at that cell: the caller wanted one hit, not a list.
+fn first_hit(wb: &Workbook, sh: &Sheet, needle: &Needle, values: bool, rows: RangeRef, keep: impl Fn(CellRef) -> bool) -> Option<(CellRef, String)> {
+    for (c, cell) in sh.cells.iter_scan(rows) {
+        if !keep(c) {
+            continue;
+        }
+        let text = text_of(wb, sh, c, &cell, values);
+        if needle.hit(&text) {
+            return Some((c, text.into_owned()));
+        }
+    }
+    None
+}
+
+/// The matching cell of `sh` that comes first in column-major order — the smallest `(col, row)` that
+/// `keep` accepts. A column-first scan cannot stop at the first hit it meets, so this walks the
+/// sheet once and keeps the best cell rather than every match.
+fn first_hit_by_column(wb: &Workbook, sh: &Sheet, needle: &Needle, values: bool, keep: impl Fn(CellRef) -> bool) -> Option<(CellRef, String)> {
+    let mut best: Option<(CellRef, String)> = None;
+    for (c, cell) in sh.cells.iter_scan(whole_sheet()) {
+        if !keep(c) || best.as_ref().is_some_and(|(b, _)| (b.col, b.row) <= (c.col, c.row)) {
+            continue;
+        }
+        let text = text_of(wb, sh, c, &cell, values);
+        if needle.hit(&text) {
+            best = Some((c, text.into_owned()));
+        }
+    }
+    best
+}
+
 fn find(s: &mut Session, p: &Json) -> Result<Json> {
     let what = str_param(p, "what").unwrap_or("").to_string();
     if what.is_empty() {
@@ -2055,45 +2194,99 @@ fn find(s: &mut Session, p: &Json) -> Result<Json> {
     let all = bool_param(p, "all").unwrap_or(false);
     let workbook = str_param(p, "within") == Some("workbook");
     s.last_find = Some(p.clone());
+    let needle = Needle::new(&what, case, whole);
     let d = s.doc()?;
     let sheets: Vec<usize> = if workbook { (0..d.wb.sheets.len()).collect() } else { vec![d.wb.active_sheet] };
-    let mut hits: Vec<(usize, CellRef, String)> = Vec::new();
-    for si in sheets {
-        let Some(sh) = d.wb.sheet(si) else { continue };
-        let mut cells: Vec<(CellRef, String)> = sh
-            .cells
-            .iter()
-            .filter_map(|(c, cell)| {
-                let text = if values || cell.formula.is_none() || crate::display::formula_hidden(&d.wb, sh, c) {
-                    crate::display::cell_text(&d.wb, sh, c)
-                } else {
-                    cell.input_text_at(c)
-                };
-                matches(&text, &what, case, whole).then_some((c, text))
-            })
-            .collect();
-        if by_cols {
-            cells.sort_by_key(|(c, _)| (c.col, c.row));
-        }
-        hits.extend(cells.into_iter().map(|(c, t)| (si, c, t)));
-    }
-    if hits.is_empty() {
-        return Err(EngineError::Other(format!("We couldn't find what you were looking for: {what}")));
-    }
+    let cur = (d.wb.active_sheet, d.selection.active);
     if all {
+        let mut hits: Vec<(usize, CellRef, String)> = Vec::new();
+        for si in sheets.iter().copied() {
+            let Some(sh) = d.wb.sheet(si) else { continue };
+            let mut cells: Vec<(CellRef, String)> = Vec::new();
+            for (c, cell) in sh.cells.iter_scan(whole_sheet()) {
+                let text = text_of(&d.wb, sh, c, &cell, values);
+                if needle.hit(&text) {
+                    cells.push((c, text.into_owned()));
+                }
+            }
+            if by_cols {
+                cells.sort_by_key(|(c, _)| (c.col, c.row));
+            }
+            hits.extend(cells.into_iter().map(|(c, t)| (si, c, t)));
+        }
+        if hits.is_empty() {
+            return Err(EngineError::Other(format!("We couldn't find what you were looking for: {what}")));
+        }
         let list: Vec<Json> =
             hits.iter().map(|(si, c, t)| json!({"sheet": d.wb.sheet(*si).map(|s| s.name.clone()), "cell": c.a1(), "value": t})).collect();
         return Ok(json!({"count": list.len(), "results": list}));
     }
-    // Next hit after the active cell.
-    let cur = (d.wb.active_sheet, d.selection.active);
-    let key = |si: usize, c: CellRef| if by_cols { (si, c.col, c.row) } else { (si, c.row, c.col) };
-    let next = hits.iter().find(|(si, c, _)| key(*si, *c) > key(cur.0, cur.1)).or_else(|| hits.first()).cloned();
-    let Some((si, c, t)) = next else { return Err(EngineError::Other("not found".into())) };
+    // Find Next: the first match after the active cell, else the first one in the sheet — the wrap
+    // Excel does. Only that one cell is built, so a word with a million matches costs the distance
+    // to the first of them.
+    let mut found: Option<(usize, CellRef, String)> = None;
+    if by_cols {
+        // A column-first scan reads the whole sheet either way, so one walk collects both the next
+        // match and (for the wrap) the first one.
+        let (mut after, mut any) = (None, None);
+        for si in sheets.iter().copied() {
+            let Some(sh) = d.wb.sheet(si) else { continue };
+            if after.is_none() {
+                after = first_hit_by_column(&d.wb, sh, &needle, values, |c| scan_key(si, c, true) > scan_key(cur.0, cur.1, true))
+                    .map(|(c, t)| (si, c, t));
+            }
+            if any.is_none() {
+                any = first_hit_by_column(&d.wb, sh, &needle, values, |_| true).map(|(c, t)| (si, c, t));
+            }
+            if after.is_some() {
+                break;
+            }
+        }
+        found = after.or(any);
+    } else {
+        // Row-major: walk the rows from the active cell down, then the rows above it.
+        for si in sheets.iter().copied() {
+            if si < cur.0 {
+                continue;
+            }
+            let Some(sh) = d.wb.sheet(si) else { continue };
+            let hit = if si == cur.0 {
+                let rows = RangeRef::new(CellRef::new(cur.1.row, 0), CellRef::new(MAX_ROWS - 1, MAX_COLS - 1));
+                first_hit(&d.wb, sh, &needle, values, rows, |c| (c.row, c.col) > (cur.1.row, cur.1.col))
+            } else {
+                first_hit(&d.wb, sh, &needle, values, whole_sheet(), |_| true)
+            };
+            if let Some((c, t)) = hit {
+                found = Some((si, c, t));
+                break;
+            }
+        }
+        if found.is_none() {
+            for si in sheets.iter().copied() {
+                if si > cur.0 {
+                    break;
+                }
+                let Some(sh) = d.wb.sheet(si) else { continue };
+                let hit = if si == cur.0 {
+                    let rows = RangeRef::new(CellRef::new(0, 0), CellRef::new(cur.1.row, MAX_COLS - 1));
+                    first_hit(&d.wb, sh, &needle, values, rows, |c| (c.row, c.col) <= (cur.1.row, cur.1.col))
+                } else {
+                    first_hit(&d.wb, sh, &needle, values, whole_sheet(), |_| true)
+                };
+                if let Some((c, t)) = hit {
+                    found = Some((si, c, t));
+                    break;
+                }
+            }
+        }
+    }
+    let Some((si, c, t)) = found else {
+        return Err(EngineError::Other(format!("We couldn't find what you were looking for: {what}")));
+    };
     let dd = s.doc_mut()?;
     dd.wb_switch_sheet(si);
     dd.selection = crate::Selection::at(c);
-    Ok(json!({"cell": c.a1(), "sheet": si, "value": t, "count": hits.len()}))
+    Ok(json!({"cell": c.a1(), "sheet": si, "value": t}))
 }
 
 fn replace(s: &mut Session, p: &Json) -> Result<Json> {
@@ -2107,6 +2300,7 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
     let all = bool_param(p, "all").unwrap_or(true);
     let workbook = str_param(p, "within") == Some("workbook");
     let active = s.doc()?.selection.active;
+    let needle = Needle::new(&what, case, whole);
     let n = edit(s, |cx| {
         let sheets: Vec<usize> = if workbook { (0..cx.wb.sheets.len()).collect() } else { vec![cx.wb.active_sheet] };
         let mut shapes = cella_formula::ShapeTable::default();
@@ -2118,7 +2312,7 @@ fn replace(s: &mut Session, p: &Json) -> Result<Json> {
                 if !all && c != active {
                     continue;
                 }
-                if !matches(&text, &what, case, whole) {
+                if !needle.hit(&text) {
                     continue;
                 }
                 let new = if whole {
@@ -2409,6 +2603,77 @@ mod tests {
     #[test]
     fn replace_case_insensitive() {
         assert_eq!(replace_ci("Apple apple APPLE", "apple", "pear"), "pear pear pear");
+    }
+
+    /// A three-by-three sheet with three `x` cells, laid out so row order and column order disagree:
+    /// row-major finds B1, A2, B3; column-major finds A2, B1, B3.
+    fn three_x() -> Session {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1:C3", "values": [["a", "x", "b"], ["x", "c", "d"], ["e", "x", "f"]]})).unwrap();
+        s
+    }
+
+    /// Find Next answers with the first match after the active cell, wraps to the top when there is
+    /// none, and walks rows first — or columns first when `byColumns` asks for it.
+    #[test]
+    fn find_walks_in_scan_order_and_wraps() {
+        let mut s = three_x();
+        let at = |s: &mut Session, p: Json| s.execute("edit.find", p).unwrap()["cell"].as_str().unwrap_or_default().to_string();
+        let cursor = |s: &mut Session, a: &str| s.execute("selection.set", json!({"range": a})).unwrap();
+        for (from, want) in [("A1", "B1"), ("B1", "A2"), ("C3", "B1"), ("B3", "B1")] {
+            cursor(&mut s, from);
+            assert_eq!(at(&mut s, json!({"what": "x"})), want, "row-major from {from}");
+        }
+        for (from, want) in [("A1", "A2"), ("B1", "B3"), ("C1", "A2")] {
+            cursor(&mut s, from);
+            assert_eq!(at(&mut s, json!({"what": "x", "byColumns": true})), want, "column-major from {from}");
+        }
+    }
+
+    /// `all` still collects every match, in scan order.
+    #[test]
+    fn find_all_collects_every_match_in_scan_order() {
+        let mut s = three_x();
+        let cells = |s: &mut Session, by_cols: bool| -> Vec<String> {
+            let r = s.execute("edit.find", json!({"what": "x", "all": true, "byColumns": by_cols})).unwrap();
+            assert_eq!(r["count"], 3);
+            r["results"].as_array().map(|a| a.iter().filter_map(|x| x["cell"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+        };
+        assert_eq!(cells(&mut s, false), ["B1", "A2", "B3"]);
+        assert_eq!(cells(&mut s, true), ["A2", "B1", "B3"]);
+    }
+
+    /// Within a workbook the search starts at the active sheet and wraps round the sheets.
+    #[test]
+    fn find_wraps_round_the_workbook() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1", "values": [["here", "here"]]})).unwrap();
+        s.execute("home.insertSheet", json!({"name": "Second"})).unwrap();
+        s.execute("range.setValues", json!({"range": "A1", "values": [["here", "here"]]})).unwrap();
+        let p = json!({"what": "here", "within": "workbook"});
+        // The new sheet is the active one, so its B1 (after the active cell A1) is the first hit.
+        assert_eq!(s.execute("edit.find", p.clone()).unwrap()["sheet"], json!(1), "the active sheet first");
+        assert_eq!(s.execute("edit.find", p).unwrap()["sheet"], json!(0), "then the sheets before it");
+    }
+
+    /// What a cell is matched on is what it shows: a number format's literal counts, and so does a
+    /// text section. The fast path that borrows a text value's own text must not skip either.
+    #[test]
+    fn find_matches_the_text_a_format_shows() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("cell.set", json!({"cell": "A1", "input": 5})).unwrap();
+        s.execute("home.numberFormat", json!({"range": "A1", "code": "0\" units\""})).unwrap();
+        s.execute("cell.set", json!({"cell": "A2", "input": "abc"})).unwrap();
+        s.execute("home.numberFormat", json!({"range": "A2", "code": "0;0;0;\"text:\"@"})).unwrap();
+        let find = |s: &mut Session, what: &str| -> String {
+            s.execute("edit.find", json!({"what": what})).unwrap()["value"].as_str().unwrap_or_default().to_string()
+        };
+        assert_eq!(find(&mut s, "units"), "5 units");
+        assert_eq!(find(&mut s, "text:abc"), "text:abc");
+        assert_eq!(find(&mut s, "abc"), "text:abc", "a text section still holds the text");
     }
 
     #[test]

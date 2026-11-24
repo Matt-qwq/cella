@@ -1216,20 +1216,25 @@ laying the band out once in mirrored order, so the mirror is paid per cell per f
 
 **Evidence:** [performance-ui.md](performance-ui.md) §"What a view setting costs per frame".
 
-### 31. `edit.find` materialises every match: 3.7–5.8 s in eight million cells (P, measured 11-24)
+### 31. `edit.find` materialises every match — **fixed 11-24** (was 3.5–5.7 s in eight million cells)
 
-**What:** `edit.find` over the whole used area takes **3.48 s** on a million rows × 8 columns and
+**Was:** `edit.find` over the whole used area took **3.48 s** on a million rows × 8 columns and
 **5.68 s** on 8,000 rows × 1,000 columns (33 ms on a hundred sheets, where the search is scoped to
-the active sheet's 80,000 cells). A common word has a million matches, and the command builds a `Vec`
+the active sheet's 80,000 cells). A common word had a million matches, and the command built a `Vec`
 of `(sheet, cell, text)` for every one of them before returning the first — so *Find Next*, which
-needs one hit, pays for all of them.
+needs one hit, paid for all of them.
 
-**Why it matters:** Find is a first-class button (Ctrl+F) and a million-row sheet is the size this
-project benchmarks at.
+**Now:** the single-hit form stops at the first match after the active cell and wraps by walking the
+rows above it, so it costs the distance to that cell: **0.21 ms / 0.07 ms / 0.05 ms** on the same
+three shapes, against Excel's 3 ms / 70 ms. Only `all` collects. Two things fell out of the same
+walk: the matcher allocates nothing per cell (it lowers the needle once instead of both sides eight
+million times), and a text value under a format that leaves text alone is borrowed rather than
+rebuilt — the difference between allocating eight million strings and none. The scan also goes
+through `iter_scan` (the save path's flat walk) instead of `iter`, so a thousand-column sheet no
+longer builds a 256,000-cell vector per band.
 
-**Fix (not diagnosed yet):** the scan can stop at the first hit after the active cell for the default
-form, and only collect when `all` is set; the count it reports is a second pass or a flag.
-**Estimate:** 2–3 h.
+**Behaviour change:** the single-hit result no longer carries `count`. That number was the total,
+which is the thing the early stop stops paying for; `all` still returns it.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
