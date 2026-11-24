@@ -93,6 +93,9 @@ fn run() -> Result<(), String> {
     let json_out = args.iter().any(|a| a == "--json");
     let only: Option<Vec<String>> =
         args.iter().find_map(|a| a.strip_prefix("--only=")).map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+    // `--save=DIR` writes the three shapes out as .xlsx and stops: the external replay (Excel, WPS)
+    // needs the same workbooks on disk, and this ruler is the thing that defines them.
+    let save_dir = args.iter().find_map(|a| a.strip_prefix("--save=")).map(|v| v.trim_end_matches(['\\', '/']).to_string());
     if args.iter().any(|a| a == "--list") {
         for (id, what) in COMMANDS {
             println!("{id}\t{what}");
@@ -100,7 +103,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("usage: bench_shapes [--json] [--only=ID,...] [--list]");
+        println!("usage: bench_shapes [--json] [--only=ID,...] [--list] [--save=DIR]");
         return Ok(());
     }
     if cfg!(debug_assertions) {
@@ -109,6 +112,18 @@ fn run() -> Result<(), String> {
     let wanted: Vec<(&str, &str)> = COMMANDS.iter().copied().filter(|(id, _)| only.as_ref().is_none_or(|w| w.iter().any(|x| x == id))).collect();
     if wanted.is_empty() {
         return Err("no command matched".to_string());
+    }
+    if let Some(dir) = &save_dir {
+        for shape in SHAPES {
+            let base = prepare(shape)?;
+            let mut s = Session::new();
+            s.add_document(base);
+            let path = format!("{dir}/{}.xlsx", shape.name);
+            let started = Instant::now();
+            s.execute("file.save", json!({"path": path})).map_err(err)?;
+            eprintln!("bench_shapes: wrote {path} in {:.1} s", started.elapsed().as_secs_f64());
+        }
+        return Ok(());
     }
     let mut measurements: Vec<Json> = Vec::new();
     for shape in SHAPES {
