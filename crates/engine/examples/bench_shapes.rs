@@ -184,14 +184,32 @@ struct Measured {
     detail: Option<String>,
 }
 
+/// How many times a slow row is measured before one of the runs is published.
+///
+/// One sample is not a measurement on this machine: the wide shape's `range.move` reads 2.2 s and
+/// 2.7 s in the same afternoon, and a page built from single samples moved by 25 % between runs that
+/// changed nothing. A row that takes longer than [`SLOW_MS`] is measured [`SAMPLES`] times and the
+/// fastest run is the one published — the same "best of three" the scenario gate records budgets
+/// with. A row under it is cheap enough that repetition would only cost the ruler's own time.
+const SAMPLES: usize = 3;
+const SLOW_MS: f64 = 50.0;
+
 fn measure(base: &DocState, id: &str, shape: &Shape) -> Result<Measured, String> {
     let mut best: Option<Measured> = None;
-    for attempt in 0..TRIES {
-        let m = measure_once(base, id, shape, attempt)?;
+    let mut attempts = 0usize;
+    while attempts < TRIES {
+        let m = measure_once(base, id, shape, attempts)?;
+        attempts += 1;
         if best.as_ref().is_none_or(|b| rank(&m) < rank(b)) {
             best = Some(m);
         }
-        if best.as_ref().is_some_and(|m| m.outcome == "ok") {
+        let Some(b) = best.as_ref() else { continue };
+        if b.outcome != "ok" {
+            // The command turned these params down: another draw may run it.
+            continue;
+        }
+        // A row that ran is the answer once it is fast, and [`SAMPLES`] samples of it once it is not.
+        if b.ms < SLOW_MS || attempts >= SAMPLES {
             break;
         }
     }

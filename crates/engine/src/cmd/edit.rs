@@ -1291,6 +1291,7 @@ fn range_move(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
+    let probe = !cfg!(target_arch = "wasm32") && std::env::var_os("CELLA_PROFILE").is_some();
     let Some(clip) = s.clipboard.clone() else { return Err(EngineError::Other("Nothing to paste.".into())) };
     let what = match str_param(p, "what").unwrap_or("all") {
         "all" => What::All,
@@ -1360,7 +1361,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             let source = cx.sheet_mut(clip.sheet)?;
             moved_pictures = source.cell_pictures.iter().filter(|(c, _)| src.contains(**c)).map(|(c, p)| (*c, p.clone())).collect();
             #[allow(clippy::disallowed_methods)]
-            let cut_started = (!cfg!(target_arch = "wasm32")).then(std::time::Instant::now).filter(|_| std::env::var_os("CELLA_PROFILE").is_some());
+            let cut_started = probe.then(std::time::Instant::now);
             let taken = source.take_cells(src);
             if let Some(started) = cut_started {
                 #[allow(clippy::disallowed_methods)]

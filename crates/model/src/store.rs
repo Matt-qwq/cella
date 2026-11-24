@@ -5247,27 +5247,37 @@ impl CellStore {
         let mut out: Vec<(CellRef, Cell)> = Vec::new();
         let mut drop: Vec<(u32, u32, usize)> = Vec::new();
         {
-            // A row at a time through the store's own row reader: it walks the packed row once,
-            // where `cell_at` looks the kind and style of every cell up in its run stripe from the
-            // start of the row — 125 runs a cell on a thousand-column sheet.
-            let read = self.row_reader(used.start.col, used.end.col);
-            let mut scratch: Vec<Option<Cell>> = Vec::new();
+            // The stored cells of each row, straight into the answer: a row reader would fill an
+            // `Option` per column first (a thousand of them a row, 48 bytes each) for a sheet that
+            // has no holes.
             for logical in first..=last {
                 let Some(physical) = self.physical_row(logical) else { continue };
                 let key = physical / BAND;
-                let row_key = physical % BAND;
-                if !self.bands.get(&key).is_some_and(|b| b.row(row_key).is_some()) {
-                    continue;
-                }
+                let decoded;
+                let band = match self.bands.get(&key) {
+                    Some(band) => Some(band.as_ref()),
+                    None => {
+                        decoded = self.band_arc(key);
+                        decoded.as_deref()
+                    }
+                };
+                let Some(band) = band else { continue };
+                let Some(cells) = band.row(physical % BAND) else { continue };
                 let before = out.len();
-                scratch.clear();
-                read(logical, &mut scratch);
-                for (i, slot) in scratch.iter_mut().enumerate() {
-                    if let Some(cell) = slot.take() {
-                        out.push((CellRef::new(logical, used.start.col + i as u32), cell));
+                for columns in self.col_map.segments_in(used.start.col, used.end.col) {
+                    let first_col = columns.physical;
+                    let last_col = columns.physical.saturating_add(columns.len).saturating_sub(1);
+                    if first_col > last_col {
+                        continue;
+                    }
+                    for (at, cell) in packed_row(band, logical, cells, first_col, last_col) {
+                        let col = columns.logical.saturating_add(at.col.saturating_sub(first_col));
+                        if col >= used.start.col && col <= used.end.col {
+                            out.push((CellRef::new(logical, col), cell));
+                        }
                     }
                 }
-                drop.push((key, row_key, out.len() - before));
+                drop.push((key, physical % BAND, out.len() - before));
             }
         }
         // Rows go in **descending** order, and a band that loses every row it holds is dropped
