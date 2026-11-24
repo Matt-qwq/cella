@@ -165,6 +165,19 @@ pub trait Host {
     fn first_match_in_column(&mut self, _sheet: usize, _range: RangeRef, _key: &Value) -> Option<Option<u32>> {
         None
     }
+
+    /// `COUNTIF`'s answer for a one-column block: how many cells the criterion matches, blanks
+    /// included when it matches one. `None` when the block holds a cell only the evaluator can
+    /// price (a formula, an array, a spill), and the caller builds the array instead.
+    fn countif_column(&mut self, _sheet: usize, _range: RangeRef, _criterion: &cella_functions::Criterion) -> Option<u64> {
+        None
+    }
+
+    /// `SUMIF`'s answer for one column summed over another: both blocks one column over the same
+    /// rows, one on a sheet with no spill. `None` when the shape is anything else.
+    fn sumif_columns(&mut self, _target: Area, _criteria: Area, _criterion: &cella_functions::Criterion) -> Option<Value> {
+        None
+    }
     /// While a formula is calculated on demand inside another one: [`stack_position`] where the
     /// outermost one started, which the stack budget is counted from.
     fn stack_top(&self) -> Option<usize> {

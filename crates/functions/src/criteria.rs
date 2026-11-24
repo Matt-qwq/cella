@@ -48,9 +48,43 @@ enum Operand {
     Blank,
 }
 
+/// A stored cell as a criterion sees it: the five kinds, plus "anything else" (an array, or a
+/// nested one) which compares the way a non-scalar always has.
+///
+/// The matcher is written once over this view so a host that walks packed pages can test a cell it
+/// holds — a number, a borrowed text, a boolean, an error — without building a `Value` for it:
+/// `COUNTIF(A:A, ">0")` over a million **text** cells used to allocate a `Value` a cell to ask one
+/// question.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CellView<'a> {
+    Empty,
+    Number(f64),
+    Bool(bool),
+    Error(CellError),
+    Text(&'a str),
+    Other,
+}
+
+impl<'a> CellView<'a> {
+    /// The view of a value: an array shows as its first element's kind, as `matches` compares it.
+    pub fn of(v: &'a Value) -> CellView<'a> {
+        match v {
+            Value::Empty => CellView::Empty,
+            Value::Number(n) => CellView::Number(*n),
+            Value::Bool(b) => CellView::Bool(*b),
+            Value::Error(e) => CellView::Error(*e),
+            Value::Text(t) => CellView::Text(t),
+            Value::Array(_) => CellView::Other,
+        }
+    }
+
+    fn is_blank(self) -> bool {
+        matches!(self, CellView::Empty)
+    }
+}
 /// A parsed criterion.
 #[derive(Clone, Debug)]
-pub(crate) struct Criterion {
+pub struct Criterion {
     op: Op,
     operand: Operand,
     /// The criterion was a bare `""` (or empty cell text): matches blanks and empty strings.
@@ -80,7 +114,7 @@ impl NumericOrderingCriterion {
 
 impl Criterion {
     /// Parses a criterion value the way COUNTIF does.
-    pub(crate) fn parse(v: &Value) -> Criterion {
+    pub fn parse(v: &Value) -> Criterion {
         match v {
             Value::Number(n) => Criterion { op: Op::Eq, operand: Operand::Number(*n), bare_empty: false },
             Value::Bool(b) => Criterion { op: Op::Eq, operand: Operand::Bool(*b), bare_empty: false },
@@ -95,7 +129,7 @@ impl Criterion {
     /// functions: like `parse`, but text longer than 255 UTF-16 code units is `#VALUE!`, as in
     /// Excel (checked on Excel 2016 and Microsoft 365: `"a"×254 & "😀"` is 255 characters but
     /// 256 units, and is `#VALUE!`).
-    pub(crate) fn parse_arg(v: &Value) -> Result<Criterion, CellError> {
+    pub fn parse_arg(v: &Value) -> Result<Criterion, CellError> {
         match v {
             Value::Array(a) => Criterion::parse_arg(a.data.first().unwrap_or(&Value::Empty)),
             // A UTF-8 string has at least as many bytes as UTF-16 units, so short text skips the count.
@@ -110,7 +144,7 @@ impl Criterion {
     /// doesn't reject a longer text criterion there: it matches its first 255 UTF-16 code units
     /// (checked on Excel 2016 and Microsoft 365 with COUNTIFS, SUMIFS, AVERAGEIFS, MAXIFS and
     /// MINIFS). A cut through a surrogate pair matches nothing; see `Operand::CutText`.
-    pub(crate) fn parse_arg_truncated(v: &Value) -> Criterion {
+    pub fn parse_arg_truncated(v: &Value) -> Criterion {
         match v {
             Value::Array(a) => Criterion::parse_arg_truncated(a.data.first().unwrap_or(&Value::Empty)),
             Value::Text(t) if t.len() > MAX_CRITERION_UTF16_UNITS => {
@@ -154,40 +188,41 @@ impl Criterion {
     }
 
     /// Whether a cell value satisfies the criterion.
-    pub(crate) fn matches(&self, v: &Value) -> bool {
+    pub fn matches(&self, v: &Value) -> bool {
         // A cell holding an array matches like its first element (implicit intersection). Only one
         // level is peeled, as before: a nested array compares like any other non-scalar value.
         match v {
-            Value::Array(a) => self.match_value(a.data.first().unwrap_or(&Value::Empty)),
-            other => self.match_value(other),
+            Value::Array(a) => self.matches_view(CellView::of(a.data.first().unwrap_or(&Value::Empty))),
+            other => self.matches_view(CellView::of(other)),
         }
     }
 
-    /// `matches` for one value, borrowing the cell rather than cloning it.
-    fn match_value(&self, v: &Value) -> bool {
+    /// [`matches`](Self::matches) for a cell a host holds in **packed** form, without building a
+    /// [`Value`] for it: a calculation host that walks stored pages asks this once a cell.
+    pub fn matches_view(&self, v: CellView<'_>) -> bool {
         if self.bare_empty {
             return match v {
-                Value::Empty => true,
-                Value::Text(t) => t.is_empty(),
+                CellView::Empty => true,
+                CellView::Text(t) => t.is_empty(),
                 _ => false,
             };
         }
         match &self.operand {
             Operand::Blank => match self.op {
-                Op::Eq => matches!(v, Value::Empty),
-                Op::Ne => !matches!(v, Value::Empty),
+                Op::Eq => v.is_blank(),
+                Op::Ne => !v.is_blank(),
                 // "<" / ">" with nothing: Excel compares against "" for text cells, but an
                 // empty string never matches ("<=" and ">=" count it in neither).
                 _ => match v {
-                    Value::Text(t) if !t.is_empty() => cmp_op(self.op, compare_text(t, "")),
+                    CellView::Text(t) if !t.is_empty() => cmp_op(self.op, compare_text(t, "")),
                     _ => false,
                 },
             },
             Operand::Number(n) => {
                 let cell = match v {
-                    Value::Number(x) => Some(*x),
+                    CellView::Number(x) => Some(x),
                     // Numeric text matches only for equality (COUNTIF("1") counts text "1").
-                    Value::Text(t) if matches!(self.op, Op::Eq | Op::Ne) => parse_number_text(t),
+                    CellView::Text(t) if matches!(self.op, Op::Eq | Op::Ne) => parse_number_text(t),
                     _ => None,
                 };
                 match cell {
@@ -196,27 +231,27 @@ impl Criterion {
                 }
             }
             Operand::Bool(b) => match v {
-                Value::Bool(x) => cmp_op(self.op, x.cmp(b)),
+                CellView::Bool(x) => cmp_op(self.op, x.cmp(b)),
                 _ => self.op == Op::Ne,
             },
             Operand::Error(e) => match v {
-                Value::Error(x) => cmp_op(self.op, x.code().cmp(&e.code())),
+                CellView::Error(x) => cmp_op(self.op, x.code().cmp(&e.code())),
                 _ => self.op == Op::Ne,
             },
             Operand::Text { text, tokens } => match self.op {
                 // Blank cells hold no text: `"*"` skips them and `"<>*"` counts them.
-                Op::Eq => matches!(v, Value::Text(t) if match_tokens(tokens, t)),
-                Op::Ne => !matches!(v, Value::Text(t) if match_tokens(tokens, t)),
+                Op::Eq => matches!(v, CellView::Text(t) if match_tokens(tokens, t)),
+                Op::Ne => !matches!(v, CellView::Text(t) if match_tokens(tokens, t)),
                 _ => match v {
-                    Value::Text(t) => cmp_op(self.op, compare_text(t, text)),
+                    CellView::Text(t) => cmp_op(self.op, compare_text(t, text)),
                     _ => false,
                 },
             },
             Operand::CutText(kept) => match self.op {
                 Op::Eq => false,
                 Op::Ne => true,
-                Op::Lt | Op::Le => matches!(v, Value::Text(t) if compare_text(t, kept) != Ordering::Greater),
-                Op::Gt | Op::Ge => matches!(v, Value::Text(t) if compare_text(t, kept) == Ordering::Greater),
+                Op::Lt | Op::Le => matches!(v, CellView::Text(t) if compare_text(t, kept) != Ordering::Greater),
+                Op::Gt | Op::Ge => matches!(v, CellView::Text(t) if compare_text(t, kept) == Ordering::Greater),
             },
         }
     }

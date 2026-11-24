@@ -221,6 +221,10 @@ impl<'h> Evaluator<'h> {
             // first hundred — `eval/reference_fns.rs`.
             "MATCH" => self.match_exact_column(args).unwrap_or_else(|| self.builtin("MATCH", args)),
             "XMATCH" => self.xmatch_exact_column(args).unwrap_or_else(|| self.builtin("XMATCH", args)),
+            // The single-criterion family answers from a scan of the stored cells; the array the
+            // library takes is built only when the shape is something else.
+            "COUNTIF" => self.countif(args).unwrap_or_else(|| self.builtin("COUNTIF", args)),
+            "SUMIF" => self.sumif(args).unwrap_or_else(|| self.builtin("SUMIF", args)),
             "VLOOKUP" => self.vlookup_exact_column(args).unwrap_or_else(|| self.builtin("VLOOKUP", args)),
             "XLOOKUP" => self.xlookup(args),
             "CELL" => self.cell_info(args),

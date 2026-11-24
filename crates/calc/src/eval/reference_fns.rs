@@ -321,6 +321,70 @@ impl<'h> Evaluator<'h> {
         })
     }
 
+    /// `COUNTIF(column, criterion)`: counts the stored cells a criterion matches, without building
+    /// the column into an array to test it.
+    ///
+    /// The library's COUNTIF takes an `Array`, so the evaluator materialised the whole block first
+    /// — a million `Value`s at a million rows — and then tested them. Here the criterion (parsed
+    /// once, by the same parser the library uses) is asked of the stored cells as the walk meets
+    /// them; blanks are the slots the walk does not meet.
+    pub(super) fn countif(&mut self, args: &[Expr]) -> Option<Ev> {
+        if args.len() != 2 {
+            return None;
+        }
+        let block = args.first()?;
+        let (sheet, range) = self.one_column(block)?;
+        if range.height() <= 1 {
+            return None;
+        }
+        let criterion = match cella_functions::Criterion::parse_arg(&self.value(args.get(1)?)) {
+            Ok(c) => c,
+            Err(e) => return Some(err(e)),
+        };
+        let rows = u64::from(range.height());
+        let work = rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let count = self.host.countif_column(sheet, range, &criterion)?;
+        if !self.spend(work) {
+            return Some(err(CellError::Calc));
+        }
+        Some(Ev::V(Value::number(count as f64)))
+    }
+
+    /// `SUMIF(criteria column, criterion, target column)`: adds the target cells whose criteria cell
+    /// matches, both columns in one walk.
+    pub(super) fn sumif(&mut self, args: &[Expr]) -> Option<Ev> {
+        if !(2..=3).contains(&args.len()) {
+            return None;
+        }
+        let (criteria_sheet, criteria) = self.one_column(args.first()?)?;
+        let criterion = match cella_functions::Criterion::parse_arg(&self.value(args.get(1)?)) {
+            Ok(c) => c,
+            Err(e) => return Some(err(e)),
+        };
+        // Without a sum range the range is both what is tested and what is added.
+        let (target_sheet, target) = match args.get(2) {
+            Some(e) => self.one_column(e)?,
+            None => (criteria_sheet, criteria),
+        };
+        if criteria_sheet != target_sheet || criteria.height() <= 1 {
+            return None;
+        }
+        let rows = u64::from(criteria.height());
+        let work = 2 * rows + 4;
+        if self.work < work {
+            return None;
+        }
+        let sum =
+            self.host.sumif_columns(Area { sheet: target_sheet, range: target }, Area { sheet: criteria_sheet, range: criteria }, &criterion)?;
+        if !self.spend(work) {
+            return Some(err(CellError::Calc));
+        }
+        Some(Ev::V(sum))
+    }
+
     /// `MATCH(key, column, 0)`: the position of the first stored cell an exact match compares equal,
     /// read as a scan that stops at the hit.
     ///
