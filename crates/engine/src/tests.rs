@@ -2946,6 +2946,24 @@ fn create_names_from_selection() {
     assert!(names(&s).contains(&named("North", "Sheet1!$B$2:$C$2")));
 }
 
+/// A left column of labels names every row beside it. Ten thousand rows must be one pass over the
+/// name list: a `retain` per new name walked the growing list once per name, and a million rows —
+/// which is what the command catalogue asks for — never finished (`gaps` §37).
+#[test]
+fn creating_names_from_a_long_left_column_is_one_pass() {
+    let mut s = s();
+    let rows = 10_000;
+    let values: Vec<serde_json::Value> = (0..rows).map(|i| json!([format!("Label {}", i + 1)])).collect();
+    s.execute("range.setValues", json!({"range": "A1", "values": values})).unwrap();
+    let r = s.execute("formulas.createFromSelection", json!({"range": format!("A1:B{rows}"), "top": false, "left": true})).unwrap();
+    assert_eq!(r["created"], rows);
+    assert_eq!(s.doc().unwrap().wb.names.len(), rows as usize);
+    // Asked again, every one of them is a name that already exists: nothing is created or replaced.
+    let r = s.execute("formulas.createFromSelection", json!({"range": format!("A1:B{rows}"), "top": false, "left": true})).unwrap();
+    assert_eq!(r["created"], 0);
+    assert_eq!(s.doc().unwrap().wb.names.len(), rows as usize);
+}
+
 #[test]
 fn names_that_look_like_references_are_refused() {
     let mut s = s();

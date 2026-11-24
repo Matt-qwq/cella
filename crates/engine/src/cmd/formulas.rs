@@ -636,10 +636,15 @@ fn create_from_selection(s: &mut Session, p: &Json) -> Result<Json> {
     let skipped: Vec<String> = skipped.into_iter().map(|(n, _)| n).collect();
     let n = made.len();
     edit(s, |cx| {
-        for (name, f) in made {
-            cx.wb.names.retain(|x| !(x.name.eq_ignore_ascii_case(&name) && x.scope.is_none()));
-            cx.wb.names.push(DefinedName { name, scope: None, formula: f, comment: String::new(), hidden: false });
-        }
+        // Replacing an existing name is one pass over the list, not one pass per new name: a
+        // selection whose left column names a million rows makes a **million** names, and a
+        // `retain` inside the loop walked the list a million times — the command never finished
+        // (`gaps` §37).
+        let made: Vec<DefinedName> =
+            made.into_iter().map(|(name, formula)| DefinedName { name, scope: None, formula, comment: String::new(), hidden: false }).collect();
+        let replaced: std::collections::HashSet<String> = made.iter().map(|m| m.name.to_ascii_lowercase()).collect();
+        cx.wb.names.retain(|x| x.scope.is_some() || !replaced.contains(&x.name.to_ascii_lowercase()));
+        cx.wb.names.extend(made);
         cx.structural = true;
         Ok(json!({"created": n, "skipped": skipped}))
     })
