@@ -908,6 +908,21 @@ mod tests {
         assert_eq!(alternatives(&keys[1].2), Some(vec!["right".into(), "down".into(), "row".into(), "column".into()]));
     }
 
+    /// A hint with alternatives that changes the *work* must be pinned, or the ruler measures a
+    /// different command on every row: `file.saveBytes` drew json on the hundred-sheet shape and
+    /// xlsx on the other two, and the "18x slower" that produced was two formats compared. Absent
+    /// is the command's own default, which is xlsx.
+    #[test]
+    fn the_save_format_is_pinned_whatever_the_seed() {
+        let wb = Workbook::default();
+        let doc = "{format?: xlsx|csv|tsv|json|html}";
+        for seed in 0..16 {
+            let p = doc_params(&mut Rng::new(seed), &wb, "file.saveBytes", doc, Scale::Small);
+            let format = p.get("format").and_then(|f| f.as_str());
+            assert!(format.is_none() || format == Some("xlsx"), "seed {seed} drew {format:?}");
+        }
+    }
+
     /// The catalogue's one difference: a region-naming key covers the whole used area.
     #[test]
     fn whole_scale_points_a_range_at_the_used_area() {

@@ -680,6 +680,76 @@ fn copy_paste_shifts_formulas() {
     assert_eq!(f["formula"], "=E5+B1");
 }
 
+/// The clipboard text reads a range a row at a time now, so the two shapes that are not a stored
+/// cell's own value must still reach it: a spilled value (the cell stores nothing itself) and, when
+/// the sheet shows formulas, the anchor's formula where its value would be.
+#[test]
+fn copy_takes_spilled_values_and_shows_formulas_when_asked() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "=SEQUENCE(3,2)"})).unwrap();
+    let copied = s.execute("edit.copy", json!({"range": "A1:B3"})).unwrap();
+    assert_eq!(copied["text"], "1\t2\n3\t4\n5\t6\n", "a spilled value is part of the clipboard text");
+    s.execute("formulas.showFormulas", json!({"on": true})).unwrap();
+    let copied = s.execute("edit.copy", json!({"range": "A1:B3"})).unwrap();
+    assert_eq!(copied["text"], "=SEQUENCE(3,2)\t2\n3\t4\n5\t6\n", "the anchor shows its formula, the spill its values");
+}
+
+/// Clearing the whole used area of a sheet takes the structural path: the recalculation rebuilds
+/// instead of being handed the cleared addresses, so a formula on another sheet must still see the
+/// clear, and undo must bring it back.
+#[test]
+fn clearing_a_whole_sheet_tells_the_other_sheets() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:A3", "values": [[1], [2], [3]]})).unwrap();
+    let first = s.doc().unwrap().wb.sheets.first().map(|sh| sh.name.clone()).unwrap_or_default();
+    s.execute("home.insertSheet", json!({"name": "Watch"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A1", "input": format!("=SUM({first}!A1:A3)")})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::from(6.0));
+    s.execute("sheet.activate", json!({"sheet": first})).unwrap();
+    s.execute("edit.clearAll", json!({"range": "A1:A3"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::Empty);
+    s.execute("sheet.activate", json!({"sheet": "Watch"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::from(0.0), "the rebuild sees the cleared cells");
+    s.execute("edit.undo", json!({})).unwrap();
+    // Undo restores the document as the snapshot had it, the active sheet included.
+    s.execute("sheet.activate", json!({"sheet": "Watch"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::from(6.0), "undo brings the data back");
+}
+
+/// A clear of the whole used area replaces the store, so a spill whose anchor went with it must not
+/// leave its cells behind.
+#[test]
+fn clearing_a_whole_sheet_takes_its_spills_with_it() {
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A1", "input": "=SEQUENCE(3)"})).unwrap();
+    assert_eq!(v(&s, "A3"), Value::from(3.0));
+    s.execute("edit.clearAll", json!({"range": "A1:A3"})).unwrap();
+    for a in ["A1", "A2", "A3"] {
+        assert_eq!(v(&s, a), Value::Empty, "{a} went with its anchor");
+    }
+}
+
+/// Clearing formats keeps every value and drops every style: a number format that showed `1.00`
+/// shows `1` afterwards, and a block that carried no formats at all is left exactly as it was
+/// (the clear skips those cells rather than rewriting them through the store).
+#[test]
+fn clearing_formats_keeps_content_and_drops_the_styles() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:B2", "values": [[1, "a"], [2, "b"]]})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A1", "code": "0.00"})).unwrap();
+    s.execute("home.bold", json!({"range": "A1:B1", "on": true})).unwrap();
+    let text = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap()["text"].clone();
+    assert_eq!(text(&mut s, "A1"), json!("1.00"));
+    s.execute("edit.clearFormats", json!({"range": "A1:B2"})).unwrap();
+    assert_eq!(text(&mut s, "A1"), json!("1"), "the number format went");
+    assert_eq!(v(&s, "A1"), Value::from(1.0), "the value stayed");
+    assert_eq!(v(&s, "B2"), Value::from("b"));
+    // A second clear has nothing to do and must leave the cells alone.
+    s.execute("edit.clearFormats", json!({"range": "A1:B2"})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::from(1.0));
+    assert_eq!(text(&mut s, "B2"), json!("b"));
+}
+
 #[test]
 fn rich_clipboard_copies_selected_displayed_cells_and_styles() {
     let mut s = s();
