@@ -235,8 +235,19 @@ fn save_bytes(s: &mut Session, p: &Json) -> Result<Json> {
         None => d.password.clone(),
     };
     let scheme = scheme_param("file.saveBytes", p, d)?;
+    #[allow(clippy::disallowed_methods)]
+    let probe = std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now());
     let bytes = crate::io::save_bytes_with(&d.wb, &name, password.as_deref(), scheme)?;
-    Ok(json!({"name": name, "base64": crate::io::base64_encode(&bytes), "bytes": bytes.len()}))
+    if let Some(started) = probe {
+        eprintln!("saveBytes: {:.1} ms, {} sheets, {} bytes", started.elapsed().as_secs_f64() * 1000.0, d.wb.sheets.len(), bytes.len());
+    }
+    #[allow(clippy::disallowed_methods)]
+    let b64_started = std::env::var_os("CELLA_PROFILE").map(|_| std::time::Instant::now());
+    let encoded = crate::io::base64_encode(&bytes);
+    if let Some(started) = b64_started {
+        eprintln!("saveBytes: base64 {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
+    }
+    Ok(json!({"name": name, "base64": encoded, "bytes": bytes.len()}))
 }
 
 fn close(s: &mut Session, p: &Json) -> Result<Json> {

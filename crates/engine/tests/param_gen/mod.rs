@@ -823,6 +823,11 @@ fn doc_value(rng: &mut Rng, wb: &Workbook, cmd: &str, key: &str, hint: &str, sca
         "ids" => json!(chart_ids(wb)),
         "color" => json!(color(rng)),
         "values" if hint.starts_with("[[") => values_2d(rng, wb),
+        // Saving is measured as the package a file takes. The ruler used to draw a format at
+        // random, so the three shapes measured three different commands: the hundred-sheet row drew
+        // JSON and wrote **1.95 GB** in 15.8 s while the other two wrote 30–48 MB of `.xlsx`, and
+        // the comparison was meaningless.
+        "format" if cmd == "file.saveBytes" => json!("xlsx"),
         "keys" => json!([{"column": letter(rng.int(0, 9) as u32), "order": rng.pick(&["asc", "desc"])}]),
         "column" | "groupby" => json!(letter(rng.int(0, 7) as u32)),
         "columns" | "sources" if !hint.contains('|') => json!([letter(rng.int(0, 7) as u32)]),

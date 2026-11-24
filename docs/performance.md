@@ -270,7 +270,7 @@ arranged differently:
 | `range.move` | 3.73 s | **15.91 s** | 73 ms | 217× |
 | `edit.clearFormats` | 1.27 s | **3.45 s** | 16 ms | 210× |
 | `edit.find` | 3.48 s | **5.68 s** | 33 ms | 170× |
-| `file.saveBytes` | 1.81 s | 1.37 s | **18.59 s** | 14× |
+| `file.saveBytes` | 1.81 s | 1.37 s | **18.59 s** ⚠️ | 14× |
 
 - **A thousand columns turns four O(area) commands into seconds.** `data.sortAscending` is 10.0 s and
   `range.move` 15.9 s on the *same eight million cells* that take 1.5 s and 3.7 s when they are
@@ -278,8 +278,9 @@ arranged differently:
 - **The first knife is in**: `edit.clearAll` was **9.13 s** and is **1.40 s** — the store's per-cell
   removal was quadratic in a row's width (`gaps` §28). What is left is the enumeration of eight
   million addresses and the recalculation's marking of them.
-- **A hundred sheets make saving 14× slower** (18.6 s against 1.4 s for the same cells): the workbook
-  writer's per-sheet cost, not the cell count, dominates (`gaps` §29).
+- **A hundred sheets make saving 14× slower** (18.6 s against 1.4 s for the same cells) — **retracted
+  11-24: that row drew `json`, the other two drew `xlsx`.** With the format pinned the same workbook
+  saves in **1.48 s**, and Cella is faster than Excel on all three shapes (`gaps` §29).
 - **`edit.find` now answers on every shape** (3.48 s / 5.68 s / 33 ms): finding one word in eight
   million cells costs seconds, because the command materialises every match — a million of them for a
   common word — before it picks one (`gaps` §31).

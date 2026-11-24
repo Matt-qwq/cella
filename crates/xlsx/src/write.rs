@@ -556,6 +556,9 @@ pub(crate) fn write_xlsx_with_workers(wb: &Workbook, kind: XlsxKind, workers: us
 }
 
 fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, precompress_sheets: bool, workers: usize) -> Result<Vec<u8>, IoError> {
+    if cfg!(not(target_arch = "wasm32")) && std::env::var_os("CELLA_PROFILE").is_some() {
+        eprintln!("save: writing {} sheets, {workers} workers", wb.sheets.len());
+    }
     if wb.sheets.is_empty() {
         return Err(IoError::Format("a workbook needs at least one sheet".into()));
     }
@@ -654,12 +657,20 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
         // The worksheet's rows stream to the compression thread window by window (see
         // `write_sheet`); what it returns is the tail, registered here — exactly where a whole
         // part was — so the package's part order is unchanged.
+        let probe = !cfg!(target_arch = "wasm32") && std::env::var_os("CELLA_PROFILE").is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        #[allow(clippy::disallowed_methods)]
+        let started = probe.then(std::time::Instant::now);
         let (owed, mut rels) = crate::sheet_write::write_sheet(wb, i, i == active, &mut out, &slicers, workers, &name, precompress_sheets)?;
         pivots.add_sheet(wb, i, &mut out, &mut rels, &slicers);
         if precompress_sheets {
             out.end_stream(&name, Some(CT_WORKSHEET), owed.into_bytes())?;
         } else {
             out.part(&name, Some(CT_WORKSHEET), owed.into_bytes());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(started) = started {
+            eprintln!("write: sheet {i} {:.1} ms ({} cells)", started.elapsed().as_secs_f64() * 1000.0, sheet.cells.len());
         }
         if !rels.is_empty() {
             out.part(&format!("xl/worksheets/_rels/sheet{}.xml.rels", i + 1), None, rels.xml().into_bytes());

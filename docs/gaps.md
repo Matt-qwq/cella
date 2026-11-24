@@ -1187,19 +1187,29 @@ sheets' formulas are the work.
 **Evidence:** [performance-shapes.md](performance-shapes.md) and
 [performance.md](performance.md) §"Shape: rows are not the only axis".
 
-### 29. Saving a hundred sheets costs 18× the same cells in one (P, measured 11-23)
+### 29. Saving a hundred sheets — **the ruler measured JSON, not xlsx** (retracted 11-24)
 
-**What:** `file.saveBytes` on eight million cells in a hundred sheets of ten thousand rows takes
-**23.72 s**, against 1.68 s as a million rows × 8 columns and 1.34 s as 8,000 × 1,000 — the same
-cells, eighteen times the time. The writer's per-sheet cost (style tables, band walks, part
-assembly) dominates the cell count.
+**What it said:** `file.saveBytes` on eight million cells in a hundred sheets of ten thousand rows
+took **23.72 s**, against 1.68 s as a million rows × 8 columns and 1.34 s as 8,000 × 1,000 — "the
+same cells, eighteen times the time", attributed to the writer's per-sheet cost.
 
-**Why it matters:** a month-per-sheet workbook is ordinary, and the save is the operation a person
-pays most often.
+**Why that was wrong:** the shape ruler generates each command's params from its doc string, and a
+hint with alternatives (`xlsx|csv|tsv|json|html`) was drawn **at random for each shape**. The
+hundred-sheet row drew **json**: it wrote **1.95 GB** of JSON in 15.8 s. The other two shapes drew
+`xlsx` and wrote 30–48 MB. The three columns of that row were three different commands, so the "18×"
+was the difference between two formats, not between one sheet and a hundred.
 
-**Fix (not diagnosed yet):** profile the writer per sheet (`crates/xlsx`): what is rebuilt for every
-sheet even when its style table is shared, and whether the sheet parts are assembled in parallel
-(the cells are independent). **Estimate:** 3–5 h to diagnose, then a knife.
+**Proof:** with `format: "xlsx"` pinned in `crates/engine/tests/param_gen`, the same workbook writes
+43 MB in **1.48 s**, and every `write: sheet` line reports 13–16 ms for its 80,000 cells — a
+hundredth of the reported figure. The writer has no per-sheet problem to find.
+
+**Now:** `file.saveBytes` is **1.79 s** as a million rows × 8 columns, **1.41 s** as 8,000 × 1,000
+and **1.48 s** as a hundred sheets of ten thousand rows. Excel takes 2.761 / 1.714 / 2.502 s for the
+same three workbooks and WPS 4.957 / 1.024 / 1.494 s: **Cella is faster than both on all three.**
+
+**The lesson:** a ruler that draws a *mode* at random measures a different command per row. The
+generator now pins the format, and a future hint whose alternatives change the work — not just a
+detail — has to be pinned the same way.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
