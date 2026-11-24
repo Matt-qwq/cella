@@ -1690,6 +1690,40 @@ of its own, and this round is the measurement that scopes it.
 **Instrument left behind:** the three `fn_probe` rows above, and `SPILL_NO_INSERT`-style ablation is
 not kept — the numbers are in this entry.
 
+### 46. A column read spent 62 % of its time finding the rows (P, found and fixed 11-25)
+
+**What:** a one-column read of a million rows cost **15.9 ns a cell** — the floor under every
+whole-column formula (`SUM`, the criteria family, the lookups' scans, `MEDIAN`).
+
+**Where it went** (by ablation — each variant built and measured):
+| variant | ns/cell |
+|---|---:|
+| the row walk alone (no kind run, no payload, no formula test) | **9.8** |
+| + the kind's run | 11.2 |
+| + the payload and the number | 14.8 |
+| + the formula test | 15.9 |
+
+So **62 % of a column read was the enumeration**: per row the store looked the row up by key — a
+`row_bits` test, a popcount and an index into the band's rows — when a band's rows *are* the keys it
+holds, in order, on a sheet whose row map is the identity.
+
+**Now:** walking the band's rows in order instead of looking each key up:
+
+- `visit_packed`, one column: **15.9 → 11.9 ns a cell (−25 %)**; `visit_values`: ~17.5 → 14.4.
+- On the function page, five passes a row: **`SUM`/`COUNT`/`MAX`/`MIN`/`AVERAGE` 29–32 → 25–26 ms**,
+  **`COUNTIF`/`SUMIF`/`AVERAGEIF` 17–18 → 15–16**, **`MATCH`/`VLOOKUP`/`XLOOKUP` 17 → 15–16**,
+  `MEDIAN` 52 → 48, `LARGE` 26 → 23, `SUMPRODUCT` 23 → 21. A mapped row map (a row inserted or
+  deleted) keeps the old loop, which resolves logical to physical rows.
+
+**What the ablation says about the goal:** a million-row column read costs **9.8 ms even doing
+nothing**, so the plan's 10 ms target for this family *is* the enumeration. Two ways past it, both
+design knives: a per-band flag that says "every row here is dense and starts at column 0" (then a
+column's payloads are a fixed stride apart and a fold reads one load a row), or the spill-store
+change of `gaps` §45.
+
+**Test:** the model suite (174) and the two differentials that read columns through the walk
+(`criteria_scan`, `xlookup_column`) pass unchanged — the walk is the one every one of them uses.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2153,6 +2187,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §46 (new): a column read spent 62 % of its time finding the rows — by ablation the row walk alone cost 9.8 ns a cell of a 15.9 ns read. Walking the band's rows in order instead of looking each key up: **15.9 → 11.9 ns a cell (−25 %)**, and on the page `SUM`/`COUNT`/`MAX`/`MIN` 29–32 → **25–26 ms**, the criteria family 17–18 → **15–16**, the lookups 17 → **15–16**. A million-row column read costs 9.8 ms doing *nothing*, which is what the plan's 10 ms target is up against |
 | 2026-11-25 | minor | §44 (extended): the whole single-criterion family answers from the scan — AVERAGEIF **27 → 17 ms**, AVERAGEIFS **28 → 18**, COUNTIFS **24 → 18**, SUMIFS **31 → 18** — all seven spellings at the walk's price, with Excel's 255-unit difference between the two families kept and tested |
 | 2026-11-25 | minor | §45 (new): a million-cell dynamic array pays for its **spill**, not its lift. One call measured three ways: `SUM(A2:A)` 16 ms, `SUM(BITAND(A2:A,B2:B))` 87 (the lift ≈71), `BITAND(A2:A,B2:B)` 230 (the spill ≈143). Plan item 10's ≤80 ms target therefore needs the spill store (`BTreeMap<CellRef, Value>`, a node a cell) redesigned, not a tighter lift. Two fixes were built, measured (231 → 223 and 229 → 234 — both inside the noise) and reverted |
 | 2026-11-25 | minor | §44 (new): the criteria functions tested a copy of the column — the criterion matcher takes a `CellView` now (a number, a borrowed text, a boolean, an error, a blank) so a host can ask it of a stored cell with no allocation, and `COUNTIF`/`SUMIF` answer from one walk: **COUNTIF 23 → 18 ms, SUMIF 27 → 18 ms**. The differential test (`criteria_scan.rs`) caught two bugs of the new path — a matched error must be the answer, and a target's error must wait for its row's verdict |
