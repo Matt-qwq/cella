@@ -268,8 +268,8 @@ knives.
 
 | command | 1M×8 before → now | 1000×8k before → now | 100×10k before → now |
 |---|---:|---:|---:|
-| `data.sortAscending` | 1.46 s → **1.17 s** | 9.98 s → **3.35 s** | 17 ms → **14 ms** |
-| `range.move` | 3.73 s → **1.50 s** | 15.91 s → **3.50 s** | 73 ms → **27 ms** |
+| `data.sortAscending` | 1.46 s → **1.18 s** | 9.98 s → **1.94 s** ✅ | 17 ms → **16 ms** |
+| `range.move` | 3.73 s → **2.06 s** | 15.91 s → **2.70 s** | 73 ms → **33 ms** |
 | `edit.find` | 3.48 s → **214 µs** | 5.68 s → **81 µs** | 33 ms → **37 µs** |
 | `edit.clearAll` | 1.14 s → **7.9 ms** | 1.40 s → **1.1 ms** | 4.7 ms → **3.5 ms** |
 | `edit.clearFormats` | 1.27 s → **551 ms** | 3.45 s → **1.80 s** | 16 ms → **8.2 ms** |

@@ -1267,26 +1267,23 @@ question, not a knife.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
-### 33. Sorting a thousand-column sheet takes 3.1 s, not 2 (P, measured 11-24)
+### 33. Sorting a thousand-column sheet takes 1.94 s — **target met 11-24**
 
-**What:** `data.sortAscending` over eight million cells: **1.17 s** on a million rows × 8 columns,
-**3.12 s** on 8,000 rows × 1,000 columns — down from **9.98 s**. Excel takes 0.146 s and 0.347 s,
-WPS 0.758 s and 1.334 s.
+**Was:** `data.sortAscending` over eight million cells took **9.98 s** on 8,000 rows × 1,000 columns
+and **1.46 s** on a million rows × 8 columns (Excel 0.146 s and 0.347 s, WPS 0.758 s and 1.334 s).
 
-**What changed:** the write-back used to put every cell back through `put`, which keeps the band's
-run-length kind and style stripes straight one cell at a time, and a run that splits re-points the
-offsets of all 64 rows of the band. A sort is a permutation of its block, so when the block holds
-every cell the sheet stores in its columns, the write-back now builds a fresh store in destination
-order — rows ascending, one append each, no run ever split, and no band copied for the undo
-snapshot. That took the write-back from 6.1 s to 1.8 s.
+**What changed, in three cuts:** the write-back used to put every cell back through `put`, which
+keeps the band's run-length kind and style stripes straight one cell at a time, and a run that splits
+re-points the offsets of all 64 rows of the band — 6.1 s. A sort is a permutation of its block, so
+when the block holds every cell the sheet stores in its columns, the write-back now **builds a fresh
+store in destination order** (9.98 → 3.35 s). Then `Band::text_slot`'s sorted pointer index became a
+map past 256 texts, which is the shape a write-back produces: one word arriving from each source band
+as its own `Arc` (`gaps` §38) — 3.35 → 2.08 s. And the gather skips its `LineShapes` bookkeeping on a
+sheet that has never held a formula.
 
-**What remains:** the 3.1 s is 1.14 s of gathering the block's cells and 1.83 s of writing them back,
-and both are the store's per-cell cost rather than the sort's. A probe that builds the same eight
-million cells straight into a store costs **119 ns a cell** on a thousand-column sheet against
-**31 ns** on a tall one, and text interning doubles it: the store's text table is per band and keyed
-by `Arc` pointer, so one word arriving from thirty source bands becomes thirty entries. Moving a
-packed row instead of rebuilding its cells is the fix, and that is a change to the band format
-(P2-scale), not a command-level one. **Target was ≤2 s; this is 3.1 s.**
+**Now: 1.94 s** wide and **1.18 s** tall — the ≤2 s target. What is left is the gather (1.27 s of the
+1.94): reading eight million cells out of the store through `row_reader` at ~150 ns a cell, which is
+the store's per-cell read price (`gaps` §38's last paragraph).
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
@@ -1313,9 +1310,12 @@ holds is dropped instead of edited); `range.move` cuts without building the clip
 overwrite check walks only the strips of the destination the source does not cover; the paste writes
 each destination row in one store call; and the moved block is a sorted `Vec` walked by a cursor.
 
-**Measured:** **3.2 s** wide and **1.54 s** tall (was 15.9 and 3.7). The 2 s target is met on the
-tall shape and missed on the wide one: what is left is reading the block out (2.7 s of the 3.2) and
-writing it back (1.2 s before the read) — the same per-cell store floor `gaps` §33 describes.
+**Measured:** **2.70 s** wide and **2.06 s** tall (was 15.9 and 3.7 — 5.9× and 1.8×). The 2 s target
+is met on the tall shape and missed on the wide one. The profile of what is left, per the
+`CELLA_PROFILE` lines: the cut (taking the block out of the store) **1.22 s**, building the pasted
+cells 0.57 s, writing them back 0.33 s, and the commit's full recalculation the rest. Cut and paste
+are one read and one write of eight million cells at the store's per-cell price (`gaps` §38), so the
+next step is the same packed-row work `gaps` §33 needs.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
@@ -1375,6 +1375,32 @@ a million defined names cost — that is the command's real price, not a bug.
 **The catalogue finishes**: 422 commands × 2 row counts × 2 scales, `docs/performance-commands.md`
 redrawn. Test: ten thousand rows beside a label column create ten thousand names, and asking again
 creates none.
+
+### 38. A band stored one text per cell, and its index was a sorted vector (P, found and fixed 11-24)
+
+**What:** building eight million cells straight into a store cost **24 ns a cell when the text
+repeated and 401 when every cell carried its own `Arc`** — the same word, a different pointer. Every
+row of a sort's write-back looks like that: a text arrives from each source band as its own `Arc`, so
+a destination band of sixty-four rows holds hundreds of "pointers to the same word".
+
+**Why:** `Band::text_slot` kept its pointer index as a **sorted vector** and inserted into it, which
+is O(texts) per new text. That is the right shape for the handful of labels a normal band holds (the
+comment in the struct says so, and the number table — hundreds of entries — is a hash for the same
+reason), and quadratic for a band holding one text per cell: a column of unique keys, an import with
+an id column, or a sort's write-back.
+
+**Now:** past **256 texts** the index becomes a `HashMap`, where a hit and a new text are both O(1).
+The probe: 401 → **112 ns a cell**, level with the numbers-only case at the same width. The sort's
+write-back on a thousand-column sheet: **1835 → 628 ms**, and `data.sortAscending` **9.98 s → 1.94 s**
+(Excel 0.146 s) — the 2 s target round 48 missed.
+
+**What remains:** the same probe shows the numbers case at width 1,000 costs **120 ns a cell against
+49 at width 8**, with nothing per-cell changed — a band a thousand columns wide no longer fits L1 and
+every cell touches four stripes. Moving packed rows instead of rebuilding cells is the fix (`gaps`
+§33/§34), and this entry is why the *text* half of that gap is closed.
+
+**Evidence:** a probe over `CellStore::set_row` (removed after the measurement) and
+[performance-shapes.md](performance-shapes.md).
 
 ## After beta
 
