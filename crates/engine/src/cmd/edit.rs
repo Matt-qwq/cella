@@ -1948,9 +1948,16 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
         })
     };
     edit(s, |cx| {
+        // Whether any formula could read a format. `CELL("format")` and `CELL("protect")` do, and
+        // the recalculation learns about a style change from the changed list — so a clear that
+        // skips the list may only do it in a workbook with no formula at all.
+        let formula_readers = cx.wb.sheets.iter().any(|s| s.cells.has_formulas());
         for wanted in &ranges {
             let Some(used) = cx.wb.sheet(sheet).and_then(|sh| sh.used_range()) else { continue };
             let Some(r) = wanted.intersection(&used) else { continue };
+            // Whether the range spans every stored column: the store's run-level answers (a whole
+            // row of styles, a whole row of cells) are only exact that way.
+            let spans_columns = r.start.col <= used.start.col && r.end.col >= used.end.col;
             // Clear All over the whole used area: nothing survives, so the store is replaced rather
             // than emptied a cell at a time. A take per cell shifts every row of the band's side
             // tables, which is quadratic in a row's width: the thousand-column shape took 9.13 s
@@ -1964,11 +1971,17 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
                 sh.cell_pictures.retain(|c, _| !r.contains(*c));
                 sh.cells = cella_model::CellStore::default();
                 cx.structural = true;
+            } else if what == "formats" && spans_columns && !formula_readers {
+                // A row's styles are run-length encoded, so one row's runs collapse to a single
+                // default run in one splice — where a cell-by-cell clear writes a thousand cells
+                // through `put` (1.8 s over eight million cells on a thousand-column sheet). The
+                // changed list is how the recalculation hears, so this path is taken only when no
+                // formula can read a format (`CELL("format")`, `CELL("protect")`); a workbook that
+                // has one keeps the cell-by-cell clear.
+                cx.sheet_mut(sheet)?.cells.clear_styles_rows(r.start.row, r.end.row);
             } else {
-                // A cell the clear would leave exactly as it is costs nothing to leave alone:
-                // "clear formats" over a block that carries none used to rewrite every one of its
-                // cells through the store. The scan is the store's flat one, so it builds no
-                // per-band vector either.
+                // A cell the clear would leave exactly as it is costs nothing to leave alone, and
+                // the scan is the store's flat one (no per-band vector).
                 let target = (what == "formats").then_some(StyleId::DEFAULT);
                 cells = cx
                     .wb

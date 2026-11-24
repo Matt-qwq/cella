@@ -750,6 +750,42 @@ fn clearing_formats_keeps_content_and_drops_the_styles() {
     assert_eq!(text(&mut s, "B2"), json!("b"));
 }
 
+/// Clearing a block's formats collapses each row's style runs into one default run, and the rows
+/// below keep theirs: the style stripe is shared, so a collapsed run moves every later row's slice
+/// and a wrong offset shows up as a bold row losing its bold.
+#[test]
+fn clearing_formats_collapses_runs_and_leaves_the_rows_below() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:C4", "values": [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A1:C2", "code": "0.00"})).unwrap();
+    s.execute("home.bold", json!({"range": "A3:C3", "on": true})).unwrap();
+    s.execute("home.italic", json!({"range": "A4:C4", "on": true})).unwrap();
+    let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap();
+    assert_eq!(get(&mut s, "A1")["text"], json!("1.00"));
+    s.execute("edit.clearFormats", json!({"range": "A1:C2"})).unwrap();
+    assert_eq!(get(&mut s, "A1")["text"], json!("1"), "the block's number format went");
+    assert_eq!(get(&mut s, "A1")["value"], json!(1.0));
+    assert_eq!(get(&mut s, "C2")["text"], json!("6"), "every cell of the block, not just the first");
+    assert_eq!(get(&mut s, "A3")["style"]["font"]["bold"], json!(true), "the row below keeps its bold");
+    assert_eq!(get(&mut s, "A4")["style"]["font"]["italic"], json!(true), "and the one below that its italic");
+    assert_eq!(get(&mut s, "A4")["style"]["font"]["bold"], json!(false));
+}
+
+/// A workbook that holds a formula keeps the cell-by-cell clear, because `CELL("format")` reads a
+/// style: the two paths must clear the same thing.
+#[test]
+fn clearing_formats_takes_the_same_cells_when_a_formula_is_around() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:C2", "values": [[1, 2, 3], [4, 5, 6]]})).unwrap();
+    s.execute("home.numberFormat", json!({"range": "A1:C2", "code": "0.00"})).unwrap();
+    s.execute("cell.set", json!({"cell": "E1", "input": "=CELL(\"format\",A1)"})).unwrap();
+    s.execute("edit.clearFormats", json!({"range": "A1:C2"})).unwrap();
+    let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap();
+    assert_eq!(get(&mut s, "A1")["text"], json!("1"));
+    assert_eq!(get(&mut s, "C2")["text"], json!("6"));
+    assert_ne!(get(&mut s, "E1")["value"], json!("F2"), "the format the formula reads is gone");
+}
+
 #[test]
 fn rich_clipboard_copies_selected_displayed_cells_and_styles() {
     let mut s = s();
