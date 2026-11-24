@@ -1455,6 +1455,62 @@ whole and through windows that start and end **inside** a run, through `row()`, 
 **Left:** the same run walk in `Band::compact_wide` and in `row_same_as`/`diff_bands` (both ask
 `kind_at` per cell); neither is on a measured path, so neither was changed.
 
+### 40. A formula's block argument was built before the formula could say it needed three cells (P, round 53)
+
+**What:** at a million rows, with the functions catalogue's own calls, `VLOOKUP` took **78 ms**,
+`MATCH` **56 ms**, `SUM` **51 ms**, `COUNT` **50**, `MAX` **50**, `MIN` **50**, `AVERAGE` **50**,
+`SUMIFS` **39**, `SUMIF` **30**, `COUNTIF` **26**, `SUMPRODUCT` **25**, `LARGE` **28**, `MEDIAN`
+**56**, and `XLOOKUP` **79**. Excel answers a VLOOKUP into a million-row table in about a
+millisecond when the key is near the top, and its `SUM` over the same column is 20–50 ms.
+
+**Why, three separate causes:**
+
+1. **The exact lookups are library calls.** `MATCH(k, A:A, 0)` and `VLOOKUP(k, A:B, n, FALSE)`
+   reached `cella_functions` with their blocks materialised: the evaluator built every cell into a
+   `Value` first (two million of them for `A:B`) and only then looked for the key. A key on row 1
+   paid for the whole table.
+2. **A fold asked who owned the block before it folded it.** `visit_aggregate` began with
+   `has_owned_cells` — a walk of every row to learn whether any cell holds a formula or an array —
+   and then folded the same cells again. On a column of values that is 6–10 ms of a 25 ms `SUM`,
+   spent to answer a question the fold itself hits in its first owned cell.
+3. **One column is one cell a row, and the row walk charged it the row's setup.** The general
+   packed walk costs **16.9 ns a cell for a one-column read against 4.4 for a row of eight** — same
+   cells, one arrangement apart (`crates/model/examples/read_probe.rs`). Every whole-column argument
+   is that shape.
+
+**Now:** the two lookups answer from a scan of the key column that stops at the hit
+(`first_match_in_column`, the hook `XLOOKUP`'s text path got in round 39, generalised to numbers),
+returning `#N/A` when the scan completes without one; a wildcard key, an empty key
+(`MATCH("", …)` matches a *blank*), an approximate match type, a horizontal block or a block holding
+formulas all decline to the library, so the answer cannot differ. The fold runs first on a copy of
+the accumulator and hands over to the owned paths at the first cell the evaluator owns.
+`CellStore::visit_column_cells` hoists the row walk's invariants for one column, which
+`visit_packed`/`visit_values` take when the range is one column and the column map is the identity.
+
+**Measured:** the pre-change code checked out beside the new one, same params, five passes a row, one
+after the other — **VLOOKUP 78 → 17 ms (−78 %), MATCH 56 → 17 (−70 %), SUM 51 → 30 (−41 %), MAX 50 →
+30 (−40), MIN 50 → 30 (−40), COUNT 50 → 31 (−38), SUMIFS 39 → 33, AVERAGE 50 → 43, LARGE 28 → 25,
+SUMIF 30 → 27; MEDIAN 56 → 53, XLOOKUP 79 → 75, COUNTIF 26 → 25, SUMPRODUCT 25 → 24 follow the
+one-column walk, not their own fix.** Two rows this round cannot touch sat still across the same pair
+(`BITAND` 238 → 236 ms, `BYROW` 1.15 → 1.16 s), so the machine was steady while the two were measured.
+A hit on row 1 is **0.6–0.9 ms** where it was 25–40; a hit in the middle is the scan; a miss is one
+pass instead of the array plus the pass.
+
+**A retraction inside the round:** the first certificate was "best of two runs a side" with one pass a
+row, and it read −51 % for `SUM` and −26 % for `SUMPRODUCT`. Re-measured with five passes and the
+pre-change code actually checked out beside the new one, those are −41 % and −4 %: a single pass on
+this machine (77 % load all afternoon) is worth more swing than the change it was measuring.
+
+**Equivalence:** `crates/engine/tests/xlookup_column.rs` compares both spellings of each lookup on
+one sheet — the literal key (fast path) against the key in a cell (general path) — over text in two
+cases, a number column, a text key that spells a number, a wildcard, an approximate match type, a
+column past the table, a blank return cell, a formula in the key column, and a 5,000-row table.
+
+**Left (the next knife):** `XLOOKUP` with more than three arguments still builds the block (75 ms);
+`COUNTIF`/`SUMIF` build one array to test it (25/27 ms); `MEDIAN`/`SUMPRODUCT`/`LARGE` need every
+value in hand (53/24/25 ms) and pay the array build; `SUM`'s 30 ms is now the fold itself over two
+million cells. `LET`/`LAMBDA` over a whole column is not measured at all yet.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -1918,6 +1974,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-24 | minor | §40 (new): a formula's block argument was built before the formula could say it needed three cells. The exact lookups (`MATCH`, `VLOOKUP`, `XLOOKUP` with a scalar key) now scan the key column and stop at the hit — **VLOOKUP 78 → 17 ms, MATCH 56 → 17 ms** at a million rows, and a hit on row 1 costs 0.6–0.9 ms; a fold of a values column stops asking `has_owned_cells` first (**SUM 51 → 30 ms, MAX/MIN −40 %, COUNT −38 %**), and one-column reads take a peeled walk. The rest of the catalogue's rows move by 4–15 % with them; two untouched control rows sat still (−1 %, +1 %) |
 | 2026-11-24 | minor | §39 (new) and §33/§34/§35/§38 updated: a row walk asked the kind and style run stripes for **every cell from the first run**, so a thousand-column row was quadratic — the cut half of a move cost 1.20 s where the same cells cost 0.30 s on eight-column rows. A run position on the walk cursor took the move **2.04 → 1.11 s**, the sort **1.81 → 0.83 s**, the save **1.32 → 0.86 s** and the copy **852 → 557 ms**. Round 51's "the cut is the store's per-cell price, so packed rows are next" is retracted: moving packed rows is still the guess for the *write* side, and nothing needs it for the move's target |
 | 2026-11-16 | minor | §18/§17: the accessibility check lists every object without alternative text — **WordArt and equations included** — with the reason it is there and the name a screen reader reads (the object's own text when it carries one); the PDF export draws a WordArt's text outline (eight offset copies) and drop shadow (one) the way the grid paints them. Two tests, one per half |
 | 2026-11-03 | minor | §1: a local real-world corpus (9.6 GB, 3,199 workbooks) was run: 3,084 readable workbooks opened with no reader failure, 635 save/reopen with 0 mismatches (digest now covers formula text, merges, comments, links, CF/DV, tables, names, charts, shapes, pictures), and Excel 16 found Cella's copies identical on 16 `.xlsx` files plus all 37 readable `.xls`. #1 is met for beta; 4 invalid files (openpyxl also refuses), 111 encrypted and 449 cloud placeholders were out of reach, and the pinned corpus remains for CI (0–1 h) |
