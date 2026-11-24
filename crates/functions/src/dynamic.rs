@@ -71,28 +71,179 @@ fn pad_arg(args: &[Arg], i: usize) -> Value {
     }
 }
 
-/// Hashable key for case-insensitive equality of values.
-fn key_of(v: &Value) -> String {
+/// A value's contribution to a row's key hash. Must agree with [`key_eq`]: two rows that compare
+/// equal hash equal.
+fn hash_value(h: u64, v: &Value) -> u64 {
+    let h = key_mix(h, 0x9E37_79B9_7F4A_7C15);
     match v {
-        Value::Empty => "e".into(),
-        Value::Number(n) => format!("n{}", if *n == 0.0 { 0u64 } else { n.to_bits() }),
-        Value::Text(t) => format!("t{}", t.to_lowercase()),
-        Value::Bool(b) => format!("b{b}"),
-        Value::Error(e) => format!("x{}", e.code()),
-        Value::Array(a) => key_of(a.data.first().unwrap_or(&Value::Empty)),
+        Value::Empty => key_mix(h, 1),
+        Value::Number(n) => key_mix(key_mix(h, 2), key_number_bits(*n)),
+        Value::Bool(b) => key_mix(key_mix(h, 3), u64::from(*b)),
+        Value::Error(e) => key_mix(key_mix(h, 4), u64::from(e.code())),
+        Value::Text(t) => {
+            // The key compares text case-insensitively. An ASCII text is lowered a byte at a time
+            // (no allocation, which is the whole point); anything else goes through `to_lowercase`,
+            // whose length is what the hash records, so `"K"` (Kelvin sign) and `"k"` collide.
+            let mut h = h;
+            if t.is_ascii() {
+                h = key_mix(key_mix(h, 5), t.len() as u64);
+                for b in t.bytes() {
+                    h = key_mix(h, u64::from(b.to_ascii_lowercase()));
+                }
+            } else {
+                let lower = t.to_lowercase();
+                h = key_mix(key_mix(h, 5), lower.len() as u64);
+                for b in lower.bytes() {
+                    h = key_mix(h, u64::from(b));
+                }
+            }
+            h
+        }
+        // An array's key is its first value's, as it always was.
+        Value::Array(a) => hash_value(h, a.data.first().unwrap_or(&Value::Empty)),
     }
 }
 
-fn row_key(r: &[Value]) -> String {
-    let mut s = String::new();
-    for v in r {
-        let k = key_of(v);
-        // Length prefix keeps the encoding unambiguous even when a text value contains the separator.
-        s.push_str(&k.len().to_string());
-        s.push(':');
-        s.push_str(&k);
+/// The bits a number's key compares by: `-0` is `0`.
+fn key_number_bits(n: f64) -> u64 {
+    if n == 0.0 { 0 } else { n.to_bits() }
+}
+
+fn key_mix(h: u64, x: u64) -> u64 {
+    (h ^ x).wrapping_mul(0x0000_0100_0000_01b3)
+}
+
+const KEY_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// A row's key hash: its values in `fields`, column order.
+fn hash_key(fields: &[&Array], row: usize) -> u64 {
+    let mut h = KEY_SEED;
+    for f in fields {
+        for c in 0..f.cols {
+            h = hash_value(h, f.get(row, c).unwrap_or(&Value::Empty));
+        }
     }
-    s
+    h
+}
+
+/// Whether two rows hold the same key, compared the way the sheet's grouping compares values.
+fn key_eq(fields: &[&Array], a: usize, b: usize) -> bool {
+    for f in fields {
+        for c in 0..f.cols {
+            if !value_eq(f.get(a, c).unwrap_or(&Value::Empty), f.get(b, c).unwrap_or(&Value::Empty)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn value_eq(x: &Value, y: &Value) -> bool {
+    match (x, y) {
+        (Value::Empty, Value::Empty) => true,
+        (Value::Number(a), Value::Number(b)) => key_number_bits(*a) == key_number_bits(*b),
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Error(a), Value::Error(b)) => a.code() == b.code(),
+        (Value::Text(a), Value::Text(b)) => {
+            if a.is_ascii() && b.is_ascii() {
+                a.eq_ignore_ascii_case(b)
+            } else {
+                a.to_lowercase() == b.to_lowercase()
+            }
+        }
+        (Value::Array(a), Value::Array(b)) => value_eq(a.data.first().unwrap_or(&Value::Empty), b.data.first().unwrap_or(&Value::Empty)),
+        _ => false,
+    }
+}
+
+/// Distinct row keys as dense ids, numbered in the order the rows were first seen.
+///
+/// A key is a row's tuple of values in the field columns. Getting its id used to mean a `String` a
+/// row — `row_key` spelled the values out as text — which is a million allocations for a million
+/// data rows, and it was most of what UNIQUE, GROUPBY and PIVOTBY spent their seconds on. Here a row
+/// costs a hash of its values and, only when two rows hash alike, a value-by-value comparison
+/// against the ids in that bucket: two `Vec`s and a map of first ids, no per-row allocation at all.
+struct KeyIds {
+    /// The row that first carried each key, in id order: the representative used for comparison and
+    /// for the key's values.
+    first: Vec<u32>,
+    /// Hash → the first id carrying it.
+    buckets: HashMap<u64, u32>,
+    /// Per id, the next id with the same hash (`u32::MAX` ends the chain).
+    next: Vec<u32>,
+    /// The id of each pushed row, in push order.
+    ids: Vec<u32>,
+}
+
+impl KeyIds {
+    fn with_rows(rows: usize) -> KeyIds {
+        KeyIds { first: Vec::new(), buckets: HashMap::new(), next: Vec::new(), ids: Vec::with_capacity(rows) }
+    }
+
+    /// How many distinct keys have been seen.
+    fn len(&self) -> usize {
+        self.first.len()
+    }
+
+    /// The id of each pushed row, in push order.
+    fn ids(&self) -> &[u32] {
+        &self.ids
+    }
+
+    /// The id of `row`'s key, adding the key the first time it is seen.
+    fn push(&mut self, fields: &[&Array], row: u32) -> u32 {
+        let h = hash_key(fields, row as usize);
+        let mut cur = self.buckets.get(&h).copied();
+        while let Some(id) = cur {
+            if key_eq(fields, self.first[id as usize] as usize, row as usize) {
+                self.ids.push(id);
+                return id;
+            }
+            cur = self.next.get(id as usize).copied().filter(|n| *n != u32::MAX);
+        }
+        let id = self.first.len() as u32;
+        self.first.push(row);
+        self.next.push(u32::MAX);
+        if let Some(old) = self.buckets.insert(h, id) {
+            // Another key with the same hash: put this id at the head of the chain.
+            self.next[id as usize] = old;
+        }
+        self.ids.push(id);
+        id
+    }
+
+    /// The values of key `id`: what a `Vec<Value>` key would have held.
+    fn values_of(&self, fields: &[&Array], id: u32) -> Vec<Value> {
+        let row = self.first.get(id as usize).copied().unwrap_or(0) as usize;
+        fields.iter().flat_map(|f| (0..f.cols).map(move |c| f.get(row, c).cloned().unwrap_or(Value::Empty))).collect()
+    }
+
+    /// The distinct keys as values, in id order.
+    fn values(&self, fields: &[&Array]) -> Vec<Vec<Value>> {
+        (0..self.len() as u32).map(|id| self.values_of(fields, id)).collect()
+    }
+}
+
+/// The ids of `keys`, ordered the way this module has always ordered a group's keys: by the column
+/// `sort` names (± a column index within the key, descending when negative), then by every key
+/// column ascending. `0` keeps the plain ascending order.
+fn ordered_ids(keys: &KeyIds, key_values: &[Vec<Value>], sort: i64) -> Vec<u32> {
+    let width = key_values.first().map_or(0, Vec::len);
+    let mut ids: Vec<u32> = (0..keys.len() as u32).collect();
+    let sort_col = if sort != 0 && (sort.unsigned_abs() as usize) <= width { Some(sort.unsigned_abs() as usize - 1) } else { None };
+    let ascending = vec![1i64; width];
+    match sort_col {
+        Some(i) => {
+            let dir = sort.signum();
+            ids.sort_by(|&a, &b| {
+                let (ka, kb) = (&key_values[a as usize], &key_values[b as usize]);
+                cmp_keys(&[ka.get(i).cloned().unwrap_or(Value::Empty)], &[kb.get(i).cloned().unwrap_or(Value::Empty)], &[dir])
+                    .then_with(|| cmp_keys(ka, kb, &ascending))
+            });
+        }
+        None => ids.sort_by(|&a, &b| cmp_keys(&key_values[a as usize], &key_values[b as usize], &ascending)),
+    }
+    ids
 }
 
 fn truthy(v: &Value) -> R<bool> {
@@ -227,22 +378,24 @@ fn unique(args: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let by_col = opt_bool(args, 1, false)?;
     let once = opt_bool(args, 2, false)?;
     let base = if by_col { a.transpose() } else { a };
-    let lines = rows_of(&base);
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for l in &lines {
-        *counts.entry(row_key(l)).or_insert(0) += 1;
+    // One id a row, hashed from its values: this is the walk that used to build a `String` a row.
+    let fields = [&base];
+    let mut keys = KeyIds::with_rows(base.rows);
+    for r in 0..base.rows {
+        keys.push(&fields, r as u32);
     }
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for l in lines {
-        let k = row_key(&l);
-        let c = counts.get(&k).copied().unwrap_or(0);
-        if once && c != 1 {
+    let mut counts = vec![0u32; keys.len()];
+    for &id in keys.ids() {
+        if let Some(n) = counts.get_mut(id as usize) {
+            *n += 1;
+        }
+    }
+    let mut out: Vec<Vec<Value>> = Vec::new();
+    for id in 0..keys.len() as u32 {
+        if once && counts.get(id as usize).copied() != Some(1) {
             continue;
         }
-        if seen.insert(k) {
-            out.push(l);
-        }
+        out.push(keys.values_of(&fields, id));
     }
     if out.is_empty() {
         return Err(CellError::Calc);
@@ -593,6 +746,55 @@ fn aggregate_with(f: Option<Agg>, vals: &[&Value], c: &mut dyn Ctx) -> Value {
     }
 }
 
+/// [`aggregate_with`] over a block's rows without collecting the group's values first.
+///
+/// A group's values used to be gathered into a `Vec<&Value>` for every bucket — for a PIVOTBY that
+/// is the cells, both totals and the grand total, four million pointers to read four million
+/// numbers. A built-in aggregate now folds the block's rows as it walks them; a LAMBDA still needs
+/// the column, and the variance kinds still need every number twice.
+fn aggregate_rows(f: Option<Agg>, vals: &Array, rows: &[usize], col: usize, c: &mut dyn Ctx) -> Value {
+    let Some(f) = f else {
+        let vs: Vec<&Value> = rows.iter().filter_map(|&r| vals.get(r, col)).collect();
+        return aggregate_with(None, &vs, c);
+    };
+    match f {
+        Agg::Sum | Agg::Count | Agg::CountA | Agg::Max | Agg::Min | Agg::Average => {
+            let (mut sum, mut count, mut present, mut best) = (0.0f64, 0u64, 0u64, None::<f64>);
+            for &r in rows {
+                match vals.get(r, col) {
+                    Some(Value::Number(n)) => {
+                        sum += n;
+                        count += 1;
+                        present += 1;
+                        best = Some(match best {
+                            Some(b) if f == Agg::Max => b.max(*n),
+                            Some(b) => b.min(*n),
+                            None => *n,
+                        });
+                    }
+                    // `SUM` and `AVERAGE` carry the error; `COUNT` skips it.
+                    Some(Value::Error(e)) if f != Agg::Count => return Value::Error(*e),
+                    Some(Value::Empty) | None => {}
+                    Some(_) => present += 1,
+                }
+            }
+            match f {
+                Agg::Sum => Value::Number(sum),
+                Agg::Count => Value::Number(count as f64),
+                Agg::CountA => Value::Number(present as f64),
+                Agg::Average if count == 0 => Value::Error(CellError::Div0),
+                Agg::Average => Value::Number(sum / count as f64),
+                // Excel's `MAX` and `MIN` of no numbers at all are 0, not an error.
+                _ => Value::Number(best.unwrap_or(0.0)),
+            }
+        }
+        _ => {
+            let vs: Vec<&Value> = rows.iter().filter_map(|&r| vals.get(r, col)).collect();
+            aggregate(f, &vs)
+        }
+    }
+}
+
 fn aggregate(f: Agg, vals: &[&Value]) -> Value {
     if f == Agg::CountA {
         return Value::Number(vals.iter().filter(|v| !matches!(v, Value::Empty)).count() as f64);
@@ -713,41 +915,6 @@ fn prepare(fields: &[&Array], values: &Array, fh: Option<i64>, filter: Option<&A
     Ok(Prepared { field_headers, value_headers, show_headers: show, rows })
 }
 
-fn key_row(a: &Array, r: usize) -> Vec<Value> {
-    (0..a.cols).map(|c| a.get(r, c).cloned().unwrap_or(Value::Empty)).collect()
-}
-
-/// Distinct keys in first-seen order, then sorted (by `sort` = ±column index within the key; 0
-/// keeps all keys ascending).
-fn distinct_keys(keys: &[Vec<Value>], sort: i64) -> Vec<Vec<Value>> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for k in keys {
-        if seen.insert(row_key(k)) {
-            out.push(k.clone());
-        }
-    }
-    let width = out.first().map_or(0, Vec::len);
-    let mut orders = vec![1i64; width];
-    if sort != 0 {
-        let i = sort.unsigned_abs() as usize;
-        if i >= 1 && i <= width {
-            if let Some(o) = orders.get_mut(i - 1) {
-                *o = sort.signum();
-            }
-            // Sort key column first.
-            out.sort_by(|a, b| {
-                let ka = vec![a.get(i - 1).cloned().unwrap_or(Value::Empty)];
-                let kb = vec![b.get(i - 1).cloned().unwrap_or(Value::Empty)];
-                cmp_keys(&ka, &kb, &[sort.signum()]).then_with(|| cmp_keys(a, b, &vec![1; width]))
-            });
-            return out;
-        }
-    }
-    out.sort_by(|a, b| cmp_keys(a, b, &orders));
-    out
-}
-
 fn opt_arr(args: &[Arg], i: usize) -> R<Option<Array>> {
     if has(args, i) { Ok(Some(arr_arg(args, i)?)) } else { Ok(None) }
 }
@@ -761,26 +928,29 @@ fn groupby(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
     let sort = opt_count(args, 5)?.unwrap_or(1);
     let filter = opt_arr(args, 6)?;
     let p = prepare(&[&rf], &vals, fh, filter.as_ref())?;
-    let keys: Vec<Vec<Value>> = p.rows.iter().map(|&r| key_row(&rf, r)).collect();
-    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-    for (k, &r) in keys.iter().zip(p.rows.iter()) {
-        groups.entry(row_key(k)).or_default().push(r);
+    // One id a row, and each group's rows by id: the map from a key to its rows used to be keyed by
+    // a `String` built from the key's values (`row_key`), which is a million allocations for a
+    // million data rows and most of this function's seconds.
+    let fields = [&rf];
+    let mut keys = KeyIds::with_rows(p.rows.len());
+    for &r in &p.rows {
+        keys.push(&fields, r as u32);
     }
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
+    for (i, &r) in p.rows.iter().enumerate() {
+        if let Some(g) = keys.ids().get(i).and_then(|id| groups.get_mut(*id as usize)) {
+            g.push(r);
+        }
+    }
+    let key_values = keys.values(&fields);
     let sort_in_keys = if sort.unsigned_abs() as usize <= rf.cols { sort } else { 0 };
-    let mut ordered = distinct_keys(&keys, sort_in_keys);
-    let mut agg_row = |rows: &[usize]| -> Vec<Value> {
-        (0..vals.cols)
-            .map(|col| {
-                let vs: Vec<&Value> = rows.iter().filter_map(|&r| vals.get(r, col)).collect();
-                aggregate_with(f, &vs, c)
-            })
-            .collect()
-    };
+    let ordered = ordered_ids(&keys, &key_values, sort_in_keys);
+    let mut agg_row = |rows: &[usize]| -> Vec<Value> { (0..vals.cols).map(|col| aggregate_rows(f, &vals, rows, col, c)).collect() };
     let mut lines: Vec<Vec<Value>> = ordered
-        .drain(..)
-        .map(|k| {
-            let rows = groups.get(&row_key(&k)).cloned().unwrap_or_default();
-            let mut line = k;
+        .into_iter()
+        .map(|id| {
+            let rows = groups.get(id as usize).cloned().unwrap_or_default();
+            let mut line = key_values.get(id as usize).cloned().unwrap_or_default();
             line.extend(agg_row(&rows));
             line
         })
@@ -830,32 +1000,42 @@ fn pivotby(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
     let col_sort = opt_count(args, 8)?.unwrap_or(1);
     let filter = opt_arr(args, 9)?;
     let p = prepare(&[&rf, &cf], &vals, fh, filter.as_ref())?;
-    let rkeys: Vec<Vec<Value>> = p.rows.iter().map(|&r| key_row(&rf, r)).collect();
-    let ckeys: Vec<Vec<Value>> = p.rows.iter().map(|&r| key_row(&cf, r)).collect();
-    let rk = distinct_keys(&rkeys, if row_sort.unsigned_abs() as usize <= rf.cols { row_sort } else { 0 });
-    let ck = distinct_keys(&ckeys, if col_sort.unsigned_abs() as usize <= cf.cols { col_sort } else { 0 });
-    let mut cell: HashMap<(String, String), Vec<usize>> = HashMap::new();
-    for ((r, c), &i) in rkeys.iter().zip(ckeys.iter()).zip(p.rows.iter()) {
-        cell.entry((row_key(r), row_key(c))).or_default().push(i);
+    // Two ids a row (its row key and its column key), and the cells keyed by those ids: the cell map
+    // used to be keyed by two `String`s built from the key values, which is what this pivoted table
+    // spent its five seconds on.
+    let (rfields, cfields) = ([&rf], [&cf]);
+    let mut rkeys = KeyIds::with_rows(p.rows.len());
+    let mut ckeys = KeyIds::with_rows(p.rows.len());
+    for &r in &p.rows {
+        rkeys.push(&rfields, r as u32);
+        ckeys.push(&cfields, r as u32);
     }
+    let mut cell: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    // The rows of each row key and of each column key, for the totals: gathering them once beats the
+    // walk over every cell the totals used to do.
+    let mut rows_by_row_key: Vec<Vec<usize>> = vec![Vec::new(); rkeys.len()];
+    let mut rows_by_col_key: Vec<Vec<usize>> = vec![Vec::new(); ckeys.len()];
+    for (i, &r) in p.rows.iter().enumerate() {
+        let (Some(rk), Some(ck)) = (rkeys.ids().get(i).copied(), ckeys.ids().get(i).copied()) else { continue };
+        cell.entry((rk, ck)).or_default().push(r);
+        if let Some(v) = rows_by_row_key.get_mut(rk as usize) {
+            v.push(r);
+        }
+        if let Some(v) = rows_by_col_key.get_mut(ck as usize) {
+            v.push(r);
+        }
+    }
+    let rkey_values = rkeys.values(&rfields);
+    let ckey_values = ckeys.values(&cfields);
+    let rk = ordered_ids(&rkeys, &rkey_values, if row_sort.unsigned_abs() as usize <= rf.cols { row_sort } else { 0 });
+    let ck = ordered_ids(&ckeys, &ckey_values, if col_sort.unsigned_abs() as usize <= cf.cols { col_sort } else { 0 });
     let mut agg = |rows: &[usize], c: usize| -> Value {
         if rows.is_empty() {
             return Value::Empty;
         }
-        let vs: Vec<&Value> = rows.iter().filter_map(|&r| vals.get(r, c)).collect();
-        aggregate_with(f, &vs, ctx)
+        aggregate_rows(f, &vals, rows, c, ctx)
     };
-    let rows_for = |r: Option<&Vec<Value>>, c: Option<&Vec<Value>>| -> Vec<usize> {
-        let rkey = r.map(|k| row_key(k));
-        let ckey = c.map(|k| row_key(k));
-        p.rows
-            .iter()
-            .zip(rkeys.iter().zip(ckeys.iter()))
-            .filter(|(_, (a, b))| rkey.as_ref().is_none_or(|k| *k == row_key(a)) && ckey.as_ref().is_none_or(|k| *k == row_key(b)))
-            .map(|(&i, _)| i)
-            .collect()
-    };
-    let mut cols: Vec<Option<&Vec<Value>>> = ck.iter().map(Some).collect();
+    let mut cols: Vec<Option<u32>> = ck.iter().map(|id| Some(*id)).collect();
     if col_total > 0 {
         cols.push(None);
     } else if col_total < 0 {
@@ -877,7 +1057,7 @@ fn pivotby(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
         for c in &cols {
             for _ in 0..vals.cols {
                 line.push(match c {
-                    Some(k) => k.get(level).cloned().unwrap_or(Value::Empty),
+                    Some(id) => ckey_values.get(*id as usize).and_then(|k| k.get(level)).cloned().unwrap_or(Value::Empty),
                     None if level == 0 => Value::from("Total"),
                     None => Value::Empty,
                 });
@@ -893,9 +1073,9 @@ fn pivotby(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
         }
         out.push(line);
     }
-    let mut body_line = |r: Option<&Vec<Value>>| -> Vec<Value> {
+    let mut body_line = |r: Option<u32>| -> Vec<Value> {
         let mut line: Vec<Value> = match r {
-            Some(k) => k.clone(),
+            Some(id) => rkey_values.get(id as usize).cloned().unwrap_or_default(),
             None => {
                 let mut l = vec![Value::from("Total")];
                 l.resize(lead, Value::Empty);
@@ -904,8 +1084,10 @@ fn pivotby(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
         };
         for c in &cols {
             let rows = match (r, c) {
-                (Some(rk), Some(ck)) => cell.get(&(row_key(rk), row_key(ck))).cloned().unwrap_or_default(),
-                _ => rows_for(r, *c),
+                (Some(rk), Some(ck)) => cell.get(&(rk, *ck)).cloned().unwrap_or_default(),
+                (Some(rk), None) => rows_by_row_key.get(rk as usize).cloned().unwrap_or_default(),
+                (None, Some(ck)) => rows_by_col_key.get(*ck as usize).cloned().unwrap_or_default(),
+                (None, None) => p.rows.clone(),
             };
             for vc in 0..vals.cols {
                 line.push(agg(&rows, vc));
@@ -916,8 +1098,8 @@ fn pivotby(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
     if row_total < 0 {
         out.push(body_line(None));
     }
-    for k in &rk {
-        out.push(body_line(Some(k)));
+    for id in &rk {
+        out.push(body_line(Some(*id)));
     }
     if row_total > 0 {
         out.push(body_line(None));
@@ -1074,6 +1256,93 @@ mod tests {
 
     fn grid() -> Value {
         arr(vec![vec![tv("b"), nv(2.0), nv(20.0)], vec![tv("a"), nv(3.0), nv(10.0)], vec![tv("c"), nv(1.0), nv(30.0)]])
+    }
+
+    /// The rule this module grouped by before [`KeyIds`]: a value's key is its text form, with text
+    /// lowercased, joined with a length prefix. Kept only here, as the reference the hashed ids must
+    /// agree with — every input whose grouping the two disagree on is a bug in the hash or in
+    /// `value_eq`.
+    fn groups_by_the_string_key(rows: &[Vec<Value>]) -> Vec<Vec<usize>> {
+        fn key_of(v: &Value) -> String {
+            match v {
+                Value::Empty => "e".into(),
+                Value::Number(n) => format!("n{}", if *n == 0.0 { 0u64 } else { n.to_bits() }),
+                Value::Text(t) => format!("t{}", t.to_lowercase()),
+                Value::Bool(b) => format!("b{b}"),
+                Value::Error(e) => format!("x{}", e.code()),
+                Value::Array(a) => key_of(a.data.first().unwrap_or(&Value::Empty)),
+            }
+        }
+        let row_key = |r: &[Value]| -> String {
+            let mut s = String::new();
+            for v in r {
+                let k = key_of(v);
+                s.push_str(&k.len().to_string());
+                s.push(':');
+                s.push_str(&k);
+            }
+            s
+        };
+        let mut out: Vec<(String, Vec<usize>)> = Vec::new();
+        for (i, row) in rows.iter().enumerate() {
+            let k = row_key(row);
+            match out.iter_mut().find(|(had, _)| *had == k) {
+                Some((_, ids)) => ids.push(i),
+                None => out.push((k, vec![i])),
+            }
+        }
+        out.into_iter().map(|(_, ids)| ids).collect()
+    }
+
+    /// The hashed ids must group exactly the way the string key did — including the pairs that only
+    /// collide because the rule lowercases text: `"K"` (the Kelvin sign) is `"k"`, `"ß"` is not
+    /// `"SS"` (Rust's `to_lowercase` keeps it one character), and `-0` is `0` but two NaNs are not
+    /// equal unless their bits are.
+    #[test]
+    fn hashed_keys_group_like_the_string_key() {
+        use cella_core::{Array, CellError};
+
+        use super::KeyIds;
+        let v = Value::Empty;
+        let rows: Vec<Vec<Value>> = vec![
+            vec![Value::text("a"), v.clone()],
+            vec![Value::text("A"), v.clone()],
+            vec![Value::text("a"), v.clone()],
+            vec![Value::text("b"), v.clone()],
+            vec![Value::text("B"), v.clone()],
+            vec![Value::number(1.0), v.clone()],
+            vec![Value::number(1.0), v.clone()],
+            vec![Value::number(-0.0), v.clone()],
+            vec![Value::number(0.0), v.clone()],
+            vec![Value::number(f64::NAN), v.clone()],
+            vec![Value::text(""), v.clone()],
+            vec![Value::Empty, v.clone()],
+            vec![Value::Bool(true), v.clone()],
+            vec![Value::Bool(false), v.clone()],
+            vec![Value::Error(CellError::Value), v.clone()],
+            vec![Value::Error(CellError::NA), v.clone()],
+            vec![Value::text("\u{212a}"), v.clone()],
+            vec![Value::text("k"), v.clone()],
+            vec![Value::text("ß"), v.clone()],
+            vec![Value::text("SS"), v.clone()],
+            vec![Value::text("İ"), v.clone()],
+            vec![Value::text("i\u{307}"), v.clone()],
+            vec![Value::number(1.0), Value::text("A")],
+            vec![Value::number(1.0), Value::text("a")],
+            vec![Value::text("A"), Value::number(1.0)],
+        ];
+        let data: Vec<Value> = rows.iter().flatten().cloned().collect();
+        let base = Array::new(rows.len(), 2, data).expect("a table of values");
+        let fields = [&base];
+        let mut keys = KeyIds::with_rows(base.rows);
+        for r in 0..base.rows {
+            keys.push(&fields, r as u32);
+        }
+        let mut got: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
+        for (r, id) in keys.ids().iter().enumerate() {
+            got[*id as usize].push(r);
+        }
+        assert_eq!(got, groups_by_the_string_key(&rows));
     }
 
     #[test]
