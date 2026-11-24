@@ -327,6 +327,11 @@ impl SortProfile {
 /// many means the cell-by-cell relabel is the right answer anyway.
 const MAX_LINE_PATTERNS: usize = 8;
 
+/// How many rows outside the sorted body the rebuild path writes back unchanged: a header row, a
+/// table's totals row, a label or two. More than that and the sheet is much bigger than the sort, so
+/// the per-cell path — which leaves everything outside the body alone — is the right one.
+const REBUILD_MAX_OUTSIDE_ROWS: u32 = 64;
+
 /// The two states of a cell's formula that a shape pointer cannot name, for [`LineShapes`]: a cell
 /// that holds no formula at all, and one whose formula carries no shape (a text-only cell, whose
 /// tree comes from parsing its text). Neither can collide with a real identity — a `Shape` is an
@@ -726,6 +731,37 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
             })
             .collect();
         SortProfile::mark(&mut profile, "prepare_metadata");
+        // A sort is a permutation of the body, so when the body holds every cell the sheet stores in
+        // its columns, the write-back can build the store in destination order instead of putting
+        // eight million cells back one at a time. Each `put` keeps the band's run bookkeeping
+        // straight cell by cell — `runs_set` may split a run, and every split re-points the offsets
+        // of all 64 rows of the band — which was 6.1 s of a 7.4 s sort on a thousand columns. The
+        // few rows the body leaves outside it (a header, a totals row) are written back unchanged
+        // first, so the whole store is one forward pass.
+        let used = sh.cells.used_range();
+        let rebuild = used.is_some_and(|used| {
+            let outside = used.start.row.saturating_sub(body.start.row) + used.end.row.saturating_sub(body.end.row);
+            !by_cols && outside <= REBUILD_MAX_OUTSIDE_ROWS && used.start.col >= body.start.col && used.end.col <= body.end.col
+        });
+        let kept: Vec<(u32, Vec<(u32, Cell)>)> = match used {
+            Some(used) if rebuild => {
+                let mut kept = Vec::new();
+                for row in used.start.row..=used.end.row {
+                    if row >= body.start.row && row <= body.end.row {
+                        continue;
+                    }
+                    let mut cells = Vec::new();
+                    for col in used.start.col..=used.end.col {
+                        if let Some(c) = sh.cell(CellRef::new(row, col)) {
+                            cells.push((col, c));
+                        }
+                    }
+                    kept.push((row, cells));
+                }
+                kept
+            }
+            _ => Vec::new(),
+        };
         let any_formulas = cx.wb.sheets.iter().any(|s| s.cells.has_formulas());
         SortProfile::mark(&mut profile, "detect_formulas");
         {
@@ -738,30 +774,53 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
             // sort's own time. A column sort's destinations are columns, so its cells go one at a time.
             let mut buf: Vec<(u32, Cell)> = Vec::with_capacity(lanes.len());
             let mut i = 0usize;
-            for dst_i in 0..n {
-                buf.clear();
-                for &k in &lanes {
-                    let dst = line(dst_i, k);
-                    match moved.get_mut(i).and_then(Option::take) {
-                        Some(cell) if by_cols => shm.set_cell(dst, cell),
-                        Some(cell) => {
+            if rebuild {
+                // Every stored cell is written once, in destination order, into a store that starts
+                // empty: the bands' stripes are appended to, never split or shifted.
+                shm.cells = cella_model::CellStore::default();
+                for (row, mut cells) in kept {
+                    shm.set_row_cells(row, &mut cells);
+                }
+                for dst_i in 0..n {
+                    buf.clear();
+                    for &k in &lanes {
+                        let dst = line(dst_i, k);
+                        if let Some(cell) = moved.get_mut(i).and_then(Option::take) {
                             if cell.formula.is_some() {
-                                // Destination order: the list is row-major, the order the closure
-                                // walks best — a list in the source order the gather reads scatters
-                                // its 2M probes over the graph and costs more than the values'
-                                // probes it saves (see `Ctx::formula_seeds`).
                                 moved_formulas.push((sheet, dst));
                             }
                             buf.push((dst.col, cell));
                         }
-                        None => {
-                            shm.remove_cell(dst);
-                        }
+                        i += 1;
                     }
-                    i += 1;
-                }
-                if !by_cols && !buf.is_empty() {
                     shm.set_row_cells(body.start.row + dst_i, &mut buf);
+                }
+            } else {
+                for dst_i in 0..n {
+                    buf.clear();
+                    for &k in &lanes {
+                        let dst = line(dst_i, k);
+                        match moved.get_mut(i).and_then(Option::take) {
+                            Some(cell) if by_cols => shm.set_cell(dst, cell),
+                            Some(cell) => {
+                                if cell.formula.is_some() {
+                                    // Destination order: the list is row-major, the order the closure
+                                    // walks best — a list in the source order the gather reads
+                                    // scatters its 2M probes over the graph and costs more than the
+                                    // values' probes it saves (see `Ctx::formula_seeds`).
+                                    moved_formulas.push((sheet, dst));
+                                }
+                                buf.push((dst.col, cell));
+                            }
+                            None => {
+                                shm.remove_cell(dst);
+                            }
+                        }
+                        i += 1;
+                    }
+                    if !by_cols && !buf.is_empty() {
+                        shm.set_row_cells(body.start.row + dst_i, &mut buf);
+                    }
                 }
             }
             SortProfile::mark(&mut profile, "write_cells");

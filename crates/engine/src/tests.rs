@@ -1649,6 +1649,41 @@ fn sort_with_a_sheet_prefix_sorts_the_named_sheet() {
     assert_eq!(col(&s, "Sheet1"), ["a", "b", "c"].map(Value::from));
 }
 
+/// The sort's write-back rebuilds the store when the body holds every cell of the sheet in its
+/// columns. What the body does not own — the header above it — is written back unchanged, and a
+/// formula the body carries still computes.
+#[test]
+fn a_rebuilt_sort_keeps_the_header_and_recomputes() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:C4", "values": [["k", "v", "d"], ["c", 3, "=B2*2"], ["a", 1, "=B3*2"], ["b", 2, "=B4*2"]]}))
+        .unwrap();
+    s.execute("data.sort", json!({"range": "A1:C4", "header": true, "keys": [{"column": "A"}]})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::from("k"), "the header stays on top");
+    assert_eq!(v(&s, "C1"), Value::from("d"));
+    assert_eq!(v(&s, "A2"), Value::from("a"));
+    assert_eq!(v(&s, "B2"), Value::from(1.0));
+    assert_eq!(v(&s, "C2"), Value::from(2.0), "the formula moved with its row");
+    assert_eq!(v(&s, "C4"), Value::from(6.0));
+    // The rebuilt store still knows it holds formulas: the legacy-array guard reads that flag.
+    assert!(s.doc().unwrap().wb.active().unwrap().cells.has_formulas());
+}
+
+/// A sort of a block inside a bigger sheet leaves everything outside it alone: the columns beside
+/// the body and the cells below it are not the sort's to move.
+#[test]
+fn a_sort_of_a_block_leaves_the_rest_of_the_sheet() {
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1:C3", "values": [["b", 2, "x"], ["a", 1, "y"], ["c", 3, "z"]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "A9", "input": "tail"})).unwrap();
+    s.execute("data.sort", json!({"range": "A1:A3", "header": false, "keys": [{"column": "A"}]})).unwrap();
+    assert_eq!(v(&s, "A1"), Value::from("a"));
+    assert_eq!(v(&s, "A2"), Value::from("b"));
+    assert_eq!(v(&s, "A3"), Value::from("c"));
+    assert_eq!(v(&s, "B1"), Value::from(2.0), "a column beside the body does not move");
+    assert_eq!(v(&s, "C3"), Value::from("z"));
+    assert_eq!(v(&s, "A9"), Value::from("tail"), "a cell below the body does not move");
+}
+
 /// A sort is a permutation of its block, and the commit recalculates what reads the block: a
 /// formula outside it sees the new rows, and a formula inside it travels with its own row (its
 /// relative references shifted with it), so both must agree after the sort.

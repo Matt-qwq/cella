@@ -1541,8 +1541,10 @@ impl Band {
 
     /// Builds a whole row at once, from cells already sorted by column. The row's slices are
     /// appended to the band's stripes, so there is no growth slack to give back and no
-    /// insert-per-cell shifting.
-    fn put_row(&mut self, row_key: u32, cells: &mut Vec<(u32, Cell)>) {
+    /// insert-per-cell shifting. Returns the number of cells stored, and whether the row holds an
+    /// array value or a formula — the two facts the store's own flags record, answered here so a
+    /// caller does not walk the row twice more to find them.
+    fn put_row(&mut self, row_key: u32, cells: &mut Vec<(u32, Cell)>) -> (u32, bool, bool) {
         // A whole row is replaced: whatever the parent's row held is not this band's any more.
         self.tag.rows_touched = true;
         // One pass: the cells arrive sorted by column, so the bitmap can be sized from the first
@@ -1553,7 +1555,7 @@ impl Band {
             Some(first) => first,
             None => {
                 self.remove_row(row_key);
-                return;
+                return (0, false, false);
             }
         };
         let last = cells.iter().rev().find(|(_, cell)| !cell.is_blank()).map(|(col, _)| *col).unwrap_or(first);
@@ -1569,6 +1571,10 @@ impl Band {
         let mut arrays: Vec<(u32, Arc<cella_core::Array>)> = Vec::new();
         let mut wide: Vec<u64> = Vec::new();
         let mut stored = 0u32;
+        // The two facts the store's own flags record, read off the cells while they are walked:
+        // a legacy array covering more than one cell (see `cell_has_array`) and a formula at all.
+        let mut has_array = false;
+        let mut has_formula = false;
         for (col, cell) in cells.drain(..) {
             if cell.is_blank() {
                 continue;
@@ -1576,6 +1582,8 @@ impl Band {
             let (kind, payload) = self.payload(&cell.value);
             let style = self.style_slot(cell.style);
             if let Some(f) = &cell.formula {
+                has_array |= f.array.as_deref().is_some_and(|r| !r.is_single());
+                has_formula = true;
                 formulas.push((col, f.clone()));
             }
             if let Value::Array(a) = &cell.value {
@@ -1624,6 +1632,7 @@ impl Band {
                 self.rows.insert(i, row);
             }
         }
+        (stored, has_array, has_formula)
     }
 
     fn take(&mut self, row_key: u32, col: u32) -> Option<Cell> {
@@ -1722,7 +1731,7 @@ impl BandBatch {
         let band_row = row % BAND;
         let band = self.bands.entry(row / BAND).or_default();
         if band.row(band_row).is_none_or(BandRow::is_empty) {
-            band.put_row(band_row, cells);
+            let _ = band.put_row(band_row, cells);
         } else {
             for (col, cell) in cells.drain(..) {
                 let _ = band.put(band_row, col, cell);
@@ -3600,7 +3609,7 @@ impl CellStore {
                     })
                     .collect();
                 if before == 0 && target.row(row.key).is_none_or(BandRow::is_empty) {
-                    target.put_row(row.key, &mut cells);
+                    let _ = target.put_row(row.key, &mut cells);
                 } else {
                     for (col, cell) in cells {
                         let _ = target.put(row.key, col, cell);
@@ -4040,23 +4049,26 @@ impl CellStore {
             return;
         }
         self.band_for_write(key);
-        if !self.array_anchors {
-            self.array_anchors = cells.iter().any(|(_, cell)| cell_has_array(cell));
-        }
-        if !self.wrote_formula {
-            self.wrote_formula = cells.iter().any(|(_, cell)| cell.formula.is_some());
-        }
         let band = Arc::make_mut(self.bands.entry(key).or_default());
-        // A row that isn't there yet — every row while a file opens — is built in one go: the
-        // stripes are extended once from the cells instead of grown cell by cell.
+        // A row that isn't there yet — every row while a file opens, and every row of a sort's
+        // write-back into a fresh store — is built in one go: the stripes are extended once from the
+        // cells instead of grown cell by cell, and the walk that builds them also answers the two
+        // questions the flags below ask.
         let mut shrank = false;
         if band.row(band_row).is_none_or(BandRow::is_empty) {
             let before = band.row(band_row).map_or(0, |r| r.cells as usize);
-            band.put_row(band_row, cells);
-            let after = band.row(band_row).map_or(0, |r| r.cells as usize);
-            self.len = self.len + after - before;
-            shrank = after < before;
+            let (stored, array, formula) = band.put_row(band_row, cells);
+            self.len = self.len + stored as usize - before;
+            self.array_anchors |= array;
+            self.wrote_formula |= formula;
+            shrank = (stored as usize) < before;
         } else {
+            if !self.array_anchors {
+                self.array_anchors = cells.iter().any(|(_, cell)| cell_has_array(cell));
+            }
+            if !self.wrote_formula {
+                self.wrote_formula = cells.iter().any(|(_, cell)| cell.formula.is_some());
+            }
             for (col, cell) in cells.drain(..) {
                 // put() answers whether the cell was stored before and is stored after: asking it
                 // instead of probing the row twice more drops two rank computations a cell, which

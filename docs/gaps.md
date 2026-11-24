@@ -1253,6 +1253,29 @@ question, not a knife.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
+### 33. Sorting a thousand-column sheet takes 3.1 s, not 2 (P, measured 11-24)
+
+**What:** `data.sortAscending` over eight million cells: **1.17 s** on a million rows × 8 columns,
+**3.12 s** on 8,000 rows × 1,000 columns — down from **9.98 s**. Excel takes 0.146 s and 0.347 s,
+WPS 0.758 s and 1.334 s.
+
+**What changed:** the write-back used to put every cell back through `put`, which keeps the band's
+run-length kind and style stripes straight one cell at a time, and a run that splits re-points the
+offsets of all 64 rows of the band. A sort is a permutation of its block, so when the block holds
+every cell the sheet stores in its columns, the write-back now builds a fresh store in destination
+order — rows ascending, one append each, no run ever split, and no band copied for the undo
+snapshot. That took the write-back from 6.1 s to 1.8 s.
+
+**What remains:** the 3.1 s is 1.14 s of gathering the block's cells and 1.83 s of writing them back,
+and both are the store's per-cell cost rather than the sort's. A probe that builds the same eight
+million cells straight into a store costs **119 ns a cell** on a thousand-column sheet against
+**31 ns** on a tall one, and text interning doubles it: the store's text table is per band and keyed
+by `Arc` pointer, so one word arriving from thirty source bands becomes thirty entries. Moving a
+packed row instead of rebuilding its cells is the fix, and that is a change to the band format
+(P2-scale), not a command-level one. **Target was ≤2 s; this is 3.1 s.**
+
+**Evidence:** [performance-shapes.md](performance-shapes.md).
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
