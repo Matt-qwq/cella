@@ -1384,6 +1384,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
         // to the store in one call: a row the cut emptied is then built in one pass, where a cell at
         // a time inserts into the middle of the band's stripes and shifts the rows after it.
         let batch = !transpose;
+        let single_tile = tiles_r == 1 && tiles_c == 1;
         let mut buf: Vec<(u32, Cell)> = Vec::with_capacity(src.width() as usize);
         let mut pics: Vec<(u32, Option<std::sync::Arc<cella_model::CellPicture>>)> = Vec::with_capacity(src.width() as usize);
         for tr in 0..tiles_r {
@@ -1402,15 +1403,26 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             while moved_cells.get(cursor).is_some_and(|(at, _)| *at < sc) {
                                 cursor += 1;
                             }
-                            moved_cells.get(cursor).filter(|(at, _)| *at == sc).map(|(_, cell)| cell.clone())
+                            // A single-tile paste reads each moved cell exactly once, so it can take
+                            // it: a clone per cell is an `Arc` increment per text, and the block is
+                            // eight million cells.
+                            match moved_cells.get_mut(cursor) {
+                                Some((at, cell)) if *at == sc => Some(if single_tile { std::mem::take(cell) } else { cell.clone() }),
+                                _ => None,
+                            }
                         } else {
                             src_sheet.cell(sc)
                         };
                         // The value a paste takes is the displayed one: with no spill on the source
                         // sheet that is the stored cell's own value, so the second read of the same
-                        // band — one per pasted cell — is skipped.
-                        let src_val =
-                            if src_has_spills { src_sheet.value(sc) } else { src_cell.as_ref().map_or(Value::Empty, |cell| cell.value.clone()) };
+                        // band — one per pasted cell — is skipped. Only a values paste and
+                        // `skipBlanks` read it: `all` writes the cell's own value below.
+                        let needs_val = skip_blanks || matches!(what, What::Values | What::ValuesAndNumberFormats);
+                        let src_val = if needs_val {
+                            if src_has_spills { src_sheet.value(sc) } else { src_cell.as_ref().map_or(Value::Empty, |cell| cell.value.clone()) }
+                        } else {
+                            Value::Empty
+                        };
                         let src_picture = if cut_move { moved_pictures.get(&sc) } else { src_sheet.cell_pictures.get(&sc) }.cloned();
                         if skip_blanks && src_picture.is_none() && src_val.is_empty() && src_cell.as_ref().is_none_or(|x| x.formula.is_none()) {
                             continue;
@@ -1470,19 +1482,22 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             new.value = Value::Empty;
                             new_picture = None;
                         } else {
-                            let sc_cell = src_cell.clone().unwrap_or_default();
+                            let sc_cell = src_cell.unwrap_or_default();
                             match what {
                                 What::All | What::AllExceptBorders => {
                                     new_picture = src_picture.clone();
                                     new.formula = shift(&sc_cell);
-                                    new.value = if new.formula.is_some() { Value::Empty } else { sc_cell.value.clone() };
-                                    let st = map_style(sc_cell.style, &mut cx.wb);
+                                    let style = sc_cell.style;
+                                    let st = map_style(style, &mut cx.wb);
                                     new.style = if what == What::AllExceptBorders {
                                         let borders = cx.wb.styles.get(old.style).borders;
                                         cx.wb.styles.derive(st, |s| s.borders = borders)
                                     } else {
                                         st
                                     };
+                                    // The value is moved, not cloned: the source cell is not read
+                                    // again.
+                                    new.value = if new.formula.is_some() { Value::Empty } else { sc_cell.value };
                                 }
                                 What::Formulas | What::FormulasAndNumberFormats => {
                                     new_picture = src_picture.clone();
