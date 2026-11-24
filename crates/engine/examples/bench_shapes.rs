@@ -188,30 +188,34 @@ struct Measured {
 ///
 /// One sample is not a measurement on this machine: the wide shape's `range.move` reads 2.2 s and
 /// 2.7 s in the same afternoon, and a page built from single samples moved by 25 % between runs that
-/// changed nothing. A row that takes longer than [`SLOW_MS`] is measured [`SAMPLES`] times and the
-/// fastest run is the one published — the same "best of three" the scenario gate records budgets
-/// with. A row under it is cheap enough that repetition would only cost the ruler's own time.
+/// changed nothing. A row that takes longer than [`SLOW_MS`] is measured [`SAMPLES`] times **with the
+/// same params** — a fresh session holding a copy of the shape each time — and the fastest run is the
+/// one published, which is the "best of three" the scenario gate records budgets with. The params
+/// come from a seed that depends on the attempt, so re-drawing them for a sample would price a
+/// different question (and once drew a sort the body was already ordered for: 1.9 ms).
 const SAMPLES: usize = 3;
 const SLOW_MS: f64 = 50.0;
 
 fn measure(base: &DocState, id: &str, shape: &Shape) -> Result<Measured, String> {
     let mut best: Option<Measured> = None;
-    let mut attempts = 0usize;
-    while attempts < TRIES {
-        let m = measure_once(base, id, shape, attempts)?;
-        attempts += 1;
+    for attempt in 0..TRIES {
+        let m = measure_attempt(base, id, shape, attempt, 1)?;
         if best.as_ref().is_none_or(|b| rank(&m) < rank(b)) {
             best = Some(m);
         }
-        let Some(b) = best.as_ref() else { continue };
-        if b.outcome != "ok" {
+        let Some(found) = best.as_ref() else { continue };
+        if found.outcome != "ok" {
             // The command turned these params down: another draw may run it.
             continue;
         }
-        // A row that ran is the answer once it is fast, and [`SAMPLES`] samples of it once it is not.
-        if b.ms < SLOW_MS || attempts >= SAMPLES {
-            break;
+        // A row that ran is the answer. A slow one is measured again — the same params, the fastest
+        // of [`SAMPLES`] runs — because a single sample of it is the machine, not the command.
+        if found.ms >= SLOW_MS
+            && let Ok(sampled) = measure_attempt(base, id, shape, attempt, SAMPLES)
+        {
+            best = Some(sampled);
         }
+        break;
     }
     best.ok_or_else(|| format!("`{id}` was not measured"))
 }
@@ -229,26 +233,34 @@ fn rank(m: &Measured) -> (u8, u64) {
     (kind, (m.ms * 1000.0) as u64)
 }
 
-fn measure_once(base: &DocState, id: &str, shape: &Shape, attempt: usize) -> Result<Measured, String> {
-    let mut s = Session::new();
-    s.add_document(base.clone());
+/// One set of params, run `samples` times in a fresh session each time; the fastest run is the
+/// answer, and its document growth is the one reported.
+fn measure_attempt(base: &DocState, id: &str, shape: &Shape, attempt: usize, samples: usize) -> Result<Measured, String> {
     let spec = command_specs().iter().find(|spec| spec.id == id).ok_or_else(|| format!("unknown command `{id}`"))?;
-    let wb = s.doc().map_err(err)?.wb.clone();
     let mut rng = Rng::new(seed_of(id, shape.name).wrapping_add((attempt as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
-    let params = doc_params(&mut rng, &wb, id, spec.params, Scale::Whole { rows: shape.rows as u32, cols: shape.cols as u32 });
-    let mem_before = document_bytes(&s);
-    let started = Instant::now();
-    let result = s.execute(id, params);
-    let ms = started.elapsed().as_secs_f64() * 1000.0;
-    let mem_after = document_bytes(&s);
-    let (outcome, detail) = match result {
-        Ok(_) => ("ok", None),
-        Err(EngineError::Disabled(_, why)) => ("refused", Some(why)),
-        Err(EngineError::BadParams { msg, .. }) => ("params", Some(msg)),
-        Err(EngineError::Internal(_, msg)) => ("refused", Some(format!("panic guard: {msg}"))),
-        Err(e) => ("no", Some(e.to_string())),
-    };
-    Ok(Measured { ms, bytes: mem_after as i64 - mem_before as i64, outcome, detail })
+    let params = doc_params(&mut rng, &base.wb, id, spec.params, Scale::Whole { rows: shape.rows as u32, cols: shape.cols as u32 });
+    let mut best: Option<Measured> = None;
+    for _ in 0..samples.max(1) {
+        let mut s = Session::new();
+        s.add_document(base.clone());
+        let mem_before = document_bytes(&s);
+        let started = Instant::now();
+        let result = s.execute(id, params.clone());
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let mem_after = document_bytes(&s);
+        let (outcome, detail) = match result {
+            Ok(_) => ("ok", None),
+            Err(EngineError::Disabled(_, why)) => ("refused", Some(why)),
+            Err(EngineError::BadParams { msg, .. }) => ("params", Some(msg)),
+            Err(EngineError::Internal(_, msg)) => ("refused", Some(format!("panic guard: {msg}"))),
+            Err(e) => ("no", Some(e.to_string())),
+        };
+        let m = Measured { ms, bytes: mem_after as i64 - mem_before as i64, outcome, detail };
+        if best.as_ref().is_none_or(|b| rank(&m) < rank(b)) {
+            best = Some(m);
+        }
+    }
+    best.ok_or_else(|| format!("`{id}` was not measured"))
 }
 
 /// The live document's own bytes (sheets, workbook parts, calculation state) — not the history: the

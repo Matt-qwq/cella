@@ -395,8 +395,9 @@ impl WriteProfile {
 
 /// One pasted cell: written straight away, or buffered into the destination row it belongs to when
 /// the paste walks rows left to right (`paste_special`'s `batch`), so the row reaches the store in
-/// one call.
-#[allow(clippy::too_many_arguments)]
+/// one call. A cell whose new picture is `None` buffers nothing for the picture buffer: the absence
+/// is what the row's own write says, and eight million empty entries are a buffer the size of the
+/// block.
 fn write_cell(
     wb: &mut cella_model::Workbook,
     sheet: usize,
@@ -405,11 +406,13 @@ fn write_cell(
     picture: Option<std::sync::Arc<cella_model::CellPicture>>,
     batch: bool,
     buf: &mut Vec<(u32, Cell)>,
-    pics: &mut Vec<(u32, Option<std::sync::Arc<cella_model::CellPicture>>)>,
+    pics: &mut Vec<(u32, std::sync::Arc<cella_model::CellPicture>)>,
 ) -> Result<()> {
     if batch {
         buf.push((dest.col, new));
-        pics.push((dest.col, picture));
+        if let Some(picture) = picture {
+            pics.push((dest.col, picture));
+        }
         return Ok(());
     }
     let sh = wb.sheet_mut(sheet).ok_or_else(|| EngineError::Other("no such sheet".into()))?;
@@ -1387,7 +1390,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
         let batch = !transpose;
         let single_tile = tiles_r == 1 && tiles_c == 1;
         let mut buf: Vec<(u32, Cell)> = Vec::with_capacity(src.width() as usize);
-        let mut pics: Vec<(u32, Option<std::sync::Arc<cella_model::CellPicture>>)> = Vec::with_capacity(src.width() as usize);
+        let mut pics: Vec<(u32, std::sync::Arc<cella_model::CellPicture>)> = Vec::new();
         for tr in 0..tiles_r {
             for tc in 0..tiles_c {
                 // The paste reads the source row by row, so the cursor starts over for each tile.
@@ -1636,9 +1639,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                             }
                         }
                         for (col, picture) in pics.drain(..) {
-                            if let Some(picture) = picture {
-                                sh.cell_pictures.insert(CellRef::new(row, col), picture);
-                            }
+                            sh.cell_pictures.insert(CellRef::new(row, col), picture);
                         }
                         sh.set_row_cells(row, &mut buf);
                         buf.clear();
