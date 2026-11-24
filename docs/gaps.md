@@ -1511,6 +1511,38 @@ column past the table, a blank return cell, a formula in the key column, and a 5
 value in hand (53/24/25 ms) and pay the array build; `SUM`'s 30 ms is now the fold itself over two
 million cells. `LET`/`LAMBDA` over a whole column is not measured at all yet.
 
+### 41. The groupers keyed every row by a string they built (P, found and fixed 11-24)
+
+**What:** over a million rows, `PIVOTBY` took **5.16 s**, `GROUPBY` **2.48 s**, `UNIQUE` **1.49 s**
+and `BYROW` **1.14 s** — the four dynamic-array functions a person uses to turn a data dump into a
+summary, and the four that `docs/performance-plan.md` ranked as P1's second knife.
+
+**Why, for the three that group:** a row's key was a `String`. `row_key` spelled the row's values out
+as text — a length, a colon and the value, with text lowercased — and the map from a key to its rows
+was keyed by that string, so every function built **a string a row**: a million allocations, a million
+hashes of a small string, and (in `PIVOTBY`) two of them a row for the cell map. `UNIQUE` and
+`GROUPBY` also collected the keys into a `Vec<Vec<Value>>` first, another million allocations.
+
+**Now:** `KeyIds` numbers each distinct row key in first-seen order and answers a row's id from a hash
+of its values: two `Vec`s and a map from a hash to its first id, with a chain of ids for collisions, so
+a row costs a hash and no allocation. Two rows that hash alike are compared value by value, so a
+collision costs a comparison rather than a wrong group. The rule the hash and the comparison share is
+exactly the one the string key had: numbers by value (`-0` is `0`, two NaNs equal only when their bits
+are), text **case-insensitively**, errors by code, blanks equal to each other, an array by its first
+value. `PIVOTBY` also stopped gathering each bucket into a `Vec<&Value>` — a built-in aggregate walks
+the block's rows directly (`aggregate_rows`) — and gathers the totals' rows once instead of walking
+every cell.
+
+**Measured:** `PIVOTBY` **5.16 s → 989 ms**, `GROUPBY` **2.48 → 785 ms**, `UNIQUE` **1.49 → 310 ms**
+(−80 %, −66 %, −77 %). and `BYROW` did not move (1.18 → 1.15 s): it calls the LAMBDA once a row, and each call builds a
+`Vec` of the row's values, an `Arc<Array>` for them and a bound-argument `Vec` with a cloned
+parameter name — a microsecond a row, which is the evaluator's next item, not this one's.
+
+**Test:** the old string key runs beside the new ids over the pairs that make the rule non-obvious —
+`"a"`/`"A"`, `-0`/`0`, two NaNs, the Kelvin sign against `"k"`, `"ß"` against `"SS"`, blanks,
+errors and mixed-type rows — and the two groupings must be identical, which is what a hash or a
+comparison that disagrees with the rule would break.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -1974,6 +2006,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-24 | minor | §41 (new): the groupers keyed every row by a string they built. `row_key` spelled a row's values out as text and the key-to-rows map was keyed by it — a million allocations at a million rows. A hashed `KeyIds` (two `Vec`s, a map of first ids and a collision chain) took **PIVOTBY 5.16 s → 989 ms, GROUPBY 2.48 → 785 ms, UNIQUE 1.49 → 310 ms**, with the old string key kept as the reference a test compares the ids against. `BYROW`'s 1.14 s is the evaluator's per-row LAMBDA cost and is left named |
 | 2026-11-24 | minor | §40 (new): a formula's block argument was built before the formula could say it needed three cells. The exact lookups (`MATCH`, `VLOOKUP`, `XLOOKUP` with a scalar key) now scan the key column and stop at the hit — **VLOOKUP 78 → 17 ms, MATCH 56 → 17 ms** at a million rows, and a hit on row 1 costs 0.6–0.9 ms; a fold of a values column stops asking `has_owned_cells` first (**SUM 51 → 30 ms, MAX/MIN −40 %, COUNT −38 %**), and one-column reads take a peeled walk. The rest of the catalogue's rows move by 4–15 % with them; two untouched control rows sat still (−1 %, +1 %) |
 | 2026-11-24 | minor | §39 (new) and §33/§34/§35/§38 updated: a row walk asked the kind and style run stripes for **every cell from the first run**, so a thousand-column row was quadratic — the cut half of a move cost 1.20 s where the same cells cost 0.30 s on eight-column rows. A run position on the walk cursor took the move **2.04 → 1.11 s**, the sort **1.81 → 0.83 s**, the save **1.32 → 0.86 s** and the copy **852 → 557 ms**. Round 51's "the cut is the store's per-cell price, so packed rows are next" is retracted: moving packed rows is still the guess for the *write* side, and nothing needs it for the move's target |
 | 2026-11-16 | minor | §18/§17: the accessibility check lists every object without alternative text — **WordArt and equations included** — with the reason it is there and the name a screen reader reads (the object's own text when it carries one); the PDF export draws a WordArt's text outline (eight offset copies) and drop shadow (one) the way the grid paints them. Two tests, one per half |
