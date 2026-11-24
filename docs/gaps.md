@@ -1281,13 +1281,14 @@ map past 256 texts, which is the shape a write-back produces: one word arriving 
 as its own `Arc` (`gaps` §38) — 3.35 → 2.08 s. And the gather skips its `LineShapes` bookkeeping on a
 sheet that has never held a formula.
 
-**Now: 1.94 s** wide and **1.18 s** tall — the ≤2 s target. What is left is the gather (1.27 s of the
-1.94): reading eight million cells out of the store through `row_reader` at ~150 ns a cell, which is
-the store's per-cell read price (`gaps` §38's last paragraph).
+**Now: 1.75–1.80 s** wide and **1.16–1.20 s** tall over four quiet runs (the shape page's single
+sample read 2.04 s on a loaded machine) — the ≤2 s target. What is left is the gather (~1.27 s):
+reading eight million cells out of the store through `row_reader` at ~150 ns a cell, which is the
+store's per-cell read price (`gaps` §38's last paragraph).
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
-### 34. Moving a block took 16 s — **five causes, all removed 11-24** (now 3.2 s)
+### 34. Moving a block took 16 s — **five causes, all removed 11-24** (now 2.2 s, target 2 s)
 
 **Was:** `range.move` over eight million cells took **15.9 s** on 8,000 rows × 1,000 columns and
 **3.7 s** on a million rows × 8 columns (Excel 0.507 s and 0.676 s, WPS 1.380 s and 1.334 s). Five
@@ -1310,7 +1311,7 @@ holds is dropped instead of edited); `range.move` cuts without building the clip
 overwrite check walks only the strips of the destination the source does not cover; the paste writes
 each destination row in one store call; and the moved block is a sorted `Vec` walked by a cursor.
 
-**Measured:** **2.22 s** wide and **1.46 s** tall on the ruler (15.9 and 3.7 before; run-to-run spread 2.2–2.9 s, `σ` ≈ 10 %), and 2.70 s on a busier run. The 2 s target
+**Measured:** **2.18–2.22 s** wide and **1.29–1.35 s** tall over three quiet runs (15.9 and 3.7 before). The 2 s target
 is met on the tall shape and missed on the wide one. The profile of what is left, per the
 `CELLA_PROFILE` lines: the cut (taking the block out of the store) **1.22 s**, building the pasted
 cells 0.57 s, writing them back 0.33 s, and the commit's full recalculation the rest. Cut and paste
@@ -1334,19 +1335,21 @@ clipboard — build the text when somebody reads it, the way Excel's delayed-ren
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
-### 36. `edit.clearFormats` reads every cell to learn its style (P, measured 11-24)
+### 36. `edit.clearFormats` — **target met 11-24** (was 3.45 s, now 36 ms)
 
-**What:** `edit.clearFormats` over eight million cells took **3.45 s** on 8,000 rows × 1,000 columns
-(Excel 0.203 s, WPS 0.788 s) and now takes **1.72 s**: the clear skips every cell whose style is
-already the default, so a block that carries no formats is no longer rewritten cell by cell, and the
-scan is the store's flat one (no per-band vector).
+**Was:** `edit.clearFormats` over eight million cells took **3.45 s** on 8,000 rows × 1,000 columns
+(Excel 0.203 s, WPS 0.788 s). It read a whole [`Cell`] — value, formula `Arc` and style — for every
+cell to learn that most of them had no style, then wrote a styled one at a time through `put`.
 
-**What remains:** 215 ns a cell, and it is all in *reading* the style: the scan builds a whole `Cell`
-— value `Arc`, formula `Arc`, style — to throw all but the style away. Styles are run-length encoded
-in the store, so the honest fix is a run-level walk: "which column runs in this range hold a style
-other than the default" answers in O(runs), and a whole-row answer rewrites the row's run slice in
-one go. That also settles whether a formats-only change has to reach the recalculation's changed list
-at all (today it reports every cell it touched).
+**Now: 36 ms** wide, **173 ms** tall, 1.0 ms on a hundred sheets. Styles are run-length encoded in the
+store, so `CellStore::clear_styles_rows` + `Band::set_row_style` collapse a row's runs into one default
+run with a single splice of the style stripe, and the rows after it move by the difference; rows
+already all-default are skipped without touching a stripe.
+
+**The trade:** the changed list is how the recalculation hears about a style change — `CELL("format")`
+and `CELL("protect")` read one — so the run-level path is taken only when **no formula can read a
+format**. A workbook that holds one keeps the cell-by-cell clear, which is still 1.8 s on a wide
+sheet; a test covers both paths.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
