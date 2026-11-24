@@ -4401,6 +4401,26 @@ impl CellStore {
     /// and the general walk already resolves that. `r` must be one column wide.
     fn visit_column_cells(&self, r: RangeRef, f: &mut dyn FnMut(&Band, &BandRow, usize, CellRef) -> bool) -> bool {
         let col = r.start.col;
+        // The identity row map is the ordinary sheet — no row was ever inserted or deleted — and a
+        // band's rows are then the keys it holds, in order, so walking them is a scan where the
+        // general path looks each key up (`row_bits` test, popcount, index).
+        if self.row_map.identity {
+            for key in r.start.row / BAND..=r.end.row / BAND {
+                let Some(band) = self.band_arc(key) else { continue };
+                let base = key.saturating_mul(BAND);
+                for row in &band.rows {
+                    let at_row = base.saturating_add(row.key);
+                    if at_row < r.start.row || at_row > r.end.row {
+                        continue;
+                    }
+                    let Some(i) = row.index_of(&band, col) else { continue };
+                    if !f(&band, row, i, CellRef::new(at_row, col)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
         let mut current: Option<(u32, Option<Arc<Band>>)> = None;
         for rows in self.row_map.segments_in(r.start.row, r.end.row) {
             for offset in 0..rows.len {
