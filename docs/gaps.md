@@ -1311,7 +1311,7 @@ holds is dropped instead of edited); `range.move` cuts without building the clip
 overwrite check walks only the strips of the destination the source does not cover; the paste writes
 each destination row in one store call; and the moved block is a sorted `Vec` walked by a cursor.
 
-**Measured:** **2.18–2.22 s** wide and **1.29–1.35 s** tall over three quiet runs (15.9 and 3.7 before). The 2 s target
+**Measured:** **2.03–2.04 s** wide and **1.30–1.31 s** tall — the ruler's best of three (15.9 and 3.7 before), stable to 10 ms between runs where single samples had spread over 2.2–2.9 s. That is 1.5 % over its 2 s target. The 2 s target
 is met on the tall shape and missed on the wide one. The profile of what is left, per the
 `CELLA_PROFILE` lines: the cut (taking the block out of the store) **1.22 s**, building the pasted
 cells 0.57 s, writing them back 0.33 s, and the commit's full recalculation the rest. Cut and paste

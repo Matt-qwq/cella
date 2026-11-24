@@ -268,13 +268,13 @@ knives.
 
 | command | 1M×8 before → now | 1000×8k before → now | 100×10k before → now |
 |---|---:|---:|---:|
-| `data.sortAscending` | 1.46 s → **1.18 s** | 9.98 s → **1.76 s** ✅ | 17 ms → **15 ms** |
-| `range.move` | 3.73 s → **1.30 s** | 15.91 s → **2.20 s** | 73 ms → **22 ms** |
+| `data.sortAscending` | 1.46 s → **1.17 s** | 9.98 s → **1.81 s** ✅ | 17 ms → **15 ms** |
+| `range.move` | 3.73 s → **1.30 s** | 15.91 s → **2.03 s** | 73 ms → **22 ms** |
 | `edit.find` | 3.48 s → **214 µs** | 5.68 s → **81 µs** | 33 ms → **37 µs** |
 | `edit.clearAll` | 1.14 s → **7.9 ms** | 1.40 s → **1.1 ms** | 4.7 ms → **3.5 ms** |
-| `edit.clearFormats` | 1.27 s → **173 ms** | 3.45 s → **36 ms** ✅ | 16 ms → **1.1 ms** |
-| `edit.copy` | 100 ms → **9.8 ms** | 0.92 s → **880 ms** | 25 ms → **24 ms** |
-| `file.saveBytes` | 1.81 s → **1.63 s** | 1.37 s → **1.56 s** | 18.59 s → **1.97 s** |
+| `edit.clearFormats` | 1.27 s → **154 ms** | 3.45 s → **34 ms** ✅ | 16 ms → **998 µs** |
+| `edit.copy` | 100 ms → **9.5 ms** | 0.92 s → **852 ms** | 25 ms → **22 ms** |
+| `file.saveBytes` | 1.81 s → **1.63 s** | 1.37 s → **1.32 s** | 18.59 s → **1.24 s** |
 
 - **A thousand columns is still where the seconds are**, but three of the commands that lived there
   are down hard: the sort 9.98 s → 3.35 s, the move 15.91 s → 3.50 s, the find 5.68 s → 81 µs. What
