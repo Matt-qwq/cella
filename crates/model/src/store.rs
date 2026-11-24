@@ -5095,10 +5095,99 @@ impl CellStore {
         m
     }
 
-    /// Removes every cell in `r` and returns them.
+    /// Removes every cell in `r` and returns them, row-major.
+    ///
+    /// A range over whole rows is a **row cut** — the shape a cut of a table takes — and removing it
+    /// row by row is one pass over the band's rows, where removing cell by cell walks the rows after
+    /// every one of them: 11 s of a 16 s move on a thousand-column sheet.
     pub fn take_range(&mut self, r: RangeRef) -> Vec<(CellRef, Cell)> {
+        // A range that spans every column the sheet stores is a row cut: whatever a row holds, the
+        // range takes it, so the row can go whole.
+        let spans_columns = self.used_range().is_none_or(|u| r.start.col <= u.start.col && r.end.col >= u.end.col);
+        if spans_columns {
+            return self.take_rows(r.start.row, r.end.row);
+        }
         let keys: Vec<CellRef> = self.iter_range(r).map(|(c, _)| c).collect();
         keys.into_iter().filter_map(|c| self.remove(c).map(|cell| (c, cell))).collect()
+    }
+
+    /// [`take_range`](Self::take_range) for a range of whole rows, returned in row order.
+    ///
+    /// The rows go in **descending** order: the last row of a band is the one whose slice sits at the
+    /// end of the band's stripes, so dropping it moves nothing, and dropping the one below it moves
+    /// one row. Ascending order would move the whole band's tail per row.
+    fn take_rows(&mut self, first: u32, last: u32) -> Vec<(CellRef, Cell)> {
+        let Some(used) = self.used_range() else { return Vec::new() };
+        // Paged bands come into memory first: the reader below borrows the store.
+        if !self.pages.is_empty() {
+            let keys: Vec<u32> = self.pages.keys().copied().collect();
+            for key in keys {
+                let _ = self.materialize(key);
+            }
+        }
+        let mut out: Vec<(CellRef, Cell)> = Vec::new();
+        let mut drop: Vec<(u32, u32, usize)> = Vec::new();
+        {
+            // A row at a time through the store's own row reader: it walks the packed row once,
+            // where `cell_at` looks the kind and style of every cell up in its run stripe from the
+            // start of the row — 125 runs a cell on a thousand-column sheet.
+            let read = self.row_reader(used.start.col, used.end.col);
+            let mut scratch: Vec<Option<Cell>> = Vec::new();
+            for logical in first..=last {
+                let Some(physical) = self.physical_row(logical) else { continue };
+                let key = physical / BAND;
+                let row_key = physical % BAND;
+                if !self.bands.get(&key).is_some_and(|b| b.row(row_key).is_some()) {
+                    continue;
+                }
+                let before = out.len();
+                scratch.clear();
+                read(logical, &mut scratch);
+                for (i, slot) in scratch.iter_mut().enumerate() {
+                    if let Some(cell) = slot.take() {
+                        out.push((CellRef::new(logical, used.start.col + i as u32), cell));
+                    }
+                }
+                drop.push((key, row_key, out.len() - before));
+            }
+        }
+        // Rows go in **descending** order, and a band that loses every row it holds is dropped
+        // rather than edited: the last row of a band is the one whose slice sits at the end of the
+        // band's stripes, so dropping it moves nothing, and the first edit of a band the undo
+        // snapshot shares copies the whole band.
+        let mut i = drop.len();
+        while i > 0 {
+            let key = drop[i - 1].0;
+            let mut j = i - 1;
+            while j > 0 && drop[j - 1].0 == key {
+                j -= 1;
+            }
+            let all = self.bands.get(&key).is_some_and(|b| b.rows.len() == i - j);
+            if all {
+                self.bands.remove(&key);
+                for (_, _, cells) in &drop[j..i] {
+                    self.len = self.len.saturating_sub(*cells);
+                }
+            } else {
+                for k in (j..i).rev() {
+                    let (_, row_key, cells) = drop[k];
+                    let mut empty = false;
+                    if let Some(band) = self.bands.get_mut(&key) {
+                        Arc::make_mut(band).remove_row(row_key);
+                        empty = band.rows.is_empty();
+                    }
+                    if empty {
+                        self.bands.remove(&key);
+                    }
+                    self.len = self.len.saturating_sub(cells);
+                }
+            }
+            i = j;
+        }
+        if !out.is_empty() {
+            self.mark_used_stale();
+        }
+        out
     }
 
     /// Reclaims cells that no logical row or column can reach, and normalizes the maps.

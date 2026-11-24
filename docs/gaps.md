@@ -1276,6 +1276,35 @@ packed row instead of rebuilding its cells is the fix, and that is a change to t
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
+### 34. Moving a block took 16 s — **five causes, all removed 11-24** (now 3.2 s)
+
+**Was:** `range.move` over eight million cells took **15.9 s** on 8,000 rows × 1,000 columns and
+**3.7 s** on a million rows × 8 columns (Excel 0.507 s and 0.676 s, WPS 1.380 s and 1.334 s). Five
+things added up, each measured on its own:
+
+- the cut removed the block **cell by cell**, and removing a cell shifts the rows of its band after
+  it: **11 s** of the 16;
+- the tab-separated text a clipboard holds was built for a *move*, which never reads it — and
+  `range_text` formats every cell: **1.1 s**;
+- the overwrite check walked the whole destination to find the few cells the source does not cover:
+  **1.3 s**;
+- the paste wrote a cell at a time into rows the cut had just emptied, so every cell inserted into
+  the middle of the band's stripes: **4.4 s**;
+- the moved cells went through a `BTreeMap` keyed by address — 8M insertions to build it, 8M lookups
+  to read it: **2.4 s**.
+
+**Now:** a cut whose range spans every stored column takes the rows whole (descending, so a row's
+slice sits at the end of its band and dropping it moves nothing; a band that loses every row it
+holds is dropped instead of edited); `range.move` cuts without building the clipboard text; the
+overwrite check walks only the strips of the destination the source does not cover; the paste writes
+each destination row in one store call; and the moved block is a sorted `Vec` walked by a cursor.
+
+**Measured:** **3.2 s** wide and **1.54 s** tall (was 15.9 and 3.7). The 2 s target is met on the
+tall shape and missed on the wide one: what is left is reading the block out (2.7 s of the 3.2) and
+writing it back (1.2 s before the read) — the same per-cell store floor `gaps` §33 describes.
+
+**Evidence:** [performance-shapes.md](performance-shapes.md).
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)

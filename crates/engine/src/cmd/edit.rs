@@ -393,6 +393,33 @@ impl WriteProfile {
     }
 }
 
+/// One pasted cell: written straight away, or buffered into the destination row it belongs to when
+/// the paste walks rows left to right (`paste_special`'s `batch`), so the row reaches the store in
+/// one call.
+#[allow(clippy::too_many_arguments)]
+fn write_cell(
+    wb: &mut cella_model::Workbook,
+    sheet: usize,
+    dest: CellRef,
+    new: Cell,
+    picture: Option<std::sync::Arc<cella_model::CellPicture>>,
+    batch: bool,
+    buf: &mut Vec<(u32, Cell)>,
+    pics: &mut Vec<(u32, Option<std::sync::Arc<cella_model::CellPicture>>)>,
+) -> Result<()> {
+    if batch {
+        buf.push((dest.col, new));
+        pics.push((dest.col, picture));
+        return Ok(());
+    }
+    let sh = wb.sheet_mut(sheet).ok_or_else(|| EngineError::Other("no such sheet".into()))?;
+    sh.set_cell(dest, new);
+    if let Some(picture) = picture {
+        sh.cell_pictures.insert(dest, picture);
+    }
+    Ok(())
+}
+
 fn range_set_values(s: &mut Session, p: &Json) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
     let start = target_range(s, p)?.start;
@@ -909,6 +936,13 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
 // ---------------------------------------------------------------- clipboard
 
 fn copy_impl(s: &mut Session, p: &Json, cut: bool) -> Result<Json> {
+    copy_impl_with(s, p, cut, true)
+}
+
+/// [`copy_impl`] with the tab-separated text under control. A move (`range_move`) cuts and pastes in
+/// one command, so the text it would put on the system clipboard is never read — and building it
+/// formats every cell of the block: seconds on a thousand-column sheet.
+fn copy_impl_with(s: &mut Session, p: &Json, cut: bool, with_text: bool) -> Result<Json> {
     let multiple = || EngineError::Other("This action won't work on multiple selections.".into());
     let sheet = target_sheet(s, p)?;
     let ranges = target_ranges(s, p)?;
@@ -934,7 +968,7 @@ fn copy_impl(s: &mut Session, p: &Json, cut: bool) -> Result<Json> {
     } else {
         (d.wb.clone(), trim(ranges.first().copied().unwrap_or_default()), Vec::new())
     };
-    let text = crate::display::range_text(&wb, sheet, range);
+    let text = if with_text { crate::display::range_text(&wb, sheet, range) } else { String::new() };
     // The HTML rendering is for the host clipboard (UI); it can reach 4 MB, so agents and
     // scripts get it only when they ask for it.
     let html = if p.get("html").and_then(Json::as_bool) == Some(true) { crate::io::range_html(&wb, sheet, range, &text) } else { None };
@@ -1171,6 +1205,37 @@ pub(crate) fn parse_tsv(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// The parts of `outer` that `inner` does not cover, as rectangles (at most four).
+///
+/// A move's overwrite check asks whether the destination holds anything the source does not, and
+/// the two overlap almost entirely: walking the whole destination to answer that was 1.3 s on a
+/// thousand-column sheet, where the strips that actually differ are a few rows deep.
+fn rect_difference(outer: RangeRef, inner: RangeRef) -> Vec<RangeRef> {
+    let (r0, r1) = (outer.start.row, outer.end.row);
+    let (c0, c1) = (outer.start.col, outer.end.col);
+    let ir0 = inner.start.row.max(r0);
+    let ir1 = inner.end.row.min(r1);
+    let ic0 = inner.start.col.max(c0);
+    let ic1 = inner.end.col.min(c1);
+    if ir0 > ir1 || ic0 > ic1 {
+        return vec![outer];
+    }
+    let mut out = Vec::new();
+    if r0 < ir0 {
+        out.push(RangeRef::new(CellRef::new(r0, c0), CellRef::new(ir0 - 1, c1)));
+    }
+    if ir1 < r1 {
+        out.push(RangeRef::new(CellRef::new(ir1 + 1, c0), CellRef::new(r1, c1)));
+    }
+    if c0 < ic0 {
+        out.push(RangeRef::new(CellRef::new(ir0, c0), CellRef::new(ir1, ic0 - 1)));
+    }
+    if ic1 < c1 {
+        out.push(RangeRef::new(CellRef::new(ir0, ic1 + 1), CellRef::new(ir1, c1)));
+    }
+    out
+}
+
 /// Dragging the selection's border: a cut and paste, with the references that pointed at the
 /// moved cells following them. It asks before replacing data — a programmatic caller that means
 /// to replace says so with `overwrite: true`.
@@ -1178,21 +1243,33 @@ fn range_move(s: &mut Session, p: &Json) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
     let to = cell_param_on(s, p, "to", sheet)?.ok_or_else(|| bad("range.move", "missing `to`: the cell the range is dropped on"))?;
     let kept = s.clipboard.take();
-    let moved = cut(s, p).and_then(|_| {
+    let probe = std::env::var_os("CELLA_PROFILE").is_some();
+    #[allow(clippy::disallowed_methods)]
+    let started = std::time::Instant::now();
+    let moved = copy_impl_with(s, p, true, false).and_then(|_| {
+        #[allow(clippy::disallowed_methods)]
+        let t_copy = started.elapsed().as_secs_f64();
         let src = s.clipboard.as_ref().map(|c| c.range).unwrap_or_default();
         let dest = to.offset(i64::from(src.height()) - 1, i64::from(src.width()) - 1).map(|end| RangeRef::new(to, end));
         if bool_param(p, "overwrite") != Some(true)
             && let Some(dest) = dest
             && let Some(sh) = s.doc()?.wb.sheet(sheet)
-            && (sh.cells.iter_range(dest).any(|(c, cell)| !src.contains(c) && (!cell.value.is_empty() || cell.formula.is_some()))
+            && (rect_difference(dest, src).iter().any(|r| sh.cells.iter_range(*r).any(|(_, cell)| !cell.value.is_empty() || cell.formula.is_some()))
                 || sh.spill.iter().any(|(c, v)| dest.contains(*c) && !src.contains(*c) && *v != Value::Empty))
         {
             return Err(EngineError::Other("There's already data here. Pass `overwrite: true` to replace it.".into()));
         }
+        #[allow(clippy::disallowed_methods)]
+        let t_check = started.elapsed().as_secs_f64();
         // On the range's sheet, which `paste` would leave to the active one. The selection
         // belongs to the active sheet: it follows the moved cells only when they are on it.
         let selection = s.doc()?.selection.clone();
         let pasted = paste_special(s, &json!({"what": "all", "at": to.a1(), "sheet": sheet}))?;
+        if probe {
+            #[allow(clippy::disallowed_methods)]
+            let now = started.elapsed().as_secs_f64();
+            eprintln!("move: copy {:.0} ms, check {:.0} ms, paste {:.0} ms", t_copy * 1000.0, (t_check - t_copy) * 1000.0, (now - t_check) * 1000.0);
+        }
         if sheet != s.doc()?.wb.active_sheet {
             s.doc_mut()?.selection = selection;
         }
@@ -1264,7 +1341,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             }
             *style_map.entry(id).or_insert_with(|| wb.styles.intern(src_wb.styles.get(id).clone()))
         };
-        let mut moved_formulas: std::collections::BTreeMap<CellRef, Cell> = std::collections::BTreeMap::new();
+        // The cells a move took out of the source, in row-major order — the order the paste reads
+        // them in, so a cursor walks both lists together. A `BTreeMap` keyed by address cost 8M
+        // insertions to build and 8M lookups to read on a thousand-column sheet.
+        let mut moved_cells: Vec<(CellRef, Cell)> = Vec::new();
         let mut moved_pictures = std::collections::BTreeMap::new();
         if cut_move {
             // Remove the source first (contents and formats), and fix references to it.
@@ -1281,11 +1361,19 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
             for (c, _) in &taken {
                 cx.touch(clip.sheet, *c);
             }
-            moved_formulas = taken.into_iter().collect();
+            moved_cells = taken;
         }
         let mut profile = WriteProfile::start("paste");
+        // A paste without a transpose writes each destination row left to right, so the row can go
+        // to the store in one call: a row the cut emptied is then built in one pass, where a cell at
+        // a time inserts into the middle of the band's stripes and shifts the rows after it.
+        let batch = !transpose;
+        let mut buf: Vec<(u32, Cell)> = Vec::with_capacity(src.width() as usize);
+        let mut pics: Vec<(u32, Option<std::sync::Arc<cella_model::CellPicture>>)> = Vec::with_capacity(src.width() as usize);
         for tr in 0..tiles_r {
             for tc in 0..tiles_c {
+                // The paste reads the source row by row, so the cursor starts over for each tile.
+                let mut cursor = 0usize;
                 for r in 0..src.height() {
                     if let Some(prof) = profile.as_mut() {
                         prof.row_started();
@@ -1294,7 +1382,14 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         let sc = CellRef::new(src.start.row + r, src.start.col + c);
                         let (dr, dc) = if transpose { (c, r) } else { (r, c) };
                         let Some(dest) = at.offset((tr * h + dr) as i64, (tc * w + dc) as i64) else { continue };
-                        let src_cell = if cut_move { moved_formulas.get(&sc).cloned() } else { src_sheet.cell(sc) };
+                        let src_cell = if cut_move {
+                            while moved_cells.get(cursor).is_some_and(|(at, _)| *at < sc) {
+                                cursor += 1;
+                            }
+                            moved_cells.get(cursor).filter(|(at, _)| *at == sc).map(|(_, cell)| cell.clone())
+                        } else {
+                            src_sheet.cell(sc)
+                        };
                         // The value a paste takes is the displayed one: with no spill on the source
                         // sheet that is the stored cell's own value, so the second read of the same
                         // band — one per pasted cell — is skipped.
@@ -1475,9 +1570,9 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                                 if let Some(h) = src_sheet.hyperlinks.get(&sc).cloned() {
                                     cx.sheet_mut(dest_sheet)?.hyperlinks.insert(dest, h);
                                 }
-                                cx.sheet_mut(dest_sheet)?.set_cell(dest, new);
+                                write_cell(&mut cx.wb, dest_sheet, dest, new, new_picture.take(), batch, &mut buf, &mut pics)?;
                             }
-                            _ => cx.sheet_mut(dest_sheet)?.set_cell(dest, new),
+                            _ => write_cell(&mut cx.wb, dest_sheet, dest, new, new_picture.take(), batch, &mut buf, &mut pics)?,
                         }
                         if let Some(picture) = new_picture {
                             cx.sheet_mut(dest_sheet)?.cell_pictures.insert(dest, picture);
@@ -1486,6 +1581,25 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
                         if let Some(prof) = profile.as_mut() {
                             prof.written();
                         }
+                    }
+                    // One store call for the destination row: a row the cut emptied is built in one
+                    // pass, where a cell at a time inserts into the middle of the band's stripes and
+                    // shifts the rows after it.
+                    if batch && !buf.is_empty() {
+                        let row = at.row + (tr * h) + r;
+                        let sh = cx.sheet_mut(dest_sheet)?;
+                        if !sh.cell_pictures.is_empty() {
+                            for (col, _) in &buf {
+                                sh.cell_pictures.remove(&CellRef::new(row, *col));
+                            }
+                        }
+                        for (col, picture) in pics.drain(..) {
+                            if let Some(picture) = picture {
+                                sh.cell_pictures.insert(CellRef::new(row, col), picture);
+                            }
+                        }
+                        sh.set_row_cells(row, &mut buf);
+                        buf.clear();
                     }
                 }
             }
@@ -2603,6 +2717,44 @@ mod tests {
     #[test]
     fn replace_case_insensitive() {
         assert_eq!(replace_ci("Apple apple APPLE", "apple", "pear"), "pear pear pear");
+    }
+
+    /// Moving a block that spans every column the sheet stores takes the rows whole — and leaves
+    /// behind exactly what the rows did not hold.
+    #[test]
+    fn a_move_of_whole_rows_leaves_nothing_behind() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1:C3", "values": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]})).unwrap();
+        let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap()["value"].clone();
+        s.execute("range.move", json!({"range": "A1:C2", "to": "E5"})).unwrap();
+        for a in ["A1", "B1", "C1", "A2", "B2", "C2"] {
+            assert_eq!(get(&mut s, a), Json::Null, "{a} was moved away");
+        }
+        assert_eq!(get(&mut s, "E5"), json!(1.0));
+        assert_eq!(get(&mut s, "G6"), json!(6.0));
+        assert_eq!(get(&mut s, "A3"), json!(7.0), "the row below the block stays");
+        assert_eq!(get(&mut s, "C3"), json!(9.0));
+    }
+
+    /// A move onto cells the source does not cover still asks — and the cells it asks about are the
+    /// ones outside the overlap, not the whole destination.
+    #[test]
+    fn a_move_onto_data_asks_before_replacing_it() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1:C2", "values": [[1, 2, 3], [4, 5, 6]]})).unwrap();
+        s.execute("cell.set", json!({"cell": "A3", "input": "busy"})).unwrap();
+        assert!(s.execute("range.move", json!({"range": "A1:C2", "to": "A3"})).is_err(), "no overlap at all");
+        // B2:D3 covers B2:C2 of the source; D2 and row 3 are the cells that differ.
+        s.execute("cell.set", json!({"cell": "D2", "input": "busy"})).unwrap();
+        assert!(s.execute("range.move", json!({"range": "A1:C2", "to": "B2"})).is_err(), "a cell beside the overlap");
+        s.execute("cell.set", json!({"cell": "D2", "input": ""})).unwrap();
+        s.execute("range.move", json!({"range": "A1:C2", "to": "B2", "overwrite": true})).unwrap();
+        let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap()["value"].clone();
+        assert_eq!(get(&mut s, "B2"), json!(1.0));
+        assert_eq!(get(&mut s, "D3"), json!(6.0));
+        assert_eq!(get(&mut s, "A3"), json!("busy"), "the row outside the move stays");
     }
 
     /// A three-by-three sheet with three `x` cells, laid out so row order and column order disagree:
