@@ -35,7 +35,7 @@ sort.formulas         100000  760
 # `struct.deleteColumn` at 100k rows measures 1.0-1.4 ms, and the 1 ms floor the rule gives a
 # sub-half-millisecond scenario is inside the harness's own noise: the gate failed on it twice in a
 # row (110 % and 140 % of a 1 ms budget) and passed on a re-run. Recorded at 2 ms — still needing a
-# doubling to fail, which is the rule — and the million-row budget below stays 18.5 ms.
+# doubling to fail, which is the rule.
 struct.deleteColumn   100000  2
 struct.deleteRow      100000  420
 struct.insertColumn   100000  2
@@ -65,7 +65,12 @@ save.repeat          1000000  3200
 save.xlsx            1000000  3400
 sort.desc            1000000  6700
 sort.formulas        1000000  8650
-struct.deleteColumn  1000000  18.5
+# `struct.deleteColumn` at a million rows measures **17-18 ms** (best of three) and 20 ms on a single
+# sample — on **both** sides of round 52's store change (`c8f83a3~1` read 17 and 17). The 18.5 recorded
+# here came from a ~9.25 ms reading that neither build reproduces on this machine, and at the row's own
+# value that budget needed +2 % to fail: the gate failed on it at 108 % and passed at 93 %/99 % on two
+# re-runs. Recorded at 36, so a doubling still fails, which is the rule.
+struct.deleteColumn  1000000  36
 struct.deleteRow     1000000  4400
 struct.insertColumn  1000000  26
 struct.insertRow     1000000  4800
