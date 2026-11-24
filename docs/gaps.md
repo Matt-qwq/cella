@@ -1577,6 +1577,38 @@ environment would have to carry `Arc<str>` for that to go, which is a type chang
 evaluator for a few percent. `BYROW`'s remaining microsecond is mostly the row's own `Vec` and
 `Arc<Array>` — the argument has to be an owned array because the LAMBDA may keep it.
 
+### 43. The lookups only answered the short spellings (P, found and fixed 11-25)
+
+**What:** round 53 taught `MATCH` and `VLOOKUP` to scan the key column, but the catalogue's own calls
+— and most of the ones people write — spell the options out: `XLOOKUP($K,$KG,$R,1,0,1)` is six
+arguments, `XMATCH($K,$KG,0,1)` four, and both fell straight through to the general path, which
+builds the block first. So `XLOOKUP` read **74 ms** and `XMATCH` **53 ms** while `MATCH` and
+`VLOOKUP` — the short spellings round 53 taught — read 17.
+
+**Why:** `xlookup_scalar_column` demanded exactly three arguments (no `if_not_found`, no modes), and
+`XMATCH` had no narrow shape at all: the dispatcher went from `MATCH` straight to `builtin`.
+
+**Now:** `XLOOKUP` takes three to six arguments — `if_not_found` is answered only on a miss (lazily,
+as the general path answers it), and the documented defaults (exact match, first to last) may be
+spelled out. `XMATCH` got the scan `MATCH` has: `match_mode 0` and `search_mode 1`, or the defaults,
+answer from the key column and stop at the hit. Every other mode declines to the library — last to
+first, a binary search, a wildcard mode or a lower-than mode — as do wildcard keys, so the answer
+cannot differ.
+
+**Measured:** `XLOOKUP` **74 → 16 ms (−78 %)**, `XMATCH` **53 → 16 ms (−70 %)**; `MATCH` and
+`VLOOKUP` stayed at 16–17, and the rows this round cannot touch did not move (`SUM` 30 → 29,
+`COUNTIF` 23 → 23, `SUMIF` 27 → 27, `MEDIAN` 51 → 49, `SUMPRODUCT` 23 → 22, `BYROW` 984 → 983,
+`PIVOTBY` 990 → 996, `BITAND` 231 → 231).
+
+**Test:** `crates/engine/tests/xlookup_column.rs` grew XMATCH both ways (text, number, a miss, the
+modes spelled, a wildcard mode staying general) and XLOOKUP with the defaults spelled and an
+`if_not_found` on a miss, a number and a text.
+
+**Left, and it is the last of P1's first item:** `COUNTIF` (23 ms) and `SUMIF` (27 ms) build an array
+to test it, and `MEDIAN`/`SUMPRODUCT` (49/22 ms) need every value in hand. A scan would only reach
+~19 ms because the store's one-column walk costs that much a million rows (`gaps` §39/§40); getting
+them under 10 ms needs a tighter column walk in the store, which is its own knife.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2040,6 +2072,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §43 (new): the lookups only answered the short spellings — `XLOOKUP(k,A:A,B:B,1,0,1)` and `XMATCH(k,A:A,0,1)` fell to the general path and built the block, while the three-argument `MATCH`/`VLOOKUP` scanned. **XLOOKUP 74 → 16 ms, XMATCH 53 → 16 ms**, with the rows the round cannot touch unmoved |
 | 2026-11-25 | minor | §42 (new): a LAMBDA call cost a microsecond before the body ran — the environment was swapped out and rebuilt every call, the bound argument went through a one-entry `Vec`, and `aggregate_value` looked up `SUM` and `COUNT` for every argument. **BYROW 1.15 s → 984 ms, MAP 532 → 422 ms, SCAN 601 → 524 ms, REDUCE 170 → 133 ms**, and the rows that run no LAMBDA did not move |
 | 2026-11-24 | minor | §41 (new): the groupers keyed every row by a string they built. `row_key` spelled a row's values out as text and the key-to-rows map was keyed by it — a million allocations at a million rows. A hashed `KeyIds` (two `Vec`s, a map of first ids and a collision chain) took **PIVOTBY 5.16 s → 989 ms, GROUPBY 2.48 → 785 ms, UNIQUE 1.49 → 310 ms**, with the old string key kept as the reference a test compares the ids against. `BYROW`'s 1.14 s is the evaluator's per-row LAMBDA cost and is left named |
 | 2026-11-24 | minor | §40 (new): a formula's block argument was built before the formula could say it needed three cells. The exact lookups (`MATCH`, `VLOOKUP`, `XLOOKUP` with a scalar key) now scan the key column and stop at the hit — **VLOOKUP 78 → 17 ms, MATCH 56 → 17 ms** at a million rows, and a hit on row 1 costs 0.6–0.9 ms; a fold of a values column stops asking `has_owned_cells` first (**SUM 51 → 30 ms, MAX/MIN −40 %, COUNT −38 %**), and one-column reads take a peeled walk. The rest of the catalogue's rows move by 4–15 % with them; two untouched control rows sat still (−1 %, +1 %) |
