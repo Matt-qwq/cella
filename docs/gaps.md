@@ -1350,6 +1350,22 @@ at all (today it reports every cell it touched).
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
+### 37. The command catalogue cannot finish: `formulas.createFromSelection` runs for 20+ minutes (P, found 11-24)
+
+**What:** `cargo xtask bench-commands` priced 413 of the 422 commands and then stopped moving on
+`formulas.createFromSelection` with the whole used area (a million rows × 6 columns) as its range.
+Isolated, the same command alone did not finish in four minutes; the full run was killed after
+twenty. It is not one of the commands this round touched — the page it blocks is
+[performance-commands.md](performance-commands.md), which is therefore still round 47's.
+
+**Why it matters:** a command that does not return in twenty minutes on the size the project
+benchmarks at is a hang a person can meet, and it blocks the catalogue from finishing.
+
+**Not diagnosed:** whether it creates one defined name per row (a million names), or whether some
+part of it is quadratic. **Estimate:** 1–2 h to diagnose, then it is its own knife.
+
+**Evidence:** the run itself (`bench_commands --only=formulas.createFromSelection`).
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
