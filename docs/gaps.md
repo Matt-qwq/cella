@@ -1609,6 +1609,39 @@ to test it, and `MEDIAN`/`SUMPRODUCT` (49/22 ms) need every value in hand. A sca
 ~19 ms because the store's one-column walk costs that much a million rows (`gaps` §39/§40); getting
 them under 10 ms needs a tighter column walk in the store, which is its own knife.
 
+### 44. The criteria functions tested a copy of the column (P, found and fixed 11-25)
+
+**What:** `COUNTIF` read **23 ms** and `SUMIF` **27 ms** over a million rows — and round 53 had
+already said why: they are library functions that take an `Array`, so the evaluator built the whole
+block into one (a million `Value`s) and *then* asked the criterion of the copy.
+
+**Why it was not just a one-line wiring:** the criterion is a parsed matcher (`crates/functions/src/
+criteria.rs`: the operator, the operand, the wildcard tokens), and its `matches` took a `&Value` — so
+a host that walks stored pages would have had to build a `Value` a cell to ask it, which is the
+allocation the array build was already paying.
+
+**Now:** the matcher is written once over a `CellView` — a number, a borrowed text, a boolean, an
+error, a blank — so a host can ask it of a packed cell with no allocation. `COUNTIF` and `SUMIF` in
+the evaluator answer from a single walk of the stored column (the hook `countif_column` /
+`sumif_columns`; blanks are the slots the walk does not meet, counted when the criterion matches
+one), and `SUMIF` answers its one-column form (`SUMIF(A:A, ">0", A:A)` and the two-argument
+`SUMIF(A:A, ">0")`) from one walk too.
+
+**Measured:** `COUNTIF` **23 → 18 ms (−22 %)**, `SUMIF` **27 → 18 ms (−33 %)**. Both now sit at the
+walk's own price (~19 ns a cell), which is the floor a scan can reach until the store's one-column
+walk gets tighter.
+
+**The differential found two bugs of its own:** `crates/engine/tests/criteria_scan.rs` asks the same
+question as `COUNTIF`/`COUNTIFS` (and `SUMIF`/`SUMIFS`) with one pair over a table of numbers,
+numeric text, text in two cases, a wildcard literal, a boolean, an error, a blank slot and an empty
+text. It caught that a **matched error cell has to be the answer** (a `SUMIF` whose matching target
+holds `#DIV/0!` returns the error, not a sum that skips it), and that the two-column form has to
+remember a target's error until its row's criterion is known — both fixed and pinned.
+
+**Left:** `AVERAGEIF` (27 ms) still takes the library path; `SUM`/`MAX`/`MIN` are folds already; and
+`MEDIAN`/`SUMPRODUCT` (50/22 ms) need every value in hand. The 10 ms target for the criteria family
+is the store's one-column walk, not theirs.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2072,6 +2105,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §44 (new): the criteria functions tested a copy of the column — the criterion matcher takes a `CellView` now (a number, a borrowed text, a boolean, an error, a blank) so a host can ask it of a stored cell with no allocation, and `COUNTIF`/`SUMIF` answer from one walk: **COUNTIF 23 → 18 ms, SUMIF 27 → 18 ms**. The differential test (`criteria_scan.rs`) caught two bugs of the new path — a matched error must be the answer, and a target's error must wait for its row's verdict |
 | 2026-11-25 | minor | §43 (new): the lookups only answered the short spellings — `XLOOKUP(k,A:A,B:B,1,0,1)` and `XMATCH(k,A:A,0,1)` fell to the general path and built the block, while the three-argument `MATCH`/`VLOOKUP` scanned. **XLOOKUP 74 → 16 ms, XMATCH 53 → 16 ms**, with the rows the round cannot touch unmoved |
 | 2026-11-25 | minor | §42 (new): a LAMBDA call cost a microsecond before the body ran — the environment was swapped out and rebuilt every call, the bound argument went through a one-entry `Vec`, and `aggregate_value` looked up `SUM` and `COUNT` for every argument. **BYROW 1.15 s → 984 ms, MAP 532 → 422 ms, SCAN 601 → 524 ms, REDUCE 170 → 133 ms**, and the rows that run no LAMBDA did not move |
 | 2026-11-24 | minor | §41 (new): the groupers keyed every row by a string they built. `row_key` spelled a row's values out as text and the key-to-rows map was keyed by it — a million allocations at a million rows. A hashed `KeyIds` (two `Vec`s, a map of first ids and a collision chain) took **PIVOTBY 5.16 s → 989 ms, GROUPBY 2.48 → 785 ms, UNIQUE 1.49 → 310 ms**, with the old string key kept as the reference a test compares the ids against. `BYROW`'s 1.14 s is the evaluator's per-row LAMBDA cost and is left named |
