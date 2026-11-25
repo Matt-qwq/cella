@@ -2462,6 +2462,16 @@ The list of kept labels is the scan's: a differential test computes both and com
 (`crates/engine/tests/pivot_sql.rs`, 18 cases now). What SQL cannot answer — a numeric-range axis, a
 product or a standard deviation — falls back to the scan as before.
 
+### 69. One Solver test is red, and it was red before the data-model work (S, found 11-25)
+
+`crates/engine/tests/solver_sensitivity.rs::reset_all_removes_the_sheets_model_and_the_saved_cells_bring_it_back`
+fails at **`da5a683`** (checked out and run there, so it is not a regression of rounds 81–89): the
+second `data.solverSaveModel` is refused for a **spill** ("The saved model would cover H11, which
+holds the values of another formula") where the test expects the column's own "already holds data"
+message. Which of the two refusals comes first is a Solver behaviour question — Excel asks about the
+column first — so either the check's order or the test's expectation is wrong. It is the one test
+that would stop `cargo test --workspace` today.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
