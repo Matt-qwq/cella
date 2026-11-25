@@ -2139,7 +2139,26 @@ instead of sorting lines of `Value`s).
 `PIVOTBY` did not move: its report still goes through `from_rows`, and the same change is waiting
 there. Functions 172, calc 176, engine 649, clippy, wasm, `perf` 59/59.
 
-**Then `PIVOTBY`'s own cell copy:** `body_line` cloned each grid cell's row list — up to a million
+**Round 78 itemised the rest of a million-group report — and there is no dominant cost left**
+(`fn_probe`, 1M rows, `GROUPBY(A, C, SUM)`, 552 ms end to end; timers removed again):
+
+| phase | time |
+|---|---:|
+| the evaluator: argument materialisation (`C2:C` and `A2:A` into arrays, the pass, the commit) | ~150 ms |
+| the key build (`KeyIds::push` a record) | ~40 |
+| `keys.values` — one `Vec<Value>` a group, a million of them | **69** |
+| the group rows (`Vec` a group) | **30** |
+| per-group aggregates | **68** |
+| the sort of a million keys | **25** |
+| the report's emit | **30** |
+| prepare (records in, filter out) and the probe's own session overhead | ~140 |
+
+Every item is 25–70 ms, which is 5–12 % each: the phase that dominated — the double evaluation (§53/§54)
+and the line-at-a-time report (§57) — are gone, and what is left is a dozen small ones. The two that
+would pay next are `keys.values` (a `Vec` a group where a flat block would do, the same shape as §57)
+and the per-group aggregates; together they are ~137 ms of 552, or a 9 % win at this size.
+
+**Then `PIVOTBY`'s own cell copy:**' `body_line` cloned each grid cell's row list — up to a million
 entries a cell, sixteen cells copied for a four-by-four report. Borrowed now: `fn_probe` 1.90 →
 **1.77 s** (−7 %), the page 398 → 389 ms (inside the noise; the page's grid has less to copy). What is
 left of `PIVOTBY`'s second is the same unexplained block `GROUPBY` has.
