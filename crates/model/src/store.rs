@@ -1880,6 +1880,70 @@ impl BandBatch {
     }
 }
 
+/// What [`CellStore::fold_column`] accumulates: one column's arithmetic, done in the loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldMode {
+    /// `SUM`: the numbers added up.
+    Sum,
+    /// `COUNT`: how many numbers there are.
+    Count,
+    /// `COUNTA`: how many cells hold anything at all.
+    CountA,
+    /// `AVERAGE`: the sum and the count, divided at the end.
+    Average,
+    /// `MIN`/`MAX`: the smallest or largest number.
+    Min,
+    Max,
+}
+
+/// The running total of a [`CellStore::fold_column`]. `error` is set when a cell holds an error the
+/// mode carries (`SUM` and `AVERAGE` carry it; `COUNT` skips it).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FoldAcc {
+    pub sum: f64,
+    pub count: u64,
+    /// Cells that hold anything at all: every value but a styled blank.
+    pub present: u64,
+    pub best: Option<f64>,
+    pub error: Option<CellError>,
+}
+
+impl FoldAcc {
+    fn add(&mut self, n: f64, mode: FoldMode) {
+        self.present = self.present.saturating_add(1);
+        match mode {
+            FoldMode::Sum => self.sum += n,
+            FoldMode::Average => {
+                self.sum += n;
+                self.count = self.count.saturating_add(1);
+            }
+            FoldMode::Count | FoldMode::CountA => self.count = self.count.saturating_add(1),
+            FoldMode::Min | FoldMode::Max => {
+                self.best = Some(match self.best {
+                    Some(b) if mode == FoldMode::Max => b.max(n),
+                    Some(b) => b.min(n),
+                    None => n,
+                });
+            }
+        }
+    }
+
+    /// The answer this fold makes of `mode`: a count for `COUNT`/`COUNTA`, a sum for `SUM`, the mean
+    /// for `AVERAGE` (`#DIV/0!` with no numbers, as `AVERAGE` is) and the extreme for `MIN`/`MAX`
+    /// (`0` with no numbers, as Excel's are).
+    pub fn answer(&self, mode: FoldMode) -> Value {
+        if let Some(e) = self.error {
+            return Value::Error(e);
+        }
+        match mode {
+            FoldMode::Sum => Value::Number(self.sum),
+            FoldMode::Count | FoldMode::CountA => Value::Number(self.count as f64),
+            FoldMode::Average if self.count == 0 => Value::Error(CellError::Div0),
+            FoldMode::Average => Value::Number(self.sum / self.count as f64),
+            FoldMode::Min | FoldMode::Max => Value::Number(self.best.unwrap_or(0.0)),
+        }
+    }
+}
 /// One stored cell as its page holds it: no `Cell`, no `Value`, no allocation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Packed<'a> {
@@ -4389,8 +4453,97 @@ impl CellStore {
         self.visit_packed_impl(r, true, f)
     }
 
-    /// Calls `f` on the stored cell of one column in each row of `r` that holds one, in row order.
+    /// Folds one column's stored values into `acc` with the arithmetic **in the loop**, so a
+    /// million-cell `SUM` pays one call, not a million.
     ///
+    /// The aggregating functions ask the same question of one column and throw every cell away after
+    /// adding it, and at a million rows the call per cell is the third of the walk's price that is
+    /// not the row iteration (`gaps` §46). `false` when the column holds a cell only a host can
+    /// price — a formula or an array — and the caller has to take its own path.
+    pub fn fold_column(&self, r: RangeRef, mode: FoldMode, acc: &mut FoldAcc) -> bool {
+        if r.start.col != r.end.col {
+            return false;
+        }
+        let col = r.start.col;
+        let mut take = |band: &Band, row: &BandRow, i: usize| -> bool {
+            let kind = row.kind_at(band, i);
+            match kind {
+                NUMBER => {
+                    acc.add(band.number(row.payload_at(band, i)), mode);
+                    true
+                }
+                NUMBER_WIDE => {
+                    acc.add(f64::from_bits(row.wide_at(band, i)), mode);
+                    true
+                }
+                // A styled blank is stored but holds no value: `COUNT` and `SUM` skip it, `COUNTA`
+                // does not count it either (it is empty).
+                EMPTY => true,
+                ERROR => {
+                    let code = *ERRORS.get(row.payload_at(band, i) as usize).unwrap_or(&CellError::Value);
+                    if mode == FoldMode::Count {
+                        // COUNT skips errors; the rest carry them.
+                        return true;
+                    }
+                    acc.error = Some(code);
+                    false
+                }
+                // Text and booleans count for COUNTA and add nothing to a sum.
+                BOOL | TEXT | TEXT_WIDE => {
+                    acc.present = acc.present.saturating_add(1);
+                    true
+                }
+                // An array, or a formula's value: only the evaluator can price it.
+                _ => false,
+            }
+        };
+        if self.row_map.identity {
+            for key in r.start.row / BAND..=r.end.row / BAND {
+                let Some(band) = self.band_arc(key) else { continue };
+                let base = key.saturating_mul(BAND);
+                for row in &band.rows {
+                    let at_row = base.saturating_add(row.key);
+                    if at_row < r.start.row || at_row > r.end.row {
+                        continue;
+                    }
+                    if row.extras.as_ref().is_some_and(|e| !e.formulas.is_empty() || !e.arrays().is_empty()) {
+                        return false;
+                    }
+                    let Some(i) = row.index_of(&band, col) else { continue };
+                    if !take(&band, row, i) {
+                        return acc.error.is_some();
+                    }
+                }
+            }
+            return true;
+        }
+        let mut current: Option<(u32, Option<Arc<Band>>)> = None;
+        for rows in self.row_map.segments_in(r.start.row, r.end.row) {
+            for offset in 0..rows.len {
+                let physical = rows.physical.saturating_add(offset);
+                let at_row = rows.logical.saturating_add(offset);
+                if at_row < r.start.row || at_row > r.end.row {
+                    continue;
+                }
+                let key = physical / BAND;
+                if current.as_ref().is_none_or(|(k, _)| *k != key) {
+                    current = Some((key, self.band_arc(key)));
+                }
+                let Some(band) = current.as_ref().and_then(|(_, band)| band.as_ref()) else { continue };
+                let Some(row) = band.row(physical % BAND) else { continue };
+                if row.extras.as_ref().is_some_and(|e| !e.formulas.is_empty() || !e.arrays().is_empty()) {
+                    return false;
+                }
+                let Some(i) = row.index_of(band, col) else { continue };
+                if !take(band, row, i) {
+                    return acc.error.is_some();
+                }
+            }
+        }
+        true
+    }
+
+    /// Calls `f` on the stored cell of one column in each row of `r` that holds one, in row order.
     /// One column is the shape a whole-column formula takes — `SUM(A:A)`, a lookup's answer column,
     /// `MATCH`'s key — and the general row walk pays its setup once **a cell** for it: 16.9 ns a cell
     /// against 4.4 for a row of eight, measured on a million rows × eight columns

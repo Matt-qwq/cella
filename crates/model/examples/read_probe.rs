@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use cella_core::{CellRef, RangeRef, Value};
-use cella_model::{Cell, CellStore, Packed};
+use cella_model::{Cell, CellStore, FoldAcc, FoldMode, Packed};
 
 const DEFAULT_ROWS: usize = 1_000_000;
 const DEFAULT_COLS: usize = 8;
@@ -131,6 +131,15 @@ fn run() -> Result<(), String> {
                 true
             });
             n
+        }),
+    );
+    report(
+        "fold_column Sum A2:A{last}",
+        cells,
+        best(repeat, || {
+            let mut acc = FoldAcc::default();
+            store.fold_column(one, FoldMode::Sum, &mut acc);
+            acc.count
         }),
     );
     report("iter_range    A2:A{last}", cells, best(repeat, || store.iter_range(one).count() as u64));

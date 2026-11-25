@@ -70,6 +70,17 @@ fn fold(text: &str) -> String {
     text.chars().flat_map(char::to_lowercase).collect()
 }
 
+/// The store's fold mode for an aggregate kind, when the kind is one a column fold can answer.
+fn fold_mode(kind: crate::eval::Agg) -> Option<cella_model::FoldMode> {
+    use crate::eval::Agg;
+    Some(match kind {
+        Agg::Sum => cella_model::FoldMode::Sum,
+        Agg::Count => cella_model::FoldMode::Count,
+        Agg::Average => cella_model::FoldMode::Average,
+        Agg::Max => cella_model::FoldMode::Max,
+        Agg::Min => cella_model::FoldMode::Min,
+    })
+}
 /// Whether `c` holds content of its own. A cell kept only for its formatting (a fill, a border,
 /// an empty value) does not: an array may spill over formatted cells, and a cell that was
 /// formatted while a spill covered it must not turn that spill into `#SPILL!` on the next pass.
@@ -1544,7 +1555,22 @@ impl Host for PassHost<'_> {
         if self.spill_index.has_sheet(sheet) || sh.spill.range(range.start..=range.end).any(|(c, _)| range.contains(*c)) {
             return None;
         }
-        // The packed fold first, without asking the block whether it owns a cell: a block of values
+        // One column of values is the shape a whole-column aggregate has, and the store can fold it
+        // with the arithmetic in its own loop: one call a column instead of one a cell. `false` when
+        // the column holds a formula or an array, and the walks below take it.
+        if range.width() == 1
+            && let Some(mode) = fold_mode(kind)
+        {
+            let mut fold = cella_model::FoldAcc::default();
+            if sh.cells.fold_column(range, mode, &mut fold) {
+                if let Some(e) = fold.error {
+                    return Some(Err(e));
+                }
+                acc.merge_fold(kind, fold.sum, fold.count, fold.best);
+                return Some(Ok(()));
+            }
+        }
+        // The packed fold next, without asking the block whether it owns a cell: a block of values
         // hands out every cell and finishes here, and the first cell whose value the evaluator owns
         // (a formula, an array) sends the fold to the paths below with the trial's total thrown
         // away. Asking `has_owned_cells` up front instead walks the whole block to answer what this

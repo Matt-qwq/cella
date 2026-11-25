@@ -71,6 +71,24 @@ impl Acc {
         }
     }
 
+    /// Merges a fold the **store** ran over a whole column (`CellStore::fold_column`): the arithmetic
+    /// happened in its loop, and what comes back is the running total.
+    pub(crate) fn merge_fold(&mut self, kind: Agg, sum: f64, count: u64, best: Option<f64>) {
+        match kind {
+            Agg::Sum => self.sum += sum,
+            Agg::Count => self.count = self.count.saturating_add(count),
+            Agg::Average => {
+                self.sum += sum;
+                self.count = self.count.saturating_add(count);
+            }
+            Agg::Max | Agg::Min => {
+                if let Some(b) = best {
+                    self.note(b, kind);
+                }
+            }
+        }
+    }
+
     /// Keeps the extreme for `MAX` and `MIN`, which ignore everything but numbers.
     pub(super) fn note(&mut self, n: f64, kind: Agg) {
         if matches!(kind, Agg::Max | Agg::Min) {
