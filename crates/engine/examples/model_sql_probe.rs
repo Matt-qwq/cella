@@ -205,6 +205,20 @@ fn main() {
     });
     println!("  pivot.refresh grouped by the joined dimension: {:.1} ms", seconds * 1e3);
 
+    // ---- a measure: every level computed by SQL, because a ratio does not average
+    run(&mut f, "data.measure.add", json!({"name": "Avg", "table": "Sales", "formula": "DIVIDE(SUM(Sales[Amount]), COUNT(Sales[Amount]))"}));
+    let measured = run(
+        &mut f,
+        "insert.pivotTable",
+        json!({"source": "Sales", "rows": ["Region[Name]", "Sales[Month]"], "values": ["Avg"], "destination": "new"}),
+    );
+    let measured_name = measured["name"].as_str().unwrap_or("").to_string();
+    let (seconds, _) = best(3, || {
+        run(&mut f, "pivot.refresh", json!({"pivot": measured_name, "replace": true}));
+        0
+    });
+    println!("  pivot.refresh with a ratio measure, two row levels: {:.1} ms", seconds * 1e3);
+
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&big);
 }

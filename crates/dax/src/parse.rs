@@ -19,7 +19,7 @@ use crate::{DaxError, MAX_DEPTH, MAX_FORMULA_LEN};
 
 /// The two sides of an arithmetic operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BinOp {
+pub enum BinOp {
     Add,
     Sub,
     Mul,
@@ -28,7 +28,7 @@ pub(crate) enum BinOp {
 
 /// A parsed formula.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Expr {
+pub enum Expr {
     Number(f64),
     Text(String),
     /// Table[Column]: meaningful only as the single argument of an aggregate.
@@ -63,7 +63,7 @@ pub(crate) enum Expr {
 
 impl Expr {
     /// The character offset this expression starts at, for an error that can point at it.
-    pub(crate) fn at(&self) -> usize {
+    pub fn at(&self) -> usize {
         match self {
             Expr::Column { at, .. } | Expr::Measure { at, .. } | Expr::Call { at, .. } | Expr::Filter { at, .. } => *at,
             Expr::Neg(inner) => inner.at(),
@@ -75,7 +75,7 @@ impl Expr {
 
 /// The aggregates the subset knows, each over exactly one column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Agg {
+pub enum Agg {
     Sum,
     Average,
     Count,
@@ -86,7 +86,7 @@ pub(crate) enum Agg {
 }
 
 /// The aggregate a name stands for, or None for a name that is not one.
-pub(crate) fn aggregate(name: &str) -> Option<Agg> {
+pub fn aggregate(name: &str) -> Option<Agg> {
     let n = name.trim();
     if n.eq_ignore_ascii_case("SUM") {
         Some(Agg::Sum)
@@ -108,7 +108,8 @@ pub(crate) fn aggregate(name: &str) -> Option<Agg> {
 }
 
 /// How an expression reads in an error message: "SUM needs one column ... but got a formula".
-pub(crate) fn describe(e: &Expr) -> String {
+/// The formula as text, for an error message.
+pub fn describe(e: &Expr) -> String {
     match e {
         Expr::Number(n) => format!("the number {n}"),
         Expr::Text(s) => format!("the text \"{s}\""),
@@ -311,7 +312,8 @@ fn lex(chars: &[char]) -> Result<Vec<Token>, DaxError> {
 
 /// Parses one measure formula. Length is refused before anything is read; nesting is refused at
 /// MAX_DEPTH levels.
-pub(crate) fn parse(src: &str) -> Result<Expr, DaxError> {
+/// A formula as a tree.
+pub fn parse(src: &str) -> Result<Expr, DaxError> {
     let chars: Vec<char> = src.chars().collect();
     if chars.len() > MAX_FORMULA_LEN {
         return Err(DaxError::Parse { at: MAX_FORMULA_LEN, message: format!("the formula is longer than {MAX_FORMULA_LEN} characters") });

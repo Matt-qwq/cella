@@ -334,6 +334,108 @@ fn plan_ref(plan: &[Planned<'_>], index: usize) -> Option<String> {
     Some(format!("{}.{}", p.alias, cella_sql::quote_ident(column)))
 }
 
+/// `Table[Column]` as the SQL this plan names it by, when that table is part of the source.
+fn plan_ref_by_name(plan: &[Planned<'_>], table: &str, column: &str) -> Option<String> {
+    let p = plan.iter().find(|p| p.table.name.eq_ignore_ascii_case(table))?;
+    let c = p.table.index(column)?;
+    let name = p.table.columns.get(c)?;
+    Some(format!("{}.{}", p.alias, cella_sql::quote_ident(name)))
+}
+
+/// A measure's formula as a SQL expression over this plan, or `None` when the formula uses
+/// something the translation does not carry (it keeps the per-cell evaluation then).
+///
+/// The translation is of the *meaning*, not the text: a `CALCULATE` filter becomes the `WHERE` of
+/// the aggregates it wraps, a division that would be a blank is `NULLIF` apart, and an aggregate
+/// over no rows is `NULL` rather than 0 so an empty cell stays blank the way the evaluator's is.
+fn measure_sql(wb: &Workbook, plan: &[Planned<'_>], formula: &str, filters: &[String], depth: u32) -> Option<String> {
+    if depth as usize > cella_dax::MAX_MEASURE_DEPTH {
+        return None;
+    }
+    let tree = cella_dax::tree(formula).ok()?;
+    translate(wb, plan, &tree, filters, depth)
+}
+
+fn translate(wb: &Workbook, plan: &[Planned<'_>], e: &cella_dax::Expr, filters: &[String], depth: u32) -> Option<String> {
+    use cella_dax::{Agg, BinOp, Expr};
+    match e {
+        Expr::Number(n) if n.is_finite() => Some(format!("{n}")),
+        Expr::Number(_) => None,
+        Expr::Text(t) => Some(cella_sql::quote_literal(t)),
+        // A bare column is only meaningful inside an aggregate, which is translated below.
+        Expr::Column { .. } => None,
+        Expr::Measure { name, .. } => {
+            let m = wb.model.measure(name)?;
+            let formula = m.formula.clone();
+            measure_sql(wb, plan, &formula, filters, depth + 1)
+        }
+        Expr::Neg(inner) => Some(format!("-({})", translate(wb, plan, inner, filters, depth)?)),
+        Expr::Binary { op, left, right } => {
+            let l = translate(wb, plan, left, filters, depth)?;
+            let r = translate(wb, plan, right, filters, depth)?;
+            Some(match op {
+                // Division by zero is blank in this language, and `NULL` in SQL.
+                BinOp::Div => format!("(({l}) / NULLIF(({r}), 0))"),
+                BinOp::Add => format!("(({l}) + ({r}))"),
+                BinOp::Sub => format!("(({l}) - ({r}))"),
+                BinOp::Mul => format!("(({l}) * ({r}))"),
+            })
+        }
+        Expr::Call { name, args, .. } => match name.to_ascii_uppercase().as_str() {
+            "DIVIDE" => {
+                let n = translate(wb, plan, args.first()?, filters, depth)?;
+                let d = translate(wb, plan, args.get(1)?, filters, depth)?;
+                let quotient = format!("(({n}) / NULLIF(({d}), 0))");
+                Some(match args.get(2) {
+                    Some(alt) => format!("COALESCE({quotient}, {})", translate(wb, plan, alt, filters, depth)?),
+                    None => quotient,
+                })
+            }
+            "BLANK" => Some("NULL".to_string()),
+            "CALCULATE" => {
+                // The filters are ANDed onto the context, which for an aggregate is its `WHERE`.
+                let mut all: Vec<String> = filters.to_vec();
+                for f in args.iter().skip(1) {
+                    let Expr::Filter { column, value, .. } = f else { return None };
+                    let Expr::Column { table, column: name, .. } = &**column else { return None };
+                    let reference = plan_ref_by_name(plan, table, name)?;
+                    all.push(format!("{reference} = {}", translate(wb, plan, value, &[], depth)?));
+                }
+                translate(wb, plan, args.first()?, &all, depth)
+            }
+            other => {
+                let agg = cella_dax::aggregate_of(other)?;
+                let Expr::Column { table, column, .. } = args.first()? else { return None };
+                let reference = plan_ref_by_name(plan, table, column)?;
+                // An aggregate over no rows is blank in this language; SQL answers 0 or NULL.
+                let filter = if filters.is_empty() { String::new() } else { format!(" FILTER (WHERE {})", filters.join(" AND ")) };
+                let numeric =
+                    plan.iter().find(|p| p.table.name.eq_ignore_ascii_case(table)).and_then(|p| p.table.index(column)).is_some_and(|c| {
+                        plan.iter().find(|p| p.table.name.eq_ignore_ascii_case(table)).is_some_and(|p| column_is_numeric(p.table, c))
+                    });
+                Some(match agg {
+                    Agg::Sum | Agg::Average | Agg::Min | Agg::Max if numeric => {
+                        let f = match agg {
+                            Agg::Sum => "SUM",
+                            Agg::Average => "AVG",
+                            Agg::Min => "MIN",
+                            _ => "MAX",
+                        };
+                        format!("{f}({reference}){filter}")
+                    }
+                    Agg::Count | Agg::CountA => format!("NULLIF(COUNT({reference}){filter}, 0)"),
+                    Agg::DistinctCount => format!("NULLIF(COUNT(DISTINCT {reference}){filter}, 0)"),
+                    // Text where the function needs numbers: the evaluator answers `#VALUE!` and the
+                    // translation has nothing honest to say, so the cell keeps the scan.
+                    _ => return None,
+                })
+            }
+        },
+        // A filter outside `CALCULATE` is not a formula this language has.
+        Expr::Filter { .. } => None,
+    }
+}
+
 /// Whether a model table's column holds numbers only: its stored types when it has them (a
 /// file-backed table), else its rows (a cached one).
 fn column_is_numeric(table: &ModelTable, column: usize) -> bool {
@@ -908,6 +1010,9 @@ struct Acc {
     mean: f64,
     m2: f64,
     err: Option<CellError>,
+    /// A measure's value for this cell, already computed: the engine answered the formula, so
+    /// there is nothing to accumulate and `result` returns this whatever the function says.
+    computed: Option<Value>,
 }
 
 impl Acc {
@@ -960,6 +1065,9 @@ impl Acc {
         self.nums = self.nums.saturating_add(other.nums);
     }
     fn result(&self, f: PivotFunc) -> Value {
+        if let Some(value) = &self.computed {
+            return value.clone();
+        }
         let n = self.nums as f64;
         match f {
             PivotFunc::Count => return Value::number(self.count as f64),
@@ -1621,6 +1729,11 @@ impl Lookup<'_> {
     fn raw(&self, rp: &[u32], cp: &[u32], vi: usize) -> Option<Value> {
         let (vs, v) = self.vals.get(vi)?;
         if let ValSrc::Measure(i) = vs {
+            // The engine answered this cell's formula already (see `sql_aggregate_levels`): there
+            // is nothing to evaluate here.
+            if let Some(value) = self.aggs.get(&(rp.to_vec(), cp.to_vec())).and_then(|slots| slots.get(vi)).and_then(|a| a.computed.clone()) {
+                return Some(value);
+            }
             // A measure is its own formula, not an accumulation: it answers for the cell's filter
             // context, so the field's func (and the accumulator that would have held it) is
             // ignored. A formula that cannot compute puts its error in this one cell, never a
@@ -1776,6 +1889,24 @@ enum Role {
     Max,
 }
 
+/// One SQL column's value into an accumulator: the same fields `Acc::add` would have summed.
+fn leaf_put(acc: &mut Acc, role: Role, value: &Value) {
+    let Some(n) = value.as_f64() else { return };
+    match role {
+        Role::Sum => acc.sum = n,
+        Role::Count => acc.count = n.max(0.0) as u64,
+        Role::Nums => acc.nums = n.max(0.0) as u64,
+        Role::Min => {
+            acc.min = n;
+            acc.nums = 1;
+        }
+        Role::Max => {
+            acc.max = n;
+            acc.nums = 1;
+        }
+    }
+}
+
 /// One leaf's aggregates, as the `Acc` the record loop would have built for that group alone.
 fn leaf_accs(values: &[Value], roles: &[(usize, Role)], slots: usize) -> Vec<Acc> {
     let mut out = vec![Acc::default(); slots];
@@ -1801,84 +1932,19 @@ fn leaf_accs(values: &[Value], roles: &[(usize, Role)], slots: usize) -> Vec<Acc
     out
 }
 
-/// The report's aggregates, answered by the engine over the model table instead of by a scan of
-/// every record.
+/// The report's filters as a SQL `WHERE`, or the empty string when it has none.
 ///
-/// `Ok(None)` means "this report is not one the engine can answer" — a related table's columns, a
-/// DAX measure, a product or a standard deviation, a text column summed — and the caller uses the
-/// record scan, which answers everything. `Err` is the engine refusing a query this path built.
-///
-/// The three queries are the whole of it: one `DISTINCT` per filtered field (to turn the filter's
-/// *labels* back into the raw values a `WHERE` can name), and one `GROUP BY` over the row and
-/// column fields. Every sub-total is composed from those leaf groups here, because a function a
-/// pivot offers is either additive (sum, count, min, max) or is not supported at all.
-fn sql_aggregate(
+/// A filter names *labels* — a date group's caption, a formatted number — so the column's distinct
+/// values are labelled here and the raw ones are what SQL filters. `None` means this report cannot
+/// be put in SQL: too many distinct values to map, or a value SQL cannot spell.
+fn plan_where(
     wb: &Workbook,
     pt: &PivotTable,
     src: &Source,
     engine: &cella_sql::Engine,
-    rows: &[(usize, &PivotField)],
-    cols: &[(usize, &PivotField)],
-    vals: &[(ValSrc, &PivotValue)],
-    extra: &[usize],
-) -> Result<Option<FastAgg>, String> {
-    let Some(table_name) = src.model_table.as_deref() else { return Ok(None) };
-    let Some(table) = wb.model.table(table_name) else { return Ok(None) };
-    // The tables the source is made of, and how they join: the same plan the row walk and the
-    // report's shape use, so a header names the same column here as there.
-    let plan = plan_source(wb, table);
-    let mut from = format!(
-        "(SELECT row_number() OVER () AS {ORD}, * FROM {}) AS {}",
-        cella_sql::quote_ident(&table.name),
-        plan.first().map(|p| p.alias.as_str()).unwrap_or("t0")
-    );
-    for p in plan.iter().skip(1) {
-        let Some((parent, key_col, dim_key)) = p.join else { continue };
-        let parent_plan = match plan.get(parent) {
-            Some(q) => q,
-            None => return Ok(None),
-        };
-        let (Some(parent_key), Some(own_key)) = (parent_plan.table.columns.get(key_col), p.table.columns.get(dim_key)) else { return Ok(None) };
-        from.push_str(&format!(
-            " LEFT JOIN {} AS {} ON {}.{} = {}.{}",
-            cella_sql::quote_ident(&p.table.name),
-            p.alias,
-            parent_plan.alias,
-            cella_sql::quote_ident(parent_key),
-            p.alias,
-            cella_sql::quote_ident(own_key)
-        ));
-    }
-    // A value slot is a source column and a function, or `None` for a calculated field (whose own
-    // arithmetic runs on its sources' sums, which are slots too).
-    let mut slots: Vec<Option<(usize, PivotFunc)>> = Vec::with_capacity(vals.len() + extra.len());
-    for (vs, v) in vals {
-        match vs {
-            ValSrc::Col(c) => slots.push(Some((*c, v.func))),
-            ValSrc::Calc(_) => slots.push(None),
-            // A measure is DAX evaluated per cell against the records; the engine cannot stand in
-            // for it without translating the language.
-            ValSrc::Measure(_) => return Ok(None),
-        }
-    }
-    for c in extra {
-        slots.push(Some((*c, PivotFunc::Sum)));
-    }
-    let numeric = |c: usize| src.numeric.get(c).copied().unwrap_or(false);
-    for slot in slots.iter().flatten() {
-        let (c, func) = *slot;
-        let supported = match func {
-            // `COUNT` counts what is not blank, whatever it is.
-            PivotFunc::Count => true,
-            PivotFunc::Sum | PivotFunc::Average | PivotFunc::Min | PivotFunc::Max | PivotFunc::CountNumbers => numeric(c),
-            PivotFunc::Product | PivotFunc::StdDev | PivotFunc::StdDevP | PivotFunc::Var | PivotFunc::VarP => false,
-        };
-        if !supported {
-            return Ok(None);
-        }
-    }
-
-    // ---- the report's filters, as `WHERE`
+    plan: &[Planned<'_>],
+    from: &str,
+) -> Result<Option<String>, String> {
     let mut where_parts: Vec<String> = Vec::new();
     for f in &pt.filters {
         let Some(selected) = &f.selected else { continue };
@@ -1886,9 +1952,7 @@ fn sql_aggregate(
         let group =
             pt.rows.iter().chain(pt.columns.iter()).find(|x| x.source_col.eq_ignore_ascii_case(&f.source_col)).map(Grouping::of).unwrap_or_default();
         let fmt = src.formats.get(c).map(String::as_str).unwrap_or("General");
-        let Some(column) = plan_ref(&plan, c) else { return Ok(None) };
-        // A filter names *labels* — a date group's caption, a formatted number — so the labels are
-        // computed here, from the column's distinct values, and the raw ones are what SQL filters.
+        let Some(column) = plan_ref(plan, c) else { return Ok(None) };
         let distinct = engine.query(&format!("SELECT DISTINCT {column} FROM {from}")).map_err(|e| e.to_string())?;
         if distinct.rows.len() > 200_000 {
             return Ok(None);
@@ -1919,6 +1983,348 @@ fn sql_aggregate(
         }
         where_parts.push(if clause.is_empty() { "1 = 0".to_string() } else { clause });
     }
+    Ok(Some(where_parts.join(" AND ")))
+}
+
+/// The `FROM` a report's plan reads: the base table with its record ordinal, and one `LEFT JOIN`
+/// a dimension (a relationship is a left join: a row whose key matches nothing takes blanks).
+fn plan_from(plan: &[Planned<'_>]) -> String {
+    let base = plan.first();
+    let mut from = format!(
+        "(SELECT row_number() OVER () AS {ORD}, * FROM {}) AS {}",
+        cella_sql::quote_ident(base.map(|p| p.table.name.as_str()).unwrap_or_default()),
+        base.map(|p| p.alias.as_str()).unwrap_or("t0")
+    );
+    for p in plan.iter().skip(1) {
+        let Some((parent, key_col, dim_key)) = p.join else { continue };
+        let Some(parent_plan) = plan.get(parent) else { continue };
+        let (Some(parent_key), Some(own_key)) = (parent_plan.table.columns.get(key_col), p.table.columns.get(dim_key)) else { continue };
+        from.push_str(&format!(
+            " LEFT JOIN {} AS {} ON {}.{} = {}.{}",
+            cella_sql::quote_ident(&p.table.name),
+            p.alias,
+            parent_plan.alias,
+            cella_sql::quote_ident(parent_key),
+            p.alias,
+            cella_sql::quote_ident(own_key)
+        ));
+    }
+    from
+}
+
+/// The report's aggregates when a value field is a measure: **every level at once**.
+///
+/// A measure is a formula, and a formula does not compose from its own sub-totals — the average of
+/// two averages is not the average of the two groups, and a sum of two ratios is not a ratio of
+/// sums. So one `GROUPING SETS` query asks SQL for each level of the report (every prefix of the
+/// row fields against every prefix of the column fields), and each answer is the cell it belongs to.
+#[allow(clippy::too_many_arguments)]
+fn sql_aggregate_levels(
+    wb: &Workbook,
+    pt: &PivotTable,
+    src: &Source,
+    engine: &cella_sql::Engine,
+    rows: &[(usize, &PivotField)],
+    cols: &[(usize, &PivotField)],
+    vals: &[(ValSrc, &PivotValue)],
+    extra: &[usize],
+) -> Result<Option<FastAgg>, String> {
+    let Some(table_name) = src.model_table.as_deref() else { return Ok(None) };
+    let Some(table) = wb.model.table(table_name) else { return Ok(None) };
+    let plan = plan_source(wb, table);
+    // A grouped axis field (a date part, a numeric range) puts several raw values into one item,
+    // and SQL cannot group by the label the report shows: those reports are the scan's.
+    if rows.iter().chain(cols.iter()).any(|(_, f)| !Grouping::of(f).is_none()) {
+        return Ok(None);
+    }
+    let from = plan_from(&plan);
+    let Some(where_sql) = plan_where(wb, pt, src, engine, &plan, &from)? else { return Ok(None) };
+    let (n, m) = (rows.len(), cols.len());
+    let mut axis: Vec<String> = Vec::with_capacity(n + m);
+    for (c, _) in rows.iter().chain(cols.iter()) {
+        let Some(reference) = plan_ref(&plan, *c) else { return Ok(None) };
+        axis.push(reference);
+    }
+    let groups = axis.len();
+    if groups == 0 {
+        return Ok(None);
+    }
+    // ---- what each value field asks of SQL: a column's aggregate, or a measure's formula
+    enum Want {
+        Agg { slot: usize, role: Role },
+        Measure { slot: usize },
+    }
+    let slots = vals.len() + extra.len();
+    let mut exprs: Vec<String> = Vec::new();
+    let mut wants: Vec<Want> = Vec::new();
+    for (slot, (vs, v)) in vals.iter().enumerate() {
+        match vs {
+            ValSrc::Col(c) => {
+                let Some(q) = plan_ref(&plan, *c) else { return Ok(None) };
+                let numeric = src.numeric.get(*c).copied().unwrap_or(false);
+                match v.func {
+                    PivotFunc::Sum if numeric => {
+                        exprs.push(format!("SUM({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Sum });
+                    }
+                    PivotFunc::Average if numeric => {
+                        exprs.push(format!("SUM({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Sum });
+                        exprs.push(format!("COUNT({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Nums });
+                    }
+                    PivotFunc::Count => {
+                        exprs.push(format!("COUNT({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Count });
+                    }
+                    PivotFunc::CountNumbers if numeric => {
+                        exprs.push(format!("COUNT({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Nums });
+                    }
+                    PivotFunc::Min if numeric => {
+                        exprs.push(format!("MIN({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Min });
+                    }
+                    PivotFunc::Max if numeric => {
+                        exprs.push(format!("MAX({q})"));
+                        wants.push(Want::Agg { slot, role: Role::Max });
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            ValSrc::Calc(_) => {}
+            ValSrc::Measure(i) => {
+                let Some(measure) = wb.model.measures.get(*i) else { return Ok(None) };
+                let Some(sql) = measure_sql(wb, &plan, &measure.formula, &[], 0) else { return Ok(None) };
+                exprs.push(sql);
+                wants.push(Want::Measure { slot });
+            }
+        }
+    }
+    for (k, c) in extra.iter().enumerate() {
+        let slot = vals.len() + k;
+        let Some(q) = plan_ref(&plan, *c) else { return Ok(None) };
+        if !src.numeric.get(*c).copied().unwrap_or(false) {
+            return Ok(None);
+        }
+        exprs.push(format!("SUM({q})"));
+        wants.push(Want::Agg { slot, role: Role::Sum });
+    }
+    // ---- one query, every level
+    let mut select: Vec<String> = axis.clone();
+    for reference in &axis {
+        select.push(format!("GROUPING({reference})"));
+    }
+    let ord = format!("{}.{ORD}", plan.first().map(|p| p.alias.as_str()).unwrap_or("t0"));
+    select.push(format!("MIN({ord})"));
+    select.extend(exprs);
+    let mut sets: Vec<String> = Vec::new();
+    for i in 0..=n {
+        for j in 0..=m {
+            let mut parts: Vec<&str> = Vec::new();
+            for k in 0..i {
+                if let Some(one) = axis.get(k) {
+                    parts.push(one);
+                }
+            }
+            for k in 0..j {
+                if let Some(one) = axis.get(n + k) {
+                    parts.push(one);
+                }
+            }
+            sets.push(format!("({})", parts.join(", ")));
+        }
+    }
+    let mut sql = format!("SELECT {} FROM {}", select.join(", "), from);
+    if !where_sql.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_sql);
+    }
+    sql.push_str(&format!(" GROUP BY GROUPING SETS ({})", sets.join(", ")));
+    let answer = engine.query(&sql).map_err(|e| e.to_string())?;
+    // ---- read the levels back: which axis columns a row was grouped by, and the earliest record
+    // it holds (the order a scan gives a report is the order its items first appear in).
+    struct Level {
+        first: usize,
+        rows: usize,
+        cols: usize,
+        keys: Vec<Value>,
+        values: Vec<Value>,
+    }
+    let mut levels: Vec<Level> = Vec::with_capacity(answer.rows.len());
+    for row in &answer.rows {
+        let flags: Vec<bool> = row.iter().skip(groups).take(groups).map(|v| v.as_f64().unwrap_or(1.0) != 0.0).collect();
+        let level_rows = flags.iter().take(n).take_while(|grouped| !**grouped).count();
+        let level_cols = flags.iter().skip(n).take(m).take_while(|grouped| !**grouped).count();
+        let first = row.get(groups * 2).and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as usize;
+        levels.push(Level {
+            first,
+            rows: level_rows,
+            cols: level_cols,
+            keys: row.iter().take(groups).cloned().collect(),
+            values: row.iter().skip(groups * 2 + 1).cloned().collect(),
+        });
+    }
+    levels.sort_by_key(|level| level.first);
+    // ---- the same path bookkeeping the record loop does
+    let mut row_items: Vec<FieldItems> = rows.iter().map(|_| FieldItems::default()).collect();
+    let mut col_items: Vec<FieldItems> = cols.iter().map(|_| FieldItems::default()).collect();
+    let row_fmts: Vec<String> = rows.iter().map(|(c, _)| src.formats.get(*c).cloned().unwrap_or_else(|| "General".into())).collect();
+    let col_fmts: Vec<String> = cols.iter().map(|(c, _)| src.formats.get(*c).cloned().unwrap_or_else(|| "General".into())).collect();
+    let mut row_id_path: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut col_id_path: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut row_nodes: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut col_nodes: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut fast_aggs: HashMap<(u32, u32), Vec<Acc>> = HashMap::new();
+    let mut row_set: HashSet<Vec<u32>> = HashSet::new();
+    let mut col_set: HashSet<Vec<u32>> = HashSet::new();
+    let mut col_leaves: HashSet<Vec<u32>> = HashSet::new();
+    let mut row_ids = [0u32; MAX_AXIS_FIELDS + 1];
+    let mut col_ids = [0u32; MAX_AXIS_FIELDS + 1];
+    let mut rp: Vec<u32> = Vec::with_capacity(n);
+    let mut cp: Vec<u32> = Vec::with_capacity(m);
+    for level in &levels {
+        rp.clear();
+        for (d, ((_, f), fi)) in rows.iter().zip(row_items.iter_mut()).enumerate().take(level.rows) {
+            let value = level.keys.get(d).cloned().unwrap_or(Value::Empty);
+            rp.push(fi.intern(wb, &value, Grouping::of(f), row_fmts.get(d).map(String::as_str).unwrap_or("General"), level.first));
+        }
+        cp.clear();
+        for (d, ((_, f), fi)) in cols.iter().zip(col_items.iter_mut()).enumerate().take(level.cols) {
+            let value = level.keys.get(n + d).cloned().unwrap_or(Value::Empty);
+            cp.push(fi.intern(wb, &value, Grouping::of(f), col_fmts.get(d).map(String::as_str).unwrap_or("General"), level.first));
+        }
+        row_ids[0] = 0;
+        for (d, item) in rp.iter().enumerate() {
+            let key = (row_ids[d], *item);
+            row_ids[d + 1] = match row_nodes.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let Some(id) = u32::try_from(row_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                    row_id_path.push(rp[..=d].to_vec());
+                    row_nodes.insert(key, id);
+                    id
+                }
+            };
+        }
+        col_ids[0] = 0;
+        for (d, item) in cp.iter().enumerate() {
+            let key = (col_ids[d], *item);
+            col_ids[d + 1] = match col_nodes.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let Some(id) = u32::try_from(col_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                    col_id_path.push(cp[..=d].to_vec());
+                    col_nodes.insert(key, id);
+                    id
+                }
+            };
+        }
+        let mut accs = vec![Acc::default(); slots];
+        for (i, want) in wants.iter().enumerate() {
+            let Some(value) = level.values.get(i) else { continue };
+            match want {
+                Want::Agg { slot, role } => {
+                    if let Some(acc) = accs.get_mut(*slot) {
+                        leaf_put(acc, *role, value);
+                    }
+                }
+                Want::Measure { slot } => {
+                    if let Some(acc) = accs.get_mut(*slot) {
+                        acc.computed = Some(value.clone());
+                    }
+                }
+            }
+        }
+        fast_aggs.insert((row_ids[rp.len()], col_ids[cp.len()]), accs);
+        if level.rows == n {
+            row_set.insert(rp.clone());
+        }
+        if level.cols == m {
+            let shown = cols
+                .iter()
+                .zip(col_items.iter())
+                .zip(cp.iter())
+                .position(|(((_, f), fi), &it)| !f.collapsed_items.is_empty() && is_collapsed(f, &fi.label(it)))
+                .map_or(cp.len(), |d| d + 1);
+            if !col_leaves.contains(&cp[..shown]) {
+                col_leaves.insert(cp[..shown].to_vec());
+            }
+            col_set.insert(cp.clone());
+        }
+        if !cols.is_empty() && data_cols_exceed_sheet(col_leaves.len(), pt.grand_totals_rows, vals.len()) {
+            return Err("The PivotTable report will not fit on the sheet.".into());
+        }
+        if fast_aggs.len() > 5_000_000 {
+            return Err("The PivotTable report is too large.".into());
+        }
+    }
+    Ok(Some(FastAgg { row_items, col_items, row_id_path, col_id_path, fast_aggs, row_set, col_set }))
+}
+/// The report's aggregates, answered by the engine over the model table instead of by a scan of
+/// every record.
+///
+/// `Ok(None)` means "this report is not one the engine can answer" — a related table's columns, a
+/// DAX measure, a product or a standard deviation, a text column summed — and the caller uses the
+/// record scan, which answers everything. `Err` is the engine refusing a query this path built.
+///
+/// The three queries are the whole of it: one `DISTINCT` per filtered field (to turn the filter's
+/// *labels* back into the raw values a `WHERE` can name), and one `GROUP BY` over the row and
+/// column fields. Every sub-total is composed from those leaf groups here, because a function a
+/// pivot offers is either additive (sum, count, min, max) or is not supported at all.
+fn sql_aggregate(
+    wb: &Workbook,
+    pt: &PivotTable,
+    src: &Source,
+    engine: &cella_sql::Engine,
+    rows: &[(usize, &PivotField)],
+    cols: &[(usize, &PivotField)],
+    vals: &[(ValSrc, &PivotValue)],
+    extra: &[usize],
+) -> Result<Option<FastAgg>, String> {
+    let Some(table_name) = src.model_table.as_deref() else { return Ok(None) };
+    let Some(table) = wb.model.table(table_name) else { return Ok(None) };
+    // The tables the source is made of, and how they join: the same plan the row walk and the
+    // report's shape use, so a header names the same column here as there.
+    let plan = plan_source(wb, table);
+    let from = plan_from(&plan);
+    // A value slot is a source column and a function, or `None` for a calculated field (whose own
+    // arithmetic runs on its sources' sums, which are slots too).
+    let mut slots: Vec<Option<(usize, PivotFunc)>> = Vec::with_capacity(vals.len() + extra.len());
+    let mut has_measure = false;
+    for (vs, v) in vals {
+        match vs {
+            ValSrc::Col(c) => slots.push(Some((*c, v.func))),
+            ValSrc::Calc(_) => slots.push(None),
+            // A measure is a formula, not an accumulation: it needs every level of the report
+            // computed by SQL, which is what `sql_aggregate_levels` does.
+            ValSrc::Measure(_) => {
+                has_measure = true;
+                slots.push(None);
+            }
+        }
+    }
+    for c in extra {
+        slots.push(Some((*c, PivotFunc::Sum)));
+    }
+    let numeric = |c: usize| src.numeric.get(c).copied().unwrap_or(false);
+    for slot in slots.iter().flatten() {
+        let (c, func) = *slot;
+        let supported = match func {
+            // `COUNT` counts what is not blank, whatever it is.
+            PivotFunc::Count => true,
+            PivotFunc::Sum | PivotFunc::Average | PivotFunc::Min | PivotFunc::Max | PivotFunc::CountNumbers => numeric(c),
+            PivotFunc::Product | PivotFunc::StdDev | PivotFunc::StdDevP | PivotFunc::Var | PivotFunc::VarP => false,
+        };
+        if !supported {
+            return Ok(None);
+        }
+    }
+    if has_measure {
+        return sql_aggregate_levels(wb, pt, src, engine, rows, cols, vals, extra);
+    }
+
+    let Some(where_sql) = plan_where(wb, pt, src, engine, &plan, &from)? else { return Ok(None) };
 
     // ---- the aggregates
     let mut group_exprs: Vec<String> = Vec::new();
@@ -1973,9 +2379,9 @@ fn sql_aggregate(
     select.push(format!("MIN({}.{ORD})", plan.first().map(|p| p.alias.as_str()).unwrap_or("t0")));
     select.extend(agg_exprs);
     let mut sql = format!("SELECT {} FROM {}", select.join(", "), from);
-    if !where_parts.is_empty() {
+    if !where_sql.is_empty() {
         sql.push_str(" WHERE ");
-        sql.push_str(&where_parts.join(" AND "));
+        sql.push_str(&where_sql);
     }
     sql.push_str(&format!(" GROUP BY {}", (1..=groups).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")));
     sql.push_str(&format!(" ORDER BY {}", groups + 1));

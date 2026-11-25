@@ -74,7 +74,22 @@ mod parse;
 #[cfg(test)]
 mod tests;
 
-use parse::{Expr, aggregate, describe};
+use parse::{aggregate, describe};
+
+/// A formula's tree: what this crate understands, for a caller that answers a measure another way
+/// than [`evaluate`] does. The pivot's SQL translation reads it instead of running it, which is what
+/// lets a report over a model table be aggregated by the engine.
+pub use parse::{Agg, BinOp, Expr};
+
+/// The tree of a formula, or why it could not be read.
+pub fn tree(formula: &str) -> Result<parse::Expr, DaxError> {
+    parse::parse(formula)
+}
+
+/// The aggregate a function name means (`SUM` → [`Agg::Sum`]), if it is one.
+pub fn aggregate_of(name: &str) -> Option<Agg> {
+    aggregate(name)
+}
 
 /// The longest formula a measure may hold. Refused before a token is read.
 pub const MAX_FORMULA_LEN: usize = 4_096;
