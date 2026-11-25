@@ -1822,6 +1822,34 @@ evaluator already produced — `Sheet::spill_values: BTreeMap<CellRef, Arc<Array
 and the traps (blank spills showing 0, contested-area eviction order, `spilled_nothing`'s cell-by-cell
 compare, save must stay byte-identical) are written up in `plan/spill-store.md`.
 
+**Landed the same day.** `Sheet::spill_values: BTreeMap<CellRef, Arc<Array>>` beside `spill_ranges`,
+with `Sheet::spilled(c)` and `Sheet::spilled_in(range)` carrying the readers, and all sixty sites
+moved: model's `value`/`value_ref`, calc's lay-out (one insert; clearing drops one entry), the
+presence questions the ranges answer themselves, the engine's display/cut/copy/paste/print/pivot/
+solver/analyze/memory, the xlsx reader (one array built from the file's cached cells) and writer, and
+the grid. Measured with the probe and the five-pass page:
+
+| call (1M rows) | before | after |
+|---|---:|---:|
+| `=A2:A1000001` (spills) | 142 ms | **77** |
+| `=BITAND(A2:A,B2:B)` (spills) | 247 | **173** |
+| `DROP` | 749 | **574** (−23 %) |
+| `CHOOSECOLS` | 267 | **150** (−44 %) |
+| `TOCOL` | 139 | **96** (−31 %) |
+| `VSTACK` | 189 | **139** (−26 %) |
+| `WRAPROWS` | 197 | **151** (−23 %) |
+| `BITAND`/`BITOR` | 228 | **180** (−21 %) |
+| `SORT` | 255 | **207** (−19 %) |
+| `HSTACK` | 331 | **284** (−14 %) |
+| `SORTBY` | 284 | **240** (−15 %) |
+| `MAP` | 423 | **335** (−21 %) |
+| `UNIQUE` | 302 | **274** (−9 %) |
+
+Every function whose result spills moved; the rows that do not spill stayed put within the machine's
+noise (`SUM` 20 → 22, `COUNTIF` 15 → 16, `XLOOKUP` 15 → 16, `PIVOTBY` 983 → 1.03 s). Gates: model
+174, calc 175, engine 649, xlsx 479, ui 231, the criteria/lookup differentials, the command-sequence
+fuzz, wasm, `perf` 59/59.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2285,6 +2313,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §49 (fixed): a spill is **one array at its anchor** now, not a BTreeMap entry a cell — =A2:A (1M, spills) **142 → 77 ms**, BITAND 247 → 173, and on the page DROP 749 → **574**, CHOOSECOLS 267 → **150**, TOCOL 139 → 96, VSTACK 189 → 139, SORT 255 → 207, HSTACK 331 → 284, MAP 423 → 335. Sixty reader sites moved to Sheet::spilled/spilled_in; no function that does not spill moved |
 | 2026-11-25 | minor | §49 (new): the spill lay-out is **75–78 ms** of a million-cell array, priced phase by phase (=A2:A 142 ms = 10.6 read + 53.8 building the array + 75 laying it out; =BITAND 247 = 166.5 eval + 77.8 spill). So the fix is to keep the evaluator's Arc<Array> as the spill's value instead of a BTreeMap node a cell — 60 non-test reader sites across five crates, inventoried and ordered in plan/spill-store.md |
 | 2026-11-25 | minor | §48 (new): the column-read wall is a chain of **three dependent loads a cell** (the row's `cells_at`, the payload, the number). The dense-band stride read works — 11.5 → **8.1 ns a cell** on a one-column sheet, 9.9 on eight — and moves the page by nothing (`SUM` 20 → 21 ms, inside ±2), so it is reverted. The width sweep is the proof it is latency, not bandwidth: 8.1 ns at one column wide against 9.9 at eight. Under it needs the number inline in the payload stripe — a storage format change, not a loop |
 | 2026-11-25 | minor | §47 (new): a whole-column sum folds inside the store — `CellStore::fold_column` runs the arithmetic in its own loop, so `SUM` **25 → 20 ms**, `COUNT` **26 → 21**, `MAX` **26 → 20**, `MIN` **26 → 21**. The same fold costs 11.5 ns a cell against the packed walk's 12.4, which is the round's other finding: the callback a cell was ~1 ns of the walk. The 15 ms aim is retracted — a two-column sum cannot go under ~23 ms without a dense-band stride read |
