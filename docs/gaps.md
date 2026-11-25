@@ -2428,6 +2428,10 @@ not translated and keeps the scan.
 (every caption compared cell by cell), and a measure with a month-grouped **column** axis against a
 dimension's rows — date grouping and a join in one query.
 
+**Cost** (the probe, release, 5M rows): the same ratio measure over a month axis is **58.7 ms**
+against 29.0 ms over two plain row levels — the date conversion is ~30 ms of the report at five
+million rows.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)

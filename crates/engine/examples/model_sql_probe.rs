@@ -141,9 +141,17 @@ fn main() {
     let t = Instant::now();
     {
         let mut csv = String::with_capacity(big_rows * 24);
-        csv.push_str("RegionId,Month,Product,Amount\n");
+        csv.push_str("RegionId,Month,Product,Amount,Day\n");
         for i in 0..big_rows {
-            let _ = writeln!(csv, "{},{},{},{:.2}", i % 64, (i / 64) % 12, (i / 768) % 1000, (i % 9973) as f64 * 0.01 + 1.0);
+            let _ = writeln!(
+                csv,
+                "{},{},{},{:.2},{}",
+                i % 64,
+                (i / 64) % 12,
+                (i / 768) % 1000,
+                (i % 9973) as f64 * 0.01 + 1.0,
+                45000 + (i / 4096) % 900
+            );
         }
         std::fs::write(&big, csv).expect("write the big csv");
     }
@@ -218,6 +226,18 @@ fn main() {
         0
     });
     println!("  pivot.refresh with a ratio measure, two row levels: {:.1} ms", seconds * 1e3);
+    // A date-grouped axis with the same measure: SQL groups by the month, the caption is ours.
+    let by_month = run(
+        &mut f,
+        "insert.pivotTable",
+        json!({"source": "Sales", "rows": [{"field": "Sales[Day]", "group": "months"}], "values": ["Avg"], "destination": "new"}),
+    );
+    let month_name = by_month["name"].as_str().unwrap_or("").to_string();
+    let (seconds, _) = best(3, || {
+        run(&mut f, "pivot.refresh", json!({"pivot": month_name, "replace": true}));
+        0
+    });
+    println!("  pivot.refresh with a measure over a month axis: {:.1} ms", seconds * 1e3);
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&big);
