@@ -680,6 +680,8 @@ fn update(s: &mut Session, p: &Json, f: impl FnOnce(&mut PivotTable, &pv::Source
         }
     }
     let replace = bool_param(p, "replace").unwrap_or(false);
+    // Taken before the workbook is borrowed: a model-sourced report is aggregated by the engine.
+    let sql = s.model_sql_for();
     edit(s, |cx| {
         let pt = cx.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).cloned().ok_or_else(|| other("There's no such PivotTable."))?;
         let src = pv::read_source_kind(&cx.wb, pt.source_kind, &pt.source, si).map_err(other)?;
@@ -688,7 +690,7 @@ fn update(s: &mut Session, p: &Json, f: impl FnOnce(&mut PivotTable, &pv::Source
         if let Some(slot) = cx.sheet_mut(si)?.pivots.get_mut(pi) {
             *slot = new;
         }
-        let area = pv::refresh(&mut cx.wb, si, pi, replace).map_err(other)?;
+        let area = pv::refresh_sql(&mut cx.wb, si, pi, replace, sql.as_deref()).map_err(other)?;
         // A filter changed from the report itself is the same field selection a slicer shows, so
         // an already-inserted widget follows it (and the tiles cannot disagree with the cells).
         super::slicer::sync_slicers_from_pivot(&mut cx.wb, si, pi);
@@ -805,6 +807,8 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
     let values = field_list(p.get("values"));
     let filters = field_list(p.get("filters"));
     let mut new_sheet_at: Option<usize> = None;
+    // Taken before the workbook is borrowed: a model-sourced report is aggregated by the engine.
+    let sql = s.model_sql_for();
     let res = edit(s, |cx| {
         let id = next_pivot_id(&cx.wb);
         let (si, anchor) = match target {
@@ -862,7 +866,7 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
         let sh = cx.sheet_mut(si)?;
         sh.pivots.push(pt);
         let pi = sh.pivots.len() - 1;
-        let area = pv::refresh(&mut cx.wb, si, pi, replace).map_err(other)?;
+        let area = pv::refresh_sql(&mut cx.wb, si, pi, replace, sql.as_deref()).map_err(other)?;
         cx.wb.active_sheet = si;
         *cx.sel = crate::Selection::at(anchor);
         cx.structural = true;
@@ -1860,11 +1864,43 @@ fn grand_totals(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn refresh(s: &mut Session, p: &Json) -> Result<Json> {
-    update(s, p, |_, src, _| Ok(json!({"records": src.height()})))
+    let (si, pi) = find_pivot(s, p)?;
+    {
+        let d = s.doc()?;
+        if let Some(pt) = d.wb.sheet(si).and_then(|sh| sh.pivots.get(pi))
+            && is_carried(pt)
+        {
+            return Err(read_only_error(pt));
+        }
+    }
+    let replace = bool_param(p, "replace").unwrap_or(false);
+    let sql = s.model_sql_for();
+    // The source's size, without its records: a model table's rows are the engine's to read, and
+    // copying them into a `Source` here cost 240 ms of a 246 ms refresh at a million rows.
+    let records = {
+        let d = s.doc()?;
+        let pt = d.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).ok_or_else(|| other("There's no such PivotTable."))?;
+        match pt.source_kind {
+            cella_model::PivotSourceKind::DataModel => {
+                let name = pt.source.trim().trim_start_matches('=').trim();
+                d.wb.model.table(name).map(|t| t.height()).unwrap_or(0)
+            }
+            _ => pv::read_source_kind(&d.wb, pt.source_kind, &pt.source, si).map(|s| s.height()).unwrap_or(0),
+        }
+    };
+    edit(s, |cx| {
+        let area = pv::refresh_sql(&mut cx.wb, si, pi, replace, sql.as_deref()).map_err(other)?;
+        // A filter changed from the report itself is the same field selection a slicer shows, so
+        // an already-inserted widget follows it (and the tiles cannot disagree with the cells).
+        super::slicer::sync_slicers_from_pivot(&mut cx.wb, si, pi);
+        cx.structural = true;
+        Ok(json!({"records": records, "range": area.a1()}))
+    })
 }
 
 fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
     let replace = bool_param(p, "replace").unwrap_or(false);
+    let sql = s.model_sql_for();
     // Excel's Refresh All reaches every connection, and a PivotTable can be built on the table a
     // query loads, so the queries run first — a report that reads a query's sheet sees the data
     // the same command just refreshed.
@@ -1888,7 +1924,7 @@ fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
                     skipped.push(json!({"pivot": name, "reason": pt.read_only_text()}));
                     continue;
                 }
-                match pv::refresh(&mut cx.wb, si, pi, replace) {
+                match pv::refresh_sql(&mut cx.wb, si, pi, replace, sql.as_deref()) {
                     Ok(_) => n += 1,
                     Err(e) => errors.push(json!({"pivot": name, "error": e})),
                 }

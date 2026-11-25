@@ -29,12 +29,22 @@ pub struct ModelTable {
     pub name: String,
     pub columns: Vec<String>,
     /// One row per record, each exactly [`ModelTable::width`] long.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rows: Vec<Vec<Value>>,
+    ///
+    /// Behind an `Arc` so a command's undo snapshot shares the rows instead of copying them: a
+    /// workbook's every edit clones the whole `Workbook` (`cmd::commit`), and a million-row model
+    /// made that clone **109 ms a keystroke** (measured). Nothing mutates a table's rows in place;
+    /// a refresh replaces the table.
+    #[serde(default, skip_serializing_if = "rows_are_empty")]
+    pub rows: std::sync::Arc<Vec<Vec<Value>>>,
     /// The query this table came from, so a refresh knows what to run. `None` for a table that was
     /// put in the model by a command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_query: Option<String>,
+}
+
+/// `skip_serializing_if` for [`ModelTable::rows`]: an `Arc<Vec<_>>` has no `Vec::is_empty` path.
+fn rows_are_empty(rows: &std::sync::Arc<Vec<Vec<Value>>>) -> bool {
+    rows.is_empty()
 }
 
 impl ModelTable {
@@ -190,7 +200,7 @@ mod tests {
     use super::*;
 
     fn table(name: &str, columns: &[&str]) -> ModelTable {
-        ModelTable { name: name.into(), columns: columns.iter().map(|c| c.to_string()).collect(), rows: Vec::new(), source_query: None }
+        ModelTable { name: name.into(), columns: columns.iter().map(|c| c.to_string()).collect(), rows: Default::default(), source_query: None }
     }
 
     fn model() -> DataModel {
@@ -246,7 +256,7 @@ mod tests {
         let mut m = model();
         m.relationships.push(rel("Sales", "RegionId", "Region", "Id"));
         m.measures.push(Measure { name: "Total".into(), table: "Sales".into(), formula: "SUM(Sales[Amount])".into(), format: Some("#,##0".into()) });
-        m.tables[0].rows.push(vec![Value::number(1.0), Value::number(42.0)]);
+        std::sync::Arc::make_mut(&mut m.tables[0].rows).push(vec![Value::number(1.0), Value::number(42.0)]);
         let text = serde_json::to_string(&m).unwrap();
         let back: DataModel = serde_json::from_str(&text).unwrap();
         assert_eq!(m, back);

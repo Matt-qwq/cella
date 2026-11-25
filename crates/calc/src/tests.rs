@@ -2317,17 +2317,17 @@ fn model_book() -> Workbook {
     let sales = ModelTable {
         name: "Sales".into(),
         columns: vec!["RegionId".into(), "Amount".into()],
-        rows: vec![
+        rows: std::sync::Arc::new(vec![
             vec![Value::number(1.0), Value::number(10.0)],
             vec![Value::number(2.0), Value::number(5.0)],
             vec![Value::number(1.0), Value::number(7.0)],
-        ],
+        ]),
         source_query: None,
     };
     let region = ModelTable {
         name: "Region".into(),
         columns: vec!["Id".into(), "Name".into()],
-        rows: vec![vec![Value::number(1.0), Value::text("West")], vec![Value::number(2.0), Value::text("East")]],
+        rows: std::sync::Arc::new(vec![vec![Value::number(1.0), Value::text("West")], vec![Value::number(2.0), Value::text("East")]]),
         source_query: None,
     };
     wb.model = DataModel {

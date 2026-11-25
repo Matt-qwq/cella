@@ -12,7 +12,7 @@ fn model_workbook() -> Workbook {
     wb.model.tables.push(ModelTable {
         name: "Sales".into(),
         columns: vec!["Amount".into()],
-        rows: vec![vec![Value::number(10.0)]],
+        rows: std::sync::Arc::new(vec![vec![Value::number(10.0)]]),
         source_query: None,
     });
     let mut model_pt = PivotTable { name: "ModelOne".into(), source: "Sales".into(), ..PivotTable::default() };

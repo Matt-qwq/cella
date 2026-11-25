@@ -9,7 +9,12 @@ use cella_model::{DataModel, Measure, ModelTable, Relationship};
 use crate::{Context, DaxError, MAX_FORMULA_LEN, evaluate, validate};
 
 fn table(name: &str, columns: &[&str], rows: Vec<Vec<Value>>) -> ModelTable {
-    ModelTable { name: name.to_string(), columns: columns.iter().map(|c| c.to_string()).collect(), rows, source_query: None }
+    ModelTable {
+        name: name.to_string(),
+        columns: columns.iter().map(|c| c.to_string()).collect(),
+        rows: std::sync::Arc::new(rows),
+        source_query: None,
+    }
 }
 
 fn rel(from_table: &str, from_column: &str, to_table: &str, to_column: &str) -> Relationship {

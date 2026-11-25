@@ -161,7 +161,14 @@ query before it reaches the engine, so a query box cannot write a file or attach
 
 At 1M rows × 4 columns (`cargo run -p cella-engine --example model_sql_probe --release --features
 sql-engine`): the 768-cell group-by is **5.4 ms** and the same report with a 4-of-64 slicer is
-**3.6 ms**, against **640 ms** for our own `pivot.refresh` of that report — 118×. The pivot does not
-ask the engine yet (its cells still come from `compute`'s scan); that is the next round, and it is
-also what lets the 4M-cell model cap go, since the rows stop having to live in the document.
+**3.6 ms**, against **640 ms** for our own `pivot.refresh` of that report — 118×.
+
+**The pivot asks the engine now.** A report over a model table is aggregated by three queries (one
+`GROUP BY`, `DISTINCT` per filtered field, `DESCRIBE` for the shape) and every sub-total is composed
+from the leaves; labels stay in Rust, so date grouping is identical on both paths. `pivot.refresh`
+at 1M rows went **640 ms → 8.0 ms**, and the last hidden cost turned out to be the workbook copy
+every command makes for undo: the model's rows are `Arc`-shared now, which took **one cell edit from
+109 ms to 0.1 ms**. The differential test that holds the two aggregators together is
+`crates/engine/tests/pivot_sql.rs`; what is still on the scan is a related table's columns, a DAX
+measure, and the functions SQL cannot compose (product, standard deviation, variance).
 

@@ -319,7 +319,7 @@ fn find_timeline(s: &Session, p: &Json) -> Option<(usize, usize)> {
 /// The labels are the report's own item labels (`pv::item_label`), derived from the source rows
 /// whose value is one of the selected tiles, so a filter the engine applies on the next refresh
 /// compares equal to the labels the report shows.
-fn apply_pivot_slicer(wb: &mut Workbook, widget: &PivotSlicer) -> Result<usize> {
+fn apply_pivot_slicer(wb: &mut Workbook, widget: &PivotSlicer, sql: Option<&cella_sql::Engine>) -> Result<usize> {
     let keys: Option<HashSet<String>> =
         if widget.all_selected() { None } else { Some(widget.items.iter().filter(|i| i.selected).map(|i| i.value.key()).collect()) };
     let mut refreshed = 0;
@@ -345,7 +345,7 @@ fn apply_pivot_slicer(wb: &mut Workbook, widget: &PivotSlicer) -> Result<usize> 
                 Some(out)
             }
         };
-        filter_pivot_field(wb, si, pi, &widget.field, labels)?;
+        filter_pivot_field(wb, si, pi, &widget.field, labels, sql)?;
         refreshed += 1;
     }
     Ok(refreshed)
@@ -357,7 +357,7 @@ fn apply_pivot_slicer(wb: &mut Workbook, widget: &PivotSlicer) -> Result<usize> 
 /// No range removes the filter (`None` = every date). A period the range only partly covers still
 /// shows whole, because the filter is the report's own items — the representation the rest of the
 /// pivot model filters by — not a per-row date test.
-fn apply_pivot_timeline(wb: &mut Workbook, widget: &PivotTimeline) -> Result<usize> {
+fn apply_pivot_timeline(wb: &mut Workbook, widget: &PivotTimeline, sql: Option<&cella_sql::Engine>) -> Result<usize> {
     let mut refreshed = 0;
     for (si, pi) in widget_targets(wb, &widget.pivot_tables) {
         let Some(pt) = wb.sheet(si).and_then(|s| s.pivots.get(pi)).cloned() else { continue };
@@ -378,7 +378,7 @@ fn apply_pivot_timeline(wb: &mut Workbook, widget: &PivotTimeline) -> Result<usi
                 Some(range_labels(wb, &src, col, group, range))
             }
         };
-        filter_pivot_field(wb, si, pi, &widget.field, labels)?;
+        filter_pivot_field(wb, si, pi, &widget.field, labels, sql)?;
         refreshed += 1;
     }
     Ok(refreshed)
@@ -495,7 +495,14 @@ pub(crate) fn sync_slicers_from_pivot(wb: &mut Workbook, si: usize, pi: usize) {
 
 /// Writes `labels` as a report's filter on `field` (`None` removes the field's filter) and
 /// re-renders it: the one filter path a slicer's tiles and a timeline's range both use.
-fn filter_pivot_field(wb: &mut Workbook, si: usize, pi: usize, field: &str, labels: Option<Vec<String>>) -> Result<()> {
+fn filter_pivot_field(
+    wb: &mut Workbook,
+    si: usize,
+    pi: usize,
+    field: &str,
+    labels: Option<Vec<String>>,
+    sql: Option<&cella_sql::Engine>,
+) -> Result<()> {
     if let Some(p) = wb.sheet_mut(si).and_then(|s| s.pivots.get_mut(pi)) {
         let at = p.filters.iter().position(|f| f.source_col.eq_ignore_ascii_case(field));
         match (&labels, at) {
@@ -513,7 +520,7 @@ fn filter_pivot_field(wb: &mut Workbook, si: usize, pi: usize, field: &str, labe
             (None, None) => {}
         }
     }
-    pv::refresh(wb, si, pi, false).map(|_| ()).map_err(EngineError::Other)
+    pv::refresh_sql(wb, si, pi, false, sql).map(|_| ()).map_err(EngineError::Other)
 }
 
 /// Removes a PivotTable slicer's filter from the reports it filtered (deleting the slicer leaves
@@ -760,11 +767,13 @@ fn set_selection(s: &mut Session, p: &Json) -> Result<Json> {
         }
         let selected = widget.selected_labels();
         let name = widget.name.clone();
+        // Taken before the workbook is borrowed: a model-sourced report is aggregated by the engine.
+        let sql = s.model_sql_for();
         return edit(s, |cx| {
             if let Some(slot) = cx.sheet_mut(si)?.pivot_slicers.get_mut(wi) {
                 *slot = widget.clone();
             }
-            let pivots = apply_pivot_slicer(&mut cx.wb, &widget)?;
+            let pivots = apply_pivot_slicer(&mut cx.wb, &widget, sql.as_deref())?;
             cx.structural = pivots > 0;
             Ok(json!({"slicer": name, "selected": selected, "pivots": pivots}))
         });
@@ -924,11 +933,12 @@ fn set_range(s: &mut Session, p: &Json) -> Result<Json> {
     };
     let name = widget.name.clone();
     widget.range = range;
+    let sql = s.model_sql_for();
     edit(s, |cx| {
         if let Some(slot) = cx.sheet_mut(si)?.pivot_timelines.get_mut(wi) {
             *slot = widget.clone();
         }
-        let pivots = apply_pivot_timeline(&mut cx.wb, &widget)?;
+        let pivots = apply_pivot_timeline(&mut cx.wb, &widget, sql.as_deref())?;
         cx.structural = pivots > 0;
         let shown = widget.range.map(|r| (iso_text(&cx.wb, r.start), iso_text(&cx.wb, r.end)));
         let (start, end) = shown.unwrap_or((None, None));
@@ -972,11 +982,12 @@ fn slicer_toggle(s: &mut Session, p: &Json) -> Result<Json> {
         }
         let selected = widget.selected_labels();
         let name = widget.name.clone();
+        let sql = s.model_sql_for();
         return edit(s, |cx| {
             if let Some(slot) = cx.sheet_mut(si)?.pivot_slicers.get_mut(wi) {
                 *slot = widget.clone();
             }
-            let pivots = apply_pivot_slicer(&mut cx.wb, &widget)?;
+            let pivots = apply_pivot_slicer(&mut cx.wb, &widget, sql.as_deref())?;
             cx.structural = pivots > 0;
             Ok(json!({"slicer": name, "selected": selected}))
         });
@@ -1026,11 +1037,12 @@ fn slicer_select_all(s: &mut Session, p: &Json) -> Result<Json> {
             item.selected = true;
         }
         let name = widget.name.clone();
+        let sql = s.model_sql_for();
         return edit(s, |cx| {
             if let Some(slot) = cx.sheet_mut(si)?.pivot_slicers.get_mut(wi) {
                 *slot = widget.clone();
             }
-            let pivots = apply_pivot_slicer(&mut cx.wb, &widget)?;
+            let pivots = apply_pivot_slicer(&mut cx.wb, &widget, sql.as_deref())?;
             cx.structural = pivots > 0;
             Ok(json!({"slicer": name, "selected": Json::Null}))
         });

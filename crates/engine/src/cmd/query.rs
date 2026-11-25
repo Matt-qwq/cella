@@ -528,7 +528,7 @@ fn load_into_model(s: &mut Session, name: &str, table: &Table) -> Result<()> {
         let t = cella_model::ModelTable {
             name: name.to_string(),
             columns: table.columns.clone(),
-            rows: table.rows.clone(),
+            rows: std::sync::Arc::new(table.rows.clone()),
             source_query: Some(name.to_string()),
         };
         match cx.wb.model.table_index(name) {

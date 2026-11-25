@@ -1247,7 +1247,7 @@ fn as_model_table(v: &Json) -> Result<ModelTable, String> {
         Some(v) => as_optional(v, "a model table's query")?,
         None => None,
     };
-    Ok(ModelTable { name, columns, rows, source_query })
+    Ok(ModelTable { name, columns, rows: std::sync::Arc::new(rows), source_query })
 }
 
 fn as_relationship(v: &Json) -> Result<Relationship, String> {

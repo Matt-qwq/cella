@@ -774,7 +774,9 @@ pub type TextWidth = Arc<dyn Fn(&str, &model::Font, bool) -> f32 + Send + Sync>;
 
 /// The data model's SQL engine and the document generation its copy of the tables was built from.
 pub struct ModelSql {
-    engine: cella_sql::Engine,
+    /// Behind an `Rc`: a command that holds a workbook borrow while it runs takes a handle to the
+    /// engine *before* it borrows the document, so the two borrows never meet.
+    engine: std::rc::Rc<cella_sql::Engine>,
     /// The document it was built for: another document's model is a different set of tables.
     doc: u64,
     /// [`Session::model_generation`] at the moment it was built.
@@ -889,7 +891,7 @@ impl Session {
     /// Filling it costs `cella_sql::Engine::load_rows`'s ~720 ns a row — 0.7 s for a million-row
     /// model — **once** rather than on every query, which is why the copy is kept. A build with no
     /// engine (the browser) answers with the message the UI shows instead.
-    pub fn model_engine(&mut self) -> Result<&cella_sql::Engine> {
+    pub fn model_engine(&mut self) -> Result<&std::rc::Rc<cella_sql::Engine>> {
         let doc = self.doc()?.uid;
         let fresh = matches!(&self.model_sql, Some(m) if m.doc == doc && m.generation == self.model_generation);
         if !fresh {
@@ -907,12 +909,31 @@ impl Session {
                     .load_rows(&table.name, &table.columns, &table.rows)
                     .map_err(|e| EngineError::Other(format!("The model's table \"{}\" could not be loaded into the engine: {e}", table.name)))?;
             }
-            self.model_sql = Some(ModelSql { engine, doc, generation: self.model_generation });
+            self.model_sql = Some(ModelSql { engine: std::rc::Rc::new(engine), doc, generation: self.model_generation });
         }
         match &self.model_sql {
             Some(m) => Ok(&m.engine),
             None => Err(EngineError::Other("The data model's SQL engine did not start.".into())),
         }
+    }
+
+    /// The engine as an owned handle, or `None` when this build has none or starting it failed.
+    ///
+    /// A command that runs inside `edit` takes this **before** it borrows the document: the
+    /// workbook lives in the session the engine handle came from, and one mutable borrow of the
+    /// session cannot hold both.
+    pub fn model_sql_handle(&mut self) -> Option<std::rc::Rc<cella_sql::Engine>> {
+        self.model_engine().ok().map(std::rc::Rc::clone)
+    }
+
+    /// The model's engine **only if the workbook has a model at all**: a command that may
+    /// aggregate a model report asks for this, so a workbook with no model pays nothing (not even
+    /// starting a database) and the browser build answers `None`.
+    pub fn model_sql_for(&mut self) -> Option<std::rc::Rc<cella_sql::Engine>> {
+        if self.doc().ok()?.wb.model.tables.is_empty() {
+            return None;
+        }
+        self.model_sql_handle()
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
         self.docs.push(d);

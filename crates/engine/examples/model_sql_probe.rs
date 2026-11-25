@@ -117,5 +117,23 @@ fn main() {
     });
     println!("  our pivot refresh (grouping included): {:.1} ms", seconds * 1e3);
 
+    // What is left of the refresh: the report itself (the engine's answer laid out as cells)
+    // against writing that report onto the sheet.
+    let engine = s.model_sql_for();
+    let d = s.doc().expect("a document");
+    let at = d.wb.sheets.iter().enumerate().find_map(|(si, sh)| sh.pivots.iter().position(|p| p.name == name).map(|pi| (si, pi)));
+    if let Some((si, pi)) = at {
+        let pt = d.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).expect("the report").clone();
+        let t = Instant::now();
+        let (out, _src, used) = cella_engine::pivot::compute_detailed(&d.wb, &pt, si, engine.as_deref()).expect("the report");
+        println!("  the report alone: {:.1} ms (engine: {used}; {} rows x {} columns)", t.elapsed().as_secs_f64() * 1e3, out.grid.len(), out.width);
+    }
+
+    // A keystroke on a workbook whose model holds a million rows: every command copies the
+    // workbook for its undo entry, and the model's rows travel with it unless they are shared.
+    let t = Instant::now();
+    run(&mut s, "cell.set", json!({"cell": "A1", "input": "1"}));
+    println!("  one cell edit (the workbook is copied for undo): {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+
     let _ = std::fs::remove_file(&path);
 }

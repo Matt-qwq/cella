@@ -363,7 +363,7 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
     let mut numeric = vec![true; width];
     let mut any = vec![false; width];
     let mut data: Vec<Value> = Vec::with_capacity(table.height().saturating_mul(width));
-    for rec in &table.rows {
+    for rec in table.rows.iter() {
         let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
         // The rows each hop resolved to, so a chained hop can read its key out of its parent.
         let mut dims: Vec<Vec<Value>> = Vec::with_capacity(hops.len());
@@ -828,6 +828,24 @@ impl Acc {
             }
             _ => self.count += 1,
         }
+    }
+    /// Folds a group's aggregates into this one, for the sums the scan would have accumulated one
+    /// record at a time: `A ∪ B` is `A` plus `B`, and only the functions this builder produces
+    /// (sum, count, min, max) are composed this way.
+    fn merge(&mut self, other: &Acc) {
+        let had_numbers = self.nums > 0;
+        self.count = self.count.saturating_add(other.count);
+        self.sum += other.sum;
+        if other.nums > 0 {
+            if had_numbers {
+                self.min = self.min.min(other.min);
+                self.max = self.max.max(other.max);
+            } else {
+                self.min = other.min;
+                self.max = other.max;
+            }
+        }
+        self.nums = self.nums.saturating_add(other.nums);
     }
     fn result(&self, f: PivotFunc) -> Value {
         let n = self.nums as f64;
@@ -1554,16 +1572,451 @@ impl Lookup<'_> {
     }
 }
 
+// ---------------------------------------------------------------- the model's SQL engine
+
+/// A model table's *shape* — its headers and which columns are numbers — without its records:
+/// when the engine is going to answer the report it reads the rows itself, and copying a million
+/// of them into a `Source` first was 370 ms of a 372 ms refresh.
+///
+/// `None` when the shape cannot be had without the rows: a sheet source, a table a relationship
+/// widens (the joined columns are built by walking the rows), a table the engine does not hold.
+pub fn read_source_shape(
+    wb: &Workbook,
+    kind: PivotSourceKind,
+    text: &str,
+    _default_sheet: usize,
+    engine: &cella_sql::Engine,
+) -> Result<Option<Source>, String> {
+    if kind != PivotSourceKind::DataModel {
+        return Ok(None);
+    }
+    let requested = text.trim().trim_start_matches('=').trim();
+    let Some(table) = wb.model.table(requested) else { return Ok(None) };
+    // A related table adds another table's columns to the source, and those are read row by row.
+    if wb.model.relationships.iter().any(|r| r.from_table.eq_ignore_ascii_case(&table.name)) {
+        return Ok(None);
+    }
+    let width = table.columns.len();
+    let headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
+    // The column types are the engine's, which are the ones its copy was loaded with (the same
+    // rule the writer uses: a column is a number only when every cell in it is one).
+    let described = engine.query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&table.name))).map_err(|e| e.to_string())?;
+    if described.rows.len() != width {
+        return Ok(None);
+    }
+    let mut numeric = vec![false; width];
+    for (i, row) in described.rows.iter().enumerate() {
+        let Some(slot) = numeric.get_mut(i) else { return Ok(None) };
+        // `DESCRIBE` answers (column_name, column_type, null, key, default, extra).
+        let ty = row.get(1).map(|v| v.display().to_uppercase()).unwrap_or_default();
+        *slot = ty.starts_with("DECIMAL")
+            || matches!(
+                ty.as_str(),
+                "BIGINT"
+                    | "INTEGER"
+                    | "SMALLINT"
+                    | "TINYINT"
+                    | "HUGEINT"
+                    | "UBIGINT"
+                    | "UINTEGER"
+                    | "USMALLINT"
+                    | "UTINYINT"
+                    | "DOUBLE"
+                    | "FLOAT"
+                    | "REAL"
+            );
+    }
+    Ok(Some(Source {
+        sheet: NO_SHEET,
+        range: NO_RANGE,
+        headers,
+        formats: vec!["General".into(); width],
+        numeric,
+        dates: vec![false; width],
+        data: Vec::new(),
+        width,
+        model_table: Some(table.name.clone()),
+        measures: wb.model.measures.iter().map(|m| m.name.clone()).collect(),
+    }))
+}
+
+/// What the engine answered for a model-sourced report: exactly the shapes the record loop builds,
+/// so the layout below cannot tell which path produced them.
+struct FastAgg {
+    row_items: Vec<FieldItems>,
+    col_items: Vec<FieldItems>,
+    row_id_path: Vec<Vec<u32>>,
+    col_id_path: Vec<Vec<u32>>,
+    fast_aggs: HashMap<(u32, u32), Vec<Acc>>,
+    row_set: HashSet<Vec<u32>>,
+    col_set: HashSet<Vec<u32>>,
+}
+
+/// The column of the model table a source header names (`Sales[Amount]` → `Amount`). A related
+/// table's header (`Region[Name]`) answers `None`: it needs a join, which this path does not write.
+fn model_column<'a>(header: &'a str, table: &str) -> Option<&'a str> {
+    header.strip_prefix(table)?.strip_prefix('[')?.strip_suffix(']')
+}
+
+/// A value as a SQL literal, or `None` for one SQL cannot compare (an array).
+fn sql_literal(v: &Value) -> Option<String> {
+    match v {
+        Value::Number(n) if n.is_finite() => Some(format!("{n}")),
+        Value::Text(t) => Some(cella_sql::quote_literal(t)),
+        Value::Bool(b) => Some(if *b { "TRUE".into() } else { "FALSE".into() }),
+        _ => None,
+    }
+}
+
+/// The column name the first-record ordinal lives under, in the aggregate query.
+const ORD: &str = "__cella_ord";
+
+/// The part of an aggregate a SQL column contributes to an [`Acc`].
+#[derive(Clone, Copy)]
+enum Role {
+    Sum,
+    /// `COUNT(col)`: how many cells are not blank.
+    Count,
+    /// `COUNT(col)` of a numeric column: how many cells are numbers.
+    Nums,
+    Min,
+    Max,
+}
+
+/// One leaf's aggregates, as the `Acc` the record loop would have built for that group alone.
+fn leaf_accs(values: &[Value], roles: &[(usize, Role)], slots: usize) -> Vec<Acc> {
+    let mut out = vec![Acc::default(); slots];
+    for (i, (slot, role)) in roles.iter().enumerate() {
+        let Some(n) = values.get(i).and_then(Value::as_f64) else { continue };
+        let Some(acc) = out.get_mut(*slot) else { continue };
+        match role {
+            Role::Sum => acc.sum = n,
+            Role::Count => acc.count = n.max(0.0) as u64,
+            Role::Nums => acc.nums = n.max(0.0) as u64,
+            // One is enough: `result` only asks whether the slot ever held a number, and the merge
+            // keeps the smallest/largest of the leaves.
+            Role::Min => {
+                acc.min = n;
+                acc.nums = 1;
+            }
+            Role::Max => {
+                acc.max = n;
+                acc.nums = 1;
+            }
+        }
+    }
+    out
+}
+
+/// The report's aggregates, answered by the engine over the model table instead of by a scan of
+/// every record.
+///
+/// `Ok(None)` means "this report is not one the engine can answer" — a related table's columns, a
+/// DAX measure, a product or a standard deviation, a text column summed — and the caller uses the
+/// record scan, which answers everything. `Err` is the engine refusing a query this path built.
+///
+/// The three queries are the whole of it: one `DISTINCT` per filtered field (to turn the filter's
+/// *labels* back into the raw values a `WHERE` can name), and one `GROUP BY` over the row and
+/// column fields. Every sub-total is composed from those leaf groups here, because a function a
+/// pivot offers is either additive (sum, count, min, max) or is not supported at all.
+fn sql_aggregate(
+    wb: &Workbook,
+    pt: &PivotTable,
+    src: &Source,
+    engine: &cella_sql::Engine,
+    rows: &[(usize, &PivotField)],
+    cols: &[(usize, &PivotField)],
+    vals: &[(ValSrc, &PivotValue)],
+    extra: &[usize],
+) -> Result<Option<FastAgg>, String> {
+    let Some(table) = src.model_table.as_deref() else { return Ok(None) };
+    // The source's own headers must all be this table's: a relationship adds another table's
+    // columns to the source, and those need a join.
+    if !src.headers.iter().all(|h| model_column(h, table).is_some()) {
+        return Ok(None);
+    }
+    // A value slot is a source column and a function, or `None` for a calculated field (whose own
+    // arithmetic runs on its sources' sums, which are slots too).
+    let mut slots: Vec<Option<(usize, PivotFunc)>> = Vec::with_capacity(vals.len() + extra.len());
+    for (vs, v) in vals {
+        match vs {
+            ValSrc::Col(c) => slots.push(Some((*c, v.func))),
+            ValSrc::Calc(_) => slots.push(None),
+            // A measure is DAX evaluated per cell against the records; the engine cannot stand in
+            // for it without translating the language.
+            ValSrc::Measure(_) => return Ok(None),
+        }
+    }
+    for c in extra {
+        slots.push(Some((*c, PivotFunc::Sum)));
+    }
+    let numeric = |c: usize| src.numeric.get(c).copied().unwrap_or(false);
+    for slot in slots.iter().flatten() {
+        let (c, func) = *slot;
+        let supported = match func {
+            // `COUNT` counts what is not blank, whatever it is.
+            PivotFunc::Count => true,
+            PivotFunc::Sum | PivotFunc::Average | PivotFunc::Min | PivotFunc::Max | PivotFunc::CountNumbers => numeric(c),
+            PivotFunc::Product | PivotFunc::StdDev | PivotFunc::StdDevP | PivotFunc::Var | PivotFunc::VarP => false,
+        };
+        if !supported {
+            return Ok(None);
+        }
+    }
+
+    // ---- the report's filters, as `WHERE`
+    let mut where_parts: Vec<String> = Vec::new();
+    for f in &pt.filters {
+        let Some(selected) = &f.selected else { continue };
+        let Some(c) = src.col(&f.source_col) else { continue };
+        let group =
+            pt.rows.iter().chain(pt.columns.iter()).find(|x| x.source_col.eq_ignore_ascii_case(&f.source_col)).map(Grouping::of).unwrap_or_default();
+        let fmt = src.formats.get(c).map(String::as_str).unwrap_or("General");
+        let Some(column) = src.headers.get(c).and_then(|h| model_column(h, table)) else { return Ok(None) };
+        // A filter names *labels* — a date group's caption, a formatted number — so the labels are
+        // computed here, from the column's distinct values, and the raw ones are what SQL filters.
+        let distinct = engine
+            .query(&format!("SELECT DISTINCT {} FROM {}", cella_sql::quote_ident(column), cella_sql::quote_ident(table)))
+            .map_err(|e| e.to_string())?;
+        if distinct.rows.len() > 200_000 {
+            return Ok(None);
+        }
+        let mut keep: Vec<String> = Vec::new();
+        let mut blank = false;
+        for row in &distinct.rows {
+            let value = row.first().cloned().unwrap_or(Value::Empty);
+            let label = item_label(wb, &value, group, fmt);
+            if !selected.iter().any(|s| s.eq_ignore_ascii_case(&label)) {
+                continue;
+            }
+            if value.is_empty() {
+                blank = true;
+            } else {
+                match sql_literal(&value) {
+                    Some(literal) => keep.push(literal),
+                    None => return Ok(None),
+                }
+            }
+        }
+        let column = cella_sql::quote_ident(column);
+        let mut clause = String::new();
+        if !keep.is_empty() {
+            clause = format!("{column} IN ({})", keep.join(", "));
+        }
+        if blank {
+            clause = if clause.is_empty() { format!("{column} IS NULL") } else { format!("({clause} OR {column} IS NULL)") };
+        }
+        where_parts.push(if clause.is_empty() { "1 = 0".to_string() } else { clause });
+    }
+
+    // ---- the aggregates
+    let mut group_exprs: Vec<String> = Vec::new();
+    for (c, _) in rows.iter().chain(cols.iter()) {
+        let Some(column) = src.headers.get(*c).and_then(|h| model_column(h, table)) else { return Ok(None) };
+        group_exprs.push(cella_sql::quote_ident(column));
+    }
+    if group_exprs.is_empty() {
+        // The no-fields report draws one cell; the scan does that in a few instructions.
+        return Ok(None);
+    }
+    let mut agg_exprs: Vec<String> = Vec::new();
+    let mut roles: Vec<(usize, Role)> = Vec::new();
+    for (slot, spec) in slots.iter().enumerate() {
+        let Some((c, func)) = spec else { continue };
+        let Some(column) = src.headers.get(*c).and_then(|h| model_column(h, table)) else { return Ok(None) };
+        let q = cella_sql::quote_ident(column);
+        match func {
+            PivotFunc::Sum => {
+                agg_exprs.push(format!("SUM({q})"));
+                roles.push((slot, Role::Sum));
+            }
+            PivotFunc::Count => {
+                agg_exprs.push(format!("COUNT({q})"));
+                roles.push((slot, Role::Count));
+            }
+            PivotFunc::CountNumbers => {
+                agg_exprs.push(format!("COUNT({q})"));
+                roles.push((slot, Role::Nums));
+            }
+            PivotFunc::Average => {
+                agg_exprs.push(format!("SUM({q})"));
+                roles.push((slot, Role::Sum));
+                agg_exprs.push(format!("COUNT({q})"));
+                roles.push((slot, Role::Nums));
+            }
+            PivotFunc::Min => {
+                agg_exprs.push(format!("MIN({q})"));
+                roles.push((slot, Role::Min));
+            }
+            PivotFunc::Max => {
+                agg_exprs.push(format!("MAX({q})"));
+                roles.push((slot, Role::Max));
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    let groups = group_exprs.len();
+    let mut select = group_exprs;
+    // The earliest record each group holds: the item order a scan gives a report is the order the
+    // items first appear in, and this is that order without the scan.
+    select.push(format!("MIN({ORD})"));
+    select.extend(agg_exprs);
+    let mut sql = format!("SELECT {} FROM (SELECT row_number() OVER () AS {ORD}, * FROM {}) AS m", select.join(", "), cella_sql::quote_ident(table));
+    if !where_parts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_parts.join(" AND "));
+    }
+    sql.push_str(&format!(" GROUP BY {}", (1..=groups).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")));
+    sql.push_str(&format!(" ORDER BY {}", groups + 1));
+
+    let answer = engine.query(&sql).map_err(|e| e.to_string())?;
+
+    // ---- leaves, in the order their items first appeared
+    let mut leaves: Vec<(usize, Vec<Value>, Vec<Value>)> = Vec::with_capacity(answer.rows.len());
+    for row in &answer.rows {
+        let first = row.get(groups).and_then(Value::as_f64).unwrap_or(0.0);
+        let keys: Vec<Value> = row.iter().take(groups).cloned().collect();
+        let agg: Vec<Value> = row.iter().skip(groups + 1).cloned().collect();
+        leaves.push((first.max(0.0) as usize, keys, agg));
+    }
+    leaves.sort_by_key(|leaf| leaf.0);
+
+    // ---- the same path bookkeeping the record loop does, from the leaves
+    let mut row_items: Vec<FieldItems> = rows.iter().map(|_| FieldItems::default()).collect();
+    let mut col_items: Vec<FieldItems> = cols.iter().map(|_| FieldItems::default()).collect();
+    let row_fmts: Vec<String> = rows.iter().map(|(c, _)| src.formats.get(*c).cloned().unwrap_or_else(|| "General".into())).collect();
+    let col_fmts: Vec<String> = cols.iter().map(|(c, _)| src.formats.get(*c).cloned().unwrap_or_else(|| "General".into())).collect();
+    let mut row_id_path: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut col_id_path: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut row_nodes: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut col_nodes: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut fast_aggs: HashMap<(u32, u32), Vec<Acc>> = HashMap::new();
+    let mut row_set: HashSet<Vec<u32>> = HashSet::new();
+    let mut col_set: HashSet<Vec<u32>> = HashSet::new();
+    let mut col_leaves: HashSet<Vec<u32>> = HashSet::new();
+    let mut row_ids = [0u32; MAX_AXIS_FIELDS + 1];
+    let mut col_ids = [0u32; MAX_AXIS_FIELDS + 1];
+    let mut rp: Vec<u32> = Vec::with_capacity(rows.len());
+    let mut cp: Vec<u32> = Vec::with_capacity(cols.len());
+    for (first, keys, agg) in &leaves {
+        rp.clear();
+        for (d, ((_, f), fi)) in rows.iter().zip(row_items.iter_mut()).enumerate() {
+            let v = keys.get(d).cloned().unwrap_or(Value::Empty);
+            rp.push(fi.intern(wb, &v, Grouping::of(f), row_fmts.get(d).map(String::as_str).unwrap_or("General"), *first));
+        }
+        cp.clear();
+        for (d, ((_, f), fi)) in cols.iter().zip(col_items.iter_mut()).enumerate() {
+            let v = keys.get(rows.len() + d).cloned().unwrap_or(Value::Empty);
+            cp.push(fi.intern(wb, &v, Grouping::of(f), col_fmts.get(d).map(String::as_str).unwrap_or("General"), *first));
+        }
+        row_ids[0] = 0;
+        for (d, item) in rp.iter().enumerate() {
+            let key = (row_ids[d], *item);
+            row_ids[d + 1] = match row_nodes.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let Some(id) = u32::try_from(row_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                    row_id_path.push(rp[..=d].to_vec());
+                    row_nodes.insert(key, id);
+                    id
+                }
+            };
+        }
+        col_ids[0] = 0;
+        for (d, item) in cp.iter().enumerate() {
+            let key = (col_ids[d], *item);
+            col_ids[d + 1] = match col_nodes.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let Some(id) = u32::try_from(col_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                    col_id_path.push(cp[..=d].to_vec());
+                    col_nodes.insert(key, id);
+                    id
+                }
+            };
+        }
+        let leaf = leaf_accs(agg, &roles, slots.len());
+        for &rid in &row_ids[..=rp.len()] {
+            for &cid in &col_ids[..=cp.len()] {
+                let entry = fast_aggs.entry((rid, cid)).or_insert_with(|| vec![Acc::default(); slots.len()]);
+                for (acc, one) in entry.iter_mut().zip(leaf.iter()) {
+                    acc.merge(one);
+                }
+            }
+        }
+        let shown = cols
+            .iter()
+            .zip(col_items.iter())
+            .zip(cp.iter())
+            .position(|(((_, f), fi), &it)| !f.collapsed_items.is_empty() && is_collapsed(f, &fi.label(it)))
+            .map_or(cp.len(), |d| d + 1);
+        if !col_leaves.contains(&cp[..shown]) {
+            col_leaves.insert(cp[..shown].to_vec());
+        }
+        row_set.insert(rp.clone());
+        col_set.insert(cp.clone());
+        if !cols.is_empty() && data_cols_exceed_sheet(col_leaves.len(), pt.grand_totals_rows, vals.len()) {
+            return Err("The PivotTable report will not fit on the sheet.".into());
+        }
+        if fast_aggs.len() > 5_000_000 {
+            return Err("The PivotTable report is too large.".into());
+        }
+    }
+    Ok(Some(FastAgg { row_items, col_items, row_id_path, col_id_path, fast_aggs, row_set, col_set }))
+}
+
 /// Computes a PivotTable report from the workbook.
 pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Output, String> {
     compute_with_source(wb, pt, pivot_sheet).map(|(out, _)| out)
 }
 
+/// `compute`, with the SQL engine the data model lives on: a report over a model table is answered
+/// by the engine when it can be ([`sql_aggregate`]) and by the record scan when it cannot.
+pub fn compute_sql(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize, engine: Option<&cella_sql::Engine>) -> Result<Output, String> {
+    compute_with_source_sql(wb, pt, pivot_sheet, engine).map(|(out, _)| out)
+}
+
 /// `compute`, also handing back the source list it read: Show Details writes the records the
 /// source holds, so it needs them and not a second read of the sheet.
 pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<(Output, Source), String> {
-    let src = read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?;
-    let fmt_of = |c: usize| src.formats.get(c).cloned().unwrap_or_else(|| "General".into());
+    compute_with_source_sql(wb, pt, pivot_sheet, None)
+}
+
+/// [`compute_with_source`], with the engine a model-sourced report may be aggregated by.
+pub fn compute_with_source_sql(
+    wb: &Workbook,
+    pt: &PivotTable,
+    pivot_sheet: usize,
+    engine: Option<&cella_sql::Engine>,
+) -> Result<(Output, Source), String> {
+    compute_detailed(wb, pt, pivot_sheet, engine).map(|(out, src, _)| (out, src))
+}
+
+/// `compute_with_source_sql`, also saying whether the engine answered the report or the record
+/// scan did: the difference is 640 ms against 5 ms at a million rows, so a test (and the probe)
+/// has to be able to see which one ran.
+pub fn compute_detailed(
+    wb: &Workbook,
+    pt: &PivotTable,
+    pivot_sheet: usize,
+    engine: Option<&cella_sql::Engine>,
+) -> Result<(Output, Source, bool), String> {
+    // A model table's shape is enough to try the engine on, and the rows are what the engine
+    // reads itself: copying them into a `Source` first would be the whole cost of the refresh.
+    let shape = match engine {
+        Some(engine) if pt.source_kind == PivotSourceKind::DataModel => read_source_shape(wb, pt.source_kind, &pt.source, pivot_sheet, engine)?,
+        _ => None,
+    };
+    let mut src = match shape {
+        Some(src) => src,
+        None => read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?,
+    };
+    // The formats are copied out of the source so the closure below borrows a `Vec<String>` and
+    // not the source itself: a model-sourced report may have to read its rows *after* the
+    // engine has said no, which replaces the source.
+    let formats = src.formats.clone();
+    let fmt_of = |c: usize| formats.get(c).cloned().unwrap_or_else(|| "General".into());
     let rows: Vec<(usize, &PivotField)> = pt.rows.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
     let cols: Vec<(usize, &PivotField)> = pt.columns.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
     // Value fields: a source column, a calculated field evaluated on sums (see `pivot_calc`), or
@@ -1631,6 +2084,25 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     let row_levels = rows.len() + usize::from(on_rows);
 
     // ---- aggregate
+    // A model-sourced report can borrow the SQL engine the model lives on: the leaves come back
+    // grouped, and every sub-total is composed from them. When the shape or the engine says no,
+    // the record scan below answers exactly as it always did.
+    let sql_fast = match engine {
+        Some(engine) if !empty => match sql_aggregate(wb, pt, &src, engine, &rows, &cols, &vals, &extra) {
+            Ok(fast) => fast,
+            Err(e) => {
+                log::warn!("the model's SQL engine could not aggregate \"{}\" ({e}); using the record scan", pt.name);
+                None
+            }
+        },
+        _ => None,
+    };
+    let sql_used = sql_fast.is_some();
+    // The engine is not answering this report, so the scan below needs the records it was not
+    // given: a shape-only source is read in full now.
+    if !sql_used && src.data.is_empty() && src.model_table.is_some() {
+        src = read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?;
+    }
     let mut row_items: Vec<FieldItems> = rows.iter().map(|_| FieldItems::default()).collect();
     let mut col_items: Vec<FieldItems> = cols.iter().map(|_| FieldItems::default()).collect();
     // The accumulator map is keyed by **two path ids**, not two vectors. A record contributes to
@@ -1652,80 +2124,94 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     let mut col_leaves: HashSet<Vec<u32>> = HashSet::new();
     let row_fmts: Vec<String> = rows.iter().map(|(c, _)| fmt_of(*c)).collect();
     let col_fmts: Vec<String> = cols.iter().map(|(c, _)| fmt_of(*c)).collect();
-    'rec: for (ri, rec) in src.rows().enumerate() {
-        if !record_passes(wb, &src, pt, rec) {
-            continue 'rec;
-        }
-        if empty {
-            continue;
-        }
-        let mut rp = Vec::with_capacity(rows.len());
-        for (((c, f), fi), fmt) in rows.iter().zip(row_items.iter_mut()).zip(row_fmts.iter()) {
-            rp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), Grouping::of(f), fmt, ri));
-        }
-        let mut cp = Vec::with_capacity(cols.len());
-        for (((c, f), fi), fmt) in cols.iter().zip(col_items.iter_mut()).zip(col_fmts.iter()) {
-            cp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), Grouping::of(f), fmt, ri));
-        }
-        // This record's prefixes, as ids: one lookup a depth, then the sub-total pairs are two
-        // integers each.
-        row_ids[0] = 0;
-        for (d, item) in rp.iter().enumerate() {
-            let key = (row_ids[d], *item);
-            row_ids[d + 1] = match row_nodes.get(&key) {
-                Some(id) => *id,
-                None => {
-                    let Some(id) = u32::try_from(row_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
-                    row_id_path.push(rp[..=d].to_vec());
-                    row_nodes.insert(key, id);
-                    id
-                }
-            };
-        }
-        col_ids[0] = 0;
-        for (d, item) in cp.iter().enumerate() {
-            let key = (col_ids[d], *item);
-            col_ids[d + 1] = match col_nodes.get(&key) {
-                Some(id) => *id,
-                None => {
-                    let Some(id) = u32::try_from(col_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
-                    col_id_path.push(cp[..=d].to_vec());
-                    col_nodes.insert(key, id);
-                    id
-                }
-            };
-        }
-        for &rid in &row_ids[..=rp.len()] {
-            for &cid in &col_ids[..=cp.len()] {
-                let e = fast_aggs.entry((rid, cid)).or_insert_with(|| vec![Acc::default(); k + extra.len()]);
-                for (acc, (vs, _)) in e.iter_mut().zip(vals.iter()) {
-                    if let ValSrc::Col(c) = vs {
+    if let Some(fast) = sql_fast {
+        // The engine answered: the same three shapes the loop below builds, so the layout that
+        // follows cannot tell the difference.
+        row_items = fast.row_items;
+        col_items = fast.col_items;
+        row_id_path = fast.row_id_path;
+        col_id_path = fast.col_id_path;
+        fast_aggs = fast.fast_aggs;
+        row_set = fast.row_set;
+        col_set = fast.col_set;
+        // `col_leaves` is not taken over: the fast path checks the report's width itself, and
+        // nothing after the loop reads the set.
+    } else {
+        'rec: for (ri, rec) in src.rows().enumerate() {
+            if !record_passes(wb, &src, pt, rec) {
+                continue 'rec;
+            }
+            if empty {
+                continue;
+            }
+            let mut rp = Vec::with_capacity(rows.len());
+            for (((c, f), fi), fmt) in rows.iter().zip(row_items.iter_mut()).zip(row_fmts.iter()) {
+                rp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), Grouping::of(f), fmt, ri));
+            }
+            let mut cp = Vec::with_capacity(cols.len());
+            for (((c, f), fi), fmt) in cols.iter().zip(col_items.iter_mut()).zip(col_fmts.iter()) {
+                cp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), Grouping::of(f), fmt, ri));
+            }
+            // This record's prefixes, as ids: one lookup a depth, then the sub-total pairs are two
+            // integers each.
+            row_ids[0] = 0;
+            for (d, item) in rp.iter().enumerate() {
+                let key = (row_ids[d], *item);
+                row_ids[d + 1] = match row_nodes.get(&key) {
+                    Some(id) => *id,
+                    None => {
+                        let Some(id) = u32::try_from(row_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                        row_id_path.push(rp[..=d].to_vec());
+                        row_nodes.insert(key, id);
+                        id
+                    }
+                };
+            }
+            col_ids[0] = 0;
+            for (d, item) in cp.iter().enumerate() {
+                let key = (col_ids[d], *item);
+                col_ids[d + 1] = match col_nodes.get(&key) {
+                    Some(id) => *id,
+                    None => {
+                        let Some(id) = u32::try_from(col_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                        col_id_path.push(cp[..=d].to_vec());
+                        col_nodes.insert(key, id);
+                        id
+                    }
+                };
+            }
+            for &rid in &row_ids[..=rp.len()] {
+                for &cid in &col_ids[..=cp.len()] {
+                    let e = fast_aggs.entry((rid, cid)).or_insert_with(|| vec![Acc::default(); k + extra.len()]);
+                    for (acc, (vs, _)) in e.iter_mut().zip(vals.iter()) {
+                        if let ValSrc::Col(c) = vs {
+                            acc.add(rec.get(*c).unwrap_or(&Value::Empty));
+                        }
+                    }
+                    for (acc, c) in e.iter_mut().skip(k).zip(extra.iter()) {
                         acc.add(rec.get(*c).unwrap_or(&Value::Empty));
                     }
                 }
-                for (acc, c) in e.iter_mut().skip(k).zip(extra.iter()) {
-                    acc.add(rec.get(*c).unwrap_or(&Value::Empty));
-                }
             }
-        }
-        // The column leaf this record lands in: its path cut after the first collapsed item (as in `flatten_cols`).
-        let shown = cols
-            .iter()
-            .zip(col_items.iter())
-            .zip(cp.iter())
-            .position(|(((_, f), fi), &it)| !f.collapsed_items.is_empty() && is_collapsed(f, &fi.label(it)))
-            .map_or(cp.len(), |d| d + 1);
-        if !col_leaves.contains(&cp[..shown]) {
-            col_leaves.insert(cp[..shown].to_vec());
-        }
-        row_set.insert(rp);
-        col_set.insert(cp);
-        // Refuse a report that cannot fit before the accumulators for more column groups are allocated.
-        if !cols.is_empty() && data_cols_exceed_sheet(col_leaves.len(), pt.grand_totals_rows, k) {
-            return Err("The PivotTable report will not fit on the sheet.".into());
-        }
-        if fast_aggs.len() > 5_000_000 {
-            return Err("The PivotTable report is too large.".into());
+            // The column leaf this record lands in: its path cut after the first collapsed item (as in `flatten_cols`).
+            let shown = cols
+                .iter()
+                .zip(col_items.iter())
+                .zip(cp.iter())
+                .position(|(((_, f), fi), &it)| !f.collapsed_items.is_empty() && is_collapsed(f, &fi.label(it)))
+                .map_or(cp.len(), |d| d + 1);
+            if !col_leaves.contains(&cp[..shown]) {
+                col_leaves.insert(cp[..shown].to_vec());
+            }
+            row_set.insert(rp);
+            col_set.insert(cp);
+            // Refuse a report that cannot fit before the accumulators for more column groups are allocated.
+            if !cols.is_empty() && data_cols_exceed_sheet(col_leaves.len(), pt.grand_totals_rows, k) {
+                return Err("The PivotTable report will not fit on the sheet.".into());
+            }
+            if fast_aggs.len() > 5_000_000 {
+                return Err("The PivotTable report is too large.".into());
+            }
         }
     }
 
@@ -1863,7 +2349,7 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     if empty {
         let r = g.push_row(RowKind::Placeholder)?;
         g.set(r, 0, Value::text(format!("{} — choose fields", pt.name)), CellKind::Placeholder, 0, None);
-        return Ok((Output { width: g.width as u32, grid: g.rows, row_kinds: g.kinds, body_offset, ..Output::default() }, src));
+        return Ok((Output { width: g.width as u32, grid: g.rows, row_kinds: g.kinds, body_offset, ..Output::default() }, src, false));
     }
 
     let val_name = |vi: usize| vals.get(vi).map(|(_, v)| v.name.clone()).unwrap_or_default();
@@ -2135,6 +2621,7 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
             value_names: val_names,
         },
         src,
+        sql_used,
     ))
 }
 
@@ -2211,8 +2698,13 @@ fn cell_style(lk: &Look, rk: RowKind, cell: &OutCell, last_header: bool) -> Styl
 /// Recomputes a pivot and writes its report. With `replace` false, refuses when the target area
 /// holds other data. Returns the written area.
 pub fn refresh(wb: &mut Workbook, sheet: usize, idx: usize, replace: bool) -> Result<RangeRef, String> {
+    refresh_sql(wb, sheet, idx, replace, None)
+}
+
+/// [`refresh`], with the engine a model-sourced report may be aggregated by.
+pub fn refresh_sql(wb: &mut Workbook, sheet: usize, idx: usize, replace: bool, engine: Option<&cella_sql::Engine>) -> Result<RangeRef, String> {
     let pt = wb.sheet(sheet).and_then(|s| s.pivots.get(idx)).cloned().ok_or("There's no such PivotTable.")?;
-    let out = compute(wb, &pt, sheet)?;
+    let out = compute_sql(wb, &pt, sheet, engine)?;
     let h = out.height().max(1);
     let w = out.width.max(1);
     let k = out.body_offset;

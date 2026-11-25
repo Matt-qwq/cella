@@ -296,7 +296,7 @@ impl<'m, 'c> Evaluator<'m, 'c> {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         let mut distinct = ValueSet::default();
-        for row in &t.rows {
+        for row in t.rows.iter() {
             if !self.row_ok(&name, row, 0)? {
                 continue;
             }
@@ -459,7 +459,7 @@ impl<'m, 'c> Evaluator<'m, 'c> {
         let name = t.name.clone();
         self.busy.insert(key.clone());
         let mut set = ValueSet::default();
-        for row in &t.rows {
+        for row in t.rows.iter() {
             if self.row_ok(&name, row, depth)?
                 && let Some(v) = row.get(ci)
             {
