@@ -143,15 +143,8 @@ fn main() {
         let mut csv = String::with_capacity(big_rows * 24);
         csv.push_str("RegionId,Month,Product,Amount,Day\n");
         for i in 0..big_rows {
-            let _ = writeln!(
-                csv,
-                "{},{},{},{:.2},{}",
-                i % 64,
-                (i / 64) % 12,
-                (i / 768) % 1000,
-                (i % 9973) as f64 * 0.01 + 1.0,
-                45000 + (i / 4096) % 900
-            );
+            let _ =
+                writeln!(csv, "{},{},{},{:.2},{}", i % 64, (i / 64) % 12, (i / 768) % 1000, (i % 9973) as f64 * 0.01 + 1.0, 45000 + (i / 4096) % 900);
         }
         std::fs::write(&big, csv).expect("write the big csv");
     }
