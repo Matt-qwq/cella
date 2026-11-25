@@ -118,9 +118,25 @@ fn a_file_backed_table_survives_save_and_reopen() {
         assert!(table.is_file_backed());
         assert!(table.rows.is_empty());
     }
+    // The opened table kept the types the file reported, so a report knows which columns are
+    // numbers without reading anything.
+    {
+        let d = back.doc().expect("a document");
+        let table = d.wb.model.table("Sales").expect("the table");
+        assert_eq!(table.column_types.len(), table.columns.len(), "the column types came back");
+        assert!(table.column_types.iter().any(|t| t.contains("INT") || t.contains("DOUBLE")), "{:?}", table.column_types);
+    }
     // The reopened workbook reads the file again (the engine holds no rows across a save).
     let counted = run(&mut back, "data.model.query", json!({"sql": "SELECT COUNT(*) AS n FROM Sales"}));
     assert_eq!(counted["rows"][0][0], 1_000.0);
+    // And a report over it still refreshes to the same numbers.
+    let out =
+        run(&mut back, "insert.pivotTable", json!({"source": "Sales", "rows": ["Sales[Region]"], "values": ["Sales[Amount]"], "destination": "new"}));
+    let name = out["name"].as_str().expect("a name").to_string();
+    run(&mut back, "pivot.refresh", json!({"pivot": name, "replace": true}));
+    let (sheet, area) = report_area(&back, &name);
+    let total = back.doc().expect("a document").wb.sheet(sheet).map(|sh| sh.value(area.end)).unwrap_or_default();
+    assert!(total.as_f64().unwrap_or(0.0) > 0.0, "the reopened report has its totals: {total:?}");
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&book);
 }
