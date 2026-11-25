@@ -2432,6 +2432,24 @@ dimension's rows — date grouping and a join in one query.
 against 29.0 ms over two plain row levels — the date conversion is ~30 ms of the report at five
 million rows.
 
+### 67. An ordinary "load this file into the model" takes the file route (11-25)
+
+**What landed:** `data.query.add` / `data.query.refresh` with `load: model` now puts a file-backed
+table in the model when the source is **one file** and its steps are only `PromoteHeaders` — the header
+promotion the engine's own reader does. The prompt is the one a person uses ("Import from file →
+load to model"), so the big-table route is now what that flow does, not a command an agent has to know.
+
+**How:** `run_query` asks `file_model(source, steps)` first; when it answers, the table is
+`load_model_file`'s (the same function `data.model.loadFile` runs: register the path, `DESCRIBE` the
+columns, keep the definition), and the query's `columns` learn the names the file gave. A file the
+engine refuses — an encoding, a delimiter auto-detect gets wrong — is logged and the pipeline runs in
+memory exactly as before, so nothing that used to load stops loading; it just stops being bigger
+than the cache.
+
+**Proven:** `crates/engine/tests/model_file.rs` (7 cases now): a 5,000-row CSV added through
+`data.query.add {load: "model"}` keeps the path (the document caches no rows) and a refresh reads it
+again; a query with a `ChangeType` step stays an in-memory table.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)

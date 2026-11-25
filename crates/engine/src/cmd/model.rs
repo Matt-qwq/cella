@@ -340,14 +340,8 @@ fn sql_query(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"columns": table.columns, "rows": rows}))
 }
 
-/// `data.model.loadFile`: a model table whose rows are a file's, not the document's.
-///
-/// The engine reads the file itself (`read_parquet`/`read_csv`), which costs it ~22–99 ns a row
-/// against the ~720 a row a table handed over cell by cell costs — that difference is the whole
-/// reason a model table can be bigger than the 4M-cell cache the document keeps. The document
-/// stores the paths and the column names; a reopened workbook re-reads the file, and a file that
-/// has moved away is an error a report shows rather than a silently empty table.
-fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
+/// The paths a `data.model.loadFile` (or a query's own load) names: `paths` or a single `path`.
+fn file_paths(p: &Json) -> Result<Vec<String>> {
     let mut paths: Vec<String> = match p.get("paths") {
         Some(Json::Array(list)) => list.iter().filter_map(Json::as_str).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
         _ => Vec::new(),
@@ -358,7 +352,13 @@ fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
     if paths.is_empty() {
         return Err(bad("data.model.loadFile", "missing `path` (or `paths`, for several files read as one table)"));
     }
-    let format = match str_param(p, "format").map(|f| f.to_ascii_lowercase()) {
+    Ok(paths)
+}
+
+/// The format a file load names, or the one its extension suggests (a `.csv` is text, anything
+/// else is read as Parquet).
+fn file_format(named: Option<&str>, paths: &[String]) -> Result<cella_model::ModelFileFormat> {
+    Ok(match named.map(|f| f.to_ascii_lowercase()) {
         Some(f) if f == "csv" || f == "text" => cella_model::ModelFileFormat::Csv,
         Some(f) if f == "parquet" => cella_model::ModelFileFormat::Parquet,
         Some(other) => return Err(bad("data.model.loadFile", format!("\"{other}\" is not a file format (parquet, csv)"))),
@@ -370,35 +370,65 @@ fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
                 cella_model::ModelFileFormat::Parquet
             }
         }
-    };
-    // The name comes from the first file: "sales.parquet" becomes "sales".
-    let name = match str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
+    })
+}
+
+/// The name a file load gets: the one it was given, or the first file's stem ("sales.parquet"
+/// becomes "sales").
+fn file_name(named: Option<&str>, paths: &[String]) -> String {
+    match named.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => n.to_string(),
         None => {
             let file = paths.first().map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p)).unwrap_or("Table");
             file.rsplit_once('.').map(|(stem, _)| stem).filter(|stem| !stem.is_empty()).unwrap_or(file).to_string()
         }
-    };
+    }
+}
+/// `data.model.loadFile`: a model table whose rows are a file's, not the document's.
+///
+/// The engine reads the file itself (`read_parquet`/`read_csv`), which costs it ~22–99 ns a row
+/// against the ~720 a row a table handed over cell by cell costs — that difference is the whole
+/// reason a model table can be bigger than the 4M-cell cache the document keeps. The document
+/// stores the paths and the column names; a reopened workbook re-reads the file, and a file that
+/// has moved away is an error a report shows rather than a silently empty table.
+fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
+    let paths = file_paths(p)?;
+    let format = file_format(str_param(p, "format"), &paths)?;
+    let name = file_name(str_param(p, "name"), &paths);
+    let (rows, cols) = load_model_file(s, &name, &paths, format, bool_param(p, "replace").unwrap_or(false))?;
+    Ok(json!({"name": name, "rows": rows, "cols": cols}))
+}
+
+/// A query's own file load: the same table `data.model.loadFile` makes, so "load this file into the
+/// model" is one path whether a person runs the command or a query does.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_model_file(
+    s: &mut Session,
+    name: &str,
+    paths: &[String],
+    format: cella_model::ModelFileFormat,
+    replace: bool,
+) -> Result<(u64, usize)> {
     let previous = {
         let d = s.doc()?;
-        d.wb.model.tables.iter().find(|t| t.name.eq_ignore_ascii_case(&name)).cloned()
+        d.wb.model.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name)).cloned()
     };
-    if previous.is_some() && !bool_param(p, "replace").unwrap_or(false) {
+    if previous.is_some() && !replace {
         return Err(bad("data.model.loadFile", format!("\"{name}\" is already a table in the model (pass replace: true to reload it)")));
     }
     edit(s, |cx| {
-        if cx.wb.model.tables.len() >= cella_model::MAX_MODEL_TABLES && cx.wb.model.table_index(&name).is_none() {
+        if cx.wb.model.tables.len() >= cella_model::MAX_MODEL_TABLES && cx.wb.model.table_index(name).is_none() {
             return Err(EngineError::Other(format!("The data model holds at most {} tables.", cella_model::MAX_MODEL_TABLES)));
         }
         let loaded = cella_model::ModelTable {
-            name: name.clone(),
+            name: name.to_string(),
             columns: Vec::new(),
             rows: Default::default(),
             column_types: Vec::new(),
             source_query: None,
-            source_file: Some(cella_model::ModelFile { paths: paths.clone(), format }),
+            source_file: Some(cella_model::ModelFile { paths: paths.to_vec(), format }),
         };
-        match cx.wb.model.table_index(&name) {
+        match cx.wb.model.table_index(name) {
             Some(i) => cx.wb.model.tables[i] = loaded,
             None => cx.wb.model.tables.push(loaded),
         }
@@ -412,7 +442,7 @@ fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
     let described = (|s: &mut Session| -> Result<(Vec<String>, Vec<String>)> {
         let answer = s
             .model_engine()?
-            .query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&name)))
+            .query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(name)))
             .map_err(|e| EngineError::Other(format!("The model's table \"{name}\" could not be read from {}: {e}", paths.join(", "))))?;
         // `DESCRIBE` answers (column_name, column_type, null, key, default, extra): the names are
         // the table's columns and the types are what the field list and the default function read.
@@ -433,7 +463,7 @@ fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
         Ok(columns) => columns,
         Err(e) => {
             let _ = edit(s, |cx| {
-                cx.wb.model.tables.retain(|t| !t.name.eq_ignore_ascii_case(&name));
+                cx.wb.model.tables.retain(|t| !t.name.eq_ignore_ascii_case(name));
                 if let Some(before) = previous.clone() {
                     cx.wb.model.tables.push(before);
                 }
@@ -447,7 +477,7 @@ fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
     let rows = (|s: &mut Session| -> Result<f64> {
         let answer = s
             .model_engine()?
-            .query(&format!("SELECT COUNT(*) AS n FROM {}", cella_sql::quote_ident(&name)))
+            .query(&format!("SELECT COUNT(*) AS n FROM {}", cella_sql::quote_ident(name)))
             .map_err(|e| EngineError::Other(e.to_string()))?;
         Ok(answer.rows.first().and_then(|r| r.first()).and_then(Value::as_f64).unwrap_or(0.0))
     })(s)
@@ -457,11 +487,11 @@ fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
     // The columns are the document's now, and the engine's copy is already right: bumping the
     // generation here would make the next query re-read the file.
     edit(s, |cx| {
-        if let Some(i) = cx.wb.model.table_index(&name) {
+        if let Some(i) = cx.wb.model.table_index(name) {
             cx.wb.model.tables[i].columns = columns.clone();
             cx.wb.model.tables[i].column_types = types.clone();
         }
         Ok(())
     })?;
-    Ok(json!({"name": name, "rows": rows, "cols": cols}))
+    Ok((rows as u64, cols))
 }

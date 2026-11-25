@@ -152,6 +152,64 @@ fn a_path_or_a_format_that_makes_no_sense_is_refused() {
 }
 
 #[test]
+fn a_query_that_loads_a_file_into_the_model_keeps_the_path() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // The route, not the size: a CSV loaded to the model through `data.query.add` is the *file*,
+    // not a copy of its rows — which is what lets an ordinary "import this file" flow past the cap.
+    let path = temp("query-file.csv");
+    write_sales(&path, 5_000);
+    let mut s = Session::new();
+    s.new_workbook();
+    let answer = run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Sales",
+            "source": {"kind": "csv", "path": path.display().to_string()},
+            "steps": ["PromoteHeaders"],
+            "load": "model",
+        }),
+    );
+    assert_eq!(answer["rows"], 5_000.0);
+    {
+        let d = s.doc().expect("a document");
+        let table = d.wb.model.table("Sales").expect("the table");
+        assert!(table.is_file_backed(), "the query should have kept the file");
+        assert!(table.rows.is_empty(), "nothing is cached in the document");
+        assert_eq!(table.columns.first().map(String::as_str), Some("Region"));
+    }
+    // A refresh reads the file again, and reports its rows.
+    let refreshed = run(&mut s, "data.query.refresh", json!({"name": "Sales"}));
+    assert_eq!(refreshed[0]["rows"], 5_000.0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_query_with_a_real_step_stays_in_memory() {
+    let path = temp("query-steps.csv");
+    write_sales(&path, 100);
+    let mut s = Session::new();
+    s.new_workbook();
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Sales",
+            "source": {"kind": "csv", "path": path.display().to_string()},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Amount"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    let d = s.doc().expect("a document");
+    let table = d.wb.model.table("Sales").expect("the table");
+    assert!(!table.is_file_backed(), "a pipeline is not a file");
+    assert_eq!(table.height(), 100);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn without_an_engine_a_file_backed_table_says_so() {
     if cfg!(feature = "sql-engine") {
         return;

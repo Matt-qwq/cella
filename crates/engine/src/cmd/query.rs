@@ -653,8 +653,32 @@ fn value_json(v: &Value) -> Json {
 struct Ran {
     table: Table,
     sheet: Option<String>,
+    /// The rows a file-backed model load took, when the query loaded a file instead of running
+    /// its steps: the table a query then holds is the model's definition, with no rows here.
+    file_rows: Option<usize>,
 }
 
+impl Ran {
+    fn rows(&self) -> usize {
+        self.file_rows.unwrap_or_else(|| self.table.height())
+    }
+}
+
+/// The file a query loads as it stands: a Parquet file, or a delimited one whose only step is
+/// naming its header row — which is what the engine's own reader does. Anything else is a
+/// pipeline and has to run (`data.query.addStep` and the editor keep it in memory).
+fn file_model(source: &QuerySource, steps: &[QueryStep]) -> Option<cella_model::ModelFile> {
+    if steps.len() > 1 || !steps.iter().all(|s| matches!(s, QueryStep::PromoteHeaders)) {
+        return None;
+    }
+    match source {
+        QuerySource::Parquet { path } => Some(cella_model::ModelFile { paths: vec![path.clone()], format: cella_model::ModelFileFormat::Parquet }),
+        QuerySource::Csv { path: Some(path), text: None, .. } => {
+            Some(cella_model::ModelFile { paths: vec![path.clone()], format: cella_model::ModelFileFormat::Csv })
+        }
+        _ => None,
+    }
+}
 /// Runs one query: source, steps, then the load. The query's stored `columns` learn the new header
 /// names, which is what the pane shows before a refresh.
 fn run_query(s: &mut Session, name: &str) -> Result<Ran> {
@@ -663,6 +687,31 @@ fn run_query(s: &mut Session, name: &str) -> Result<Ran> {
         let q = d.wb.queries.iter().find(|q| q.name == name).ok_or_else(|| EngineError::Other(format!("There is no query named \"{name}\".")))?;
         (q.source.clone(), q.steps.clone(), q.load.clone())
     };
+    // A file the engine can read as it stands goes into the model *as the file*: the document
+    // keeps the path and the engine reads the rows, which is what lets the table be bigger than
+    // the sheet (and than the rows the document caches). A pipeline, or a file the engine
+    // refuses, runs in memory as it always did.
+    if let QueryLoad::Model = load
+        && let Some(file) = file_model(&source, &steps)
+    {
+        match super::model::load_model_file(s, name, &file.paths, file.format, true) {
+            Ok((rows, cols)) => {
+                let columns = {
+                    let d = s.doc()?;
+                    d.wb.model.table(name).map(|t| t.columns.clone()).unwrap_or_else(|| vec![String::new(); cols])
+                };
+                let nm = name.to_string();
+                edit(s, |cx| {
+                    if let Some(q) = cx.wb.queries.iter_mut().find(|q| q.name == nm) {
+                        q.columns = columns.clone();
+                    }
+                    Ok(())
+                })?;
+                return Ok(Ran { table: Table { columns, rows: Vec::new() }, sheet: None, file_rows: Some(rows as usize) });
+            }
+            Err(e) => log::warn!("a query's file could not be read by the engine, so its steps run in memory: {e}"),
+        }
+    }
     let table = source_table(s, &source)?;
     let table = cella_query::apply(table, &steps).map_err(pipeline_error)?;
     let sheet = match &load {
@@ -684,7 +733,7 @@ fn run_query(s: &mut Session, name: &str) -> Result<Ran> {
         }
         Ok(())
     })?;
-    Ok(Ran { table, sheet })
+    Ok(Ran { table, sheet, file_rows: None })
 }
 
 // ---------------------------------------------------------------- the commands
@@ -769,7 +818,7 @@ fn add(s: &mut Session, p: &Json) -> Result<Json> {
         Ok(())
     })?;
     let ran = run_query(s, &name)?;
-    Ok(json!({"name": name, "sheet": ran.sheet, "rows": ran.table.height(), "cols": ran.table.width()}))
+    Ok(json!({"name": name, "sheet": ran.sheet, "rows": ran.rows(), "cols": ran.table.width()}))
 }
 
 fn refresh(s: &mut Session, p: &Json) -> Result<Json> {
@@ -783,7 +832,7 @@ fn refresh(s: &mut Session, p: &Json) -> Result<Json> {
     let mut out = Vec::with_capacity(names.len());
     for name in &names {
         let ran = run_query(s, name)?;
-        out.push(json!({"name": name, "sheet": ran.sheet, "rows": ran.table.height(), "cols": ran.table.width()}));
+        out.push(json!({"name": name, "sheet": ran.sheet, "rows": ran.rows(), "cols": ran.table.width()}));
     }
     Ok(Json::Array(out))
 }
@@ -833,7 +882,7 @@ fn add_step(s: &mut Session, p: &Json) -> Result<Json> {
     };
     steps.push(step);
     let ran = set_steps_and_run(s, &name, steps, "data.query.addStep")?;
-    Ok(json!({"name": name, "index": index, "rows": ran.table.height(), "cols": ran.table.width(), "sheet": ran.sheet}))
+    Ok(json!({"name": name, "index": index, "rows": ran.rows(), "cols": ran.table.width(), "sheet": ran.sheet}))
 }
 
 fn set_step(s: &mut Session, p: &Json) -> Result<Json> {
@@ -850,7 +899,7 @@ fn set_step(s: &mut Session, p: &Json) -> Result<Json> {
         steps
     };
     let ran = set_steps_and_run(s, &name, steps, "data.query.setStep")?;
-    Ok(json!({"name": name, "rows": ran.table.height(), "cols": ran.table.width(), "sheet": ran.sheet}))
+    Ok(json!({"name": name, "rows": ran.rows(), "cols": ran.table.width(), "sheet": ran.sheet}))
 }
 
 fn remove_step(s: &mut Session, p: &Json) -> Result<Json> {
@@ -867,7 +916,7 @@ fn remove_step(s: &mut Session, p: &Json) -> Result<Json> {
         steps
     };
     let ran = set_steps_and_run(s, &name, steps, "data.query.removeStep")?;
-    Ok(json!({"name": name, "rows": ran.table.height(), "cols": ran.table.width(), "sheet": ran.sheet}))
+    Ok(json!({"name": name, "rows": ran.rows(), "cols": ran.table.width(), "sheet": ran.sheet}))
 }
 
 fn set_source(s: &mut Session, p: &Json) -> Result<Json> {
@@ -889,7 +938,7 @@ fn set_source(s: &mut Session, p: &Json) -> Result<Json> {
     // A source that does not read back (a file that moved, a query that would read itself) is put
     // back: a query whose recipe cannot run is a query that cannot be refreshed again either.
     match run_query(s, &name) {
-        Ok(ran) => Ok(json!({"name": name, "rows": ran.table.height(), "cols": ran.table.width(), "sheet": ran.sheet})),
+        Ok(ran) => Ok(json!({"name": name, "rows": ran.rows(), "cols": ran.table.width(), "sheet": ran.sheet})),
         Err(e) => {
             let nm = name.clone();
             edit(s, |cx| {
@@ -968,7 +1017,7 @@ fn load(s: &mut Session, p: &Json) -> Result<Json> {
         Ok(())
     })?;
     let ran = run_query(s, &name)?;
-    Ok(json!({"name": name, "sheet": ran.sheet, "rows": ran.table.height(), "cols": ran.table.width()}))
+    Ok(json!({"name": name, "sheet": ran.sheet, "rows": ran.rows(), "cols": ran.table.width()}))
 }
 
 // ---------------------------------------------------------------- preview
