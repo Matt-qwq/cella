@@ -2048,6 +2048,39 @@ and not the spill.
 unrelated edit does not recalculate a grouper over fixed ranges, and a defined-but-unparsable name still
 does. calc 176, engine 649, wasm, `perf` 59/59.
 
+### 55. A lifted `MOD` formatted and parsed every number to leave it alone (P, found and fixed 11-25)
+
+**How it was found.** With the grouper at 326 ms, the argument lift was 193 of them — and `MOD`'s lift
+was the outlier among the lifts `fn_probe` prices: `=SUM(ABS(A2:A))` 54 ms, `=SUM(INT(A2:A))` 54,
+`=SUM(POWER(A2:A,1))` 55, `=SUM(A2:A*1)` 34 — but `=SUM(MOD(A2:A,4))` **194 ms**, 3.5× the others.
+
+**Cause:** `modulo` ends with `clean(r)` — Excel's fifteen-significant-digit snap — and `clean` was
+`to_sig_digits`, which **formatted the number to a string and parsed it back**:
+
+```rust
+let s = format!("{:.*e}", sig - 1, x);   // a heap allocation
+s.parse().unwrap_or(x)                   // and a parse
+```
+
+That is ~150 ns a call, and `MOD`, `ROUND`, `TRUNC`, `QUOTIENT`, `MROUND`, `CEILING` and friends call it
+**per element** — a million times for a whole-column call.
+
+**Now:** an integer with no more digits than `sig` significant ones is already what the round trip
+produces, so it returns unchanged (a compare and a multiply-by-power check); anything else takes the
+format-and-parse as before.
+
+**Measured:**
+
+| call (1M rows) | before | after |
+|---|---:|---:|
+| `SUM(MOD(A2:A,4))` — the lift | 194 ms | **72** |
+| `SUM(POWER(A2:A,1))` — the control | 55 | 54 |
+| `GROUPBY(MOD(A,4), C, SUM)` | 326 | **196** |
+| `PIVOTBY` (`fn_probe`) | 2.09 s | **1.90 s** |
+| page: `PIVOTBY` | 519 ms | **393 ms** |
+
+Functions 172, calc 176, engine 649, clippy, wasm, `perf` 59/59.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
