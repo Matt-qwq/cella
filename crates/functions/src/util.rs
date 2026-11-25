@@ -279,6 +279,14 @@ pub(crate) fn to_sig_digits(x: f64, sig: usize) -> f64 {
     if !x.is_finite() || x == 0.0 {
         return x;
     }
+    // An integer with no more digits than `sig` significant ones is already what the round trip
+    // below would produce, and it is what most calls ask: `MOD` of two integers, `ROUND` to no
+    // decimals, `TRUNC`. That round trip is a `format!` and a `parse` — a heap allocation each way,
+    // ~150 ns — and it was 140 of the 194 ns a lifted `MOD` cost an element (`gaps` §55).
+    let limit = 10f64.powi(i32::try_from(sig).unwrap_or(15).min(15));
+    if x.fract() == 0.0 && x.abs() < limit {
+        return x;
+    }
     let s = format!("{:.*e}", sig.saturating_sub(1).min(30), x);
     s.parse().unwrap_or(x)
 }

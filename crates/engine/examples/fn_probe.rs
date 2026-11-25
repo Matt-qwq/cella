@@ -90,6 +90,11 @@ const CALLS: &[(&str, &str)] = &[
     // whole column folded at once, and the same lift handed to a grouper.
     ("SUM(MOD(A,4))", "=SUM(MOD(A2:A{last},4))"),
     ("SUM(MOD+BITAND lift)", "=SUM(BITAND(A2:A{last},B2:B{last}))"),
+    ("SUM(ABS(A)) lift", "=SUM(ABS(A2:A{last}))"),
+    ("SUM(INT(A)) lift", "=SUM(INT(A2:A{last}))"),
+    ("SUM(A*1) lift", "=SUM(A2:A{last}*1)"),
+    ("SUM(QUOTIENT(A,4)) lift", "=SUM(QUOTIENT(A2:A{last},4))"),
+    ("SUM(POWER(A,1)) lift", "=SUM(POWER(A2:A{last},1))"),
     // A text column materialised as an array: the grouper's key column in the owner's report, and
     // what a text column costs to turn into a million values.
     ("text column materialised", r#"=SUMPRODUCT(--(D2:D{last}="North"))"#),
