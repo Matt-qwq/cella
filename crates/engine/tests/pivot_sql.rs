@@ -203,3 +203,106 @@ fn a_report_with_no_model_behind_it_is_unaffected() {
     let name = out["name"].as_str().expect("a name").to_string();
     assert!(!agree(&mut s, &name), "a sheet source is not the engine's");
 }
+
+// ---------------------------------------------------------------- relationships
+
+const SALES_CSV: &str = "RegionId,Amount\n1,10\n2,5\n1,7\n3,1\n2,20\n";
+const REGION_CSV: &str = "Id,Name\n1,West\n2,East\n3,North\n4,South\n";
+
+/// Two model tables, related many-to-one: five sales and the four regions they name.
+fn related() -> Session {
+    let mut s = Session::new();
+    s.new_workbook();
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Sales",
+            "source": {"kind": "csv", "text": SALES_CSV},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["RegionId", "Amount"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Region",
+            "source": {"kind": "csv", "text": REGION_CSV},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(&mut s, "data.relationship.add", json!({"from": {"table": "Sales", "column": "RegionId"}, "to": {"table": "Region", "column": "Id"}}));
+    s
+}
+
+#[test]
+fn the_engine_joins_a_related_tables_column_the_way_the_scan_does() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    let mut s = related();
+    let name = make(&mut s, json!({"rows": ["Region[Name]"], "values": ["Sales[Amount]"]}));
+    assert!(agree(&mut s, &name), "the engine should answer a report grouped by a dimension");
+}
+
+#[test]
+fn a_filter_on_a_dimension_column_agrees() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    let mut s = related();
+    let name = make(&mut s, json!({"rows": ["Region[Name]"], "values": ["Sales[Amount]"]}));
+    // A slicer on the dimension: the label maps back to `Region[Name]`'s own values, and the
+    // dimension is a joined table — so the filter has to name its alias.
+    run(&mut s, "pivot.filter", json!({"pivot": name, "field": "Region[Name]", "selected": ["West", "North"]}));
+    assert!(agree(&mut s, &name));
+}
+
+#[test]
+fn a_file_backed_fact_table_joins_its_dimension_in_sql() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // The fact table is a file the engine reads (the document caches none of it), the dimension is
+    // a cached query table: only SQL can join them for a report.
+    let mut csv = String::from("RegionId,Amount\n");
+    let mut total = 0.0;
+    for i in 0..1_000 {
+        let region = i % 4 + 1;
+        let amount = (i % 10 + 1) as f64;
+        total += amount;
+        let _ = std::fmt::Write::write_fmt(&mut csv, format_args!("{region},{amount:.0}\n"));
+    }
+    let path = std::env::temp_dir().join(format!("cella-pivot-join-{}.csv", std::process::id()));
+    std::fs::write(&path, csv).expect("write the fact csv");
+    let mut s = Session::new();
+    s.new_workbook();
+    run(&mut s, "data.model.loadFile", json!({"path": path.display().to_string(), "name": "Sales"}));
+    run(
+        &mut s,
+        "data.query.add",
+        json!({
+            "name": "Region",
+            "source": {"kind": "csv", "text": REGION_CSV},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(&mut s, "data.relationship.add", json!({"from": {"table": "Sales", "column": "RegionId"}, "to": {"table": "Region", "column": "Id"}}));
+    let name = make(&mut s, json!({"rows": ["Region[Name]"], "values": ["Sales[Amount]"]}));
+    run(&mut s, "pivot.refresh", json!({"pivot": name, "replace": true}));
+    // The scan cannot walk a file-backed fact table, so a report with numbers can only be the
+    // engine's; its grand total is the file's sum.
+    let engine = s.model_sql_for();
+    let d = s.doc().expect("a document");
+    let sheet = d.wb.sheets.iter().position(|sh| sh.pivots.iter().any(|p| p.name == name)).expect("a sheet");
+    let idx = d.wb.sheet(sheet).and_then(|sh| sh.pivots.iter().position(|p| p.name == name)).expect("an index");
+    let pt = d.wb.sheet(sheet).and_then(|sh| sh.pivots.get(idx)).expect("the report").clone();
+    let (out, _, used) = compute_detailed(&d.wb, &pt, sheet, engine.as_deref()).expect("the report");
+    assert!(used, "the engine answered by joining the dimension");
+    let grand = out.grid.last().and_then(|row| row.last()).map(|c| c.value.clone()).unwrap_or_default();
+    assert_eq!(grand.as_f64().unwrap_or(-1.0), total, "the report's grand total is the file's sum");
+    let _ = std::fs::remove_file(&path);
+}

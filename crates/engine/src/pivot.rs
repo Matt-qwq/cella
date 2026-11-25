@@ -258,21 +258,98 @@ pub fn read_source_kind(wb: &Workbook, kind: PivotSourceKind, text: &str, defaul
     }
 }
 
-/// One hop out of the model table a pivot is built on, or out of a table an earlier hop brought
-/// in: a relationship whose many side is that table, and the key to row index it needs to walk it.
+/// One table of a model source: the base table (`t0`), or a dimension a relationship joins to it.
 ///
-/// Chains are the reason this is not just "the dimension's columns": a fact table relates to a
-/// product, and the product relates to its category, so a report groups by Category[Name] two
-/// hops away from the rows it is summing.
-struct Hop<'a> {
-    dim: &'a ModelTable,
-    /// The key column's index inside the table the hop walks from: the pivot's own table when
-    /// via is None, else that hop's dimension table.
-    key_col: usize,
-    /// The earlier hop whose dimension table holds the key, for a chained hop.
-    via: Option<usize>,
-    /// Key to the first row of the related table that holds it.
-    index: HashMap<String, usize>,
+/// The order is breadth first — a dimension next to the fact table comes before one reachable only
+/// through it — and it is the order the source's headers are in, so a header's index names its
+/// table and column without a map. The same plan feeds the row walk, the report's shape and the
+/// SQL (which joins the tables under these aliases), so the three cannot disagree about what a
+/// column is.
+struct Planned<'a> {
+    table: &'a ModelTable,
+    /// The alias SQL refers to the table by. The base is `t0`.
+    alias: String,
+    /// A dimension's join: the plan index of the table it hangs from, that table's key column, and
+    /// this table's own key column.
+    join: Option<(usize, usize, usize)>,
+}
+
+/// The tables a model source is made of, base first. A table related twice is added once (the
+/// model refuses a relationship that would loop, and a hand-written one is skipped rather than
+/// making a report's columns ambiguous).
+fn plan_source<'a>(wb: &'a Workbook, base: &'a ModelTable) -> Vec<Planned<'a>> {
+    let model = &wb.model;
+    let mut plan: Vec<Planned<'a>> = vec![Planned { table: base, alias: "t0".to_string(), join: None }];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    queue.push_back(0);
+    while let Some(pi) = queue.pop_front() {
+        let parent_table = plan[pi].table;
+        let parent_name = parent_table.name.clone();
+        for r in model.relationships.iter().filter(|r| r.from_table.eq_ignore_ascii_case(&parent_name)) {
+            if plan.len() > MAX_MODEL_HOPS {
+                break;
+            }
+            let Some(dim) = model.table(&r.to_table) else { continue };
+            // A hand-written model can relate a table to itself or make a loop; its columns are
+            // already in the source, so it is skipped rather than added twice.
+            if dim.name.eq_ignore_ascii_case(&base.name) || plan.iter().any(|p| p.table.name.eq_ignore_ascii_case(&dim.name)) {
+                continue;
+            }
+            let (Some(key_col), Some(dim_key)) = (parent_table.index(&r.from_column), dim.index(&r.to_column)) else { continue };
+            let alias = format!("t{}", plan.len());
+            plan.push(Planned { table: dim, alias, join: Some((pi, key_col, dim_key)) });
+            queue.push_back(plan.len() - 1);
+        }
+    }
+    plan
+}
+
+/// Every column of every planned table, as a report header.
+fn plan_headers(plan: &[Planned<'_>]) -> Vec<String> {
+    let mut headers = Vec::new();
+    for p in plan {
+        headers.extend(p.table.columns.iter().map(|c| format!("{}[{c}]", p.table.name)));
+    }
+    headers
+}
+
+/// Which planned table a header index belongs to, and which of its columns.
+fn plan_column(plan: &[Planned<'_>], index: usize) -> Option<(usize, usize)> {
+    let mut seen = 0;
+    for (i, p) in plan.iter().enumerate() {
+        let width = p.table.width();
+        if index < seen + width {
+            return Some((i, index - seen));
+        }
+        seen += width;
+    }
+    None
+}
+
+/// A header index as the SQL this plan names it by: `t0."Amount"`, `t1."Name"`.
+fn plan_ref(plan: &[Planned<'_>], index: usize) -> Option<String> {
+    let (pi, ci) = plan_column(plan, index)?;
+    let p = plan.get(pi)?;
+    let column = p.table.columns.get(ci)?;
+    Some(format!("{}.{}", p.alias, cella_sql::quote_ident(column)))
+}
+
+/// Whether a model table's column holds numbers only: its stored types when it has them (a
+/// file-backed table), else its rows (a cached one).
+fn column_is_numeric(table: &ModelTable, column: usize) -> bool {
+    if let Some(ty) = table.column_types.get(column) {
+        return cella_model::is_number_type(ty);
+    }
+    let mut any = false;
+    for row in table.rows.iter() {
+        match row.get(column) {
+            Some(v) if v.is_empty() => {}
+            Some(v) if v.is_number() => any = true,
+            Some(_) => return false,
+            None => {}
+        }
+    }
+    any
 }
 
 /// Most hops a model pivot will walk. Four is more than any star or snowflake schema a report
@@ -326,50 +403,30 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
 /// [`model_source`] over rows the caller has: a file-backed table's rows are the engine's, and
 /// they are read once into here when a report needs the records (see `compute_detailed`).
 fn model_source_with(wb: &Workbook, table: &ModelTable, rows: &[Vec<Value>]) -> Result<Source, String> {
-    let model = &wb.model;
-    let mut headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
-    let mut formats: Vec<String> = vec!["General".into(); headers.len()];
-    let mut hops: Vec<Hop<'_>> = Vec::new();
-    // Breadth first, so a dimension next to the fact table is always found before one that is
-    // reachable only through it: the report reads more naturally and the columns keep that order.
-    let mut queue: std::collections::VecDeque<(String, Option<usize>)> = std::collections::VecDeque::new();
-    queue.push_back((table.name.clone(), None));
-    while let Some((parent, via)) = queue.pop_front() {
-        if hops.len() >= MAX_MODEL_HOPS {
-            break;
-        }
-        let Some(parent_table) = model.table(&parent) else { continue };
-        for r in model.relationships.iter().filter(|r| r.from_table.eq_ignore_ascii_case(&parent)) {
-            if hops.len() >= MAX_MODEL_HOPS {
-                break;
-            }
-            let Some(dim) = model.table(&r.to_table) else { continue };
-            // A hand-written model can relate a table to itself or make a loop; its columns are
-            // already in the source, so it is skipped rather than added twice.
-            if dim.name.eq_ignore_ascii_case(&table.name) || hops.iter().any(|h| h.dim.name.eq_ignore_ascii_case(&dim.name)) {
-                continue;
-            }
-            let (Some(key_col), Some(dim_key)) = (parent_table.index(&r.from_column), dim.index(&r.to_column)) else { continue };
-            // A related table whose rows are a file would need the engine's join: this walk has no
-            // rows for it, and a report that silently blanked the dimension would be worse than a
-            // message that says what is missing.
-            if dim.is_file_backed() {
-                return Err(format!(
-                    "The model's table \"{}\" is read from a file, and a relationship to it needs the SQL engine's join, which is not written yet.",
-                    dim.name
-                ));
-            }
-            // key_col walks the rows; dim_key only builds the index, so it is not kept.
-            let mut index: HashMap<String, usize> = HashMap::new();
-            for (i, rec) in dim.rows.iter().enumerate() {
-                if let Some(k) = rec.get(dim_key).and_then(join_key) {
-                    index.entry(k).or_insert(i);
+    let plan = plan_source(wb, table);
+    let headers = plan_headers(&plan);
+    let formats: Vec<String> = vec!["General".into(); headers.len()];
+    // The indexes the row walk joins through, one per dimension (the base has none). A dimension
+    // whose rows are a file has nothing to index here.
+    let mut indexes: Vec<Option<HashMap<String, usize>>> = Vec::with_capacity(plan.len());
+    for p in &plan {
+        match p.join {
+            None => indexes.push(None),
+            Some((_, _, dim_key)) => {
+                if p.table.is_file_backed() {
+                    return Err(format!(
+                        "The model's table \"{}\" is read from a file, and a report that has to walk its rows needs the relationship's join in SQL — use a sum, count, average, min or max report without a measure.",
+                        p.table.name
+                    ));
                 }
+                let mut index: HashMap<String, usize> = HashMap::new();
+                for (i, rec) in p.table.rows.iter().enumerate() {
+                    if let Some(k) = rec.get(dim_key).and_then(join_key) {
+                        index.entry(k).or_insert(i);
+                    }
+                }
+                indexes.push(Some(index));
             }
-            headers.extend(dim.columns.iter().map(|c| format!("{}[{c}]", dim.name)));
-            formats.extend((0..dim.columns.len()).map(|_| "General".to_string()));
-            hops.push(Hop { dim, key_col, via, index });
-            queue.push_back((dim.name.clone(), Some(hops.len() - 1)));
         }
     }
     let width = headers.len();
@@ -379,25 +436,33 @@ fn model_source_with(wb: &Workbook, table: &ModelTable, rows: &[Vec<Value>]) -> 
     let mut numeric = vec![true; width];
     let mut data: Vec<Value> = Vec::with_capacity(rows.len().saturating_mul(width));
     if rows.is_empty() && !table.column_types.is_empty() && table.column_types.len() == table.columns.len() {
-        // A file-backed table keeps no records here: the types the file gave say which columns
-        // are numbers, which is what a report's field list and its default function ask.
-        for (i, ty) in table.column_types.iter().enumerate() {
-            if let Some(slot) = numeric.get_mut(i) {
-                *slot = cella_model::is_number_type(ty);
+        // A file-backed table keeps no records here: its types, and its dimensions', say which
+        // columns are numbers — what a report's field list and its default function ask.
+        let mut at = 0;
+        for p in &plan {
+            for c in 0..p.table.width() {
+                if let Some(slot) = numeric.get_mut(at + c) {
+                    *slot = column_is_numeric(p.table, c);
+                }
             }
+            at += p.table.width();
         }
     } else {
         let mut any = vec![false; width];
         for rec in rows {
             let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
-            // The rows each hop resolved to, so a chained hop can read its key out of its parent.
-            let mut dims: Vec<Vec<Value>> = Vec::with_capacity(hops.len());
-            for hop in &hops {
-                // The key lives in the base row for a direct hop, and in the parent dimension's row for
-                // a chained one; both were appended to this row in discovery order.
-                let key_from = hop.via.map_or(rec.as_slice(), |p| dims.get(p).map(Vec::as_slice).unwrap_or(&[]));
-                let hit = key_from.get(hop.key_col).and_then(join_key).and_then(|k| hop.index.get(&k)).and_then(|i| hop.dim.rows.get(*i));
-                let vals: Vec<Value> = (0..hop.dim.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)).collect();
+            // The row each dimension resolved to, so a chained join can read its key out of its
+            // parent's row: `dims[k]` is plan entry k + 1's row.
+            let mut dims: Vec<Vec<Value>> = Vec::with_capacity(plan.len().saturating_sub(1));
+            for (pi, p) in plan.iter().enumerate().skip(1) {
+                let Some((parent, key_col, _)) = p.join else { continue };
+                let key_from: &[Value] = if parent == 0 { rec.as_slice() } else { dims.get(parent - 1).map(Vec::as_slice).unwrap_or(&[]) };
+                let hit = key_from
+                    .get(key_col)
+                    .and_then(join_key)
+                    .and_then(|k| indexes.get(pi).and_then(Option::as_ref).and_then(|m| m.get(&k)))
+                    .and_then(|i| p.table.rows.get(*i));
+                let vals: Vec<Value> = (0..p.table.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)).collect();
                 dims.push(vals.clone());
                 row.extend(vals);
             }
@@ -431,7 +496,7 @@ fn model_source_with(wb: &Workbook, table: &ModelTable, rows: &[Vec<Value>]) -> 
         data,
         width,
         model_table: Some(table.name.clone()),
-        measures: model.measures.iter().map(|m| m.name.clone()).collect(),
+        measures: wb.model.measures.iter().map(|m| m.name.clone()).collect(),
     })
 }
 
@@ -1639,25 +1704,27 @@ pub fn read_source_shape(
     }
     let requested = text.trim().trim_start_matches('=').trim();
     let Some(table) = wb.model.table(requested) else { return Ok(None) };
-    // A related table adds another table's columns to the source, and those are read row by row.
-    if wb.model.relationships.iter().any(|r| r.from_table.eq_ignore_ascii_case(&table.name)) {
-        return Ok(None);
+    // A related table widens the source with its own columns, and SQL joins it in: the shape is
+    // the base table's columns and then each dimension's, which is the plan's header order.
+    let plan = plan_source(wb, table);
+    let headers = plan_headers(&plan);
+    let width = headers.len();
+    // A column is a number by its type: the file's when it recorded them, else the engine's own
+    // (`DESCRIBE`, one small query a table — never a scan of the rows).
+    let mut numeric: Vec<bool> = Vec::with_capacity(width);
+    for p in &plan {
+        let types: Vec<String> = if p.table.column_types.len() == p.table.width() && p.table.width() > 0 {
+            p.table.column_types.clone()
+        } else {
+            let described = engine.query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&p.table.name))).map_err(|e| e.to_string())?;
+            if described.rows.len() != p.table.width() {
+                return Ok(None);
+            }
+            // `DESCRIBE` answers (column_name, column_type, null, key, default, extra).
+            described.rows.iter().map(|row| row.get(1).map(|v| v.display()).unwrap_or_default()).collect()
+        };
+        numeric.extend(types.iter().map(|ty| cella_model::is_number_type(ty)));
     }
-    let width = table.columns.len();
-    let headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
-    // The types were read once, when the file was loaded (a table that caches its rows is typed
-    // by those rows, and this shape has none of them), so a report does not ask again.
-    let types: Vec<String> = if table.column_types.len() == width && width > 0 {
-        table.column_types.clone()
-    } else {
-        let described = engine.query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&table.name))).map_err(|e| e.to_string())?;
-        if described.rows.len() != width {
-            return Ok(None);
-        }
-        // `DESCRIBE` answers (column_name, column_type, null, key, default, extra).
-        described.rows.iter().map(|row| row.get(1).map(|v| v.display()).unwrap_or_default()).collect()
-    };
-    let numeric: Vec<bool> = types.iter().map(|ty| cella_model::is_number_type(ty)).collect();
     Ok(Some(Source {
         sheet: NO_SHEET,
         range: NO_RANGE,
@@ -1682,12 +1749,6 @@ struct FastAgg {
     fast_aggs: HashMap<(u32, u32), Vec<Acc>>,
     row_set: HashSet<Vec<u32>>,
     col_set: HashSet<Vec<u32>>,
-}
-
-/// The column of the model table a source header names (`Sales[Amount]` → `Amount`). A related
-/// table's header (`Region[Name]`) answers `None`: it needs a join, which this path does not write.
-fn model_column<'a>(header: &'a str, table: &str) -> Option<&'a str> {
-    header.strip_prefix(table)?.strip_prefix('[')?.strip_suffix(']')
 }
 
 /// A value as a SQL literal, or `None` for one SQL cannot compare (an array).
@@ -1761,11 +1822,32 @@ fn sql_aggregate(
     vals: &[(ValSrc, &PivotValue)],
     extra: &[usize],
 ) -> Result<Option<FastAgg>, String> {
-    let Some(table) = src.model_table.as_deref() else { return Ok(None) };
-    // The source's own headers must all be this table's: a relationship adds another table's
-    // columns to the source, and those need a join.
-    if !src.headers.iter().all(|h| model_column(h, table).is_some()) {
-        return Ok(None);
+    let Some(table_name) = src.model_table.as_deref() else { return Ok(None) };
+    let Some(table) = wb.model.table(table_name) else { return Ok(None) };
+    // The tables the source is made of, and how they join: the same plan the row walk and the
+    // report's shape use, so a header names the same column here as there.
+    let plan = plan_source(wb, table);
+    let mut from = format!(
+        "(SELECT row_number() OVER () AS {ORD}, * FROM {}) AS {}",
+        cella_sql::quote_ident(&table.name),
+        plan.first().map(|p| p.alias.as_str()).unwrap_or("t0")
+    );
+    for p in plan.iter().skip(1) {
+        let Some((parent, key_col, dim_key)) = p.join else { continue };
+        let parent_plan = match plan.get(parent) {
+            Some(q) => q,
+            None => return Ok(None),
+        };
+        let (Some(parent_key), Some(own_key)) = (parent_plan.table.columns.get(key_col), p.table.columns.get(dim_key)) else { return Ok(None) };
+        from.push_str(&format!(
+            " LEFT JOIN {} AS {} ON {}.{} = {}.{}",
+            cella_sql::quote_ident(&p.table.name),
+            p.alias,
+            parent_plan.alias,
+            cella_sql::quote_ident(parent_key),
+            p.alias,
+            cella_sql::quote_ident(own_key)
+        ));
     }
     // A value slot is a source column and a function, or `None` for a calculated field (whose own
     // arithmetic runs on its sources' sums, which are slots too).
@@ -1804,12 +1886,10 @@ fn sql_aggregate(
         let group =
             pt.rows.iter().chain(pt.columns.iter()).find(|x| x.source_col.eq_ignore_ascii_case(&f.source_col)).map(Grouping::of).unwrap_or_default();
         let fmt = src.formats.get(c).map(String::as_str).unwrap_or("General");
-        let Some(column) = src.headers.get(c).and_then(|h| model_column(h, table)) else { return Ok(None) };
+        let Some(column) = plan_ref(&plan, c) else { return Ok(None) };
         // A filter names *labels* — a date group's caption, a formatted number — so the labels are
         // computed here, from the column's distinct values, and the raw ones are what SQL filters.
-        let distinct = engine
-            .query(&format!("SELECT DISTINCT {} FROM {}", cella_sql::quote_ident(column), cella_sql::quote_ident(table)))
-            .map_err(|e| e.to_string())?;
+        let distinct = engine.query(&format!("SELECT DISTINCT {column} FROM {from}")).map_err(|e| e.to_string())?;
         if distinct.rows.len() > 200_000 {
             return Ok(None);
         }
@@ -1830,7 +1910,6 @@ fn sql_aggregate(
                 }
             }
         }
-        let column = cella_sql::quote_ident(column);
         let mut clause = String::new();
         if !keep.is_empty() {
             clause = format!("{column} IN ({})", keep.join(", "));
@@ -1844,8 +1923,8 @@ fn sql_aggregate(
     // ---- the aggregates
     let mut group_exprs: Vec<String> = Vec::new();
     for (c, _) in rows.iter().chain(cols.iter()) {
-        let Some(column) = src.headers.get(*c).and_then(|h| model_column(h, table)) else { return Ok(None) };
-        group_exprs.push(cella_sql::quote_ident(column));
+        let Some(column) = plan_ref(&plan, *c) else { return Ok(None) };
+        group_exprs.push(column);
     }
     if group_exprs.is_empty() {
         // The no-fields report draws one cell; the scan does that in a few instructions.
@@ -1855,8 +1934,7 @@ fn sql_aggregate(
     let mut roles: Vec<(usize, Role)> = Vec::new();
     for (slot, spec) in slots.iter().enumerate() {
         let Some((c, func)) = spec else { continue };
-        let Some(column) = src.headers.get(*c).and_then(|h| model_column(h, table)) else { return Ok(None) };
-        let q = cella_sql::quote_ident(column);
+        let Some(q) = plan_ref(&plan, *c) else { return Ok(None) };
         match func {
             PivotFunc::Sum => {
                 agg_exprs.push(format!("SUM({q})"));
@@ -1892,9 +1970,9 @@ fn sql_aggregate(
     let mut select = group_exprs;
     // The earliest record each group holds: the item order a scan gives a report is the order the
     // items first appear in, and this is that order without the scan.
-    select.push(format!("MIN({ORD})"));
+    select.push(format!("MIN({}.{ORD})", plan.first().map(|p| p.alias.as_str()).unwrap_or("t0")));
     select.extend(agg_exprs);
-    let mut sql = format!("SELECT {} FROM (SELECT row_number() OVER () AS {ORD}, * FROM {}) AS m", select.join(", "), cella_sql::quote_ident(table));
+    let mut sql = format!("SELECT {} FROM {}", select.join(", "), from);
     if !where_parts.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&where_parts.join(" AND "));
@@ -2138,6 +2216,12 @@ pub fn compute_detailed(
         let name = src.model_table.clone().unwrap_or_default();
         src = match (engine, wb.model.table(&name)) {
             (Some(engine), Some(table)) if table.is_file_backed() => model_source_from_engine(wb, table, engine)?,
+            (None, Some(table)) if table.is_file_backed() => {
+                return Err(format!(
+                    "The model's table \"{}\" is read from a file, and this report needs every one of its rows: the data model's SQL engine is desktop-only.",
+                    table.name
+                ));
+            }
             _ => read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?,
         };
     }

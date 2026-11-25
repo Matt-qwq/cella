@@ -2327,6 +2327,44 @@ whose report's grand total equals the file's sum, save → reopen, a missing fil
 model as it was, a path or format that makes no sense, and the browser build's "needs the desktop
 app".
 
+### 64. A report joins its dimensions in SQL (11-25)
+
+**What landed:** a report over a model table with relationships is answered by the engine, which
+joins the related tables itself. That is what lets a **file-backed fact table** (whose rows the
+document does not hold) have a report at all, and a dimension's column be a row field, a filter or
+a slicer.
+
+**How:** one plan (`plan_source`) lists the tables a source is made of — the base table and every
+dimension a relationship joins to it, breadth first, aliased `t0`, `t1`… — and the *same* plan
+gives the source's headers, the row walk (the scan) and the SQL, so the three cannot disagree
+about what a header means:
+
+```sql
+FROM (SELECT row_number() OVER () AS __cella_ord, * FROM "Sales") AS t0
+LEFT JOIN "Region" AS t1 ON t0."RegionId" = t1."Id"
+```
+
+A dimension's column is `t1."Name"` in the `GROUP BY`, in the `SELECT` and in a filter's
+`SELECT DISTINCT`; a slicer's label maps back to `Region[Name]`'s own values against the joined
+table. A table related twice is added once, a chain (fact → product → category) is two joins, and
+the shape a report reads (`read_source_shape`) is the same plan's headers with each table's column
+types — the file's for a file-backed table, one `DESCRIBE` for a cached one (never a scan of its
+rows).
+
+**Proven:** three new differential cases (`crates/engine/tests/pivot_sql.rs`, eleven in all): a
+report grouped by a dimension's column, a filter on a dimension's column, and a **file-backed fact
+joined to a cached dimension**, whose grand total is the file's sum — a report the record scan
+cannot answer at all.
+
+**Numbers** (the probe, release, 5M-row file-backed fact × 4 columns): `loadFile` 0.13 s, a
+768-cell report over it **6.4 ms**, and the same report **grouped by the joined dimension 17.7 ms**
+— the join is ~11 ms of it.
+
+**What is left: measures.** A measure is DAX evaluated per cell (`CALCULATE`, `DIVIDE`, aggregate
+functions), and translating it into a `SELECT` expression over this same plan is the next step;
+until then a report with a measure takes the scan, which a table past the cache cannot do — and
+`model_source_with` now says so in one sentence instead of quietly producing blanks.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)

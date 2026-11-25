@@ -141,9 +141,9 @@ fn main() {
     let t = Instant::now();
     {
         let mut csv = String::with_capacity(big_rows * 24);
-        csv.push_str("Region,Month,Product,Amount\n");
+        csv.push_str("RegionId,Month,Product,Amount\n");
         for i in 0..big_rows {
-            let _ = writeln!(csv, "Region {},{},{},{:.2}", i % 64, (i / 64) % 12, (i / 768) % 1000, (i % 9973) as f64 * 0.01 + 1.0);
+            let _ = writeln!(csv, "{},{},{},{:.2}", i % 64, (i / 64) % 12, (i / 768) % 1000, (i % 9973) as f64 * 0.01 + 1.0);
         }
         std::fs::write(&big, csv).expect("write the big csv");
     }
@@ -160,8 +160,9 @@ fn main() {
         loaded["rows"],
         loaded["cols"]
     );
+    let big_report = "SELECT RegionId, Month, SUM(Amount) AS amount FROM Sales GROUP BY 1, 2 ORDER BY 1, 2";
     let (seconds, cells) = best(3, || {
-        let answer = run(&mut f, "data.model.query", json!({"sql": report}));
+        let answer = run(&mut f, "data.model.query", json!({"sql": big_report}));
         answer["rows"].as_array().map_or(0, Vec::len)
     });
     println!("  SQL group-by 64 x 12 over it: {:.1} ms ({cells} rows)", seconds * 1e3);
@@ -169,7 +170,7 @@ fn main() {
     let named = run(
         &mut f,
         "insert.pivotTable",
-        json!({"source": "Sales", "rows": ["Sales[Region]"], "columns": ["Sales[Month]"], "values": ["Sales[Amount]"], "destination": "new"}),
+        json!({"source": "Sales", "rows": ["Sales[RegionId]"], "columns": ["Sales[Month]"], "values": ["Sales[Amount]"], "destination": "new"}),
     );
     println!("  insert.pivotTable: {:.2} s", t.elapsed().as_secs_f64());
     let pivot = named["name"].as_str().unwrap_or("").to_string();
@@ -178,6 +179,31 @@ fn main() {
         0
     });
     println!("  pivot.refresh over 5M rows: {:.1} ms", seconds * 1e3);
+
+    // ---- a dimension the report groups by: the fact is a file, so only SQL can join them
+    let mut names = String::from("Id,Name\n");
+    for i in 0..64 {
+        let _ = writeln!(names, "{i},Region {i}");
+    }
+    run(
+        &mut f,
+        "data.query.add",
+        json!({
+            "name": "Region",
+            "source": {"kind": "csv", "text": names},
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["Id"], "to": "Number"}}],
+            "load": "model",
+        }),
+    );
+    run(&mut f, "data.relationship.add", json!({"from": {"table": "Sales", "column": "RegionId"}, "to": {"table": "Region", "column": "Id"}}));
+    let joined =
+        run(&mut f, "insert.pivotTable", json!({"source": "Sales", "rows": ["Region[Name]"], "values": ["Sales[Amount]"], "destination": "new"}));
+    let joined_name = joined["name"].as_str().unwrap_or("").to_string();
+    let (seconds, _) = best(3, || {
+        run(&mut f, "pivot.refresh", json!({"pivot": joined_name, "replace": true}));
+        0
+    });
+    println!("  pivot.refresh grouped by the joined dimension: {:.1} ms", seconds * 1e3);
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&big);
