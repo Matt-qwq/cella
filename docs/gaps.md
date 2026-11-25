@@ -1987,6 +1987,27 @@ grouping and the report as they are. That is the same shape of knife that took `
 (the evaluator's array build — not yet attributed inside `calc`), and for million-group reports the
 sort-and-write. Both are the next rounds' work.
 
+**Round 71 attributed the rest, and found a doubling.** With `calc`'s argument loop and the pass's
+phases instrumented (all removed again):
+
+| phase of `GROUPBY(MOD(A2:A,4), C2:C, SUM)` at 1M | time |
+|---|---:|
+| argument 0 (`MOD` lifted over the column) | **193 ms** |
+| argument 1 (`C2:C` turned into an array) | 19 ms |
+| the `GROUPBY` call itself | ~100 ms |
+| **one evaluation ("eval 1 formulas")** | **~320 ms** |
+| **the whole pass ("run")** | **~650 ms** |
+
+The pass's own prints account for all of the 320 (trees 0, eval 320, write 0, spills 0) while `run` is
+twice that — because **a formula whose result spills is evaluated twice**: two `eval 1 formulas` lines
+of 320 and 328 ms, `run` 648 ms, and the second lays out nothing (`spills 0.0`). The discarded-range
+and trim-dependent counts both printed **zero**, so the requeue is the small bucket that carries the
+formula's own key.
+
+**That is the next knife and it is a doubling, not a percentage:** every formula that spills pays for
+the same work twice. Halving it takes `GROUPBY` 649 → ~330 ms and `PIVOTBY` 4.0 → ~2 s at a million
+rows before anything else is touched.
+
 **Left behind:** the probe rows (and the two that price a text column against a number column), so the
 next round starts from the same numbers.
 
