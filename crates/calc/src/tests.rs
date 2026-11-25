@@ -1068,6 +1068,31 @@ fn a_name_that_can_move_keeps_its_users_dynamic() {
 }
 
 #[test]
+fn a_groupers_bare_aggregate_name_is_not_a_dynamic_reference() {
+    // `GROUPBY(rf, vals, SUM)` spells the aggregate without quotes, so the parser makes it a name —
+    // and an unresolvable name used to mark the whole formula dynamic, which made every grouper
+    // evaluate twice at a million rows (`gaps` §53). A name that is a function's own is no
+    // reference: editing an unrelated cell must not recalculate the grouper.
+    let mut t = T::new();
+    for r in 1..=3 {
+        t.set(&format!("A{r}"), &format!("{}", r % 2));
+        t.set(&format!("B{r}"), "1");
+    }
+    t.set("D1", "=GROUPBY(A1:A3,B1:B3,SUM)");
+    t.calc.last_recalc_cells = 0;
+    t.set("Z9", "5");
+    assert_eq!(t.calc.last_recalc_cells, 0, "a grouper reading fixed ranges must not recalculate");
+    // A name that is *defined* stays conservative even when it also matches a function's name.
+    let mut d = T::new();
+    d.define("Rate", "Sheet1!B1");
+    d.set("B1", "2");
+    d.set("C1", "=Rate*1");
+    d.calc.last_recalc_cells = 0;
+    d.set("Z9", "5");
+    assert_eq!(d.calc.last_recalc_cells, 1, "a defined name whose definition does not parse stays dynamic");
+}
+
+#[test]
 fn names_that_ring_each_other_are_dynamic_and_the_walk_ends() {
     // A file can define names in a ring; following definitions has a depth cap, so the walk ends
     // (and the formula stays dynamic, because what it reads can't be resolved).

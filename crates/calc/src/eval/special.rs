@@ -364,6 +364,14 @@ fn precedents_at(
                     hidden_rows |= inner.hidden_rows;
                 }
                 NameTarget::Table { area, .. } => out.push(area),
+                // A registered function's own name, spelled without its call — `GROUPBY(rf, vals,
+                // SUM)` parses that third argument as a name — is no reference at all: a call is
+                // `Expr::Call`, so a name that resolves to nothing and matches a function can only
+                // be that argument. Marking it dynamic made every grouper recalculate twice
+                // (`gaps` §53). A name that *is* defined (even one whose definition does not parse,
+                // such as `Rate` defined as `Sheet1!B1` — no cell — keeps its old conservative
+                // answer, dynamic.
+                _ if cella_functions::lookup(n).is_some() && wb.name(n, sheet).is_none() && wb.table(n).is_none() => {}
                 _ => dynamic = true,
             },
             // A structured reference is a fixed area unless it depends on the cell it is written in
