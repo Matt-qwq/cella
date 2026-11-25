@@ -142,9 +142,9 @@ fn the_pane_adds_a_file_to_the_model() {
     assert_eq!(tables[0]["name"], stem);
     assert_eq!(tables[0]["file"], true, "the table's rows are the file's");
     assert_eq!(tables[0]["rows"], 2.0);
-    // (The pane's model section only draws once it has a query to sit beside — a pre-existing
-    // layout rule — so what this test proves is the button's own path: the click ran the command
-    // and the model holds the file.)
+    // The pane shows what is in the model even with no query beside it (the section is drawn from
+    // the model's own state, which the button just changed).
+    assert!(h.query_by_label("Data model").is_some(), "the pane shows the model section");
     assert!(tables[0]["columns"].as_array().is_some_and(|c| c.len() == 2));
     let _ = std::fs::remove_file(&path);
 }

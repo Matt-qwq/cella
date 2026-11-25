@@ -258,6 +258,9 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
     ui.add_space(4.0);
     if queries.is_empty() {
         ui.label(egui::RichText::new(crate::widgets::tr(ui, "No queries yet. Get Data (Text/CSV) makes one.")).color(t.text_dim));
+        // A model can hold tables with no query beside them (a file added from the button above),
+        // and the pane is where what is in it is read.
+        model_section(app, ui);
         return;
     }
     for q in &queries {
