@@ -178,3 +178,29 @@ five times the 4M the document caches) load in 0.11 s and refresh a 768-cell rep
 The engine is now the storage, not just the calculator — which is what the "70 MB a million rows"
 memory reading buys.
 
+## Where it stands (end of 11-25)
+
+A report over a model table is answered by the engine in every shape it has: plain aggregates (one
+`GROUP BY`, sub-totals composed from the leaves), a join to a related dimension (`LEFT JOIN`, one
+`t0`, `t1`… per table), a measure (one `GROUPING SETS` query for every level, because a formula does
+not compose from its own sub-totals), and a measure over a date-grouped axis (grouped by the date
+part, the caption still built here). The same plan (`plan_source`) feeds the headers, the scan the
+engine falls back to, and the SQL, so the three cannot disagree about what a column means.
+
+Measured on a 5M-row × 5-column CSV the engine reads itself (`model_sql_probe`, release):
+
+| case | time |
+|---|---:|
+| `data.model.loadFile` (109 MB CSV) | 0.15 s |
+| 768-cell group-by over it | 4.5 ms |
+| **`pivot.refresh`** of that report | **7.6 ms** |
+| the same, grouped by a joined dimension | 20.9 ms |
+| a ratio measure, two row levels | 29.0 ms |
+| a ratio measure over a month axis | 58.7 ms |
+
+The entry points are `data.model.loadFile` (a file into the model), `data.model.query` (read-only SQL
+over it, for the control channel and MCP), and **`data.query.add` with `load: model` when the source
+is one file whose only step names its header** — so the ordinary "import a file" flow takes the file
+route too. What still reads records: a value filter (top-N by a measure), Show Details, and a
+numeric-range axis; each is bounded and says so when a table is past the bound.
+
