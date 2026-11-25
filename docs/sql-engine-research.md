@@ -77,15 +77,39 @@ analytics engine it is not.
      and the model says so plainly in the UI;
    - both are unacceptable in build time or size → **SQLite** behind the same interface, and revisit.
 
+## The DuckDB spike: measured (2026-11-25)
+
+The owner accepted a **desktop-only data model**, so the wasm constraint is off the table and the
+question became "is DuckDB actually this fast at our sizes". It is. Run out of the repository in a
+throwaway crate (`duckdb = { version = "1", features = ["bundled"] }`, `SET threads TO 8`), on a
+machine that was busy at the time:
+
+| case (5 M rows × 10 columns) | time |
+|---|---:|
+| build the table and write its Parquet file | 1.0 s (36 s the first time, cold) |
+| **group-by 64 × 12 out of the Parquet file** | **18.3 ms** |
+| slicer (4 of 64 regions) out of the file | 20.0 ms |
+| top-20 by product out of the file | 18.8 ms |
+| **load 5 M rows into memory** | **0.1 s** |
+| **group-by 64 × 12 in memory** | **3.8 ms** |
+| slicer in memory | 4.6 ms |
+| top-20 in memory | 2.9 ms |
+| join to a 64-row lookup table, then group-by | 8.2 ms |
+| **20 M rows, group-by in memory** | **11.6 ms** |
+
+**Memory:** a process holding **5 M and 20 M rows** of this shape (25 M rows × 10 columns) was
+**1.75 GB** of working set — about **70 MB per million rows** with DuckDB's compression. So 5 M rows
+≈ 350 MB, 20 M ≈ 1.4 GB.
+
+**Build cost:** the bundled C++ engine took **7 min 13 s** to compile the first time (cached after).
+That is a one-off per clean checkout, and a real cost for `cargo xtask ci` when the cache is cold.
+
+**The comparison that matters:** our own sheet path does a million-row pivot refresh in **352 ms**
+(`pivot.refresh`, five passes) and a million-group `GROUPBY` in **583 ms**. DuckDB does **five million**
+rows in **3.8 ms** in memory and **18 ms** straight from a Parquet file. The target was 200–300 ms at
+5 M; the engine is two orders of magnitude under it.
+
+What this does **not** say: how long it takes to get the data *into* the model from a spreadsheet, or
+how a pivot's cells map onto the query result — that is the integration work, not the engine.
+
 ## Spike checklist (1–2 days)
-
-- [ ] `crates/…-spike` (or a `--features datafusion` gate): create a 5M × 10 Parquet file, load, run
-      `SELECT region, month, SUM(amount) … GROUP BY`, five passes.
-- [ ] Same file, same SQL, DuckDB (native, `bundled`).
-- [ ] Record: query ms, load ms, RSS delta, crate tree size, `cargo build` time, `cargo xtask wasm`
-      outcome and `.wasm` size.
-- [ ] Write the numbers into this page and pick the engine.
-
-Sources: [SQLite vs DuckDB vs Arrow discussion](https://hn.svelte.dev/item/29010103),
-[columnar DB survey](https://github.com/alopex-db/docs/blob/main/tech/columnar-db-research.md),
-[BenchBox platform comparison](https://benchbox.dev/docs/guides/platform-comparison.html).
