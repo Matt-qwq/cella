@@ -2588,8 +2588,9 @@ slow open is explained rather than mysterious:
 The second row is the paging paying off: the reader spills completed bands beside the document, so a
 219 MB workbook costs a quarter of a gigabyte rather than two — memory follows the page file, not the
 workbook. (The threshold is 200 MiB of file, so the 112.8 MB one is read live and the 219.4 MB one is
-not.) 62.7 M cells is four times what Excel holds in one sheet, and the first open pays for writing
-the spill: 17.3 s then, 6.5–7.0 s on later opens.
+not.) Each of its four big sheets is 12 columns × ~1.046 M rows — a table at Excel's own row limit,
+four of them in one file — and the first open pays for writing the spill: 17.3 s then, 6.5–7.0 s on
+later opens.
 
 **Proven:** `crates/xlsx` `a_part_declaring_a_large_size_reads_when_the_cap_allows_it` (a part that
 declares 700 MB, over the old cap, is read rather than refused), `zip_bomb_is_rejected` (still
