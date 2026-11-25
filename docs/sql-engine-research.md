@@ -201,6 +201,9 @@ Measured on a 5M-row × 5-column CSV the engine reads itself (`model_sql_probe`,
 The entry points are `data.model.loadFile` (a file into the model), `data.model.query` (read-only SQL
 over it, for the control channel and MCP), and **`data.query.add` with `load: model` when the source
 is one file whose only step names its header** — so the ordinary "import a file" flow takes the file
-route too. What still reads records: a value filter (top-N by a measure), Show Details, and a
-numeric-range axis; each is bounded and says so when a table is past the bound.
+route too, and the Queries & Connections pane has a button for it. What still reads records: a value
+field SQL cannot compose (product, standard deviation, variance) and a text column summed; both say
+so when a table is past the bound.
+
+The user-facing summary of all this is [`data-model.md`](data-model.md).
 
