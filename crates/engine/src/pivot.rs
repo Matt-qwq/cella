@@ -828,7 +828,8 @@ impl FieldItems {
         i
     }
     /// An item a SQL bucket stands for: the key the grouping sorts by and the caption the report
-    /// shows. `intern` cannot build it from the bucket number alone (`Jan` is 1, not "1").    fn intern_group(&mut self, key: f64, date: PivotDateGroup, first: usize) -> u32 {
+    /// shows. `intern` cannot build it from the bucket number alone (`Jan` is 1, not "1").
+    fn intern_group(&mut self, key: f64, date: PivotDateGroup, first: usize) -> u32 {
         let identity = format!("g{key}");
         if let Some(i) = self.index.get(&ItemKey::Grouped(identity.clone())) {
             return *i;
