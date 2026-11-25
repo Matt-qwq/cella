@@ -130,7 +130,12 @@ fn run() -> Result<(), String> {
         let per = |ms: f64, cells: usize| ms * 1e6 / cells as f64;
         println!("{:<44} {:>12} {:>12}", "column contiguous (a column-major fold)", fmt_ms(columnar.0), format!("{:.1}", per(columnar.0, n)));
         println!("{:<44} {:>12} {:>12}", "column strided in rows (row-major today)", fmt_ms(rowmajor.0), format!("{:.1}", per(rowmajor.0, n)));
-        println!("{:<44} {:>12} {:>12}", "a row read out of columns (column-major)", fmt_ms(row_of_columns.0), format!("{:.1}", per(row_of_columns.0, n * cols)));
+        println!(
+            "{:<44} {:>12} {:>12}",
+            "a row read out of columns (column-major)",
+            fmt_ms(row_of_columns.0),
+            format!("{:.1}", per(row_of_columns.0, n * cols))
+        );
     }
     report(
         "visit_values  A2:A{last}",
