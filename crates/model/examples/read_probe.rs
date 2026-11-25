@@ -63,6 +63,37 @@ fn run() -> Result<(), String> {
     let cells = u64::from(one.height()) * u64::from(one.width());
     let block_cells = u64::from(block.height()) * u64::from(block.width());
     println!("\n{:<44} {:>12} {:>12}", "walk", "fastest", "ns/cell");
+    // What the last load of a column read costs. A number cell's payload indexes the band's number
+    // table, so reading one is three dependent loads (the row's `cells_at`, the payload, the table);
+    // a payload stripe of u64s would make the number itself the payload - two. The two chains run
+    // over the same data and the same loop, black-boxed so the optimiser cannot fold them away, and
+    // the difference is the most inline numbers could ever buy a column read (`gaps` §48).
+    {
+        use std::hint::black_box;
+        let n = 1_000_000usize;
+        // A band's shape: 64 rows a band, a few hundred distinct numbers.
+        let payloads: Vec<u32> = (0..n).map(|i| (i % 4096) as u32).collect();
+        let numbers: Vec<f64> = (0..4096).map(|i| i as f64).collect();
+        let inline: Vec<f64> = payloads.iter().map(|p| numbers[*p as usize]).collect();
+        let chain = best(5, || {
+            let mut acc = 0.0f64;
+            for p in black_box(&payloads) {
+                acc = black_box(acc + numbers[black_box(*p) as usize]);
+            }
+            acc.to_bits()
+        });
+        let flat = best(5, || {
+            let mut acc = 0.0f64;
+            for v in black_box(&inline) {
+                acc = black_box(acc + *v);
+            }
+            acc.to_bits()
+        });
+        let (c, f) = (chain.0 * 1e6 / n as f64, flat.0 * 1e6 / n as f64);
+        println!("{:<44} {:>12} {:>12}", "chain: payload -> number table", fmt_ms(chain.0), format!("{c:.1}"));
+        println!("{:<44} {:>12} {:>12}", "chain: number in the payload", fmt_ms(flat.0), format!("{f:.1}"));
+        println!("{:<44} {:>12}", "one load less would be worth", format!("{:.1} ns/cell", c - f));
+    }
     report(
         "visit_values  A2:A{last}",
         cells,

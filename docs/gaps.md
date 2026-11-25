@@ -1792,6 +1792,10 @@ from the chain — a storage-format change of the same order as the spill store,
 then, "a million-row column read in 10 ms" is a property of the layout, not of the code, and the
 `SUM` family's 20–21 ms is that layout's price.
 
+**Round 66 measured that proposal and refuted it:** the two chains cost the same (2.3 ns a cell
+each — see §50). The number table is a few hundred entries, always in cache, so the load it adds is
+free. What is left is the row walk, not a load chain.
+
 ### 49. The spill lay-out is 75–78 ms of a million-cell array, priced phase by phase (P, measured 11-25)
 
 **What the phase timer says** (`fn_probe` with `CELLA_PROFILE=1`, one pass, 1M rows; the probe rows
@@ -1850,6 +1854,35 @@ noise (`SUM` 20 → 22, `COUNTIF` 15 → 16, `XLOOKUP` 15 → 16, `PIVOTBY` 983 
 174, calc 175, engine 649, xlsx 479, ui 231, the criteria/lookup differentials, the command-sequence
 fuzz, wasm, `perf` 59/59.
 
+### 50. Inline numbers would buy nothing — the number table is free (P, measured and refuted 11-25)
+
+**What was proposed** (the next knife after §48): make the payload slot hold the number itself — a
+`u64` payload stripe instead of a `u32` index into the band's `numbers` table — so a column read's
+chain of three dependent loads becomes two. The cost would be four more bytes a cell and the loss of
+the table's deduplication.
+
+**Measured, and refuted.** `read_probe` now runs the two chains over the same data and the same loop,
+black-boxed so the optimiser cannot fold them away:
+
+| chain | ns/cell |
+|---|---:|
+| payload → the number table (what the store does) | **2.3** |
+| the number in the payload slot (one load less) | **2.3** |
+
+**Nothing.** A band's number table is a few hundred entries — tens of kilobytes, always in L1 — so
+the extra load is hidden by the memory subsystem and the out-of-order engine. The idea is dead on
+arrival and its memory cost (four bytes a cell, plus losing deduplication) is not paid.
+
+**The corrected attribution of a column read (all measured):** the whole read is 10.5 ns a cell with
+the store's fold and 14.3 with the packed walk; the payload→number chain is 2.3 of it, the kind's run
+1.4 and the formula test 1.1. The remaining **8–9 ns is the row walk itself** — resolving a band, its
+row, the row's offset in the payload stripe, and calling the caller once a cell. That is not a load
+chain to be shortened: it is the shape of a row-major store answering a column question, and the only
+way under it is to keep a column contiguous (column-major storage, or a per-column sidecar) — a
+redesign of a different order from the two knives just landed.
+
+**Instrument left behind:** the two-chain measurement in `read_probe`, so the next proposal of this
+kind is priced before it is built.
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2313,6 +2346,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §50 (new): inline numbers refuted before they were built — ead_probe runs the two chains (payload → number table against the number in the payload slot) and both cost **2.3 ns a cell**: a band's table is a few hundred entries, always in L1, so the load is free. The corrected attribution: of a 10.5 ns column read, 2.3 is the chain, 1.4 the kind run, 1.1 the formula test, and **8–9 is the row walk itself** |
 | 2026-11-25 | minor | §49 (fixed): a spill is **one array at its anchor** now, not a BTreeMap entry a cell — =A2:A (1M, spills) **142 → 77 ms**, BITAND 247 → 173, and on the page DROP 749 → **574**, CHOOSECOLS 267 → **150**, TOCOL 139 → 96, VSTACK 189 → 139, SORT 255 → 207, HSTACK 331 → 284, MAP 423 → 335. Sixty reader sites moved to Sheet::spilled/spilled_in; no function that does not spill moved |
 | 2026-11-25 | minor | §49 (new): the spill lay-out is **75–78 ms** of a million-cell array, priced phase by phase (=A2:A 142 ms = 10.6 read + 53.8 building the array + 75 laying it out; =BITAND 247 = 166.5 eval + 77.8 spill). So the fix is to keep the evaluator's Arc<Array> as the spill's value instead of a BTreeMap node a cell — 60 non-test reader sites across five crates, inventoried and ordered in plan/spill-store.md |
 | 2026-11-25 | minor | §48 (new): the column-read wall is a chain of **three dependent loads a cell** (the row's `cells_at`, the payload, the number). The dense-band stride read works — 11.5 → **8.1 ns a cell** on a one-column sheet, 9.9 on eight — and moves the page by nothing (`SUM` 20 → 21 ms, inside ±2), so it is reverted. The width sweep is the proof it is latency, not bandwidth: 8.1 ns at one column wide against 9.9 at eight. Under it needs the number inline in the payload stripe — a storage format change, not a loop |
