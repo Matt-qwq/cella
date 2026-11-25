@@ -2081,6 +2081,29 @@ format-and-parse as before.
 
 Functions 172, calc 176, engine 649, clippy, wasm, `perf` 59/59.
 
+### 56. A pivot's source read does not want a block walk (P, measured and refuted 11-25)
+
+**What was tried:** `pivot.refresh` spends ~122 ms of its 384 reading the source with `sh.value(a cell)`
+— a store lookup and a spill check each, five million of them for a million rows of five columns. Two
+rewrites were built and measured against the gate's own scenario:
+
+| reading the source | `pivot.refresh` at 1M |
+|---|---:|
+| `sh.value` a cell (as it was) | **382 ms** |
+| one block walk into a `Vec<Value>` grid (+ a `Vec<bool>` of answered cells) | **427 ms** |
+| a row at a time through `iter_range` (+ two `Vec`s a row) | **797 ms** |
+
+Both reverted. The first pays 120 MB of grid and writes every cell twice; the second allocates two
+vectors a row — and the per-row walk re-resolves the band a million times. **`sh.value` a cell is
+already 24 ns**, which is the store's one-cell read price, and neither rewrite beat it: the report's own
+`Source` — a `Vec<Vec<Value>>`, 24 bytes a cell plus a `Vec` a row — is what the read is paying for, and
+it stays the same size either way.
+
+**What would actually be cheaper:** `Source` as one flat `Vec<Value>` and a width, so a record is a
+slice of it and the row loop is a memcpy into the right offset. That is a wider change (every reader of
+`src.rows` in `crates/engine/src/pivot.rs`) and it is the next round's work if the pivot refresh is
+worth more time than the ~120 ms it would save.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
