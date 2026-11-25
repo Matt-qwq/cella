@@ -78,6 +78,18 @@ const CALLS: &[(&str, &str)] = &[
     ("BYROW identity", "=BYROW(A2:A{last},LAMBDA(x,x))"),
     ("BYROW sum", "=BYROW(A2:A{last},LAMBDA(x,SUM(x)))"),
     ("BYROW sum of 3", "=BYROW(A2:C{last},LAMBDA(x,SUM(x)))"),
+    // The groupers, which the function catalogue prices at about a second: the row key is a number
+    // in A, the column key a mod-4 of B, and the value a SUM of C — a report of a few groups over a
+    // million records, which is what a slicer drag asks for.
+    ("PIVOTBY 4 regions", "=PIVOTBY(D2:D{last},MOD(A2:A{last},4),C2:C{last},SUM)"),
+    ("GROUPBY 4 regions", "=GROUPBY(D2:D{last},C2:C{last},SUM)"),
+    ("GROUPBY number key", "=GROUPBY(A2:A{last},C2:C{last},SUM)"),
+    ("GROUPBY mod-4 key", "=GROUPBY(MOD(A2:A{last},4),C2:C{last},SUM)"),
+    ("GROUPBY text, no values", "=GROUPBY(D2:D{last},,SUM)"),
+    // The array a grouper is handed is built by the evaluator, so these price that: a lift over a
+    // whole column folded at once, and the same lift handed to a grouper.
+    ("SUM(MOD(A,4))", "=SUM(MOD(A2:A{last},4))"),
+    ("SUM(MOD+BITAND lift)", "=SUM(BITAND(A2:A{last},B2:B{last}))"),
     // Lifting against spilling: the same million-element result, once folded into a scalar (no
     // spill is laid out) and once left as an array (a million spilled cells).
     ("SUM of a lift", "=SUM(BITAND(A2:A{last},B2:B{last}))"),

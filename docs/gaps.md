@@ -1939,6 +1939,39 @@ carried but **never recomputed** ("the seam an OLAP engine plugs into"). So for 
 options are the 1M-row ceiling, a data model behind that seam, or a multi-sheet source — a product
 decision, not a performance one.
 
+### 53. The groupers' own work is 27 ms — their argument arrays are the second (P, measured 11-25)
+
+**What the owner's workload led to.** "Several million rows, dragging slicers" is a **grouping** over
+a lot of records, so the question was where a grouper's second goes. `fn_probe` gained rows for the
+catalogue's own shapes; fastest of three, a million rows:
+
+| call | time |
+|---|---:|
+| `SUM(MOD(A2:A,4))` — the same lift, folded at once | **199 ms** |
+| `GROUPBY(MOD(A2:A,4), C2:C, SUM)` — four groups | **649 ms** |
+| `GROUPBY(D2:D, C2:C, SUM)` — four groups, **text** keys | **1.80 s** |
+| `GROUPBY(A2:A, C2:C, SUM)` — a million distinct numbers | **1.36 s** |
+| `PIVOTBY(D2:D, MOD(A2:A,4), C2:C, SUM)` | **4.00 s** |
+
+**Inside the grouper, nothing is slow.** Temporary timers in `groupby` (removed again) said: `prepare`
+**2 ms**, the key build **15 ms**, the whole body **27 ms** at a million rows. The wait is not the
+grouping.
+
+**It is the evaluator building the arguments.** `arr_arg` is `as_array(v).into_owned()`, so every array
+argument is **copied** (a million `Value`s, 24 MB, twice a call), and a whole-column lift such as
+`MOD(A2:A, 4)` costs **199 ms** on its own — 2.3× what `BITAND`'s lift of the same shape costs (88 ms
+including the fold), so the lift path is uneven as well. A text key column costs about a second more
+than a numeric one at the same group count: building and copying a million `Value::Text`s is the
+expensive part, not hashing them.
+
+**What that means:** the fix for "drag a slicer over a million rows" is not a faster `GROUPBY` — it is a
+grouper that never materialises its inputs. The rows are in the store; the host can stream the key and
+value columns into the group loop the way the criteria scans stream one column (`gaps` §44), leaving the
+grouping and the report as they are. That is the same shape of knife that took `COUNTIF` from 26 to
+15 ms: keep the work in the walk.
+
+**Left behind:** the five probe rows, so the next round starts from the same numbers.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2402,6 +2435,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §53 (new, measured): the groupers' **own work is 27 ms** at a million rows (`prepare` 2, keys 15) — what costs 0.65–4 s is the evaluator building their arguments: each array argument is copied (24 MB twice a call), a whole-column `MOD` lift is **199 ms** against `BITAND`'s 88, and a text key column costs a second more than a numeric one at the same group count. The next knife is a grouper that streams from the store instead of materialising |
 | 2026-11-25 | minor | §52 (new, fixed): a pivot refresh **formatted every number to decide it had seen it** — `make_item` ran `display::format` and built a `String` key per record per axis field. The key is an enum now and the accumulators key by interned path ids: **`pivot.refresh` 889 → 384 ms at 1M (−57 %)**, 42 ms at 100k; budgets tightened to 600/80 ms. It also records that a sheet holds 1,048,576 rows (like Excel) and a `DataModel` source is carried but never recomputed — the product decision behind "several million rows" |
 | 2026-11-25 | minor | §51 (new, evaluation): column storage measured and sized — a contiguous Vec<f64> fold costs **2.2 ns/cell** against the store's 10.5 (4.8× ceiling; SUM ~6 ms), but a full column-major store is 70 public functions and 380 call sites with a wrong-number failure mode. The only shape worth a pilot is a per-column sidecar cache inside store.rs; recommendation: do not start it. [performance-columnar.md](performance-columnar.md) |
 | 2026-11-25 | minor | §50 (new): inline numbers refuted before they were built — 
