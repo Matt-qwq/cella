@@ -1106,14 +1106,16 @@ fn pivotby(args: &[Arg], ctx: &mut dyn Ctx) -> R<Value> {
             }
         };
         for c in &cols {
-            let rows = match (r, c) {
-                (Some(rk), Some(ck)) => cell.get(&(rk, *ck)).cloned().unwrap_or_default(),
-                (Some(rk), None) => rows_by_row_key.get(rk as usize).cloned().unwrap_or_default(),
-                (None, Some(ck)) => rows_by_col_key.get(*ck as usize).cloned().unwrap_or_default(),
-                (None, None) => p.rows.clone(),
+            // Borrowed, not cloned: a cell's rows can be a million entries, and a grid of them used
+            // to copy the whole source once per cell.
+            let rows: &[usize] = match (r, c) {
+                (Some(rk), Some(ck)) => cell.get(&(rk, *ck)).map(Vec::as_slice).unwrap_or(&[]),
+                (Some(rk), None) => rows_by_row_key.get(rk as usize).map(Vec::as_slice).unwrap_or(&[]),
+                (None, Some(ck)) => rows_by_col_key.get(*ck as usize).map(Vec::as_slice).unwrap_or(&[]),
+                (None, None) => p.rows.as_slice(),
             };
             for vc in 0..vals.cols {
-                line.push(agg(&rows, vc));
+                line.push(agg(rows, vc));
             }
         }
         line
