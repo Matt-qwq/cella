@@ -1970,7 +1970,25 @@ value columns into the group loop the way the criteria scans stream one column (
 grouping and the report as they are. That is the same shape of knife that took `COUNTIF` from 26 to
 15 ms: keep the work in the walk.
 
-**Left behind:** the five probe rows, so the next round starts from the same numbers.
+**Round 70 corrected two things and refuted a third.**
+
+- **The "four regions" row was not four groups.** `fn_probe`'s `D` column holds an item name that is
+  *unique per row*, so `GROUPBY(D2:D, C2:C, SUM)` is a **million-group** report. Timed from inside the
+  function (timers since removed): args copy 12.5 ms, key build **127 ms**, and the rest of its 1.78 s
+  is the report itself — sorting a million text keys and building a million lines.
+- **So the "27 ms body" holds for a *few-group* report only** (measured on the `MOD(A,4)` key): the few
+  groups cost ~590 ms *before* the call and 27 inside it; the million-group report costs ~1.7 s
+  *inside* it. The earlier sentence in this entry over-generalised and is retracted.
+- **The per-group `Vec`s were not the cost either:** grouping the rows into a flat CSR array (counts,
+  offsets, one row array) measured **1.78 → 1.78 s** and was reverted, because the line build still
+  allocates and, more to the point, the time is in sorting the keys and writing the lines.
+
+**What is left to cut, in order of size:** the ~590 ms a **few-group** grouper pays before its own body
+(the evaluator's array build — not yet attributed inside `calc`), and for million-group reports the
+sort-and-write. Both are the next rounds' work.
+
+**Left behind:** the probe rows (and the two that price a text column against a number column), so the
+next round starts from the same numbers.
 
 ## After beta
 
