@@ -1792,6 +1792,36 @@ from the chain — a storage-format change of the same order as the spill store,
 then, "a million-row column read in 10 ms" is a property of the layout, not of the code, and the
 `SUM` family's 20–21 ms is that layout's price.
 
+### 49. The spill lay-out is 75–78 ms of a million-cell array, priced phase by phase (P, measured 11-25)
+
+**What the phase timer says** (`fn_probe` with `CELLA_PROFILE=1`, one pass, 1M rows; the probe rows
+`column, spilling` / `column, folded` were added for this):
+
+| call | eval | spills | total |
+|---|---:|---:|---:|
+| `=SUM(A2:A1000001)` | 10.6 | — | **12 ms** |
+| `=A2:A1000001` (spills a million cells) | 64.4 | **75.0** | **142 ms** |
+| `=SUM(BITAND(A2:A,B2:B))` | 84.6 | — | **86 ms** |
+| `=BITAND(A2:A,B2:B)` (spills a million cells) | 166.5 | **77.8** | **247 ms** |
+
+So round 58's "143 ms is the spill" was half right: the **lay-out is 75–78 ms**, and the rest of the
+difference is the **eval side**, which pays ~54 ms to materialise the range into an `Array` (a
+`Vec<Value>`, 24 bytes a cell) — `=A2:A1000001` costs 10.6 ms read + 53.8 ms building the array it
+hands to the cell, while `=SUM(A2:A1000001)` never builds it at all.
+
+**The shape of the fix is now measured, not guessed:** keep the values as the `Arc<Array>` the
+evaluator already produced — `Sheet::spill_values: BTreeMap<CellRef, Arc<Array>>` beside
+`spill_ranges` — instead of a `BTreeMap<CellRef, Value>` with a node a cell. Expected `=A2:A` 142 →
+~70 ms and `BITAND` 247 → ~175, with `SORT`/`FILTER`/`UNIQUE`/`VSTACK`/`DROP` sharing the fraction.
+
+**The cost of that change is its blast radius:** 60 non-test sites read `sheet.spill` — 30 in `calc`
+(lay out, clear, evict, contested areas, the "is there a spill here" questions), 17 in `engine`
+(display, cut/copy/paste, print, pivot, solver, analyze, format, inspect, memory accounting), 5 in
+`xlsx` (write and read them back), 6 in `model` (`value`/`cell` fallbacks, `used_range`), 1 in
+`ui-egui` (the grid). The migration plan, the two helpers that carry most of it (`Sheet::spilled`)
+and the traps (blank spills showing 0, contested-area eviction order, `spilled_nothing`'s cell-by-cell
+compare, save must stay byte-identical) are written up in `plan/spill-store.md`.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2255,6 +2285,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §49 (new): the spill lay-out is **75–78 ms** of a million-cell array, priced phase by phase (=A2:A 142 ms = 10.6 read + 53.8 building the array + 75 laying it out; =BITAND 247 = 166.5 eval + 77.8 spill). So the fix is to keep the evaluator's Arc<Array> as the spill's value instead of a BTreeMap node a cell — 60 non-test reader sites across five crates, inventoried and ordered in plan/spill-store.md |
 | 2026-11-25 | minor | §48 (new): the column-read wall is a chain of **three dependent loads a cell** (the row's `cells_at`, the payload, the number). The dense-band stride read works — 11.5 → **8.1 ns a cell** on a one-column sheet, 9.9 on eight — and moves the page by nothing (`SUM` 20 → 21 ms, inside ±2), so it is reverted. The width sweep is the proof it is latency, not bandwidth: 8.1 ns at one column wide against 9.9 at eight. Under it needs the number inline in the payload stripe — a storage format change, not a loop |
 | 2026-11-25 | minor | §47 (new): a whole-column sum folds inside the store — `CellStore::fold_column` runs the arithmetic in its own loop, so `SUM` **25 → 20 ms**, `COUNT` **26 → 21**, `MAX` **26 → 20**, `MIN` **26 → 21**. The same fold costs 11.5 ns a cell against the packed walk's 12.4, which is the round's other finding: the callback a cell was ~1 ns of the walk. The 15 ms aim is retracted — a two-column sum cannot go under ~23 ms without a dense-band stride read |
 | 2026-11-25 | minor | §46 (new): a column read spent 62 % of its time finding the rows — by ablation the row walk alone cost 9.8 ns a cell of a 15.9 ns read. Walking the band's rows in order instead of looking each key up: **15.9 → 11.9 ns a cell (−25 %)**, and on the page `SUM`/`COUNT`/`MAX`/`MIN` 29–32 → **25–26 ms**, the criteria family 17–18 → **15–16**, the lookups 17 → **15–16**. A million-row column read costs 9.8 ms doing *nothing*, which is what the plan's 10 ms target is up against |

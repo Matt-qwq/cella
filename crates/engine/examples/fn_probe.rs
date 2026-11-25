@@ -83,6 +83,10 @@ const CALLS: &[(&str, &str)] = &[
     ("SUM of a lift", "=SUM(BITAND(A2:A{last},B2:B{last}))"),
     ("BITAND, spilling", "=BITAND(A2:A{last},B2:B{last})"),
     ("SUM of a column", "=SUM(A2:A{last})"),
+    // The same million-value array, once folded and once left in the cell (so it spills): what a
+    // spilled result costs beyond the reading of it.
+    ("column, spilling", "=A2:A{last}"),
+    ("column, folded", "=SUM(A2:A{last})"),
 ];
 
 fn main() -> ExitCode {
