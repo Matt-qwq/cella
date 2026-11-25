@@ -2104,6 +2104,18 @@ slice of it and the row loop is a memcpy into the right offset. That is a wider 
 `src.rows` in `crates/engine/src/pivot.rs`) and it is the next round's work if the pivot refresh is
 worth more time than the ~120 ms it would save.
 
+**Landed the same day.** `Source` keeps `data: Vec<Value>` and `width`, with `row`/`rows`/`height` on
+it; the sheet and model readers append into that one block and the report walks slices. Five passes
+against the gate's own scenario:
+
+| `pivot.refresh` | before | after |
+|---|---:|---:|
+| 100,000 rows | 43 ms | **34 ms (−21 %)** |
+| 1,000,000 rows | 382 ms | **352 ms (−8 %)** |
+
+The smaller sheet gains more, which is what per-row overhead looks like when it is a larger share of
+the run. Engine 649, clippy, fmt, wasm, `perf` 59/59.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
