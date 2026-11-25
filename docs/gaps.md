@@ -1762,6 +1762,36 @@ this round's brief is retracted. It needs the **dense-band stride read** (a band
 full from column 0", so a column's payloads are a stride apart and the fold never visits a row) or
 nothing.
 
+### 48. The column-read wall is a chain of three loads a cell (P, measured 11-25)
+
+**What was tried:** the dense-band stride read — a band whose rows are all full from column 0 and all
+one kind (`Band::uniform`), where a row's `i`th stored cell *is* its `i`th column, so the fold takes
+`payloads[cells_at + col]` with no presence bitmap and no run cursor.
+
+**It works, and it is not enough.** On the store directly, five-pass probe:
+
+| sheet width | `fold_column` before | after |
+|---|---:|---:|
+| 1 column | 11.5 | **8.1 ns/cell** |
+| 2 columns | 11.5 | **8.6** |
+| 8 columns | 11.5 | **9.9** |
+
+and the page did not move: `SUM` 20 → 21 ms, `COUNT`/`MAX` 21, `MIN` 20, `AVERAGE` 24 → 21 — inside
+this machine's ±2 ms. Reverted, per the rule.
+
+**The width sweep is the finding.** The same fold over one column costs 8.1 ns a cell whether the
+sheet is one column wide or eight (9.9), so this is **not** bandwidth and not the cache lines a
+strided column touches: it is **latency**, a chain of three dependent loads a cell — the row's
+`cells_at`, the payload it indexes, and the number that payload slots into. Three L2-latency loads
+are ~25 cycles, which is the 8 ns. The bitmap, the run cursor, the callback and the kind were each
+measured and are each about 1 ns of it.
+
+**What that means:** the strip below ~8 ns/cell needs the **payload to hold the number inline**
+(8 bytes in the stripe instead of a `u32` index into the `numbers` table), which removes one link
+from the chain — a storage-format change of the same order as the spill store, and not a loop. Until
+then, "a million-row column read in 10 ms" is a property of the layout, not of the code, and the
+`SUM` family's 20–21 ms is that layout's price.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2225,6 +2255,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §48 (new): the column-read wall is a chain of **three dependent loads a cell** (the row's `cells_at`, the payload, the number). The dense-band stride read works — 11.5 → **8.1 ns a cell** on a one-column sheet, 9.9 on eight — and moves the page by nothing (`SUM` 20 → 21 ms, inside ±2), so it is reverted. The width sweep is the proof it is latency, not bandwidth: 8.1 ns at one column wide against 9.9 at eight. Under it needs the number inline in the payload stripe — a storage format change, not a loop |
 | 2026-11-25 | minor | §47 (new): a whole-column sum folds inside the store — `CellStore::fold_column` runs the arithmetic in its own loop, so `SUM` **25 → 20 ms**, `COUNT` **26 → 21**, `MAX` **26 → 20**, `MIN` **26 → 21**. The same fold costs 11.5 ns a cell against the packed walk's 12.4, which is the round's other finding: the callback a cell was ~1 ns of the walk. The 15 ms aim is retracted — a two-column sum cannot go under ~23 ms without a dense-band stride read |
 | 2026-11-25 | minor | §46 (new): a column read spent 62 % of its time finding the rows — by ablation the row walk alone cost 9.8 ns a cell of a 15.9 ns read. Walking the band's rows in order instead of looking each key up: **15.9 → 11.9 ns a cell (−25 %)**, and on the page `SUM`/`COUNT`/`MAX`/`MIN` 29–32 → **25–26 ms**, the criteria family 17–18 → **15–16**, the lookups 17 → **15–16**. A million-row column read costs 9.8 ms doing *nothing*, which is what the plan's 10 ms target is up against |
 | 2026-11-25 | minor | §44 (extended): the whole single-criterion family answers from the scan — AVERAGEIF **27 → 17 ms**, AVERAGEIFS **28 → 18**, COUNTIFS **24 → 18**, SUMIFS **31 → 18** — all seven spellings at the walk's price, with Excel's 255-unit difference between the two families kept and tested |
