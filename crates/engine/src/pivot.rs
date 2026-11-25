@@ -3639,6 +3639,155 @@ pub fn detail_row_cap(width: usize, max_cells: u64) -> u64 {
     (max_cells / width.max(1) as u64).max(1).min(MAX_ROWS as u64 - 1)
 }
 
+/// [`details`] answered by the engine: the records behind a cell, read by the engine itself.
+///
+/// A file-backed table keeps no rows in the document and the scan cannot walk it, so the records
+/// are asked for with one `SELECT … WHERE … LIMIT`: the cell's items become the predicate, and an
+/// item's caption — which may cover several dates, or a formatted number — is turned back into the
+/// values it stands for by labelling the field's distinct values here, exactly as a filter's is.
+///
+/// `Ok(None)` when this is not a model source the engine holds: the scan answers then.
+pub fn details_sql(
+    wb: &Workbook,
+    pt: &PivotTable,
+    sheet: usize,
+    cell: CellRef,
+    max_cells: u64,
+    engine: Option<&cella_sql::Engine>,
+) -> Result<Option<Detail>, String> {
+    let Some(engine) = engine else { return Ok(None) };
+    if pt.source_kind != PivotSourceKind::DataModel {
+        return Ok(None);
+    }
+    let requested = pt.source.trim().trim_start_matches('=').trim();
+    let Some(table) = wb.model.table(requested) else { return Ok(None) };
+    let plan = plan_source(wb, table);
+    let Some(src) = read_source_shape(wb, pt.source_kind, &pt.source, sheet, engine)? else { return Ok(None) };
+    let area = pt.last_range.ok_or("Refresh the PivotTable before showing details.")?;
+    if !area.contains(cell) {
+        return Err(format!("{} is outside the PivotTable report {}.", cell.a1(), area.a1()));
+    }
+    let (out, _, _) = compute_detailed(wb, pt, sheet, Some(engine))?;
+    check_current(wb, pt, sheet, &out)?;
+    let (r, c, j) = out.grid_pos(area.start, cell).ok_or(NOT_A_VALUE_CELL)?;
+    let kind = out.grid.get(r).and_then(|row| row.get(c)).map(|x| x.kind);
+    if !matches!(kind, Some(CellKind::Data | CellKind::Subtotal | CellKind::GrandTotal)) {
+        return Err(NOT_A_VALUE_CELL.into());
+    }
+    let row_path = out.row_paths.get(r).cloned().unwrap_or_default();
+    let col_path = out.col_paths.get(j).cloned().ok_or(NOT_A_VALUE_CELL)?;
+    // The sheet's name: the items the line and the column stand for.
+    let mut parts: Vec<String> = Vec::new();
+    for (d, id) in row_path.iter().enumerate() {
+        if let Some(label) = out.row_items.get(d).and_then(|items| items.get(*id as usize)) {
+            parts.push(label.clone());
+        }
+    }
+    for (d, id) in col_path.iter().enumerate() {
+        if let Some(label) = out.col_items.get(d).and_then(|items| items.get(*id as usize)) {
+            parts.push(label.clone());
+        }
+    }
+    let title = if parts.is_empty() { "Details".to_string() } else { parts.join(" - ") };
+    let from = plan_from(&plan);
+    let Some(where_sql) = plan_where(wb, pt, &src, engine, &plan, &from)? else { return Ok(None) };
+    // ---- the cell's own items, as a predicate
+    let row_fields: Vec<(usize, &PivotField)> = pt.rows.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
+    let col_fields: Vec<(usize, &PivotField)> = pt.columns.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
+    let mut predicates: Vec<String> = Vec::new();
+    for (fields, items, path) in [(&row_fields, &out.row_items, &row_path), (&col_fields, &out.col_items, &col_path)] {
+        for (d, id) in path.iter().enumerate() {
+            let (Some((header, field)), Some(label)) = (fields.get(d), items.get(d).and_then(|l| l.get(*id as usize))) else { continue };
+            let Some(predicate) = item_predicate(wb, &src, engine, &plan, &from, &where_sql, *header, field, label)? else {
+                return Ok(None);
+            };
+            predicates.push(predicate);
+        }
+    }
+    let mut all: Vec<String> = Vec::new();
+    if !where_sql.is_empty() {
+        all.push(where_sql);
+    }
+    all.extend(predicates);
+    let where_all = all.join(" AND ");
+    let cap = detail_row_cap(src.headers.len(), max_cells);
+    // Counted first, so "N records left out" is the number rather than a guess.
+    let mut count = format!("SELECT COUNT(*) FROM {from}");
+    if !where_all.is_empty() {
+        count.push_str(" WHERE ");
+        count.push_str(&where_all);
+    }
+    let total = engine.query(&count).map_err(|e| e.to_string())?.rows.first().and_then(|row| row.first()).and_then(Value::as_f64);
+    let total = total.unwrap_or(0.0).max(0.0) as u64;
+    let columns: Vec<String> = (0..src.headers.len()).filter_map(|i| plan_ref(&plan, i)).collect();
+    if columns.len() != src.headers.len() {
+        return Ok(None);
+    }
+    let mut sql = format!("SELECT {} FROM {from}", columns.join(", "));
+    if !where_all.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_all);
+    }
+    sql.push_str(&format!(" ORDER BY {}.{ORD} LIMIT {cap}", plan.first().map(|p| p.alias.as_str()).unwrap_or("t0")));
+    let answer = engine.query(&sql).map_err(|e| e.to_string())?;
+    let rows = answer.rows;
+    let skipped = total.saturating_sub(rows.len() as u64);
+    Ok(Some(Detail { title, headers: src.headers.clone(), formats: src.formats.clone(), rows, skipped }))
+}
+
+/// The predicate one item of a report's axis stands for: the values whose caption it is, as SQL.
+///
+/// `None` when the item cannot be named — the engine does not hold a value, or there are too many
+/// distinct values to label (a detail would then be a guess).
+#[allow(clippy::too_many_arguments)]
+fn item_predicate(
+    wb: &Workbook,
+    src: &Source,
+    engine: &cella_sql::Engine,
+    plan: &[Planned<'_>],
+    from: &str,
+    where_sql: &str,
+    header: usize,
+    field: &PivotField,
+    label: &str,
+) -> Result<Option<String>, String> {
+    let Some(reference) = plan_ref(plan, header) else { return Ok(None) };
+    let fmt = src.formats.get(header).cloned().unwrap_or_else(|| "General".to_string());
+    let group = Grouping::of(field);
+    let mut sql = format!("SELECT DISTINCT {reference} FROM {from}");
+    if !where_sql.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(where_sql);
+    }
+    let answer = engine.query(&sql).map_err(|e| e.to_string())?;
+    if answer.rows.len() > 200_000 {
+        return Ok(None);
+    }
+    let mut keep: Vec<String> = Vec::new();
+    let mut blank = false;
+    for row in &answer.rows {
+        let value = row.first().cloned().unwrap_or(Value::Empty);
+        if !item_label(wb, &value, group, &fmt).eq_ignore_ascii_case(label) {
+            continue;
+        }
+        if value.is_empty() {
+            blank = true;
+        } else {
+            match sql_literal(&value) {
+                Some(literal) => keep.push(literal),
+                None => return Ok(None),
+            }
+        }
+    }
+    let mut clause = String::new();
+    if !keep.is_empty() {
+        clause = format!("{reference} IN ({})", keep.join(", "));
+    }
+    if blank {
+        clause = if clause.is_empty() { format!("{reference} IS NULL") } else { format!("({clause} OR {reference} IS NULL)") };
+    }
+    Ok(Some(if clause.is_empty() { "1 = 0".to_string() } else { clause }))
+}
 /// [`details`] with the cell cap given (the command uses [`MAX_DETAIL_CELLS`]).
 pub fn details_with_cap(wb: &Workbook, pt: &PivotTable, sheet: usize, cell: CellRef, max_cells: u64) -> Result<Detail, String> {
     let area = pt.last_range.ok_or("Refresh the PivotTable before showing details.")?;

@@ -2335,6 +2335,8 @@ fn show_details(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(other("The workbook is protected and cannot be changed."));
     }
     let (si, pi) = find_pivot(s, p)?;
+    // Taken before the workbook is borrowed: a model source answers its details from the engine.
+    let sql = s.model_sql_for();
     let (detail, name) = {
         let d = s.doc()?;
         let wb = &d.wb;
@@ -2350,7 +2352,12 @@ fn show_details(s: &mut Session, p: &Json) -> Result<Json> {
         let at = cell_param_on(s, p, "cell", si)?.unwrap_or_else(|| {
             if pt.last_range.is_some_and(|r| r.contains(active)) { active } else { pt.last_range.map(|r| r.start).unwrap_or(pt.anchor) }
         });
-        let detail = pv::details(wb, pt, si, at).map_err(other)?;
+        // A model source the engine holds answers from the engine (a file-backed table keeps no
+        // rows here); a sheet source, and a build with no engine, scan as they always did.
+        let detail = match pv::details_sql(wb, pt, si, at, pv::MAX_DETAIL_CELLS, sql.as_deref()).map_err(other)? {
+            Some(detail) => detail,
+            None => pv::details(wb, pt, si, at).map_err(other)?,
+        };
         let name = detail_sheet_name(wb, &detail.title);
         (detail, name)
     };

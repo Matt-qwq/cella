@@ -252,6 +252,33 @@ fn a_file_backed_table_can_be_filtered_by_value() {
 }
 
 #[test]
+fn a_file_backed_table_can_show_details() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // The records behind a cell are asked of the engine: the document has none of them, and the
+    // scan cannot walk the table at all. 500 rows over 64 regions, so one region is eight rows.
+    let path = temp("details.csv");
+    write_sales(&path, 500);
+    let mut s = Session::new();
+    s.new_workbook();
+    run(&mut s, "data.model.loadFile", json!({"path": path.display().to_string(), "name": "Sales"}));
+    let out =
+        run(&mut s, "insert.pivotTable", json!({"source": "Sales", "rows": ["Sales[Region]"], "values": ["Sales[Amount]"], "destination": "new"}));
+    let name = out["name"].as_str().expect("a name").to_string();
+    // A3 is the report's corner, A4 the first region's line, B4 its value.
+    let detail = run(&mut s, "pivot.showDetails", json!({"pivot": name, "cell": "B4"}));
+    assert_eq!(detail["rows"], 8);
+    assert_eq!(detail["name"], "Region 0");
+    // And the grand total is every record.
+    let (_, area) = report_area(&s, &name);
+    let grand = format!("B{}", area.end.row + 1);
+    let all = run(&mut s, "pivot.showDetails", json!({"pivot": name, "cell": grand}));
+    assert_eq!(all["rows"], 500);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn without_an_engine_a_file_backed_table_says_so() {
     if cfg!(feature = "sql-engine") {
         return;
