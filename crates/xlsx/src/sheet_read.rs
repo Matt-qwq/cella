@@ -104,6 +104,8 @@ pub(crate) struct ReadPlan {
     pub spill: Option<SpillTarget>,
     /// The functions the evaluator can calculate, for unwrapping Google Sheets' export wrappers.
     pub known_function: crate::KnownFunctions,
+    /// The room one part and the package in all may unpack to for this read (see `ReadOptions`).
+    pub limits: (u64, u64),
 }
 /// A place and a name hint for the page file a paging read creates. The model sanitizes the hint
 /// and applies the `CELLA_SPILL` policy; nothing here reaches a document or a sheet name.
@@ -127,6 +129,7 @@ impl Default for ReadPlan {
             paging: false,
             spill: None,
             known_function: crate::KnownFunctions::default(),
+            limits: crate::package::limits(),
         }
     }
 }

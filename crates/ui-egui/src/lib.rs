@@ -934,10 +934,16 @@ impl SheetApp {
     }
 
     pub fn open_path(&mut self, path: &str) {
-        match self.run("file.open", json!({"path": path})) {
+        // `force`: the person picked this file, so it gets the room its own parts declare even when
+        // that is past the usual size limits — a 300 MB archival workbook unpacks to gigabytes and
+        // refusing it would be refusing real work (#73). The limits still guard every open no
+        // interface asked for, and the reader still refuses a package that claims a bomb's size.
+        match self.run("file.open", json!({"path": path, "force": true})) {
             Ok(r) => self.after_open(Some(path), &r),
             // A password-protected workbook: ask for the password; the dialog opens it.
-            Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => self.open_dialog("openPassword", json!({"path": path})),
+            // `force` rides along into the password dialog's values, so the open it finally runs is
+            // still the one the person asked for.
+            Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => self.open_dialog("openPassword", json!({"path": path, "force": true})),
             Err(e) => self.message = Some(("Cella".into(), clean_error(&e))),
         }
         self.after_engine();
@@ -1433,7 +1439,8 @@ impl SheetApp {
             .unwrap_or_default();
         for (name, bytes) in arrived {
             let b64 = cella_engine::io::base64_encode(&bytes);
-            match self.run("file.open", json!({"name": &name, "base64": &b64})) {
+            // A dropped or picked file is the person's own choice: give it the room its parts declare.
+            match self.run("file.open", json!({"name": &name, "base64": &b64, "force": true})) {
                 // A file picked from File › Open (web) arrives here: show it, not the Backstage.
                 Ok(r) => {
                     self.backstage = None;
@@ -1441,7 +1448,7 @@ impl SheetApp {
                 }
                 Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => {
                     self.backstage = None;
-                    self.open_dialog("openPassword", json!({"name": name, "base64": b64}));
+                    self.open_dialog("openPassword", json!({"name": name, "base64": b64, "force": true}));
                 }
                 Err(e) => self.message = Some(("Cella".into(), clean_error(&e))),
             }

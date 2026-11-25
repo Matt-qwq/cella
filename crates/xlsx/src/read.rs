@@ -152,14 +152,16 @@ pub fn read_xlsx_paged(bytes: &[u8], paging: bool) -> Result<(Workbook, ReadRepo
 impl ReadPlan {
     pub(crate) fn from_options(options: ReadOptions) -> ReadPlan {
         let spill = options.paging.then_some(SpillTarget { dir: options.spill_dir, name: options.spill_name, temp: options.spill_temp });
-        ReadPlan { paging: options.paging, spill, known_function: options.known_function, ..ReadPlan::default() }
+        let (part, total) = crate::package::limits();
+        let limits = (options.max_part.unwrap_or(part), options.max_total.unwrap_or(total));
+        ReadPlan { paging: options.paging, spill, known_function: options.known_function, limits, ..ReadPlan::default() }
     }
 }
 
 /// [`read_xlsx`] with the row-reading plan spelled out: tests use it to read one fixture whole, in
 /// chunks and streamed, and to hold the three against each other.
 pub(crate) fn read_xlsx_with(bytes: &[u8], plan: ReadPlan) -> Result<(Workbook, ReadReport), IoError> {
-    read_package(Package::open(bytes)?, plan)
+    read_package(Package::open_with(bytes, plan.limits)?, plan)
 }
 
 /// [`read_xlsx`] from a file, decompressing parts as they are needed instead of holding the file.
@@ -177,8 +179,9 @@ pub fn read_xlsx_file_paged(path: &std::path::Path, paging: bool) -> Result<(Wor
 /// beside the document rather than into the system temp directory (which may be a tmpfs, where
 /// paging would silently land in RAM).
 pub fn read_xlsx_file_with(path: &std::path::Path, options: ReadOptions) -> Result<(Workbook, ReadReport), IoError> {
+    let plan = ReadPlan::from_options(options);
     let file = std::fs::File::open(path).map_err(|e| IoError::Format(format!("{}: {e}", path.display())))?;
-    read_package(Package::open_file(file)?, ReadPlan::from_options(options))
+    read_package(Package::open_file_with(file, plan.limits)?, plan)
 }
 
 fn read_package(pkg: Package<'_>, plan: ReadPlan) -> Result<(Workbook, ReadReport), IoError> {

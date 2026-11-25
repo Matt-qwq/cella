@@ -8,7 +8,7 @@ use crate::DocState;
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.new", "New Workbook", ["File"], Some("Cmd+N"), "{sample?: \"budget\"|\"sales\"|\"grades\"}", always, new_workbook),
-        cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"), "{path} | {name, base64}, plus {password} for a password-protected workbook and {csvAsText?: bool} to keep every csv/tsv/txt field as text, with no number or date conversion (xlsx, xlsm, xls import, xlsb and ods data import, csv, tsv, txt, json)", always, open),
+        cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"), "{path} | {name, base64}, plus {password} for a password-protected workbook, {csvAsText?: bool} to keep every csv/tsv/txt field as text, with no number or date conversion, and {force?: bool} to open a workbook whose parts unpack past the usual 2 GiB / 4 GiB limits by giving it the room its own parts declare (an interface passes it for a file the user picked; the limits are a guard against damaged or malicious files)", always, open),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?, password?, encryption?} (xlsx by default; .csv/.tsv/.json/.html/.pdf by extension; without `password` the workbook keeps the one it was opened with, and `\"\"` removes it; `encryption` picks `agile` — the default — or `standard` for the AES-128/SHA-1 form Excel 2007 wrote, and without it a workbook opened from a Standard file stays Standard)", has_doc, save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path, password?, encryption?} (.xlsx, .csv, .tsv, .json, .html, or .pdf: a PDF of the active sheet; a password encrypts an .xlsx, with `encryption`: `agile` — the default — or `standard`)", has_doc, save_as),
         cmd!(query "file.saveBytes", "Encode Workbook", [], None, "{format?: xlsx|csv|tsv|json|html, password?, encryption?: agile|standard} → {base64} (without `encryption` the document's scheme is used)", has_doc, save_bytes),
@@ -72,6 +72,11 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     // whose sheets are small then costs the parts it reads instead of a gigabyte of buffer.
     let mut from_file: Option<(Workbook, Vec<String>)> = None;
     let password = str_param(p, "password");
+    // `force` is the person who picked the file saying yes: the parts are given the room their own
+    // directory declares instead of the process limits, which is how a 300 MB archival workbook
+    // opens at all. Interfaces pass it for a file the user chose; an agent that does not ask for it
+    // keeps the limits.
+    let force = bool_param(p, "force").unwrap_or(false);
     let (name, bytes) = if let Some(b) = str_param(p, "base64") {
         (str_param(p, "name").unwrap_or("Book.xlsx").to_string(), crate::io::base64_decode(b).ok_or_else(|| bad("file.open", "invalid base64"))?)
     } else if let Some(path) = str_param(p, "path") {
@@ -80,7 +85,7 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
             s.set_active(i);
             return Ok(json!({"index": i, "alreadyOpen": true}));
         }
-        match crate::io::open_from_path(path, path, password)? {
+        match crate::io::open_from_path(path, path, password, force)? {
             Some((wb, warnings)) => {
                 from_file = Some((wb, warnings));
                 (path.to_string(), Vec::new())
@@ -94,7 +99,7 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     let encrypted = from_file.is_none() && cella_xlsx::sniff(&bytes) == cella_xlsx::Format::Encrypted;
     let (mut wb, warnings) = match from_file {
         Some((wb, warnings)) => (wb, warnings),
-        None => crate::io::open_bytes_with(&name, &bytes, password, bool_param(p, "csvAsText").unwrap_or(false))?,
+        None => crate::io::open_bytes_room(&name, &bytes, password, bool_param(p, "csvAsText").unwrap_or(false), force)?,
     };
     wb.source_dir = str_param(p, "path").and_then(crate::io::source_dir);
     // What `CELL("filename")` reports (#1489). A workbook opened from bytes knows its name but
@@ -131,7 +136,10 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let i = s.add_document(doc);
     // The decrypted-workbook notice is for the info bar, not a message box.
-    let shown: Vec<&str> = warnings.iter().map(String::as_str).filter(|w| *w != crate::io::DECRYPTED_NOTICE).collect();
+    // The decrypt and the raised-size lines are for the info bar, not a message box: each says what
+    // the open did, and the interface shows it there.
+    let shown: Vec<&str> =
+        warnings.iter().map(String::as_str).filter(|w| *w != crate::io::DECRYPTED_NOTICE && !w.contains(crate::io::ROOMED_FOR_SIZE)).collect();
     if !shown.is_empty() {
         let mut message = shown.iter().take(5).copied().collect::<Vec<_>>().join("\n\n");
         if shown.len() > 5 {

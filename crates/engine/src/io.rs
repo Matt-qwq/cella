@@ -48,6 +48,10 @@ pub const PASSWORD_REQUIRED: &str = "is password-protected. Enter its password t
 pub const WRONG_PASSWORD: &str = "The password is incorrect.";
 /// The first open warning of a workbook decrypted with its password.
 pub const DECRYPTED_NOTICE: &str = "This workbook was password-protected. Cella saves it back with the same password.";
+/// The open warning of a workbook whose parts unpack past the usual size limits carries this: it
+/// belongs in the info bar, not in a message box — the workbook opened as asked and the line only
+/// explains what it took.
+pub const ROOMED_FOR_SIZE: &str = "It was opened with room for that";
 
 /// Parses a file's bytes into a workbook. `name` picks the format by extension when the bytes
 /// don't say. An encrypted workbook needs [`open_bytes_with_password`].
@@ -65,8 +69,16 @@ pub fn open_bytes_with_password(name: &str, bytes: &[u8], password: Option<&str>
 /// the text it holds, with no number, date or boolean conversion (identifiers such as GTINs, SKUs
 /// and ZIP codes survive). It does not apply to other formats.
 pub fn open_bytes_with(name: &str, bytes: &[u8], password: Option<&str>, csv_as_text: bool) -> Result<(Workbook, Vec<String>)> {
+    open_bytes_room(name, bytes, password, csv_as_text, false)
+}
+
+/// [`open_bytes_with`], and with `force` the workbook is given the room its own parts declare even
+/// when that is past the process limits: `file.open {force}` reaches this for a file the person
+/// holding it asked to open (see [`room_for`]). An encrypted workbook is decrypted first, so its
+/// room is measured on the plain bytes.
+pub fn open_bytes_room(name: &str, bytes: &[u8], password: Option<&str>, csv_as_text: bool, force: bool) -> Result<(Workbook, Vec<String>)> {
     if cella_xlsx::sniff(bytes) != cella_xlsx::Format::Encrypted {
-        let (mut wb, warnings) = open_plain(name, bytes, csv_as_text)?;
+        let (mut wb, warnings) = open_plain(name, bytes, csv_as_text, room_of(bytes, force))?;
         fit_imported_rows(&mut wb);
         return Ok((wb, warnings));
     }
@@ -80,7 +92,7 @@ pub fn open_bytes_with(name: &str, bytes: &[u8], password: Option<&str>, csv_as_
     if cella_xlsx::sniff(&plain) == cella_xlsx::Format::Encrypted {
         return Err(EngineError::Other(format!("We can't open '{name}': the encrypted file is damaged (it holds another encrypted file).")));
     }
-    let (mut wb, mut warnings) = open_plain(name, &plain, csv_as_text)?;
+    let (mut wb, mut warnings) = open_plain(name, &plain, csv_as_text, room_of(&plain, force))?;
     fit_imported_rows(&mut wb);
     warnings.insert(0, DECRYPTED_NOTICE.into());
     Ok((wb, warnings))
@@ -242,7 +254,7 @@ fn known_functions() -> cella_xlsx::KnownFunctions {
 /// A package large enough to page is read with completed bands spilled beside the document (see
 /// [`should_page`] and [`spill_place`]); a workbook opened from bytes has no folder, so its pages
 /// go to the temp directory.
-pub fn open_from_path(name: &str, path: &str, password: Option<&str>) -> Result<Option<(Workbook, Vec<String>)>> {
+pub fn open_from_path(name: &str, path: &str, password: Option<&str>, force: bool) -> Result<Option<(Workbook, Vec<String>)>> {
     // A JSON workbook is read into memory whole, so one over the read cap is refused from its size
     // rather than after the read (a malicious 8 GB `.json` must not cost 8 GB of memory first).
     if password.is_none() && matches!(FileKind::from_path(name), Some(FileKind::Json)) {
@@ -269,23 +281,40 @@ pub fn open_from_path(name: &str, path: &str, password: Option<&str>) -> Result<
         return Err(EngineError::Other("files larger than 2 GB aren't supported".into()));
     }
     let (spill_dir, spill_name) = spill_place(path);
-    let options = cella_xlsx::ReadOptions { paging: should_page(size), spill_dir, spill_name, spill_temp: None, known_function: known_functions() };
+    // A file the person asked for gets the room its own directory declares, with a tenth of slack:
+    // a 300 MB archival report unpacks to gigabytes, and refusing it would be refusing real work.
+    let declared = if force { cella_xlsx::declared_sizes_file(std::path::Path::new(path)) } else { None };
+    let room = declared.as_ref().map(|(largest, total)| room_for(largest.as_ref().map_or(0, |(_, size)| *size), *total));
+    let limits = room.unwrap_or((cella_xlsx::max_part(), cella_xlsx::max_total()));
+    let options = cella_xlsx::ReadOptions {
+        paging: should_page(size),
+        spill_dir,
+        spill_name,
+        spill_temp: None,
+        known_function: known_functions(),
+        max_part: Some(limits.0),
+        max_total: Some(limits.1),
+    };
     let (mut wb, report) = match cella_xlsx::read_xlsx_file_with(std::path::Path::new(path), options) {
         Ok(read) => read,
         // A size complaint is the answer, not a reason to load the file to hear it again.
         Err(cella_xlsx::IoError::TooLarge(detail)) => {
-            return Err(EngineError::Other(too_large_message(name, &detail)));
+            return Err(EngineError::Other(too_large_message(name, &detail, limits)));
         }
         // Some other package named `.xlsx` — an OpenDocument or XLSB file, say: let the reader that
         // knows those formats have the bytes.
         Err(_) => return Ok(None),
     };
     fit_imported_rows(&mut wb);
-    Ok(Some((wb, report.warnings)))
+    let mut warnings = report.warnings;
+    if let (Some((largest, total)), Some(_)) = (declared.as_ref(), room) {
+        warnings.push(room_warning(largest.as_ref(), *total));
+    }
+    Ok(Some((wb, warnings)))
 }
 
 /// Parses bytes that aren't encrypted.
-fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, Vec<String>)> {
+fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool, room: Option<(u64, u64)>) -> Result<(Workbook, Vec<String>)> {
     let kind = FileKind::from_path(name);
     let sniffed = cella_xlsx::sniff(bytes);
     if sniffed == cella_xlsx::Format::Xls {
@@ -317,12 +346,25 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
         // and the model keeps only the pages. The 100M-cell export is 551 MB. A workbook opened
         // from bytes has no folder, so the temp directory is all a spill can use.
         let paging = should_page(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-        let options = cella_xlsx::ReadOptions { paging, known_function: known_functions(), ..Default::default() };
+        let limits = room.unwrap_or((cella_xlsx::max_part(), cella_xlsx::max_total()));
+        let options = cella_xlsx::ReadOptions {
+            paging,
+            known_function: known_functions(),
+            max_part: Some(limits.0),
+            max_total: Some(limits.1),
+            ..Default::default()
+        };
         let (wb, report) = cella_xlsx::read_xlsx_with(bytes, options).map_err(|e| match e {
-            cella_xlsx::IoError::TooLarge(detail) => EngineError::Other(too_large_message(name, &detail)),
+            cella_xlsx::IoError::TooLarge(detail) => EngineError::Other(too_large_message(name, &detail, limits)),
             e => EngineError::Other(format!("We can't open '{name}': {e}")),
         })?;
-        return Ok((wb, report.warnings));
+        let mut warnings = report.warnings;
+        if room.is_some()
+            && let Some(line) = room_warning_of(bytes)
+        {
+            warnings.push(line);
+        }
+        return Ok((wb, warnings));
     }
     match kind {
         Some(FileKind::Json) => {
@@ -368,18 +410,59 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
 /// the data in. The limits guard against damaged or malicious files, not against real work — a
 /// report of a million records can outgrow them — so the message says both what to do instead and
 /// how to raise them, and never presents the size as a refusal to hear.
-fn too_large_message(name: &str, detail: &str) -> String {
+fn too_large_message(name: &str, detail: &str, limits: (u64, u64)) -> String {
     if !detail.contains("unpack") {
         // A limit inside the format itself (an .xls record count, an ODS attribute): nothing raises it.
         return format!("We can't open '{name}': {detail}.");
     }
-    let (part_limit, total_limit) = (cella_xlsx::max_part() >> 20, cella_xlsx::max_total() >> 20);
+    let (part_limit, total_limit) = (limits.0 >> 20, limits.1 >> 20);
     format!(
         "We can't open '{name}': {detail}. Cella allows {part_limit} MB in one part and {total_limit} MB in \
          all, a guard against damaged or malicious files, and a report of a million records can outgrow \
          it. To open this workbook, save a copy holding fewer rows (each part is checked on its own), or \
-         save the sheet as CSV, which keeps only its values. For a file you trust, CELLA_MAX_PART_MB and \
-         CELLA_MAX_TOTAL_MB raise the limits."
+         save the sheet as CSV, which keeps only its values. An interface opens a workbook this size \
+         when the person who picked it says so; CELLA_MAX_PART_MB and CELLA_MAX_TOTAL_MB raise the \
+         limits for every open."
+    )
+}
+
+/// The room a workbook that unpacks past the process limits is given when the person holding it
+/// asked to open it: its own declared sizes plus a tenth, and a ceiling — a package claiming a
+/// bomb's 10 GB is still refused rather than believed.
+fn room_for(largest_part: u64, total: u64) -> (u64, u64) {
+    const CEILING: u64 = 8 * 1024 * 1024 * 1024;
+    let grow = |size: u64| size.saturating_add(size / 10).saturating_add(16 * 1024 * 1024).min(CEILING);
+    let total = grow(total).min(CEILING);
+    (grow(largest_part).min(total), total)
+}
+
+/// [`room_for`] for bytes already in memory; `None` unless `force`.
+fn room_of(bytes: &[u8], force: bool) -> Option<(u64, u64)> {
+    if !force {
+        return None;
+    }
+    let (largest, total) = cella_xlsx::declared_sizes(bytes)?;
+    Some(room_for(largest.as_ref().map_or(0, |(_, size)| *size), total))
+}
+
+/// [`room_warning`] for a package already in memory.
+fn room_warning_of(bytes: &[u8]) -> Option<String> {
+    let (largest, total) = cella_xlsx::declared_sizes(bytes)?;
+    Some(room_warning(largest.as_ref(), total))
+}
+
+/// What the interface says after a workbook the usual limits would refuse was opened anyway: what
+/// it declares, what it was compared against, and that the room is why it opened.
+fn room_warning(largest: Option<&(String, u64)>, total: u64) -> String {
+    let part = match largest {
+        Some((name, size)) => format!(" (its largest part {name} to {} MB)", size >> 20),
+        None => String::new(),
+    };
+    format!(
+        "This workbook's parts unpack to {} MB{part}, more than Cella's usual {} MB in one part and {} MB in all. {ROOMED_FOR_SIZE}, which takes about as much memory as it unpacks to.",
+        total >> 20,
+        cella_xlsx::max_part() >> 20,
+        cella_xlsx::max_total() >> 20
     )
 }
 
@@ -1614,7 +1697,7 @@ mod tests {
         let Ok(just_over) = u32::try_from(cap + 1) else { return };
         let path = std::env::temp_dir().join(format!("cella-size-guard-{}.xlsx", std::process::id()));
         std::fs::write(&path, declaring(package, "xl/sharedStrings.xml", just_over)).unwrap();
-        let opened = open_from_path("big.xlsx", path.to_str().unwrap(), None);
+        let opened = open_from_path("big.xlsx", path.to_str().unwrap(), None, false);
         let _ = std::fs::remove_file(&path);
         let Err(e) = opened else { panic!("a part over the limit must be refused") };
         let msg = e.to_string();
@@ -1633,6 +1716,59 @@ mod tests {
         assert!(total < cella_xlsx::max_total(), "1.32 GB of parts must fit");
         // And the guard still refuses the bomb it is there for.
         assert!(cella_xlsx::max_total() < 10 * 1024 * 1024 * 1024, "10 GB must stay out");
+    }
+
+    /// `file.open {force}`: the person who picked the file says yes, so the workbook gets the room
+    /// its own directory declares. Without it the same bytes are refused, which is what an agent
+    /// that did not ask for them gets.
+    #[test]
+    fn force_opens_a_workbook_whose_parts_are_past_the_limits() {
+        let mut wb = Workbook::new();
+        wb.sheet_mut(0).unwrap().set_value(CellRef::new(0, 0), cella_core::Value::text("archival"));
+        let package = save_bytes(&wb, "archive.xlsx").unwrap();
+        let cap = cella_xlsx::max_part();
+        let Ok(over) = u32::try_from(cap + 1) else { return };
+        let bytes = declaring(package, "xl/worksheets/sheet1.xml", over);
+        assert!(open_bytes("archive.xlsx", &bytes).is_err(), "the guard refuses it unasked");
+        let (opened, warnings) = open_bytes_room("archive.xlsx", &bytes, None, false, true).expect("opened with room");
+        assert_eq!(opened.sheet(0).map(|s| s.value(CellRef::new(0, 0))), Some(cella_core::Value::text("archival")));
+        let note = warnings.join(" ");
+        assert!(note.contains(ROOMED_FOR_SIZE) && note.contains("xl/worksheets/sheet1.xml"), "{note}");
+    }
+
+    /// The room is the file's own size plus a tenth, and it stops at a ceiling so a package claiming
+    /// a bomb's size is refused rather than believed.
+    #[test]
+    fn the_room_grows_with_the_file_and_stops_at_the_ceiling() {
+        // A 300 MB report — the archives hold these — unpacks to about 3.5 GB, which has to fit.
+        let (part, total) = room_for(620 * 1024 * 1024, 1400 * 1024 * 1024);
+        assert!(part > 620 * 1024 * 1024 && total > 1400 * 1024 * 1024, "{part} {total}");
+        assert!(total >= part, "a part is never bigger than the whole package");
+        let (part, total) = room_for(20 * 1024 * 1024 * 1024, 40 * 1024 * 1024 * 1024);
+        assert_eq!((part, total), (8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024), "the ceiling holds");
+    }
+
+    /// The command carries the parameter: an agent's open keeps the limits, a person's open
+    /// (the interface passes `force`) gets the room, and the answer says what it took.
+    #[test]
+    fn the_open_command_passes_force_through() {
+        let mut wb = Workbook::new();
+        wb.sheet_mut(0).unwrap().set_value(CellRef::new(0, 0), cella_core::Value::Number(7.0));
+        let package = save_bytes(&wb, "archive.xlsx").unwrap();
+        let cap = cella_xlsx::max_part();
+        let Ok(over) = u32::try_from(cap + 1) else { return };
+        let bytes = declaring(package, "xl/worksheets/sheet1.xml", over);
+        let path = std::env::temp_dir().join(format!("cella-force-open-{}.xlsx", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let at = path.to_string_lossy().to_string();
+        let mut s = crate::Session::new();
+        assert!(s.execute("file.open", serde_json::json!({"path": at})).is_err(), "the limits hold for an agent");
+        let opened = s.execute("file.open", serde_json::json!({"path": at, "force": true}));
+        let _ = std::fs::remove_file(&path);
+        let r = opened.expect("the file opened with room");
+        let warnings: Vec<&str> =
+            r.get("warnings").and_then(|w| w.as_array()).map(|a| a.iter().filter_map(|w| w.as_str()).collect()).unwrap_or_default();
+        assert!(warnings.iter().any(|w| w.contains(ROOMED_FOR_SIZE)), "{warnings:?}");
     }
 
     #[test]

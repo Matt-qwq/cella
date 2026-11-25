@@ -35,7 +35,7 @@ pub fn max_total() -> u64 {
     limits().1
 }
 
-fn limits() -> (u64, u64) {
+pub(crate) fn limits() -> (u64, u64) {
     const CEILING: u64 = 16 * 1024; // 16 GB, far above any real workbook
     static LIMITS: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
     *LIMITS.get_or_init(|| {
@@ -67,6 +67,10 @@ pub struct Package<'a> {
     /// Lower-case normalized part name → zip index.
     names: HashMap<String, usize>,
     total: u64,
+    /// What this read allows one part, and the package in all, to unpack to: the process defaults,
+    /// or the room the file a person opened was given (see `open_with`).
+    max_part: u64,
+    max_total: u64,
 }
 
 /// A part being decompressed as it is read. Stops at the package's remaining budget, so a part
@@ -117,18 +121,33 @@ pub fn normalize(name: &str) -> String {
 
 impl<'a> Package<'a> {
     pub fn open(bytes: &'a [u8]) -> Result<Package<'a>, IoError> {
-        Self::from_source(Box::new(Cursor::new(bytes)))
+        Self::with_limits(bytes, limits())
+    }
+
+    /// `open` with the room this read is given instead of the process defaults: a workbook whose
+    /// parts unpack past them opens once the person holding the file says so.
+    pub fn open_with(bytes: &'a [u8], limits: (u64, u64)) -> Result<Package<'a>, IoError> {
+        Self::with_limits(bytes, limits)
+    }
+
+    fn with_limits(bytes: &'a [u8], (max_part, max_total): (u64, u64)) -> Result<Package<'a>, IoError> {
+        Self::from_source(Box::new(Cursor::new(bytes)), max_part, max_total.max(max_part))
     }
 
     /// Reads the directory of a zip file and decompresses parts as they are asked for, so a
     /// workbook whose parts are mostly unread — a 1.3 GB report of which 49 MB is looked at —
     /// costs the parts it reads and not the size of the file.
     pub fn open_file(file: std::fs::File) -> Result<Package<'a>, IoError> {
-        let source: Box<dyn Source + 'static> = Box::new(BufReader::with_capacity(64 * 1024, file));
-        Self::from_source(source)
+        Self::open_file_with(file, limits())
     }
 
-    fn from_source(source: Box<dyn Source + 'a>) -> Result<Package<'a>, IoError> {
+    /// `open_file` with the room this read is given instead of the process defaults.
+    pub fn open_file_with(file: std::fs::File, (max_part, max_total): (u64, u64)) -> Result<Package<'a>, IoError> {
+        let source: Box<dyn Source + 'static> = Box::new(BufReader::with_capacity(64 * 1024, file));
+        Self::from_source(source, max_part, max_total.max(max_part))
+    }
+
+    fn from_source(source: Box<dyn Source + 'a>, max_part: u64, max_total: u64) -> Result<Package<'a>, IoError> {
         let zip = zip::ZipArchive::new(source).map_err(|e| IoError::Zip(e.to_string()))?;
         if zip.len() > MAX_ENTRIES {
             return Err(IoError::TooLarge(format!("{} zip entries", zip.len())));
@@ -139,7 +158,7 @@ impl<'a> Package<'a> {
                 names.entry(normalize(n)).or_insert(i);
             }
         }
-        Ok(Package { zip, names, total: 0 })
+        Ok(Package { zip, names, total: 0, max_part, max_total })
     }
 
     pub fn has(&self, part: &str) -> bool {
@@ -148,7 +167,25 @@ impl<'a> Package<'a> {
 
     /// Reads a part's bytes; `Ok(None)` when it doesn't exist.
     pub fn read(&mut self, part: &str) -> Result<Option<Vec<u8>>, IoError> {
-        self.read_limited(part, limits().0)
+        self.read_limited(part, self.max_part)
+    }
+
+    /// What the package's parts claim to unpack to: the largest one with its name, and the sum of
+    /// them all. The reader checks the first against the per-part limit and the second against the
+    /// total, so this is exactly the room an open needs — and it costs the zip directory, not the
+    /// parts, so a 300 MB workbook answers in a page of I/O.
+    pub fn declared(&mut self) -> (Option<(String, u64)>, u64) {
+        let mut total = 0u64;
+        let mut largest: Option<(String, u64)> = None;
+        for i in 0..self.zip.len() {
+            let Ok(f) = self.zip.by_index_raw(i) else { continue };
+            let size = f.size();
+            total = total.saturating_add(size);
+            if largest.as_ref().is_none_or(|(_, biggest)| size > *biggest) {
+                largest = Some((f.name().to_string(), size));
+            }
+        }
+        (largest, total)
     }
 
     /// Everything `read` would check about a part, without reading it: its decompressed size as the
@@ -162,7 +199,7 @@ impl<'a> Package<'a> {
     /// The caller reads the part in windows and never holds more than a window of it, which is how
     /// a sheet that unpacks to a gigabyte is read without a gigabyte of buffer.
     pub fn open_part(&mut self, part: &str) -> Result<Option<PartReader<'_, Box<dyn Source + 'a>>>, IoError> {
-        let (max_part, max_total) = limits();
+        let (max_part, max_total) = (self.max_part, self.max_total);
         let Some(&idx) = self.names.get(&normalize(part)) else {
             return Ok(None);
         };
@@ -183,7 +220,7 @@ impl<'a> Package<'a> {
 
     /// Reads a small metadata part without allowing it to expand to the general part limit.
     pub fn read_limited(&mut self, part: &str, maximum: u64) -> Result<Option<Vec<u8>>, IoError> {
-        let (max_part, max_total) = limits();
+        let (max_part, max_total) = (self.max_part, self.max_total);
         let maximum = maximum.min(max_part);
         let Some(&idx) = self.names.get(&normalize(part)) else {
             return Ok(None);

@@ -150,6 +150,13 @@ pub struct ReadOptions {
     /// wrappers (`#2871`). The default leaves every wrapper as the file wrote it, which is what a
     /// read outside the engine does: the cell then keeps the file's cached value as Excel shows it.
     pub known_function: KnownFunctions,
+    /// The room one part and the whole package may unpack to for this read, in bytes. `None` is the
+    /// process default (`CELLA_MAX_PART_MB` / `CELLA_MAX_TOTAL_MB`, else 2 GiB / 4 GiB). The engine
+    /// raises it for the file a person opened: an archival report of 300 MB unpacks to more than
+    /// the defaults allow, and refusing it would be refusing real work (#73).
+    pub max_part: Option<u64>,
+    /// See [`ReadOptions::max_part`]; never less than it once resolved.
+    pub max_total: Option<u64>,
 }
 
 /// [`read_xlsx_file`] with a [`ReadOptions`] plan. The engine opens a document by path through
@@ -169,6 +176,20 @@ pub fn read_xlsx_file(path: &std::path::Path) -> Result<(Workbook, ReadReport), 
 /// what an [`IoError::TooLarge`] from reading the package is about when one part is too large.
 pub fn oversized_part(bytes: &[u8]) -> Option<(String, u64)> {
     package::oversized_part(bytes)
+}
+
+/// What the package in `bytes` claims its parts unpack to: the largest part (its name, its bytes)
+/// and the sum of every part. `None` when the bytes are not a package. This is what a read needs
+/// room for, and it costs the zip directory rather than the parts.
+pub fn declared_sizes(bytes: &[u8]) -> Option<(Option<(String, u64)>, u64)> {
+    package::Package::open(bytes).ok().map(|mut pkg| pkg.declared())
+}
+
+/// [`declared_sizes`] of a file on disk: a 300 MB workbook answers in a page of I/O, so an
+/// interface can ask what opening it would cost before it opens anything.
+pub fn declared_sizes_file(path: &std::path::Path) -> Option<(Option<(String, u64)>, u64)> {
+    let file = std::fs::File::open(path).ok()?;
+    package::Package::open_file(file).ok().map(|mut pkg| pkg.declared())
 }
 
 /// Which member of the SpreadsheetML family a package is saved as. Only the content type of the
