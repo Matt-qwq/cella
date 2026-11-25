@@ -343,9 +343,16 @@ fn axis_sql(wb: &Workbook, plan: &[Planned<'_>], header: usize, field: &PivotFie
     if group.is_none() {
         return Some(reference);
     }
-    // A numeric range grouping is not translated, and it wins over a date part (`classify`).
-    if group.number.is_some() {
-        return None;
+    // A numeric range is the bucket a value falls in: an index, with the two tails as -1 and -2
+    // (the model names them `<start` and `>next boundary`). It wins over a date part in
+    // `classify`, so it is asked first here too.
+    if let Some(ng) = group.number {
+        let groups = ng.groups()? as f64;
+        let (start, interval, end) = (ng.start, ng.interval, ng.end);
+        let past = start + groups * interval;
+        return Some(format!(
+            "CASE WHEN {reference} < {start} THEN -1 WHEN {reference} > {end} OR {reference} >= {past} THEN -2 ELSE floor(({reference} - {start}) / {interval}) END"
+        ));
     }
     // 1970-01-01 is serial 25569 in the 1900 system and 24107 in the 1904 one.
     let epoch = if wb.date_system == cella_core::DateSystem::D1904 { 24107.0 } else { 25569.0 };
@@ -864,10 +871,43 @@ impl FieldItems {
             return Some(self.intern(wb, value, group, fmt, first));
         }
         match value {
-            Value::Number(key) => Some(self.intern_group(*key, group.date, first)),
+            Value::Number(key) => match group.number {
+                Some(ng) => Some(self.intern_number_group(&ng, *key, first)),
+                None => Some(self.intern_group(*key, group.date, first)),
+            },
             // A bucket SQL returned as text is not one of this language's items.
             _ => None,
         }
+    }
+    /// An item a numeric range stands for, from the index SQL grouped by: the caption is the
+    /// model's own (`<start`, `start-end`, `>next`), so it is the one a scan would print.
+    fn intern_number_group(&mut self, ng: &cella_model::PivotNumberGroup, index: f64, first: usize) -> u32 {
+        let captions = ng.captions();
+        let (label, num) = if index < -1.5 {
+            (captions.last().cloned().unwrap_or_default(), f64::INFINITY)
+        } else if index < -0.5 {
+            (captions.first().cloned().unwrap_or_default(), f64::NEG_INFINITY)
+        } else {
+            let bucket = index.max(0.0) as usize;
+            (captions.get(1 + bucket).cloned().unwrap_or_default(), ng.start + bucket as f64 * ng.interval)
+        };
+        let identity = format!("r{}", label.to_lowercase());
+        if let Some(id) = self.index.get(&ItemKey::Grouped(identity.clone())) {
+            return *id;
+        }
+        let id = self.items.len() as u32;
+        self.items.push(Item {
+            value: Value::text(label.clone()),
+            text: label.to_lowercase(),
+            label,
+            class: 0,
+            num,
+            first,
+            formatted: false,
+            blank: false,
+        });
+        self.index.insert(ItemKey::Grouped(identity), id);
+        id
     }
     fn get(&self, i: u32) -> Option<&Item> {
         self.items.get(i as usize)

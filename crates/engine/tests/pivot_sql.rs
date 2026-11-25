@@ -328,6 +328,20 @@ fn a_value_filter_keeps_what_the_scan_would_keep() {
 }
 
 #[test]
+fn a_measure_over_a_number_grouped_axis_agrees() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // A numeric range: values fall in a bucket (or a tail either side). The caption is the model's
+    // own (`<5`, `5-9`, `>20`), so both paths must print the same one.
+    let mut s = model();
+    run(&mut s, "data.measure.add", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"}));
+    let name = make(&mut s, json!({"rows": ["Sales[Amount]"], "values": ["Total"]}));
+    run(&mut s, "pivot.group", json!({"pivot": name, "field": "Sales[Amount]", "start": 5.0, "end": 20.0, "interval": 5.0}));
+    assert!(agree(&mut s, &name), "a measure over a numeric range should be the engine's");
+}
+
+#[test]
 fn a_report_with_no_model_behind_it_is_unaffected() {
     // A sheet-sourced report never looks at the engine, so it computes the same either way.
     let mut s = Session::new();
