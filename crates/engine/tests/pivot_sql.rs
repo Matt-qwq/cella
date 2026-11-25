@@ -271,6 +271,32 @@ fn a_measure_over_a_file_backed_fact_table_is_answered_in_sql() {
 }
 
 #[test]
+fn a_measure_over_a_date_grouped_axis_agrees() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // The axis is grouped (a year, a quarter, a month), so SQL has to group by the date part
+    // itself — and the item's caption still has to be the one a scan would print.
+    let mut s = model();
+    run(&mut s, "data.measure.add", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"}));
+    for group in ["years", "quarters", "months"] {
+        let name = make(&mut s, json!({"rows": [{"field": "Sales[Day]", "group": group}], "values": ["Total"]}));
+        assert!(agree(&mut s, &name), "a measure over a `{group}` axis should be the engine's");
+    }
+}
+
+#[test]
+fn a_measure_over_a_date_grouped_axis_and_a_dimension_agrees() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    let mut s = related();
+    run(&mut s, "data.measure.add", json!({"name": "Total", "table": "Sales", "formula": "SUM(Sales[Amount])"}));
+    let name = make(&mut s, json!({"rows": ["Region[Name]"], "columns": [{"field": "Sales[Day]", "group": "months"}], "values": ["Total"]}));
+    assert!(agree(&mut s, &name));
+}
+
+#[test]
 fn a_report_with_no_model_behind_it_is_unaffected() {
     // A sheet-sourced report never looks at the engine, so it computes the same either way.
     let mut s = Session::new();
@@ -283,7 +309,7 @@ fn a_report_with_no_model_behind_it_is_unaffected() {
 
 // ---------------------------------------------------------------- relationships
 
-const SALES_CSV: &str = "RegionId,Amount\n1,10\n2,5\n1,7\n3,1\n2,20\n";
+const SALES_CSV: &str = "RegionId,Amount,Day\n1,10,45000\n2,5,45010\n1,7,45070\n3,1,45100\n2,20,45130\n";
 const REGION_CSV: &str = "Id,Name\n1,West\n2,East\n3,North\n4,South\n";
 
 /// Two model tables, related many-to-one: five sales and the four regions they name.
@@ -296,7 +322,7 @@ fn related() -> Session {
         json!({
             "name": "Sales",
             "source": {"kind": "csv", "text": SALES_CSV},
-            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["RegionId", "Amount"], "to": "Number"}}],
+            "steps": ["PromoteHeaders", {"ChangeType": {"columns": ["RegionId", "Amount", "Day"], "to": "Number"}}],
             "load": "model",
         }),
     );

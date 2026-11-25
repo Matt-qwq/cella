@@ -334,6 +334,30 @@ fn plan_ref(plan: &[Planned<'_>], index: usize) -> Option<String> {
     Some(format!("{}.{}", p.alias, cella_sql::quote_ident(column)))
 }
 
+/// The SQL a report's axis field groups by: the column itself, or the date part a grouped item
+/// stands for, derived from the spreadsheet serial. `None` for a grouping SQL cannot say (a
+/// numeric range, a serial that is not a date).
+fn axis_sql(wb: &Workbook, plan: &[Planned<'_>], header: usize, field: &PivotField) -> Option<String> {
+    let reference = plan_ref(plan, header)?;
+    let group = Grouping::of(field);
+    if group.is_none() {
+        return Some(reference);
+    }
+    // A numeric range grouping is not translated, and it wins over a date part (`classify`).
+    if group.number.is_some() {
+        return None;
+    }
+    // 1970-01-01 is serial 25569 in the 1900 system and 24107 in the 1904 one.
+    let epoch = if wb.date_system == cella_core::DateSystem::D1904 { 24107.0 } else { 25569.0 };
+    let stamp = format!("to_timestamp(({reference} - {epoch}) * 86400)");
+    Some(match group.date {
+        PivotDateGroup::Years => format!("year({stamp})"),
+        PivotDateGroup::Quarters => format!("quarter({stamp})"),
+        PivotDateGroup::Months => format!("month({stamp})"),
+        // `classify` keys a day bucket by month * 100 + day, so a bucket is one number.
+        _ => format!("(month({stamp}) * 100 + day({stamp}))"),
+    })
+}
 /// `Table[Column]` as the SQL this plan names it by, when that table is part of the source.
 fn plan_ref_by_name(plan: &[Planned<'_>], table: &str, column: &str) -> Option<String> {
     let p = plan.iter().find(|p| p.table.name.eq_ignore_ascii_case(table))?;
@@ -802,6 +826,47 @@ impl FieldItems {
             blank: false,
         });
         i
+    }
+    /// An item a SQL bucket stands for: the key the grouping sorts by and the caption the report
+    /// shows. `intern` cannot build it from the bucket number alone (`Jan` is 1, not "1").    fn intern_group(&mut self, key: f64, date: PivotDateGroup, first: usize) -> u32 {
+        let identity = format!("g{key}");
+        if let Some(i) = self.index.get(&ItemKey::Grouped(identity.clone())) {
+            return *i;
+        }
+        let whole = key as i64;
+        let month_name = |m: i64| MONTHS.get((m as usize).saturating_sub(1)).copied().unwrap_or("Jan").to_string();
+        let label = match date {
+            PivotDateGroup::Years => format!("{whole}"),
+            PivotDateGroup::Quarters => format!("Qtr{whole}"),
+            PivotDateGroup::Months => month_name(whole),
+            _ => format!("{}-{}", whole % 100, month_name(whole / 100)),
+        };
+        let i = self.items.len() as u32;
+        self.items.push(Item {
+            value: Value::text(label.clone()),
+            text: label.to_lowercase(),
+            label,
+            class: 0,
+            num: key,
+            first,
+            formatted: false,
+            blank: false,
+        });
+        self.index.insert(ItemKey::Grouped(identity), i);
+        i
+    }
+    /// A report's axis value as an item: a plain value is `intern`, and a bucket a SQL grouping
+    /// produced is `intern_group`.
+    fn intern_axis(&mut self, wb: &Workbook, value: &Value, field: &PivotField, fmt: &str, first: usize) -> Option<u32> {
+        let group = Grouping::of(field);
+        if group.is_none() || value.is_empty() {
+            return Some(self.intern(wb, value, group, fmt, first));
+        }
+        match value {
+            Value::Number(key) => Some(self.intern_group(*key, group.date, first)),
+            // A bucket SQL returned as text is not one of this language's items.
+            _ => None,
+        }
     }
     fn get(&self, i: u32) -> Option<&Item> {
         self.items.get(i as usize)
@@ -2032,17 +2097,12 @@ fn sql_aggregate_levels(
     let Some(table_name) = src.model_table.as_deref() else { return Ok(None) };
     let Some(table) = wb.model.table(table_name) else { return Ok(None) };
     let plan = plan_source(wb, table);
-    // A grouped axis field (a date part, a numeric range) puts several raw values into one item,
-    // and SQL cannot group by the label the report shows: those reports are the scan's.
-    if rows.iter().chain(cols.iter()).any(|(_, f)| !Grouping::of(f).is_none()) {
-        return Ok(None);
-    }
     let from = plan_from(&plan);
     let Some(where_sql) = plan_where(wb, pt, src, engine, &plan, &from)? else { return Ok(None) };
     let (n, m) = (rows.len(), cols.len());
     let mut axis: Vec<String> = Vec::with_capacity(n + m);
-    for (c, _) in rows.iter().chain(cols.iter()) {
-        let Some(reference) = plan_ref(&plan, *c) else { return Ok(None) };
+    for (c, f) in rows.iter().chain(cols.iter()) {
+        let Some(reference) = axis_sql(wb, &plan, *c, f) else { return Ok(None) };
         axis.push(reference);
     }
     let groups = axis.len();
@@ -2187,12 +2247,18 @@ fn sql_aggregate_levels(
         rp.clear();
         for (d, ((_, f), fi)) in rows.iter().zip(row_items.iter_mut()).enumerate().take(level.rows) {
             let value = level.keys.get(d).cloned().unwrap_or(Value::Empty);
-            rp.push(fi.intern(wb, &value, Grouping::of(f), row_fmts.get(d).map(String::as_str).unwrap_or("General"), level.first));
+            let Some(item) = fi.intern_axis(wb, &value, f, row_fmts.get(d).map(String::as_str).unwrap_or("General"), level.first) else {
+                return Ok(None);
+            };
+            rp.push(item);
         }
         cp.clear();
         for (d, ((_, f), fi)) in cols.iter().zip(col_items.iter_mut()).enumerate().take(level.cols) {
             let value = level.keys.get(n + d).cloned().unwrap_or(Value::Empty);
-            cp.push(fi.intern(wb, &value, Grouping::of(f), col_fmts.get(d).map(String::as_str).unwrap_or("General"), level.first));
+            let Some(item) = fi.intern_axis(wb, &value, f, col_fmts.get(d).map(String::as_str).unwrap_or("General"), level.first) else {
+                return Ok(None);
+            };
+            cp.push(item);
         }
         row_ids[0] = 0;
         for (d, item) in rp.iter().enumerate() {
