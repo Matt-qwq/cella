@@ -251,14 +251,18 @@ pub fn write_sheet(
         .map(|(a, r)| (*a, *r))
         .collect();
     let mut extra: BTreeMap<CellRef, Value> = BTreeMap::new();
-    // Values inside spills and legacy array ranges.
+    // Values inside spills and legacy array ranges. A spill's values are one array at its anchor,
+    // and only the cells no stored cell already answers for are written out.
     for (a, r) in sheet.spill_ranges.iter().filter(|(_, r)| !r.is_single()) {
+        let Some(array) = sheet.spill_values.get(a) else { continue };
         for c in r.iter().take(1_000_000) {
-            if c != *a
-                && let Some(v) = sheet.spill.get(&c)
-                && sheet.cells.get(c).is_none_or(|x| x.formula.is_none() && x.value.is_empty())
-            {
-                extra.insert(c, v.clone());
+            if c == *a || sheet.cells.get(c).is_some_and(|x| x.formula.is_some() || !x.value.is_empty()) {
+                continue;
+            }
+            let row = c.row.saturating_sub(r.start.row) as usize;
+            let col = c.col.saturating_sub(r.start.col) as usize;
+            if let Some(v) = array.get(row, col).cloned() {
+                extra.insert(c, v);
             }
         }
     }

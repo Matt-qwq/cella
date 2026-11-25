@@ -1783,7 +1783,7 @@ fn write_report(s: &mut Session, p: &Json, tool: &str, g: Grid) -> Result<Json> 
                 }
             }
         }
-        if sh.spill.keys().any(|c| rect.contains(*c)) && occupied.is_empty() {
+        if sh.any_spilled_in(rect) && occupied.is_empty() {
             occupied.push(rect.start);
         }
     }

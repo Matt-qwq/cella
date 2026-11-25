@@ -212,7 +212,13 @@ fn sheet_objects(sheet: &Sheet) -> usize {
     size_of::<Sheet>()
         .saturating_add(strings_bytes(&sheet.name))
         .saturating_add(btree_entries(&sheet.cell_pictures))
-        .saturating_add(btree_entries(&sheet.spill))
+        .saturating_add(
+            sheet
+                .spill_values
+                .values()
+                .map(|a| size_of::<cella_core::Array>().saturating_add(a.data.len().saturating_mul(size_of::<cella_core::Value>())))
+                .sum::<usize>(),
+        )
         .saturating_add(btree_entries(&sheet.spill_ranges))
         .saturating_add(btree_entries(&sheet.comments))
         .saturating_add(btree_entries(&sheet.hyperlinks))

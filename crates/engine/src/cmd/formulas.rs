@@ -538,11 +538,8 @@ fn first_showing(wb: &Workbook, a: &cella_calc::Area, error: CellError) -> Optio
     let sh = wb.sheet(a.sheet)?;
     let holds = |c: &cella_model::Cell| !c.value.is_empty() || c.formula.is_some();
     let stored = sh.cells.iter_range(a.range).find(|(_, c)| holds(c) && c.value.as_error() == Some(error)).map(|(at, _)| at);
-    let spilled = sh
-        .spill
-        .range(a.range.start..=a.range.end)
-        .find(|(at, v)| a.range.contains(**at) && v.as_error() == Some(error) && sh.cell(**at).is_none_or(|c| !holds(&c)))
-        .map(|(at, _)| *at);
+    let spilled =
+        sh.spilled_in(a.range).into_iter().find(|(at, v)| v.as_error() == Some(error) && sh.cell(*at).is_none_or(|c| !holds(&c))).map(|(at, _)| at);
     stored.into_iter().chain(spilled).min().map(|c| (a.sheet, c))
 }
 

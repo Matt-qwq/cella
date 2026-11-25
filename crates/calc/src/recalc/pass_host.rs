@@ -761,14 +761,22 @@ fn spill_blocked_by_spill(host: &PassHost<'_>, (sheet, anchor): Key, a: &Array) 
     // areas are looked for only when the array would cover one. Their index is built once a sheet
     // and pass: a cell inside it is a block lookup, where a walk over every stored range was one
     // containment check per cell of the array and per range the sheet holds.
-    let mut over = sh.spill.range(range.start..=range.end).map(|(c, _)| *c).filter(|c| range.contains(*c)).peekable();
-    if over.peek().is_none() {
+    if !sh.any_spilled_in(range) {
         return false;
     }
     let own = sh.spill_ranges.get(&anchor);
     let mut index = host.stored_spills.take();
-    let entry = index.entry(sheet).or_insert_with(|| host.stored_spill_index(sheet));
-    let blocked = over.any(|c| !own.is_some_and(|o| o.contains(c)) && !matches!(entry.covering(sheet, c), Cover::None));
+    let _entry = index.entry(sheet).or_insert_with(|| host.stored_spill_index(sheet));
+    // The cells this array wants are taken when another array covers one and it is not this
+    // array's own area.
+    let mut blocked = false;
+    for (anchor, area) in &sh.spill_ranges {
+        if area.intersects(&range) && !own.is_some_and(|o| o.contains(area.start) && o.contains(area.end)) {
+            let _ = anchor;
+            blocked = true;
+            break;
+        }
+    }
     host.stored_spills.set(index);
     blocked
 }
@@ -789,10 +797,7 @@ pub(super) fn spills_as_before(sheet: &cella_model::Sheet, anchor: CellRef, rang
     RangeRef::new(anchor, end) == range
         && !sheet.merges.iter().any(|m| m.intersects(&range))
         && !sheet.tables.iter().any(|t| t.range.contains(anchor))
-        && range
-            .iter()
-            .enumerate()
-            .all(|(i, c)| c == anchor || (!holds_content(sheet, c) && sheet.spill.get(&c) == Some(arr.data.get(i).unwrap_or(&Value::Empty))))
+        && range.iter().enumerate().all(|(i, c)| c == anchor || (!holds_content(sheet, c) && sheet.spilled(c).as_ref() == arr.data.get(i)))
 }
 
 impl PassHost<'_> {
@@ -878,7 +883,7 @@ impl PassHost<'_> {
             let sh = wb.sheet(sheet)?;
             // A stored spill puts values in cells the store has nothing for; the cursor reads the
             // store alone, so it stands down where one exists.
-            (sh.spill.is_empty() && sh.spill_ranges.is_empty()).then(|| sh.cells.column_reader(col))
+            (sh.spill_ranges.is_empty() && sh.spill_ranges.is_empty()).then(|| sh.cells.column_reader(col))
         });
         let mut formulas = 0u64;
         let mut abandoned: Option<u32> = None;
@@ -1425,7 +1430,7 @@ impl Host for PassHost<'_> {
             return None;
         }
         let sh = self.wb.sheet(sheet)?;
-        if sh.spill.range(range.start..=range.end).next().is_some() {
+        if sh.any_spilled_in(range) {
             return None;
         }
         // A formula cell in the block usually rules the block out — its value is being worked
@@ -1463,8 +1468,8 @@ impl Host for PassHost<'_> {
             }
             true
         });
-        for (c, v) in sh.spill.range(range.start..=range.end) {
-            if range.contains(*c) {
+        for (c, v) in sh.spilled_in(range) {
+            {
                 let i = (c.row - range.start.row) as usize * w + (c.col - range.start.col) as usize;
                 if let Some(slot) = out.get_mut(i)
                     && slot.is_empty()
@@ -1552,7 +1557,7 @@ impl Host for PassHost<'_> {
         let sh = wb.sheet(sheet)?;
         // Spilled values sit between the stored cells, and a spill may hold a number: leave such
         // blocks to `visit_range`, which knows about them.
-        if self.spill_index.has_sheet(sheet) || sh.spill.range(range.start..=range.end).any(|(c, _)| range.contains(*c)) {
+        if self.spill_index.has_sheet(sheet) || sh.any_spilled_in(range) {
             return None;
         }
         // One column of values is the shape a whole-column aggregate has, and the store can fold it
@@ -1670,7 +1675,7 @@ impl Host for PassHost<'_> {
         use cella_model::Packed;
 
         let sh = self.wb.sheet(target.sheet)?;
-        if self.iterate || self.spill_index.has_sheet(target.sheet) || !sh.spill.is_empty() {
+        if self.iterate || self.spill_index.has_sheet(target.sheet) || !sh.spill_ranges.is_empty() {
             return None;
         }
         let (target, criteria) = (target.range, criteria.range);
@@ -1782,7 +1787,7 @@ impl Host for PassHost<'_> {
         let sh = self.wb.sheet(sheet)?;
         // The same three things that send the other kernels back: a pass that may still change the
         // cells, and a sheet whose spills could answer with a value no band holds.
-        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill.is_empty() || range.width() != 1 {
+        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill_ranges.is_empty() || range.width() != 1 {
             return None;
         }
         let mut matched = 0u64;
@@ -1835,7 +1840,7 @@ impl Host for PassHost<'_> {
         }
         let sheet = target.sheet;
         let sh = self.wb.sheet(sheet)?;
-        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill.is_empty() {
+        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill_ranges.is_empty() {
             return None;
         }
         let (t, c) = (target.range, criteria.range);
@@ -1958,7 +1963,7 @@ impl Host for PassHost<'_> {
         let sh = self.wb.sheet(sheet)?;
         // The same three things that send the SUMIFS kernel back: a pass that may still change the
         // cells (iterate), and a sheet whose spills could answer with a value no band holds.
-        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill.is_empty() || range.width() != 1 {
+        if self.iterate || self.spill_index.has_sheet(sheet) || !sh.spill_ranges.is_empty() || range.width() != 1 {
             return None;
         }
         // Only the two kinds an exact lookup compares by value here. A boolean key, an error key or
@@ -2016,7 +2021,7 @@ impl Host for PassHost<'_> {
         }
         // Spilled values sit between the stored cells (and the formulas just calculated may have
         // produced some): leave such blocks to `range_values`.
-        if self.spill_index.has_sheet(sheet) || sh.spill.range(range.start..=range.end).any(|(c, _)| range.contains(*c)) {
+        if self.spill_index.has_sheet(sheet) || sh.any_spilled_in(range) {
             return false;
         }
         for (c, cell) in sh.cells.iter_range(range) {

@@ -1444,7 +1444,7 @@ pub(crate) fn paint_quadrant(
         // nothing of its own shows the dynamic array value spilled onto it, if any.
         let v = match &cell {
             Some(cell) if !cell.value.is_empty() || cell.formula.is_some() => cell.value.clone(),
-            _ => sh.spill.get(&c).cloned().unwrap_or(Value::Empty),
+            _ => sh.spilled(c).unwrap_or(Value::Empty),
         };
         if let Some(l) = cfl
             && let Some((frac, rgb, gradient)) = l.bar

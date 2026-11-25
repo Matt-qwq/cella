@@ -107,8 +107,10 @@ fn sample() -> Workbook {
     dynf.value = Value::Number(1.0);
     s.cells.set(at("H1"), dynf);
     s.spill_ranges.insert(at("H1"), rr("H1:H3"));
-    s.spill.insert(at("H2"), Value::Number(2.0));
-    s.spill.insert(at("H3"), Value::Number(3.0));
+    s.spill_values.insert(
+        at("H1"),
+        std::sync::Arc::new(cella_core::Array::new(3, 1, vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]).unwrap()),
+    );
 
     s.cols.insert(0, LineInfo { size: Some(100.0), ..Default::default() });
     s.cols.insert(1, LineInfo { size: Some(100.0), ..Default::default() });
@@ -833,8 +835,11 @@ fn windowed_workbook() -> Workbook {
     spill.value = Value::Number(1.0);
     big.set_cell(at("F2"), spill);
     big.spill_ranges.insert(at("F2"), rr("F2:F4"));
-    big.spill.insert(at("F3"), Value::Number(2.0));
-    big.spill.insert(at("F4"), Value::Number(3.0));
+    big.spill_values.insert(
+        at("F2"),
+        std::sync::Arc::new(cella_core::Array::new(3, 1, vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]).unwrap()),
+    );
+
     big.comments.insert(
         at("B3"),
         Comment {

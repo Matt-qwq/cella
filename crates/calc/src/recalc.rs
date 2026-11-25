@@ -1235,10 +1235,10 @@ impl Calc {
         // Spills are laid out again from the formulas where they are now (a structural edit moves
         // or deletes the formulas, not the values they spilled).
         for i in 0..wb.sheets.len() {
-            if wb.sheet(i).is_some_and(|s| !s.spill_ranges.is_empty() || !s.spill.is_empty())
+            if wb.sheet(i).is_some_and(|s| !s.spill_ranges.is_empty())
                 && let Some(sh) = wb.sheet_mut(i)
             {
-                sh.spill.clear();
+                sh.spill_values.clear();
                 sh.spill_ranges.clear();
             }
         }
@@ -1412,7 +1412,7 @@ impl Calc {
             && used_changed.is_empty()
             && self.graph.is_empty()
             && self.graph.trim.is_empty()
-            && wb.sheets.iter().all(|s| s.spill_ranges.is_empty() && s.spill.is_empty())
+            && wb.sheets.iter().all(|s| s.spill_ranges.is_empty() && s.spill_ranges.is_empty())
             && wb.sheets.iter().all(|s| !s.cells.has_formulas())
         {
             self.last_recalc_cells = 0;
@@ -1440,9 +1440,6 @@ impl Calc {
                         if let Some(sh) = wb.sheet_mut(k.0)
                             && let Some(r) = sh.spill_ranges.remove(&k.1)
                         {
-                            for c in r.iter() {
-                                sh.spill.remove(&c);
-                            }
                             cleared.push((k.0, r));
                         }
                         // Only an unparseable formula needs its cached value replaced with #NAME?.
@@ -1467,7 +1464,7 @@ impl Calc {
             && self.graph.trim.is_empty()
             && cleared.is_empty()
             && used_changed.is_empty()
-            && wb.sheets.iter().all(|s| s.spill_ranges.is_empty() && s.spill.is_empty())
+            && wb.sheets.iter().all(|s| s.spill_ranges.is_empty() && s.spill_ranges.is_empty())
         {
             self.last_recalc_cells = 0;
             return;
@@ -1495,7 +1492,7 @@ impl Calc {
         let arrays = !self.graph.may_spill.is_empty()
             || !self.graph.dynamic.is_empty()
             || !self.graph.legacy.is_empty()
-            || wb.sheets.iter().any(|s| !s.spill_ranges.is_empty() || !s.spill.is_empty());
+            || wb.sheets.iter().any(|s| !s.spill_ranges.is_empty() || !s.spill_ranges.is_empty());
         #[cfg(test)]
         {
             self.seed_probes = 0;
@@ -1869,7 +1866,7 @@ impl Calc {
             }
             // Arrays that held a spill before this pass lay out first, so a contested area keeps
             // its owner; everything else follows in row-major order.
-            let any_spills = !spills.is_empty() || wb.sheets.iter().any(|s| !s.spill_ranges.is_empty() || !s.spill.is_empty());
+            let any_spills = !spills.is_empty() || wb.sheets.iter().any(|s| !s.spill_ranges.is_empty() || !s.spill_ranges.is_empty());
             let ordered: Vec<Key> = if any_spills {
                 dirty.iter().copied().filter(|k| prefer.contains(k)).chain(dirty.iter().copied().filter(|k| !prefer.contains(k))).collect()
             } else {
@@ -1890,11 +1887,9 @@ impl Calc {
                 {
                     continue;
                 }
-                if let Some(r) = old {
-                    for c in r.iter() {
-                        sheet.spill.remove(&c);
-                    }
+                if old.is_some() {
                     sheet.spill_ranges.remove(&k.1);
+                    sheet.spill_values.remove(&k.1);
                 }
                 // An array that owned its cells before the pass may grow back into cells another
                 // array took in an earlier round, after that array was laid out (this pass only
@@ -1907,10 +1902,7 @@ impl Calc {
                         .filter(|(anchor, _)| **anchor != k.1 && !prefer.contains(&(k.0, **anchor)))
                         .map(|(anchor, range)| (*anchor, *range))
                         .collect();
-                    for (anchor, range) in evicted {
-                        for c in range.iter() {
-                            sheet.spill.remove(&c);
-                        }
+                    for (anchor, _range) in evicted {
                         sheet.spill_ranges.remove(&anchor);
                         // It has to re-evaluate: the cells it took are gone, and it is either
                         // blocked now or spills somewhere else.
@@ -1923,7 +1915,7 @@ impl Calc {
                     let range = RangeRef::new(k.1, end);
                     let blocked = end.row >= cella_core::MAX_ROWS
                         || end.col >= cella_core::MAX_COLS
-                        || range.iter().any(|c| c != k.1 && (holds_content(sheet, c) || sheet.spill.contains_key(&c)))
+                        || range.iter().any(|c| c != k.1 && (holds_content(sheet, c) || sheet.spill_anchor(c).is_some()))
                         || sheet.merges.iter().any(|m| m.intersects(&range))
                         || sheet.tables.iter().any(|t| t.range.contains(k.1));
                     if blocked {
@@ -1939,11 +1931,9 @@ impl Calc {
                         self.graph.dependents_of_range(k.0, range, &mut deps);
                         spill_changes.extend(deps.into_iter().filter(|d| d != k));
                     } else {
-                        for (i, c) in range.iter().enumerate() {
-                            if c != k.1 {
-                                sheet.spill.insert(c, arr.data.get(i).cloned().unwrap_or_default());
-                            }
-                        }
+                        // One entry for the whole area: the array the evaluator built, shared. A
+                        // million-cell result used to cost a million tree nodes here.
+                        sheet.spill_values.insert(k.1, std::sync::Arc::clone(arr));
                         sheet.spill_ranges.insert(k.1, range);
                         changed_range = Some(changed_range.map_or(range, |o| o.union(&range)));
                     }
@@ -2410,7 +2400,7 @@ pub(crate) mod tests {
             assert!(a.cells.get(c).is_some(), "{c:?} only in the per-cell walk");
         }
         assert_eq!(a.spill_ranges, b.spill_ranges);
-        assert_eq!(a.spill, b.spill);
+        assert_eq!(a.spill_values, b.spill_values);
         assert_eq!(a.value(CellRef::new(0, 2)), b.value(CellRef::new(0, 2)));
     }
 
@@ -3117,7 +3107,10 @@ pub(crate) mod tests {
         put(sh, "B2", Value::from(cella_core::Array::row(vec![Value::Number(1.0)])));
         assert_eq!(check(&wb, "A1:A3", "B1:B3", ">=0.3"), None, "array criteria require scalarization");
         let sh = wb.sheet_mut(0).unwrap();
-        sh.spill.insert(CellRef::parse("B1").unwrap(), Value::Number(1.0));
+        // A spill anywhere on the sheet: one array at the anchor B1, covering B1:B2.
+        let anchor = CellRef::parse("B1").unwrap();
+        sh.spill_values.insert(anchor, std::sync::Arc::new(cella_core::Array::new(2, 1, vec![Value::Number(1.0), Value::Number(2.0)]).unwrap()));
+        sh.spill_ranges.insert(anchor, RangeRef::parse("B1:B2").unwrap());
         assert_eq!(check(&wb, "A1:A3", "B4:B6", ">0"), None, "existing spills decline without evaluating");
     }
 
@@ -3171,8 +3164,11 @@ pub(crate) mod tests {
         sh.cells.set(range.start, Cell::formula(Formula::new("=SEQUENCE(3)")));
         sh.cells.set(d4, Cell::value(Value::text("constant")));
         sh.cells.set(d5, Cell::value(Value::Error(CellError::Div0)));
-        sh.spill.insert(d5, Value::Number(-1.0));
-        sh.spill.insert(range.end, Value::Number(6.0));
+        // The anchor spills D1:D6: D5 shows -1 under its stored error and D6 shows 6.
+        let anchor = range.start;
+        let values = vec![Value::Number(0.0), Value::Number(0.0), Value::Number(0.0), Value::Number(0.0), Value::Number(-1.0), Value::Number(6.0)];
+        sh.spill_values.insert(anchor, std::sync::Arc::new(cella_core::Array::new(6, 1, values).unwrap()));
+        sh.spill_ranges.insert(anchor, range);
 
         let shape = cella_formula::Shape::from_expr(cella_formula::parse("SEQUENCE(3)").unwrap(), range.start);
         let mut trees = Trees::default();

@@ -103,9 +103,11 @@ pub struct Sheet {
     /// Static pictures are sparse rich content. Ordinary cells carry no picture pointer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "picture_map")]
     pub cell_pictures: BTreeMap<CellRef, Arc<CellPicture>>,
-    /// Values spilled by dynamic-array formulas (maintained by calc), keyed by cell.
+    /// The values dynamic-array formulas spilled (maintained by calc), keyed by **anchor**: one
+    /// array per spill instead of a `BTreeMap` entry a cell. A million-cell result used to cost a
+    /// million tree nodes to lay out — 75–78 ms of the formula's 142 (`gaps` §49).
     #[serde(skip)]
-    pub spill: BTreeMap<CellRef, Value>,
+    pub spill_values: BTreeMap<CellRef, Arc<cella_core::Array>>,
     /// Anchor → spill range.
     #[serde(skip)]
     pub spill_ranges: BTreeMap<CellRef, RangeRef>,
@@ -229,7 +231,7 @@ impl Sheet {
             name: name.into(),
             cells: CellStore::new(),
             cell_pictures: BTreeMap::new(),
-            spill: BTreeMap::new(),
+            spill_values: BTreeMap::new(),
             spill_ranges: BTreeMap::new(),
             cols: LineMap::cols(),
             rows: LineMap::rows(),
@@ -322,14 +324,56 @@ impl Sheet {
     pub fn value(&self, c: CellRef) -> Value {
         match self.cells.value_with_formula(c) {
             Some((value, has_formula)) if !value.is_empty() || has_formula => value,
-            _ => self.spill.get(&c).cloned().unwrap_or(Value::Empty),
+            _ => self.spilled(c).unwrap_or(Value::Empty),
         }
     }
     pub fn value_ref(&self, c: CellRef) -> Option<Value> {
         match self.cells.value_with_formula(c) {
             Some((value, has_formula)) if !value.is_empty() || has_formula => Some(value),
-            _ => self.spill.get(&c).cloned(),
+            _ => self.spilled(c),
         }
+    }
+
+    /// The value a **spilled** cell shows: the array its anchor produced, at the offset the cell
+    /// sits from that anchor. Anchors, ordinary cells and cells outside a working spill give
+    /// `None`. The array is shared, so this clones a `Value`, not a tree node.
+    pub fn spilled(&self, c: CellRef) -> Option<Value> {
+        let anchor = self.spill_anchor(c)?;
+        let range = *self.spill_ranges.get(&anchor)?;
+        let arr = self.spill_values.get(&anchor)?;
+        arr.get(c.row.saturating_sub(range.start.row) as usize, c.col.saturating_sub(range.start.col) as usize).cloned()
+    }
+
+    /// Every spilled cell of `range`, in anchor order then row order — the cells a block reads,
+    /// written the way the per-cell map used to hand them out.
+    pub fn spilled_in(&self, range: RangeRef) -> Vec<(CellRef, Value)> {
+        let mut out = Vec::new();
+        for (anchor, area) in &self.spill_ranges {
+            let Some(arr) = self.spill_values.get(anchor) else { continue };
+            if !area.intersects(&range) {
+                continue;
+            }
+            let start = CellRef::new(area.start.row.max(range.start.row), area.start.col.max(range.start.col));
+            let end = CellRef::new(area.end.row.min(range.end.row), area.end.col.min(range.end.col));
+            if start.row > end.row || start.col > end.col {
+                continue;
+            }
+            for c in RangeRef::new(start, end).iter() {
+                if c == *anchor {
+                    continue;
+                }
+                if let Some(v) = arr.get(c.row.saturating_sub(area.start.row) as usize, c.col.saturating_sub(area.start.col) as usize).cloned() {
+                    out.push((c, v));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether any spilled cell falls in `range` — the question a block read asks before it lets a
+    /// scan answer for it.
+    pub fn any_spilled_in(&self, range: RangeRef) -> bool {
+        self.spill_ranges.values().any(|r| r.intersects(&range))
     }
     /// Last row (inclusive) of the maximal contiguous run of non-empty values in `col`, starting
     /// at `from_row` and capped at `cap` (inclusive). `from_row - 1` when `from_row` itself is
@@ -710,6 +754,16 @@ mod tests {
     use super::*;
     use crate::cell::Formula;
 
+    /// Lays `values` down one column from `anchor` as a spill, the way calc does: one array for the
+    /// anchor and the area it covers.
+    fn lay_spill(s: &mut Sheet, anchor: CellRef, values: &[Value]) {
+        let rows = values.len() as u32;
+        let array = cella_core::Array::new(values.len(), 1, values.to_vec()).expect("an array");
+        let end = CellRef::new(anchor.row.saturating_add(rows).saturating_sub(1), anchor.col);
+        s.spill_ranges.insert(anchor, RangeRef::new(anchor, end));
+        s.spill_values.insert(anchor, Arc::new(array));
+    }
+
     /// The grid places rows through LineIndex, not row_top: after a filter hides rows it must
     /// close them too, or a filtered sheet draws blank (the visible row sits a thousand points
     /// below the header, where the old line-info entries used to put it).
@@ -841,23 +895,23 @@ mod tests {
         s.set_value(CellRef::new(2, 0), Value::Error(cella_core::CellError::Div0));
         // A formatted spill child: stored with a style only, so the spill value shows through.
         s.set_cell(CellRef::new(3, 0), Cell { style: StyleId(1), ..Default::default() });
-        s.spill.insert(CellRef::new(3, 0), Value::Number(9.0));
-        // Nothing stored at all, only a spill value from an array formula anchored elsewhere.
-        s.spill.insert(CellRef::new(4, 0), Value::Number(4.0));
         // A formula whose cached value is empty: its own answer wins over the spill under it.
         s.set_cell(CellRef::new(5, 0), Cell { formula: Some(Arc::new(Formula::new("\"\""))), ..Default::default() });
-        s.spill.insert(CellRef::new(5, 0), Value::Number(7.0));
-        for row in 0..8u32 {
-            let at = CellRef::new(row, 0);
-            let (own, value_ref) = match s.cell(at) {
-                Some(cell) if !cell.value.is_empty() || cell.formula.is_some() => (cell.value.clone(), Some(cell.value)),
-                other => {
-                    let spilled = s.spill.get(&at).cloned();
-                    (spilled.clone().unwrap_or(Value::Empty), spilled.or(other.map(|cell| cell.value)))
-                }
-            };
-            assert_eq!(s.value(at), own, "{at:?}");
-            assert_eq!(s.value_ref(at), value_ref, "{at:?}");
+        // One array anchored on row 2 covers rows 2 to 5: row 3 (a styled cell) and row 4 (nothing
+        // stored at all) show its values, and row 5's own formula answer still wins.
+        lay_spill(&mut s, CellRef::new(2, 0), &[Value::Number(0.0), Value::Number(9.0), Value::Number(4.0), Value::Number(7.0)]);
+        let wanted: [(Value, Option<Value>); 6] = [
+            (Value::Number(1.0), Some(Value::Number(1.0))),
+            (Value::Text(Arc::from("t")), Some(Value::Text(Arc::from("t")))),
+            (Value::Error(cella_core::CellError::Div0), Some(Value::Error(cella_core::CellError::Div0))),
+            (Value::Number(9.0), Some(Value::Number(9.0))),
+            (Value::Number(4.0), Some(Value::Number(4.0))),
+            (Value::Empty, Some(Value::Empty)),
+        ];
+        for (row, (own, value_ref)) in wanted.iter().enumerate() {
+            let at = CellRef::new(row as u32, 0);
+            assert_eq!(s.value(at), *own, "{at:?}");
+            assert_eq!(s.value_ref(at), *value_ref, "{at:?}");
         }
     }
 
@@ -868,14 +922,17 @@ mod tests {
             let mut s = Sheet::new("S");
             let rows = rng.below(400);
             // A mix of directly-stored values, formulas (value empty but formula present),
-            // spill-only cells, blank-but-stored cells, and gaps, like a real sheet.
+            // spill-only cells, blank-but-stored cells, and gaps, like a real sheet. One span covers
+            // the whole column first, so every row below has a spilled value to fall through to.
+            if rows > 0 {
+                let values: Vec<Value> = (0..rows).map(|r| Value::Number(r as f64)).collect();
+                lay_spill(&mut s, CellRef::new(0, 0), &values);
+            }
             for r in 0..rows {
                 match rng.below(5) {
                     0 => s.set_value(CellRef::new(r, 0), Value::Number(r as f64)),
                     1 => s.set_cell(CellRef::new(r, 0), Cell { formula: Some(Arc::new(Formula::new("1"))), ..Default::default() }),
-                    2 => {
-                        s.spill.insert(CellRef::new(r, 0), Value::Number(r as f64));
-                    }
+                    2 => {}
                     3 => {
                         // Stored but blank: does not count (matches `has_value`/`value_ref`).
                         s.set_value(CellRef::new(r, 0), Value::Text("".into()));
@@ -883,7 +940,6 @@ mod tests {
                     4 if rng.below(2) == 0 => {
                         // A style-only stored cell over a spill value: `value_ref` falls through
                         // to the spill value, so the row counts.
-                        s.spill.insert(CellRef::new(r, 0), Value::Number(r as f64));
                         s.set_cell(CellRef::new(r, 0), Cell { style: StyleId(1), ..Default::default() });
                     }
                     _ => {} // gap
@@ -931,7 +987,7 @@ mod tests {
         let mut s = Sheet::new("S");
         s.set_value(CellRef::new(0, 1), Value::Number(1.0));
         // row 1: a formatted spill child: stored with a style only, value from `spill`.
-        s.spill.insert(CellRef::new(1, 1), Value::Number(2.0));
+        lay_spill(&mut s, CellRef::new(0, 1), &[Value::Number(1.0), Value::Number(2.0)]);
         s.set_cell(CellRef::new(1, 1), Cell { style: StyleId(1), ..Default::default() });
         s.set_value(CellRef::new(2, 1), Value::Number(3.0));
         assert_eq!(s.last_contiguous_nonempty(1, 0, 100), 2);
@@ -943,7 +999,7 @@ mod tests {
         let mut s = Sheet::new("S");
         s.set_value(CellRef::new(0, 1), Value::Number(1.0));
         // row 1: nothing stored, but a spill value from an array formula anchored elsewhere.
-        s.spill.insert(CellRef::new(1, 1), Value::Number(2.0));
+        lay_spill(&mut s, CellRef::new(0, 1), &[Value::Number(1.0), Value::Number(2.0)]);
         s.set_value(CellRef::new(2, 1), Value::Number(3.0));
         // row 3: a genuine gap (nothing stored, no spill).
         assert_eq!(s.last_contiguous_nonempty(1, 0, 100), 2);

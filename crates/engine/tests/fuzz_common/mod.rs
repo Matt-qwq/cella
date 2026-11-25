@@ -92,7 +92,7 @@ pub fn workbook_diff(a: &Workbook, b: &Workbook) -> Option<String> {
                 ("autofilter", x.autofilter != y.autofilter),
                 ("cond_formats", x.cond_formats != y.cond_formats),
                 ("validations", x.validations != y.validations),
-                ("spill", x.spill != y.spill || x.spill_ranges != y.spill_ranges),
+                ("spill", x.spill_values != y.spill_values || x.spill_ranges != y.spill_ranges),
             ]
             .into_iter()
             .find(|(_, d)| *d)

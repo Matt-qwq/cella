@@ -106,8 +106,11 @@ fn dynamic_spills_and_legacy_cse_keep_distinct_ranges() {
     sh.cells.set(at("A2"), Cell::value(Value::Number(2.0)));
     sh.cells.set(at("B1"), formula("SEQUENCE(3)", 1.0));
     sh.spill_ranges.insert(at("B1"), range("B1:B3"));
-    sh.spill.insert(at("B2"), Value::Number(2.0));
-    sh.spill.insert(at("B3"), Value::Number(3.0));
+    sh.spill_values.insert(
+        at("B1"),
+        std::sync::Arc::new(cella_core::Array::new(3, 1, vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]).unwrap()),
+    );
+
     sh.cells.set(at("C1"), formula("SUM(B1:B3)", 6.0));
 
     let bytes = write_xlsx(&wb).unwrap();

@@ -717,7 +717,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
         // body that holds one gets the full recalculation that lays the spills out again. A legacy
         // array that merely overlaps the body counts too: an edit of part of an array is not
         // something a sort may do quietly, and the store answers "is there one at all" in O(1).
-        let spilled = sh.spill.keys().any(|c| body.contains(*c)) || sh.spill_ranges.values().any(|r| r.intersects(&body));
+        let spilled = sh.any_spilled_in(body);
         let arrays = body_arrays
             || (sh.cells.has_array_anchors()
                 && sh.cells.formulas().any(|(c, f, _)| f.array.as_deref().is_some_and(|r| r.start == c && !r.is_single() && r.intersects(&body))));

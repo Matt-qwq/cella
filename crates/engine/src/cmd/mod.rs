@@ -377,7 +377,7 @@ fn chart_sheet_content(sh: &cella_model::Sheet) -> Option<&'static str> {
         (!sh.images.is_empty() || !sh.shapes.is_empty() || !sh.equations.is_empty()).then_some("an object"),
         (!sh.controls.is_empty()).then_some("a form control"),
         (!sh.slicers.is_empty() || !sh.pivot_slicers.is_empty() || !sh.pivot_timelines.is_empty()).then_some("a slicer"),
-        (!sh.spill.is_empty() || !sh.spill_ranges.is_empty()).then_some("a spilled value"),
+        (!sh.spill_ranges.is_empty()).then_some("a spilled value"),
         (!sh.edit_ranges.is_empty()).then_some("an edit range"),
     ]
     .into_iter()

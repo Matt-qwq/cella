@@ -941,7 +941,7 @@ fn draw_block(pg: &mut Page, b: &Block, gridlines: bool, cf: &mut Option<crate::
         block.iter().filter(|c| !covered(*c)).collect()
     } else {
         let mut set: Vec<CellRef> = sh.cells.iter_range(block).map(|(c, _)| c).collect();
-        set.extend(sh.spill.range(block.start..=block.end).map(|(c, _)| *c).filter(|c| block.contains(*c)));
+        set.extend(sh.spilled_in(block).into_iter().map(|(c, _)| c));
         set.sort_unstable();
         set.dedup();
         set.retain(|c| !covered(*c));
@@ -1713,9 +1713,11 @@ fn needed_chars(wb: &Workbook, layouts: &[SheetLayout]) -> String {
                 return out;
             }
         }
-        for value in sh.spill.values() {
-            if let Value::Text(t) = value {
-                collect_chars(&mut out, t);
+        for array in sh.spill_values.values() {
+            for value in &array.data {
+                if let Value::Text(t) = value {
+                    collect_chars(&mut out, t);
+                }
             }
         }
         for shape in &sh.shapes {

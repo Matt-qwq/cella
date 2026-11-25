@@ -1027,7 +1027,7 @@ fn slide_together(wb: &cella_model::Workbook, sheet: usize, areas: &[RangeRef]) 
     let mut out = wb.clone();
     let dst = out.sheet_mut(sheet)?;
     dst.take_cells(block);
-    dst.spill.retain(|c, _| !block.contains(*c));
+    dst.spill_values.retain(|a, _| !block.contains(*a));
     dst.spill_ranges.retain(|c, _| !block.contains(*c));
     dst.comments.retain(|c, _| !block.contains(*c));
     dst.merges.retain(|m| !m.intersects(&block));
@@ -1039,7 +1039,11 @@ fn slide_together(wb: &cella_model::Workbook, sheet: usize, areas: &[RangeRef]) 
     let mut next = if across { anchor.col } else { anchor.row };
     for a in &sorted {
         let (dr, dc) = if across { (0, i64::from(next) - i64::from(a.start.col)) } else { (i64::from(next) - i64::from(a.start.row), 0) };
-        let cells = src.cells.iter_range(*a).map(|(c, _)| c).chain(src.spill.keys().copied().filter(|c| a.contains(*c)));
+        let cells = src
+            .cells
+            .iter_range(*a)
+            .map(|(c, _)| c)
+            .chain(src.spill_ranges.values().filter(|r| r.intersects(a)).flat_map(|r| r.iter()).filter(|c| a.contains(*c)));
         for c in cells {
             let Some(to) = c.offset(dr, dc) else { continue };
             let style = src.cell(c).map(|x| x.style).unwrap_or_default();
@@ -1270,7 +1274,7 @@ fn range_move(s: &mut Session, p: &Json) -> Result<Json> {
             && let Some(dest) = dest
             && let Some(sh) = s.doc()?.wb.sheet(sheet)
             && (rect_difference(dest, src).iter().any(|r| sh.cells.iter_range(*r).any(|(_, cell)| !cell.value.is_empty() || cell.formula.is_some()))
-                || sh.spill.iter().any(|(c, v)| dest.contains(*c) && !src.contains(*c) && *v != Value::Empty))
+                || sh.spill_ranges.values().flat_map(|r| r.iter()).any(|c| dest.contains(c) && !src.contains(c)))
         {
             return Err(EngineError::Other("There's already data here. Pass `overwrite: true` to replace it.".into()));
         }
@@ -1340,7 +1344,7 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     let src_sheet_name = src_sheet.name.clone();
     // A sheet with no spill has no cell whose displayed value could differ from the value the cell
     // stores, so a paste need not read the same band twice for every cell.
-    let src_has_spills = !src_sheet.spill_ranges.is_empty() || !src_sheet.spill.is_empty();
+    let src_has_spills = !src_sheet.spill_ranges.is_empty();
     if cut_move && at.offset((tiles_r * h).saturating_sub(1) as i64, (tiles_c * w).saturating_sub(1) as i64).is_none() {
         // Check the whole footprint before the source is emptied, so a move that overflows the grid loses nothing.
         return Err(EngineError::Other("The cut area doesn't fit at this position; nothing was moved.".into()));

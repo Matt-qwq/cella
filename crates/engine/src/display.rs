@@ -157,7 +157,7 @@ pub fn range_text(wb: &Workbook, sheet: usize, r: RangeRef) -> String {
     let Some(sh) = wb.sheet(sheet) else { return String::new() };
     let mut out = String::new();
     let r = clipboard_range(r);
-    let has_spill = !sh.spill.is_empty();
+    let has_spill = !sh.spill_ranges.is_empty();
     let read = sh.cells.row_reader(r.start.col, r.end.col);
     let mut row: Vec<Option<cella_model::Cell>> = Vec::with_capacity(r.width() as usize);
     let mut formats: HashMap<cella_model::StyleId, NumberFormat> = HashMap::new();
@@ -259,10 +259,8 @@ pub fn stats(sheet: &Sheet, ranges: &[RangeRef]) -> Stats {
         for (c, cell) in sheet.cells.iter_range(*r) {
             visit(c, &cell.value);
         }
-        for (c, v) in sheet.spill.range(r.start..=r.end) {
-            if r.contains(*c) {
-                visit(*c, v);
-            }
+        for (c, v) in sheet.spilled_in(*r) {
+            visit(c, &v);
         }
     }
     if s.numeric > 0 {

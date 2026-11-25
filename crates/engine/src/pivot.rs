@@ -2122,7 +2122,7 @@ pub fn refresh(wb: &mut Workbook, sheet: usize, idx: usize, replace: bool) -> Re
                 ));
             }
         }
-        if let Some(c) = sh.spill.keys().find(|c| area.contains(**c) && !pt.last_range.is_some_and(|r| r.contains(**c))) {
+        if let Some(c) = sh.spilled_in(area).into_iter().map(|(c, _)| c).find(|c| !pt.last_range.is_some_and(|r| r.contains(*c))) {
             return Err(format!(
                 "There's already data in {}!{}. Do you want to replace it? (Run again with replace: true to overwrite.)",
                 quote_sheet(&sh.name),

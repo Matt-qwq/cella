@@ -167,7 +167,9 @@ fn pictures_roundtrip_across_sheets_with_and_without_dynamic_arrays() {
             f.value = Value::Number(1.0);
             sheet.cells.set(at("E1"), f);
             sheet.spill_ranges.insert(at("E1"), RangeRef::parse("E1:E2").unwrap());
-            sheet.spill.insert(at("E2"), Value::Number(2.0));
+            sheet
+                .spill_values
+                .insert(at("E1"), std::sync::Arc::new(cella_core::Array::new(2, 1, vec![Value::Number(1.0), Value::Number(2.0)]).unwrap()));
         }
         let bytes = write_xlsx(&wb).unwrap();
         let mut package = Package::open(&bytes).unwrap();

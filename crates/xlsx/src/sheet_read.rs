@@ -547,19 +547,34 @@ fn adopt_spills(sheet: &mut Sheet) {
         // Only cells the file actually stored: walking the whole range would cost its area, and a
         // damaged anchor's `ref` can name the whole sheet.
         let stored: Vec<CellRef> = sheet.cells.iter_range(range).map(|(c, _)| c).filter(|c| *c != anchor).collect();
+        if stored.is_empty() {
+            continue;
+        }
+        // One array for the whole area, built from the cells the file cached: a million-cell spill
+        // is one entry here, not a million.
+        let rows = (range.end.row.saturating_sub(range.start.row)).saturating_add(1) as usize;
+        let cols = (range.end.col.saturating_sub(range.start.col)).saturating_add(1) as usize;
+        let mut data = vec![Value::Empty; rows.saturating_mul(cols)];
         for c in stored {
             let Some(cell) = sheet.cells.get(c) else { continue };
             if cell.formula.is_some() {
                 continue;
             }
             if !cell.value.is_empty() {
-                sheet.spill.insert(c, cell.value);
+                let row = c.row.saturating_sub(range.start.row) as usize;
+                let col = c.col.saturating_sub(range.start.col) as usize;
+                if let Some(slot) = data.get_mut(row.saturating_mul(cols).saturating_add(col)) {
+                    *slot = cell.value.clone();
+                }
             }
             if cell.style == cella_model::StyleId::DEFAULT {
                 sheet.cells.remove(c);
             } else {
                 sheet.cells.set(c, Cell { value: Value::Empty, ..cell });
             }
+        }
+        if let Some(array) = cella_core::Array::new(rows, cols, data) {
+            sheet.spill_values.insert(anchor, std::sync::Arc::new(array));
         }
     }
 }

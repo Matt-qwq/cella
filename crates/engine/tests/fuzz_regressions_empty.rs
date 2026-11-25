@@ -55,7 +55,7 @@ fn recalc_diff(wb: &Workbook) -> Option<String> {
         let mut keys: BTreeSet<CellRef> = BTreeSet::new();
         for s in [x, y] {
             keys.extend(s.cells.iter().filter(|(_, c)| !c.value.is_empty() || c.formula.is_some()).map(|(c, _)| c));
-            keys.extend(s.spill.keys().copied());
+            keys.extend(s.spill_ranges.values().flat_map(|r| r.iter()));
         }
         for c in keys {
             let (va, vb) = (x.value(c), y.value(c));

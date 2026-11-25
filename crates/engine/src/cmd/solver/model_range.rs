@@ -126,7 +126,7 @@ fn check_options_spill(sheet: &Sheet, anchor: CellRef, width: u32, ours: &[CellR
         if sheet.cells.contains(c) {
             return Err(blocked(format!("{} isn't empty", c.a1())));
         }
-        if sheet.spill.contains_key(&c) && sheet.spill_anchor(c).is_none_or(|a| !ours.contains(&a)) {
+        if sheet.spill_anchor(c).is_none_or(|a| !ours.contains(&a)) && sheet.any_spilled_in(RangeRef::new(c, c)) {
             return Err(blocked(format!("{} holds the values of another formula", c.a1())));
         }
     }
@@ -145,7 +145,7 @@ fn check_options_spill(sheet: &Sheet, anchor: CellRef, width: u32, ours: &[CellR
 /// are as in check_options_spill: a model saved at the same place before may be replaced.
 fn check_column_spills(sheet: &Sheet, column: RangeRef, ours: &[CellRef]) -> Result<()> {
     for c in column.iter() {
-        if sheet.spill.contains_key(&c) && sheet.spill_anchor(c).is_none_or(|a| !ours.contains(&a)) {
+        if sheet.spill_anchor(c).is_none_or(|a| !ours.contains(&a)) && sheet.any_spilled_in(RangeRef::new(c, c)) {
             return Err(EngineError::Other(format!(
                 "The saved model would cover {}, which holds the values of another formula; choose another place to save it.",
                 c.a1()
