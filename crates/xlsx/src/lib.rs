@@ -64,6 +64,12 @@ pub use package::MAX_PART;
 pub fn max_part() -> u64 {
     package::max_part()
 }
+
+/// The limit on everything one package unpacks to, as this process actually uses it (the default,
+/// or what `CELLA_MAX_TOTAL_MB` asks for; never less than [`max_part`]).
+pub fn max_total() -> u64 {
+    package::max_total()
+}
 pub use passthrough::rebase_links;
 pub use xls::read_xls;
 pub use xlsb::read_xlsb;

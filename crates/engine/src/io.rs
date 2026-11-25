@@ -273,10 +273,8 @@ pub fn open_from_path(name: &str, path: &str, password: Option<&str>) -> Result<
     let (mut wb, report) = match cella_xlsx::read_xlsx_file_with(std::path::Path::new(path), options) {
         Ok(read) => read,
         // A size complaint is the answer, not a reason to load the file to hear it again.
-        Err(e @ cella_xlsx::IoError::TooLarge(_)) => {
-            return Err(EngineError::Other(format!(
-                "We can't open '{name}': {e} (a guard against damaged or malicious files). For a file you trust,                  raise the limit with the CELLA_MAX_PART_MB and CELLA_MAX_TOTAL_MB environment variables."
-            )));
+        Err(cella_xlsx::IoError::TooLarge(detail)) => {
+            return Err(EngineError::Other(too_large_message(name, &detail)));
         }
         // Some other package named `.xlsx` — an OpenDocument or XLSB file, say: let the reader that
         // knows those formats have the bytes.
@@ -320,11 +318,9 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
         // from bytes has no folder, so the temp directory is all a spill can use.
         let paging = should_page(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         let options = cella_xlsx::ReadOptions { paging, known_function: known_functions(), ..Default::default() };
-        let (wb, report) = cella_xlsx::read_xlsx_with(bytes, options).map_err(|e| {
-            EngineError::Other(match (&e, cella_xlsx::oversized_part(bytes)) {
-                (cella_xlsx::IoError::TooLarge(_), Some((part, size))) => part_too_large_message(name, &part, size),
-                _ => format!("We can't open '{name}': {e}"),
-            })
+        let (wb, report) = cella_xlsx::read_xlsx_with(bytes, options).map_err(|e| match e {
+            cella_xlsx::IoError::TooLarge(detail) => EngineError::Other(too_large_message(name, &detail)),
+            e => EngineError::Other(format!("We can't open '{name}': {e}")),
         })?;
         return Ok((wb, report.warnings));
     }
@@ -367,22 +363,23 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
     }
 }
 
-/// What to tell the user when one part of an XLSX package unpacks to more than the reader's
-/// per-part limit: the sizes, why the limit is there, and what gets the data in. The limit is
-/// per part, so smaller sheets fit; the shared strings are one part for every sheet, so only a
-/// CSV, which has no parts, helps there.
-fn part_too_large_message(name: &str, part: &str, size: u64) -> String {
-    let limit = cella_xlsx::max_part() >> 20;
-    let mb = size >> 20;
-    let size = if mb > limit { format!("{mb} MB") } else { format!("more than {limit} MB") };
-    let remedy = if part.contains("worksheets/") {
-        "To open it, split the data across several sheets, since the limit applies to each part, or save the sheet as CSV, which keeps only its values."
-    } else {
-        "To open it, save the data as CSV, which keeps only its values."
-    };
+/// What to tell the user when a package's parts unpack to more than the reader accepts: the part and
+/// its size (the reader's own message names them), the two limits, why they are there, and what gets
+/// the data in. The limits guard against damaged or malicious files, not against real work — a
+/// report of a million records can outgrow them — so the message says both what to do instead and
+/// how to raise them, and never presents the size as a refusal to hear.
+fn too_large_message(name: &str, detail: &str) -> String {
+    if !detail.contains("unpack") {
+        // A limit inside the format itself (an .xls record count, an ODS attribute): nothing raises it.
+        return format!("We can't open '{name}': {detail}.");
+    }
+    let (part_limit, total_limit) = (cella_xlsx::max_part() >> 20, cella_xlsx::max_total() >> 20);
     format!(
-        "We can't open '{name}': its part {part} unpacks to {size}, over Cella's limit of {limit} MB for one part \
-         (a guard against damaged or malicious files). {remedy} For a file you trust, raise the limit with the CELLA_MAX_PART_MB environment variable."
+        "We can't open '{name}': {detail}. Cella allows {part_limit} MB in one part and {total_limit} MB in \
+         all, a guard against damaged or malicious files, and a report of a million records can outgrow \
+         it. To open this workbook, save a copy holding fewer rows (each part is checked on its own), or \
+         save the sheet as CSV, which keeps only its values. For a file you trust, CELLA_MAX_PART_MB and \
+         CELLA_MAX_TOTAL_MB raise the limits."
     )
 }
 
@@ -1577,32 +1574,65 @@ mod tests {
         let mut wb = Workbook::new();
         wb.sheet_mut(0).unwrap().set_value(CellRef::new(0, 0), cella_core::Value::text("big"));
         let package = save_bytes(&wb, "big.xlsx").unwrap();
-        // The cap belongs to the process (a trusted file raises it with CELLA_MAX_PART_MB),
-        // so the sizes below follow the cap in force instead of hard-coding 512 MB.
-        let cap = cella_xlsx::max_part();
-        let limit_mb = cap >> 20;
-        let declared_mb = limit_mb + 28;
+        // The limits belong to the process (a trusted file raises them with CELLA_MAX_PART_MB), so
+        // the sizes below follow the limits in force instead of hard-coding them.
+        let (part_limit, total_limit) = (cella_xlsx::max_part(), cella_xlsx::max_total());
+        let (part_mb, total_mb) = (part_limit >> 20, total_limit >> 20);
+        let declared_mb = part_mb + 28;
         let over_text = format!("{declared_mb} MB");
-        let limit_text = format!("{limit_mb} MB");
-        let (Ok(declared), Ok(just_over)) = (u32::try_from(cap + 28 * 1024 * 1024), u32::try_from(cap + 1)) else { return };
+        let (Ok(declared), Ok(just_over)) = (u32::try_from(part_limit + 28 * 1024 * 1024), u32::try_from(part_limit + 1)) else { return };
         let msg = open_bytes("big.xlsx", &declaring(package.clone(), "xl/worksheets/sheet1.xml", declared)).unwrap_err().to_string();
+        // The part, its real size, both limits, and what gets the data in: no dead end and no byte counts.
         assert!(msg.starts_with("We can't open 'big.xlsx': "), "{msg}");
-        assert!(msg.contains("xl/worksheets/sheet1.xml") && msg.contains(&over_text) && msg.contains(&limit_text), "{msg}");
-        assert!(msg.contains("several sheets") && msg.contains("CSV"), "{msg}");
+        assert!(msg.contains("xl/worksheets/sheet1.xml") && msg.contains(&over_text), "{msg}");
+        assert!(msg.contains(&format!("{part_mb} MB")) && msg.contains(&format!("{total_mb} MB")), "{msg}");
+        assert!(msg.contains("CSV") && msg.contains("CELLA_MAX_PART_MB") && msg.contains("CELLA_MAX_TOTAL_MB"), "{msg}");
         assert!(!msg.contains("bytes"), "{msg}");
-        // Splitting sheets doesn't shrink the shared strings, which every sheet uses: only CSV helps.
+        // The shared strings are one part for every sheet: the message names that part, so the
+        // reader's answer says where the size is rather than blaming the workbook as a whole.
         let msg = open_bytes("big.xlsx", &declaring(package.clone(), "xl/sharedStrings.xml", declared)).unwrap_err().to_string();
-        assert!(msg.contains("xl/sharedStrings.xml") && msg.contains(&over_text) && msg.contains("CSV"), "{msg}");
-        assert!(!msg.contains("several sheets"), "{msg}");
+        assert!(msg.contains("xl/sharedStrings.xml") && msg.contains(&over_text), "{msg}");
         // Just over the limit never reads as a size equal to it.
         let msg = open_bytes("big.xlsx", &declaring(package, "xl/worksheets/sheet1.xml", just_over)).unwrap_err().to_string();
-        assert!(msg.contains(&format!("more than {limit_mb} MB")), "{msg}");
+        assert!(msg.contains(&format!("more than {part_mb} MB")), "{msg}");
         // A package that fails for another reason keeps its own error, oversized part or not.
         let mut broken = declaring(save_bytes(&wb, "big.xlsx").unwrap(), "xl/worksheets/sheet1.xml", declared);
         let at = central_entry(&broken, "xl/workbook.xml");
         broken[at + 46 + "xl/workbook.xml".len() - 1] = b'x';
         let msg = open_bytes("big.xlsx", &broken).unwrap_err().to_string();
         assert!(msg.starts_with("We can't open 'big.xlsx': ") && !msg.contains("unpacks"), "{msg}");
+    }
+
+    /// The double-click route: a file on disk, opened by path. Every part is decompressed on demand
+    /// there, so it is the route the 112.8 MB archival workbook took when the guard refused it.
+    #[test]
+    fn a_file_whose_part_is_over_the_limit_says_the_same() {
+        let mut wb = Workbook::new();
+        wb.sheet_mut(0).unwrap().set_value(CellRef::new(0, 0), cella_core::Value::text("big"));
+        let package = save_bytes(&wb, "big.xlsx").unwrap();
+        let cap = cella_xlsx::max_part();
+        let Ok(just_over) = u32::try_from(cap + 1) else { return };
+        let path = std::env::temp_dir().join(format!("cella-size-guard-{}.xlsx", std::process::id()));
+        std::fs::write(&path, declaring(package, "xl/sharedStrings.xml", just_over)).unwrap();
+        let opened = open_from_path("big.xlsx", path.to_str().unwrap(), None);
+        let _ = std::fs::remove_file(&path);
+        let Err(e) = opened else { panic!("a part over the limit must be refused") };
+        let msg = e.to_string();
+        assert!(msg.contains("xl/sharedStrings.xml"), "{msg}");
+        assert!(msg.contains(&format!("more than {} MB", cap >> 20)), "{msg}");
+        assert!(msg.contains("CELLA_MAX_PART_MB") && msg.contains("CSV"), "{msg}");
+    }
+
+    /// The limits are the ones real work needs: the 2026-11-25 archival workbook (112.8 MB on disk)
+    /// unpacks to 1.32 GB in all, its shared strings alone to 619 MB. Both used to be over the
+    /// 512 MB / 1 GB caps, so the file was refused outright; the reader takes it now.
+    #[test]
+    fn the_limits_admit_the_archival_report_that_was_refused() {
+        let (part, total) = (619 * 1024 * 1024, 1320 * 1024 * 1024);
+        assert!(part < cella_xlsx::max_part(), "a 619 MB shared-strings part must fit");
+        assert!(total < cella_xlsx::max_total(), "1.32 GB of parts must fit");
+        // And the guard still refuses the bomb it is there for.
+        assert!(cella_xlsx::max_total() < 10 * 1024 * 1024 * 1024, "10 GB must stay out");
     }
 
     #[test]

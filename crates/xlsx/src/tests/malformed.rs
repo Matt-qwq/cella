@@ -103,6 +103,20 @@ fn deeply_nested_and_broken_xml() {
     assert!(!rep.warnings.is_empty());
 }
 
+/// The other half of the guard: a part that declares a size the cap allows is read. The archival
+/// workbook of 2026-11-25 declares 619 MB in its shared strings, which the 512 MB cap this reader
+/// used to keep refused as a whole — a real workbook, not a bomb. The declared size is what the
+/// guard checks, so a forged one just under the cap proves the read without 700 real megabytes.
+#[test]
+fn a_part_declaring_a_large_size_reads_when_the_cap_allows_it() {
+    let Ok(size) = u32::try_from(700 * 1024 * 1024) else { return };
+    assert!(u64::from(size) < crate::max_part(), "the cap still refuses a real report's part");
+    let body = r#"<sheetData><row r="1"><c r="A1"><v>7</v></c></row></sheetData>"#;
+    let bytes = declaring(minimal(body, &[], "", ""), "xl/worksheets/sheet1.xml", size);
+    let (wb, _) = read_xlsx(&bytes).expect("a part under the cap is read");
+    assert_eq!(wb.sheet(0).map(|s| s.value(cella_core::CellRef::new(0, 0))), Some(cella_core::Value::Number(7.0)));
+}
+
 #[test]
 fn zip_bomb_is_rejected() {
     // A part that declares more unpacked bytes than the per-part cap is refused on the declared

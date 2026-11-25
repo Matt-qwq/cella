@@ -9,9 +9,16 @@ use crate::IoError;
 use crate::xml::{self, El};
 
 /// Largest decompressed part accepted.
-pub const MAX_PART: u64 = 512 * 1024 * 1024;
-/// Largest total decompressed size read from one package.
-pub const MAX_TOTAL: u64 = 1024 * 1024 * 1024;
+///
+/// The cap bounds the memory a read can ask for, and a read's memory tracks the size its parts
+/// unpack to (measured: 1.38 GB of parts peaked at 1.3 GB, opening in 2.5 s). 512 MB refused real
+/// work: a 112.8 MB archival workbook (居民健康档案, 2026-11-25) holds a 619 MB
+/// `xl/sharedStrings.xml` and 1.32 GB of parts, which WPS and Excel open on the same machine. 2 GiB
+/// takes that file and the next batch after it, while the zip bomb the cap exists for — 100 KB
+/// declaring 10 GB — is still refused before a byte of it is decompressed.
+pub const MAX_PART: u64 = 2048 * 1024 * 1024;
+/// Largest total decompressed size read from one package (never less than [`MAX_PART`]).
+pub const MAX_TOTAL: u64 = 4096 * 1024 * 1024;
 
 /// The limits the reading in this process actually uses.
 ///
@@ -21,6 +28,11 @@ pub const MAX_TOTAL: u64 = 1024 * 1024 * 1024;
 /// an override is clamped so a typo cannot ask for terabytes.
 pub fn max_part() -> u64 {
     limits().0
+}
+
+/// The whole-package limit this process actually uses (see [`max_part`]).
+pub fn max_total() -> u64 {
+    limits().1
 }
 
 fn limits() -> (u64, u64) {
@@ -158,11 +170,11 @@ impl<'a> Package<'a> {
         let f = self.zip.by_index(idx).map_err(|e| IoError::Zip(format!("{part}: {e}")))?;
         let size = f.size();
         if size > max_part {
-            return Err(IoError::TooLarge(format!("{part} expands to {size} bytes")));
+            return Err(IoError::TooLarge(over_text(part, size, max_part)));
         }
         let remaining = max_total.saturating_sub(used);
         if size > remaining {
-            return Err(IoError::TooLarge(format!("package expands to more than {} MB", max_total / (1024 * 1024))));
+            return Err(IoError::TooLarge(format!("its parts unpack to more than {} MB in all", max_total >> 20)));
         }
         self.total = used.saturating_add(size);
         // The directory's size is only a claim: a part that lies still cannot expand past the limit.
@@ -178,7 +190,7 @@ impl<'a> Package<'a> {
         };
         let mut f = self.zip.by_index(idx).map_err(|e| IoError::Zip(format!("{part}: {e}")))?;
         if f.size() > maximum {
-            return Err(IoError::TooLarge(format!("{part} expands to {} bytes", f.size())));
+            return Err(IoError::TooLarge(over_text(part, f.size(), maximum)));
         }
         let remaining = max_total.saturating_sub(self.total);
         let limit = maximum.min(remaining);
@@ -190,9 +202,9 @@ impl<'a> Package<'a> {
         (&mut f).take(limit + 1).read_to_end(&mut out).map_err(|e| IoError::Zip(format!("{part}: {e}")))?;
         if out.len() as u64 > limit {
             return Err(IoError::TooLarge(if remaining < maximum {
-                format!("package expands to more than {} MB", max_total / (1024 * 1024))
+                format!("its parts unpack to more than {} MB in all", max_total >> 20)
             } else {
-                format!("{part} expands to more than {maximum} bytes")
+                over_text(part, out.len() as u64, maximum)
             }));
         }
         self.total += out.len() as u64;
@@ -231,6 +243,13 @@ impl<'a> Package<'a> {
             })
             .collect())
     }
+}
+
+/// A part's size as the message reads it: whole megabytes, and "more than N MB" when rounding down
+/// would make a part that is over a limit look like it fits (2048.5 MB must not read as "2048 MB").
+fn over_text(part: &str, size: u64, limit: u64) -> String {
+    let (mb, limit_mb) = (size >> 20, limit >> 20);
+    if mb > limit_mb { format!("{part} unpacks to {mb} MB") } else { format!("{part} unpacks to more than {limit_mb} MB") }
 }
 
 /// The first part whose declared unpacked size is over [`MAX_PART`], with that size.
