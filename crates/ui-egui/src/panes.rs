@@ -231,6 +231,19 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
                 Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
             }
         }
+        if ui.button(crate::widgets::tr(ui, "Add from file to model…")).clicked()
+            && let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick())
+        {
+            // A file the model keeps as a file: the engine reads its rows, so the table may be
+            // bigger than a sheet — and bigger than the model caches in the document.
+            match app.session.run("data.model.loadFile", json!({"path": path})) {
+                Ok(v) => {
+                    let rows = v["rows"].as_u64().unwrap_or(0);
+                    app.toast = Some((crate::widgets::tr(ui, "Loaded {} rows").replace("{}", &rows.to_string()), crate::now_ms()));
+                }
+                Err(e) => app.message = Some(("Cella".into(), crate::clean_error(&e))),
+            }
+        }
         if ui.button(crate::widgets::tr(ui, "New query from file…")).clicked()
             && let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick())
         {
@@ -342,7 +355,13 @@ fn model_section(app: &mut SheetApp, ui: &mut Ui) {
         let name = table["name"].as_str().unwrap_or("");
         let rows = table["rows"].as_u64().unwrap_or(0);
         let cols = table["columns"].as_array().map_or(0, Vec::len);
-        ui.label(egui::RichText::new(format!("{name}  ·  {rows} × {cols}")).size(12.0));
+        // A table whose rows are a file's says so: its size is the file's, not the document's.
+        let line = if table["file"].as_bool().unwrap_or(false) {
+            format!("{name}  ·  {rows} × {cols}  ·  {}", crate::widgets::tr(ui, "file"))
+        } else {
+            format!("{name}  ·  {rows} × {cols}")
+        };
+        ui.label(egui::RichText::new(line).size(12.0));
     }
     if !measures.is_empty() {
         ui.add_space(4.0);

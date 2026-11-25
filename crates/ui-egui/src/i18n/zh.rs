@@ -1999,6 +1999,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Load To" => "加载到",
         "Run SQL" => "运行 SQL",
         "Add From File" => "从文件添加",
+        "Add from file to model…" => "从文件添加到模型…",
+        "Loaded {} rows" => "已加载 {} 行",
+        "file" => "文件",
         "Queries" => "查询",
         "Query Steps" => "查询步骤",
         // zh-grid - entries the grid, the ribbon, the tooltips and the paper view need (wave 4).

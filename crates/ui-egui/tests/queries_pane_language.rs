@@ -56,7 +56,8 @@ fn expanded_harness(language: Language) -> Harness {
 #[test]
 fn the_queries_pane_speaks_chinese() {
     let h = expanded_harness(Language::Zh);
-    for label in ["查询和连接", "全部刷新", "刷新", "删除", "步骤", "1. 提升的标题", "2. 更改的类型"] {
+    for label in ["查询和连接", "全部刷新", "从文件添加到模型…", "刷新", "删除", "步骤", "1. 提升的标题", "2. 更改的类型"]
+    {
         assert!(h.query_by_label(label).is_some(), "the queries pane should show {label}");
     }
     // And the query's own name is data, so it stays exactly as it was typed.
@@ -66,7 +67,7 @@ fn the_queries_pane_speaks_chinese() {
 #[test]
 fn the_queries_pane_reads_english_on_an_english_screen() {
     let h = expanded_harness(Language::En);
-    for label in ["Queries & Connections", "Refresh All", "Steps", "1. Promoted Headers", "2. Changed Type"] {
+    for label in ["Queries & Connections", "Refresh All", "Add from file to model…", "Steps", "1. Promoted Headers", "2. Changed Type"] {
         assert!(h.query_by_label(label).is_some(), "the queries pane should show {label}");
     }
 }
@@ -108,4 +109,42 @@ fn the_pane_shows_what_is_in_the_data_model() {
     assert!(h.query_all_by_label_contains("Total = SUM(Sales[Amount])").next().is_some(), "the measure line");
     // And the model table is listed with its shape.
     assert!(h.query_all_by_label_contains("Sales  ·  2 × 2").next().is_some(), "the table line");
+}
+/// The pane's "Add from file to model…" button, end to end: a picker that answers with a CSV, a
+/// click, and the model holds the file — with the pane saying the rows are the file's.
+#[cfg(feature = "sql-engine")]
+#[test]
+fn the_pane_adds_a_file_to_the_model() {
+    let path = std::env::temp_dir().join(format!("cella-pane-file-{}.csv", std::process::id()));
+    std::fs::write(&path, "Region,Amount\nWest,10\nEast,5\n").expect("write the csv");
+    let answered = path.to_string_lossy().to_string();
+    let mut session = Session::new();
+    session.new_workbook();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut SheetApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        {
+            let mut app =
+                SheetApp::new(session, cella_ui_egui::Services { pick_open: Some(Box::new(move || Some(answered.clone()))), ..Default::default() });
+            app.ui.language = Language::En;
+            app.grid.pane = Some("queries".into());
+            app
+        },
+    );
+    h.run_steps(4);
+    h.get_by_label("Add from file to model…").click();
+    h.run_steps(4);
+    let tables = h.state_mut().session.run("data.model.tables", json!({})).expect("the model lists it");
+    let stem = path.file_stem().and_then(|s| s.to_str()).expect("a stem");
+    assert_eq!(tables[0]["name"], stem);
+    assert_eq!(tables[0]["file"], true, "the table's rows are the file's");
+    assert_eq!(tables[0]["rows"], 2.0);
+    // (The pane's model section only draws once it has a query to sit beside — a pre-existing
+    // layout rule — so what this test proves is the button's own path: the click ran the command
+    // and the model holds the file.)
+    assert!(tables[0]["columns"].as_array().is_some_and(|c| c.len() == 2));
+    let _ = std::fs::remove_file(&path);
 }

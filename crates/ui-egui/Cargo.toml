@@ -8,6 +8,11 @@ description = "Cella egui frontend (Excel-style UI); swappable — nothing below
 [lints]
 workspace = true
 
+[features]
+# The data model's SQL engine (DuckDB), for a UI test that drives a command needing it: the
+# desktop app turns it on itself, and the browser build leaves it off.
+sql-engine = ["cella-engine/sql-engine"]
+
 [dependencies]
 craft-ui = { path = "../../vendor/craft-libs/ui" }
 cella-engine = { workspace = true }
