@@ -25,7 +25,10 @@ pub mod workbook;
 
 pub use cell::{Cell, CellPicture, Formula};
 pub use controls::{CONTROL_MAX, ControlAction, ControlKind, FormControl, MAX_CONTROLS, MAX_MACRO_NAME, MacroInput};
-pub use data_model::{DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelTable, Relationship};
+pub use data_model::{
+    DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelFile, ModelFileFormat, ModelTable, Relationship,
+    is_number_type,
+};
 pub use equation::Equation;
 pub use features::*;
 pub use json_kept::JsonKept;

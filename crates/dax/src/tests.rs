@@ -13,7 +13,9 @@ fn table(name: &str, columns: &[&str], rows: Vec<Vec<Value>>) -> ModelTable {
         name: name.to_string(),
         columns: columns.iter().map(|c| c.to_string()).collect(),
         rows: std::sync::Arc::new(rows),
+        column_types: Vec::new(),
         source_query: None,
+        source_file: None,
     }
 }
 

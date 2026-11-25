@@ -33,8 +33,8 @@ use std::fmt::Write as _;
 
 use cella_core::{CellError, CellRef, RangeRef, Value};
 use cella_model::{
-    DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelTable, Query, QueryAggregate, QueryColumnType,
-    QueryFilterOp, QueryLoad, QuerySource, QueryStep, Relationship, Workbook,
+    DataModel, MAX_MEASURES, MAX_MODEL_CELLS, MAX_MODEL_TABLES, MAX_RELATIONSHIPS, Measure, ModelFile, ModelFileFormat, ModelTable, Query,
+    QueryAggregate, QueryColumnType, QueryFilterOp, QueryLoad, QuerySource, QueryStep, Relationship, Workbook,
 };
 
 use crate::IoError;
@@ -1094,6 +1094,8 @@ fn encode_model(s: &mut String, m: &DataModel) {
         push_text(s, &t.name);
         s.push_str(",\"columns\":");
         push_texts(s, &t.columns);
+        s.push_str(",\"column_types\":");
+        push_texts(s, &t.column_types);
         s.push_str(",\"rows\":[");
         for (j, row) in t.rows.iter().enumerate() {
             if j > 0 {
@@ -1110,6 +1112,19 @@ fn encode_model(s: &mut String, m: &DataModel) {
         }
         s.push_str("],\"source_query\":");
         push_optional(s, t.source_query.as_deref());
+        if let Some(file) = &t.source_file {
+            s.push_str(",\"source_file\":{\"paths\":");
+            push_texts(s, &file.paths);
+            s.push_str(",\"format\":");
+            push_text(
+                s,
+                match file.format {
+                    cella_model::ModelFileFormat::Parquet => "Parquet",
+                    cella_model::ModelFileFormat::Csv => "Csv",
+                },
+            );
+            s.push('}');
+        }
         s.push('}');
     }
     s.push_str("],\"relationships\":[");
@@ -1247,7 +1262,32 @@ fn as_model_table(v: &Json) -> Result<ModelTable, String> {
         Some(v) => as_optional(v, "a model table's query")?,
         None => None,
     };
-    Ok(ModelTable { name, columns, rows: std::sync::Arc::new(rows), source_query })
+    let source_file = match opt_field(o, "source_file") {
+        Some(Json::Null) | None => None,
+        Some(v) => Some(as_model_file(v)?),
+    };
+    let column_types = match opt_field(o, "column_types") {
+        Some(v) => as_texts(v, "a model table's column types")?,
+        None => Vec::new(),
+    };
+    Ok(ModelTable { name, columns, column_types, rows: std::sync::Arc::new(rows), source_query, source_file })
+}
+
+/// A model table's file definition: the paths the engine reads and the format they are in.
+fn as_model_file(v: &Json) -> Result<ModelFile, String> {
+    let o = as_object(v, "a model table's file")?;
+    let paths = match opt_field(o, "paths") {
+        Some(v) => as_texts(v, "a model table's file paths")?,
+        None => Vec::new(),
+    };
+    if paths.is_empty() {
+        return Err("a model table's file needs at least one path".into());
+    }
+    let format = match opt_field(o, "format") {
+        Some(Json::Str(f)) if f.eq_ignore_ascii_case("csv") => ModelFileFormat::Csv,
+        _ => ModelFileFormat::Parquet,
+    };
+    Ok(ModelFile { paths, format })
 }
 
 fn as_relationship(v: &Json) -> Result<Relationship, String> {

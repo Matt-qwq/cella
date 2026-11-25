@@ -40,6 +40,38 @@ pub struct ModelTable {
     /// put in the model by a command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_query: Option<String>,
+    /// The column types the engine read from the file (\"BIGINT\", \"VARCHAR\", …), in `columns`
+    /// order. Empty for a table whose rows are cached: those are typed by looking at them.
+    ///
+    /// A file-backed table has no rows here to look at, so a report's field list and its default
+    /// aggregation (sum for a number, count for anything else) need the types the file gave.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_types: Vec<String>,
+    /// The file (or files) the table is read from, when its rows are **not** cached here.
+    ///
+    /// A model table can be bigger than a sheet, and caching its rows in the document costs one
+    /// `Value` a cell; a table loaded from a file keeps only this definition, and the engine the
+    /// data model runs on reads the file itself. [`ModelTable::rows`] is then empty — which is the
+    /// one thing a reader has to know (see [`ModelTable::is_file_backed`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<ModelFile>,
+}
+
+/// Where a model table that does not cache its rows is read from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelFile {
+    /// The files, read as one table (a folder of Parquet parts is several).
+    pub paths: Vec<String>,
+    pub format: ModelFileFormat,
+}
+
+/// The formats a file-backed model table reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModelFileFormat {
+    /// Typed columns and real nulls: the fastest thing the engine reads.
+    Parquet,
+    /// Delimited text, header row included.
+    Csv,
 }
 
 /// `skip_serializing_if` for [`ModelTable::rows`]: an `Arc<Vec<_>>` has no `Vec::is_empty` path.
@@ -52,13 +84,42 @@ impl ModelTable {
         self.columns.len()
     }
 
+    /// The rows cached in the document. A file-backed table caches none: its rows are the
+    /// engine's, and its row count is a question for the engine.
     pub fn height(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Whether this table's rows are a file's, not the document's ([`ModelTable::source_file`]).
+    pub fn is_file_backed(&self) -> bool {
+        self.source_file.is_some()
     }
 
     pub fn index(&self, column: &str) -> Option<usize> {
         self.columns.iter().position(|c| c == column).or_else(|| self.columns.iter().position(|c| c.eq_ignore_ascii_case(column)))
     }
+}
+
+/// Whether a column type the engine reported holds numbers only (\"BIGINT\", \"DECIMAL(3,1)\",
+/// \"DOUBLE\", …). The same list `crates/sql` writes a sheet with and `read_source_shape` reads.
+pub fn is_number_type(name: &str) -> bool {
+    let upper = name.trim().to_ascii_uppercase();
+    upper.starts_with("DECIMAL")
+        || matches!(
+            upper.as_str(),
+            "BIGINT"
+                | "INTEGER"
+                | "SMALLINT"
+                | "TINYINT"
+                | "HUGEINT"
+                | "UBIGINT"
+                | "UINTEGER"
+                | "USMALLINT"
+                | "UTINYINT"
+                | "DOUBLE"
+                | "FLOAT"
+                | "REAL"
+        )
 }
 
 /// A relationship between two model tables: the sheet's shape of Excel's many-to-one link.
@@ -200,7 +261,14 @@ mod tests {
     use super::*;
 
     fn table(name: &str, columns: &[&str]) -> ModelTable {
-        ModelTable { name: name.into(), columns: columns.iter().map(|c| c.to_string()).collect(), rows: Default::default(), source_query: None }
+        ModelTable {
+            name: name.into(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            rows: Default::default(),
+            column_types: Vec::new(),
+            source_query: None,
+            source_file: None,
+        }
     }
 
     fn model() -> DataModel {

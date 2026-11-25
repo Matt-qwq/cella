@@ -87,6 +87,7 @@ data.measure.list                            bench
 data.measure.remove                          bench
 data.measure.set                             bench
 data.model.removeTable                       bench
+data.model.loadFile                          excuse: reads a data file the generator cannot invent (format, columns and size are the file's)
 data.model.query                             excuse: needs a `sql` statement over the model's tables, which the generator cannot invent and a workbook with no model has nothing to run it against (its numbers are in docs/sql-engine-research.md, `cargo run -p cella-sql --example sql_probe`)
 data.model.tables                            bench
 data.outlineSettings                         bench

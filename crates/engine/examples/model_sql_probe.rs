@@ -135,5 +135,50 @@ fn main() {
     run(&mut s, "cell.set", json!({"cell": "A1", "input": "1"}));
     println!("  one cell edit (the workbook is copied for undo): {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
 
+    // ---- a file-backed table: five million rows, five times the cells the document can cache
+    let big_rows = 5_000_000usize;
+    let big = std::env::temp_dir().join("cella-model-sql-5m.csv");
+    let t = Instant::now();
+    {
+        let mut csv = String::with_capacity(big_rows * 24);
+        csv.push_str("Region,Month,Product,Amount\n");
+        for i in 0..big_rows {
+            let _ = writeln!(csv, "Region {},{},{},{:.2}", i % 64, (i / 64) % 12, (i / 768) % 1000, (i % 9973) as f64 * 0.01 + 1.0);
+        }
+        std::fs::write(&big, csv).expect("write the big csv");
+    }
+    println!("\n=== a file-backed model table: {big_rows} rows ({} cells, the cache holds 4M) ===", big_rows * 4);
+    let megabytes = std::fs::metadata(&big).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0);
+    println!("wrote the {megabytes:.0} MB CSV in {:.2} s", t.elapsed().as_secs_f64());
+    let mut f = Session::new();
+    f.new_workbook();
+    let t = Instant::now();
+    let loaded = run(&mut f, "data.model.loadFile", json!({"path": big.display().to_string(), "name": "Sales"}));
+    println!(
+        "loadFile: {:.2} s, {} rows x {} columns (the document holds the path, not the rows)",
+        t.elapsed().as_secs_f64(),
+        loaded["rows"],
+        loaded["cols"]
+    );
+    let (seconds, cells) = best(3, || {
+        let answer = run(&mut f, "data.model.query", json!({"sql": report}));
+        answer["rows"].as_array().map_or(0, Vec::len)
+    });
+    println!("  SQL group-by 64 x 12 over it: {:.1} ms ({cells} rows)", seconds * 1e3);
+    let t = Instant::now();
+    let named = run(
+        &mut f,
+        "insert.pivotTable",
+        json!({"source": "Sales", "rows": ["Sales[Region]"], "columns": ["Sales[Month]"], "values": ["Sales[Amount]"], "destination": "new"}),
+    );
+    println!("  insert.pivotTable: {:.2} s", t.elapsed().as_secs_f64());
+    let pivot = named["name"].as_str().unwrap_or("").to_string();
+    let (seconds, _) = best(3, || {
+        run(&mut f, "pivot.refresh", json!({"pivot": pivot, "replace": true}));
+        0
+    });
+    println!("  pivot.refresh over 5M rows: {:.1} ms", seconds * 1e3);
+
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&big);
 }

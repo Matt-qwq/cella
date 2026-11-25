@@ -529,7 +529,12 @@ fn load_into_model(s: &mut Session, name: &str, table: &Table) -> Result<()> {
             name: name.to_string(),
             columns: table.columns.clone(),
             rows: std::sync::Arc::new(table.rows.clone()),
+            // A query types its own columns from the values it produced; the file field is empty.
+            column_types: Vec::new(),
             source_query: Some(name.to_string()),
+            // A query's result is cached here: it may come from a URL, a worksheet or a dozen
+            // steps, and only a file (which the engine reads itself) is ever file-backed.
+            source_file: None,
         };
         match cx.wb.model.table_index(name) {
             Some(i) => cx.wb.model.tables[i] = t,

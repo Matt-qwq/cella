@@ -73,6 +73,15 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             has_doc,
             sql_query
         ),
+        cmd!(
+            "data.model.loadFile",
+            "Add From File",
+            ["Data", "Queries & Connections"],
+            None,
+            "{paths: [path] | path, name?, format?: parquet|csv, replace?: bool} -> {name, rows, cols} — the rows stay in the file and the engine reads them, so the table may hold more rows than the model's cache does (desktop only)",
+            has_doc,
+            load_file
+        ),
     ]
 }
 
@@ -93,21 +102,29 @@ fn table_param(p: &Json, key: &str) -> Result<(String, String)> {
 }
 
 fn tables(s: &mut Session, _: &Json) -> Result<Json> {
-    let d = s.doc()?;
-    Ok(Json::Array(
-        d.wb.model
-            .tables
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "columns": t.columns,
-                    "rows": t.height(),
-                    "query": t.source_query,
-                })
-            })
-            .collect(),
-    ))
+    // The small metadata first, then one count per file-backed table from the engine: its rows
+    // are not in the document, so `height()` cannot answer.
+    let listed: Vec<(String, Vec<String>, usize, Option<String>, bool)> = {
+        let d = s.doc()?;
+        d.wb.model.tables.iter().map(|t| (t.name.clone(), t.columns.clone(), t.height(), t.source_query.clone(), t.is_file_backed())).collect()
+    };
+    let mut out = Vec::with_capacity(listed.len());
+    for (name, columns, rows, query, file) in listed {
+        let rows = if file {
+            let counted = (|s: &mut Session| -> Result<f64> {
+                let answer = s
+                    .model_engine()?
+                    .query(&format!("SELECT COUNT(*) AS n FROM {}", cella_sql::quote_ident(&name)))
+                    .map_err(|e| EngineError::Other(e.to_string()))?;
+                Ok(answer.rows.first().and_then(|r| r.first()).and_then(Value::as_f64).unwrap_or(0.0))
+            })(s);
+            counted.map(|n| n.max(0.0) as u64).unwrap_or(0)
+        } else {
+            rows as u64
+        };
+        out.push(json!({"name": name, "columns": columns, "rows": rows, "query": query, "file": file}));
+    }
+    Ok(Json::Array(out))
 }
 
 fn remove_table(s: &mut Session, p: &Json) -> Result<Json> {
@@ -321,4 +338,130 @@ fn sql_query(s: &mut Session, p: &Json) -> Result<Json> {
     let table = s.model_engine()?.query(sql).map_err(|e| bad("data.model.query", e.to_string()))?;
     let rows: Vec<Json> = table.rows.iter().map(|r| Json::Array(r.iter().map(value_json).collect())).collect();
     Ok(json!({"columns": table.columns, "rows": rows}))
+}
+
+/// `data.model.loadFile`: a model table whose rows are a file's, not the document's.
+///
+/// The engine reads the file itself (`read_parquet`/`read_csv`), which costs it ~22–99 ns a row
+/// against the ~720 a row a table handed over cell by cell costs — that difference is the whole
+/// reason a model table can be bigger than the 4M-cell cache the document keeps. The document
+/// stores the paths and the column names; a reopened workbook re-reads the file, and a file that
+/// has moved away is an error a report shows rather than a silently empty table.
+fn load_file(s: &mut Session, p: &Json) -> Result<Json> {
+    let mut paths: Vec<String> = match p.get("paths") {
+        Some(Json::Array(list)) => list.iter().filter_map(Json::as_str).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+        _ => Vec::new(),
+    };
+    if let Some(one) = str_param(p, "path").map(str::trim).filter(|t| !t.is_empty()) {
+        paths.push(one.to_string());
+    }
+    if paths.is_empty() {
+        return Err(bad("data.model.loadFile", "missing `path` (or `paths`, for several files read as one table)"));
+    }
+    let format = match str_param(p, "format").map(|f| f.to_ascii_lowercase()) {
+        Some(f) if f == "csv" || f == "text" => cella_model::ModelFileFormat::Csv,
+        Some(f) if f == "parquet" => cella_model::ModelFileFormat::Parquet,
+        Some(other) => return Err(bad("data.model.loadFile", format!("\"{other}\" is not a file format (parquet, csv)"))),
+        None => {
+            let first = paths.first().map(|p| p.to_ascii_lowercase()).unwrap_or_default();
+            if first.ends_with(".csv") || first.ends_with(".tsv") || first.ends_with(".txt") {
+                cella_model::ModelFileFormat::Csv
+            } else {
+                cella_model::ModelFileFormat::Parquet
+            }
+        }
+    };
+    // The name comes from the first file: "sales.parquet" becomes "sales".
+    let name = match str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n.to_string(),
+        None => {
+            let file = paths.first().map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p)).unwrap_or("Table");
+            file.rsplit_once('.').map(|(stem, _)| stem).filter(|stem| !stem.is_empty()).unwrap_or(file).to_string()
+        }
+    };
+    let previous = {
+        let d = s.doc()?;
+        d.wb.model.tables.iter().find(|t| t.name.eq_ignore_ascii_case(&name)).cloned()
+    };
+    if previous.is_some() && !bool_param(p, "replace").unwrap_or(false) {
+        return Err(bad("data.model.loadFile", format!("\"{name}\" is already a table in the model (pass replace: true to reload it)")));
+    }
+    edit(s, |cx| {
+        if cx.wb.model.tables.len() >= cella_model::MAX_MODEL_TABLES && cx.wb.model.table_index(&name).is_none() {
+            return Err(EngineError::Other(format!("The data model holds at most {} tables.", cella_model::MAX_MODEL_TABLES)));
+        }
+        let loaded = cella_model::ModelTable {
+            name: name.clone(),
+            columns: Vec::new(),
+            rows: Default::default(),
+            column_types: Vec::new(),
+            source_query: None,
+            source_file: Some(cella_model::ModelFile { paths: paths.clone(), format }),
+        };
+        match cx.wb.model.table_index(&name) {
+            Some(i) => cx.wb.model.tables[i] = loaded,
+            None => cx.wb.model.tables.push(loaded),
+        }
+        cx.structural = true;
+        Ok(())
+    })?;
+    s.model_changed();
+
+    // The engine reads the file here: a missing or unreadable one is refused, and the definition
+    // does not stay behind (the table it replaced comes back).
+    let described = (|s: &mut Session| -> Result<(Vec<String>, Vec<String>)> {
+        let answer = s
+            .model_engine()?
+            .query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&name)))
+            .map_err(|e| EngineError::Other(format!("The model's table \"{name}\" could not be read from {}: {e}", paths.join(", "))))?;
+        // `DESCRIBE` answers (column_name, column_type, null, key, default, extra): the names are
+        // the table's columns and the types are what the field list and the default function read.
+        let mut columns = Vec::with_capacity(answer.rows.len());
+        let mut types = Vec::with_capacity(answer.rows.len());
+        for row in &answer.rows {
+            if let Some(name) = row.first() {
+                columns.push(name.display());
+                types.push(row.get(1).map(|v| v.display()).unwrap_or_default());
+            }
+        }
+        if columns.is_empty() {
+            return Err(EngineError::Other(format!("The file {} has no columns.", paths.join(", "))));
+        }
+        Ok((columns, types))
+    })(s);
+    let (columns, types) = match described {
+        Ok(columns) => columns,
+        Err(e) => {
+            let _ = edit(s, |cx| {
+                cx.wb.model.tables.retain(|t| !t.name.eq_ignore_ascii_case(&name));
+                if let Some(before) = previous.clone() {
+                    cx.wb.model.tables.push(before);
+                }
+                cx.structural = true;
+                Ok(())
+            });
+            s.model_changed();
+            return Err(e);
+        }
+    };
+    let rows = (|s: &mut Session| -> Result<f64> {
+        let answer = s
+            .model_engine()?
+            .query(&format!("SELECT COUNT(*) AS n FROM {}", cella_sql::quote_ident(&name)))
+            .map_err(|e| EngineError::Other(e.to_string()))?;
+        Ok(answer.rows.first().and_then(|r| r.first()).and_then(Value::as_f64).unwrap_or(0.0))
+    })(s)
+    .unwrap_or(0.0)
+    .max(0.0);
+    let cols = columns.len();
+    // The columns are the document's now, and the engine's copy is already right: bumping the
+    // generation here would make the next query re-read the file.
+    edit(s, |cx| {
+        if let Some(i) = cx.wb.model.table_index(&name) {
+            cx.wb.model.tables[i].columns = columns.clone();
+            cx.wb.model.tables[i].column_types = types.clone();
+        }
+        Ok(())
+    })?;
+    Ok(json!({"name": name, "rows": rows, "cols": cols}))
 }

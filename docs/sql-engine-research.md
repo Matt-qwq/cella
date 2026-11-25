@@ -172,3 +172,9 @@ every command makes for undo: the model's rows are `Arc`-shared now, which took 
 `crates/engine/tests/pivot_sql.rs`; what is still on the scan is a related table's columns, a DAX
 measure, and the functions SQL cannot compose (product, standard deviation, variance).
 
+**A table bigger than the cache.** `data.model.loadFile` keeps only the file's path, its columns and
+their types in the document, and the engine reads the file itself: **5M rows × 4 columns (20M cells,
+five times the 4M the document caches) load in 0.11 s and refresh a 768-cell report in 17.6 ms**.
+The engine is now the storage, not just the calculator — which is what the "70 MB a million rows"
+memory reading buys.
+

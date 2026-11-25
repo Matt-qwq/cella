@@ -905,9 +905,25 @@ impl Session {
                 other => EngineError::Other(format!("The data model's SQL engine could not start: {other}")),
             })?;
             for table in &wb.model.tables {
-                engine
-                    .load_rows(&table.name, &table.columns, &table.rows)
-                    .map_err(|e| EngineError::Other(format!("The model's table \"{}\" could not be loaded into the engine: {e}", table.name)))?;
+                // A file-backed table is read by the engine itself, which is what lets it hold
+                // more rows than the document could cache.
+                if let Some(file) = &table.source_file {
+                    let format = match file.format {
+                        cella_model::ModelFileFormat::Parquet => cella_sql::FileFormat::Parquet,
+                        cella_model::ModelFileFormat::Csv => cella_sql::FileFormat::Csv,
+                    };
+                    engine.load_file(&table.name, &file.paths, format).map_err(|e| {
+                        EngineError::Other(format!(
+                            "The model's table \"{}\" could not be read from its file ({}): {e}",
+                            table.name,
+                            file.paths.first().cloned().unwrap_or_default()
+                        ))
+                    })?;
+                } else {
+                    engine
+                        .load_rows(&table.name, &table.columns, &table.rows)
+                        .map_err(|e| EngineError::Other(format!("The model's table \"{}\" could not be loaded into the engine: {e}", table.name)))?;
+                }
             }
             self.model_sql = Some(ModelSql { engine: std::rc::Rc::new(engine), doc, generation: self.model_generation });
         }

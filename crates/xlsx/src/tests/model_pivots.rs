@@ -13,7 +13,9 @@ fn model_workbook() -> Workbook {
         name: "Sales".into(),
         columns: vec!["Amount".into()],
         rows: std::sync::Arc::new(vec![vec![Value::number(10.0)]]),
+        column_types: Vec::new(),
         source_query: None,
+        source_file: None,
     });
     let mut model_pt = PivotTable { name: "ModelOne".into(), source: "Sales".into(), ..PivotTable::default() };
     model_pt.source_kind = PivotSourceKind::DataModel;

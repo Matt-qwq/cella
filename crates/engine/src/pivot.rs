@@ -320,6 +320,13 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
     let model = &wb.model;
     let requested = name.trim().trim_start_matches('=').trim();
     let table = model.table(requested).ok_or_else(|| format!("The data model has no table named \"{requested}\"."))?;
+    model_source_with(wb, table, &table.rows)
+}
+
+/// [`model_source`] over rows the caller has: a file-backed table's rows are the engine's, and
+/// they are read once into here when a report needs the records (see `compute_detailed`).
+fn model_source_with(wb: &Workbook, table: &ModelTable, rows: &[Vec<Value>]) -> Result<Source, String> {
+    let model = &wb.model;
     let mut headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
     let mut formats: Vec<String> = vec!["General".into(); headers.len()];
     let mut hops: Vec<Hop<'_>> = Vec::new();
@@ -343,6 +350,15 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
                 continue;
             }
             let (Some(key_col), Some(dim_key)) = (parent_table.index(&r.from_column), dim.index(&r.to_column)) else { continue };
+            // A related table whose rows are a file would need the engine's join: this walk has no
+            // rows for it, and a report that silently blanked the dimension would be worse than a
+            // message that says what is missing.
+            if dim.is_file_backed() {
+                return Err(format!(
+                    "The model's table \"{}\" is read from a file, and a relationship to it needs the SQL engine's join, which is not written yet.",
+                    dim.name
+                ));
+            }
             // key_col walks the rows; dim_key only builds the index, so it is not kept.
             let mut index: HashMap<String, usize> = HashMap::new();
             for (i, rec) in dim.rows.iter().enumerate() {
@@ -357,42 +373,52 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
         }
     }
     let width = headers.len();
-    if width as u64 * table.height() as u64 > MAX_SOURCE_CELLS {
+    if width as u64 * rows.len() as u64 > MAX_SOURCE_CELLS {
         return Err("The source range is too large for a PivotTable.".into());
     }
     let mut numeric = vec![true; width];
-    let mut any = vec![false; width];
-    let mut data: Vec<Value> = Vec::with_capacity(table.height().saturating_mul(width));
-    for rec in table.rows.iter() {
-        let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
-        // The rows each hop resolved to, so a chained hop can read its key out of its parent.
-        let mut dims: Vec<Vec<Value>> = Vec::with_capacity(hops.len());
-        for hop in &hops {
-            // The key lives in the base row for a direct hop, and in the parent dimension's row for
-            // a chained one; both were appended to this row in discovery order.
-            let key_from = hop.via.map_or(rec.as_slice(), |p| dims.get(p).map(Vec::as_slice).unwrap_or(&[]));
-            let hit = key_from.get(hop.key_col).and_then(join_key).and_then(|k| hop.index.get(&k)).and_then(|i| hop.dim.rows.get(*i));
-            let vals: Vec<Value> = (0..hop.dim.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)).collect();
-            dims.push(vals.clone());
-            row.extend(vals);
-        }
-        for (i, v) in row.iter().enumerate() {
-            if v.is_empty() {
-                continue;
-            }
-            if let Some(a) = any.get_mut(i) {
-                *a = true;
-            }
-            if !v.is_number()
-                && let Some(n) = numeric.get_mut(i)
-            {
-                *n = false;
+    let mut data: Vec<Value> = Vec::with_capacity(rows.len().saturating_mul(width));
+    if rows.is_empty() && !table.column_types.is_empty() && table.column_types.len() == table.columns.len() {
+        // A file-backed table keeps no records here: the types the file gave say which columns
+        // are numbers, which is what a report's field list and its default function ask.
+        for (i, ty) in table.column_types.iter().enumerate() {
+            if let Some(slot) = numeric.get_mut(i) {
+                *slot = cella_model::is_number_type(ty);
             }
         }
-        data.extend_from_slice(&row);
-    }
-    for (n, a) in numeric.iter_mut().zip(any.iter()) {
-        *n = *n && *a;
+    } else {
+        let mut any = vec![false; width];
+        for rec in rows {
+            let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
+            // The rows each hop resolved to, so a chained hop can read its key out of its parent.
+            let mut dims: Vec<Vec<Value>> = Vec::with_capacity(hops.len());
+            for hop in &hops {
+                // The key lives in the base row for a direct hop, and in the parent dimension's row for
+                // a chained one; both were appended to this row in discovery order.
+                let key_from = hop.via.map_or(rec.as_slice(), |p| dims.get(p).map(Vec::as_slice).unwrap_or(&[]));
+                let hit = key_from.get(hop.key_col).and_then(join_key).and_then(|k| hop.index.get(&k)).and_then(|i| hop.dim.rows.get(*i));
+                let vals: Vec<Value> = (0..hop.dim.width()).map(|c| hit.and_then(|r| r.get(c)).cloned().unwrap_or(Value::Empty)).collect();
+                dims.push(vals.clone());
+                row.extend(vals);
+            }
+            for (i, v) in row.iter().enumerate() {
+                if v.is_empty() {
+                    continue;
+                }
+                if let Some(a) = any.get_mut(i) {
+                    *a = true;
+                }
+                if !v.is_number()
+                    && let Some(n) = numeric.get_mut(i)
+                {
+                    *n = false;
+                }
+            }
+            data.extend_from_slice(&row);
+        }
+        for (n, a) in numeric.iter_mut().zip(any.iter()) {
+            *n = *n && *a;
+        }
     }
     let dates = vec![false; width];
     Ok(Source {
@@ -407,6 +433,19 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
         model_table: Some(table.name.clone()),
         measures: model.measures.iter().map(|m| m.name.clone()).collect(),
     })
+}
+
+/// A file-backed table's records, read out of the engine for a report that needs every one of
+/// them: a related table, a measure, a product. The engine's own result cap bounds it, which is
+/// why a report shape SQL cannot answer says what is wrong instead of quietly counting nothing.
+fn model_source_from_engine(wb: &Workbook, table: &ModelTable, engine: &cella_sql::Engine) -> Result<Source, String> {
+    let answer = engine.query(&format!("SELECT * FROM {}", cella_sql::quote_ident(&table.name))).map_err(|e| {
+        format!(
+            "The model's table \"{}\" holds more rows than a report can scan, and this report needs all of them — a sum, count, average, min or max report without a related table or a measure is answered by SQL instead. ({e})",
+            table.name
+        )
+    })?;
+    model_source_with(wb, table, &answer.rows)
 }
 
 // ---------------------------------------------------------------- items
@@ -657,6 +696,14 @@ pub fn value_measure(src: &Source, pt: &PivotTable, name: &str) -> Result<(usize
 /// The labels of `field` whose aggregate of the filter's measure passes, over the records the
 /// report's other filters keep. The result is stored as the field's hidden items.
 pub fn value_filter_kept(wb: &Workbook, src: &Source, pt: &PivotTable, vf: &PivotValueFilter) -> Result<Vec<String>, String> {
+    if let Some(table) = src.model_table.as_deref().and_then(|n| wb.model.table(n))
+        && table.is_file_backed()
+    {
+        return Err(format!(
+            "A value filter on \"{}\" needs every one of its records, and its data is a file the SQL engine reads. Select items with a slicer instead.",
+            table.name
+        ));
+    }
     let c = src.col(&vf.source_col).ok_or_else(|| format!("no field `{}` in the source data", vf.source_col))?;
     let axis = pt
         .rows
@@ -1598,34 +1645,19 @@ pub fn read_source_shape(
     }
     let width = table.columns.len();
     let headers: Vec<String> = table.columns.iter().map(|c| format!("{}[{c}]", table.name)).collect();
-    // The column types are the engine's, which are the ones its copy was loaded with (the same
-    // rule the writer uses: a column is a number only when every cell in it is one).
-    let described = engine.query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&table.name))).map_err(|e| e.to_string())?;
-    if described.rows.len() != width {
-        return Ok(None);
-    }
-    let mut numeric = vec![false; width];
-    for (i, row) in described.rows.iter().enumerate() {
-        let Some(slot) = numeric.get_mut(i) else { return Ok(None) };
+    // The types were read once, when the file was loaded (a table that caches its rows is typed
+    // by those rows, and this shape has none of them), so a report does not ask again.
+    let types: Vec<String> = if table.column_types.len() == width && width > 0 {
+        table.column_types.clone()
+    } else {
+        let described = engine.query(&format!("DESCRIBE SELECT * FROM {}", cella_sql::quote_ident(&table.name))).map_err(|e| e.to_string())?;
+        if described.rows.len() != width {
+            return Ok(None);
+        }
         // `DESCRIBE` answers (column_name, column_type, null, key, default, extra).
-        let ty = row.get(1).map(|v| v.display().to_uppercase()).unwrap_or_default();
-        *slot = ty.starts_with("DECIMAL")
-            || matches!(
-                ty.as_str(),
-                "BIGINT"
-                    | "INTEGER"
-                    | "SMALLINT"
-                    | "TINYINT"
-                    | "HUGEINT"
-                    | "UBIGINT"
-                    | "UINTEGER"
-                    | "USMALLINT"
-                    | "UTINYINT"
-                    | "DOUBLE"
-                    | "FLOAT"
-                    | "REAL"
-            );
-    }
+        described.rows.iter().map(|row| row.get(1).map(|v| v.display()).unwrap_or_default()).collect()
+    };
+    let numeric: Vec<bool> = types.iter().map(|ty| cella_model::is_number_type(ty)).collect();
     Ok(Some(Source {
         sheet: NO_SHEET,
         range: NO_RANGE,
@@ -2099,9 +2131,15 @@ pub fn compute_detailed(
     };
     let sql_used = sql_fast.is_some();
     // The engine is not answering this report, so the scan below needs the records it was not
-    // given: a shape-only source is read in full now.
+    // given. A table that caches them gives them back; a file-backed one has none in the
+    // document, so the engine reads them out for it (bounded: a table the engine cannot return
+    // in one answer cannot be scanned at all, and says so rather than reporting zeros).
     if !sql_used && src.data.is_empty() && src.model_table.is_some() {
-        src = read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?;
+        let name = src.model_table.clone().unwrap_or_default();
+        src = match (engine, wb.model.table(&name)) {
+            (Some(engine), Some(table)) if table.is_file_backed() => model_source_from_engine(wb, table, engine)?,
+            _ => read_source_kind(wb, pt.source_kind, &pt.source, pivot_sheet)?,
+        };
     }
     let mut row_items: Vec<FieldItems> = rows.iter().map(|_| FieldItems::default()).collect();
     let mut col_items: Vec<FieldItems> = cols.iter().map(|_| FieldItems::default()).collect();
