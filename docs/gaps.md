@@ -2139,6 +2139,11 @@ instead of sorting lines of `Value`s).
 `PIVOTBY` did not move: its report still goes through `from_rows`, and the same change is waiting
 there. Functions 172, calc 176, engine 649, clippy, wasm, `perf` 59/59.
 
+**Then `PIVOTBY`'s own cell copy:** `body_line` cloned each grid cell's row list — up to a million
+entries a cell, sixteen cells copied for a four-by-four report. Borrowed now: `fn_probe` 1.90 →
+**1.77 s** (−7 %), the page 398 → 389 ms (inside the noise; the page's grid has less to copy). What is
+left of `PIVOTBY`'s second is the same unexplained block `GROUPBY` has.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
