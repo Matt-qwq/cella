@@ -1883,6 +1883,34 @@ redesign of a different order from the two knives just landed.
 
 **Instrument left behind:** the two-chain measurement in `read_probe`, so the next proposal of this
 kind is priced before it is built.
+
+### 51. Column storage: measured, sized, and not recommended (evaluation, 11-25)
+
+**What:** whether the row-major store should become columnar, to take the whole-column formulas under
+their 10.5 ns-a-cell floor. The full evaluation, with every number and the three shapes compared, is
+[performance-columnar.md](performance-columnar.md); this is the summary.
+
+**Measured:** a one-column fold costs **10.5 ns a cell** in the store today, a row-wise block 5.0, a
+contiguous `Vec<f64>` fold **2.2** and a row read out of eight contiguous columns **0.2** (eight
+sequential streams prefetch) — so the ceiling is a **4.8×** win on the columnar workloads and no
+measurable regression on the row-wise ones. At the ceiling `SUM` would be ~6 ms, the criteria family
+~8, `MEDIAN` ~25 (the sort dominates).
+
+**Sized:** a full column-major store is not a knife but a rewrite — 70 public store functions, 380
+call sites (`cells.set` 251, `cells.get` 57, `iter_range` 52, `visit_packed` 18, `visit_values` 5,
+`put_row` 5), and the mixed workloads make a hybrid "two layouts and an invariant", whose failure
+mode is a **wrong number**.
+
+**The one shape worth a pilot:** a per-column sidecar cache inside `store.rs` (a contiguous
+`Vec<f64>` plus a presence bitmap per cached column, built on the second whole-column read, capped,
+invalidated by every mutator). Contained to one file, no caller changes; the risk is a stale read, so
+it needs a hook in every mutator and a write-then-read fuzz before it is trusted.
+
+**Recommendation:** do not start the rewrite. The pilot is worth ~a day *only* if a whole-column
+aggregate over a million rows is on someone's interactive path — a live dashboard over 1M rows. The
+page already has these rows among the fastest we know of; the remaining chase is engineering, not
+user-facing.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2346,7 +2374,9 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-25 | minor | §50 (new): inline numbers refuted before they were built — ead_probe runs the two chains (payload → number table against the number in the payload slot) and both cost **2.3 ns a cell**: a band's table is a few hundred entries, always in L1, so the load is free. The corrected attribution: of a 10.5 ns column read, 2.3 is the chain, 1.4 the kind run, 1.1 the formula test, and **8–9 is the row walk itself** |
+| 2026-11-25 | minor | §51 (new, evaluation): column storage measured and sized — a contiguous Vec<f64> fold costs **2.2 ns/cell** against the store's 10.5 (4.8× ceiling; SUM ~6 ms), but a full column-major store is 70 public functions and 380 call sites with a wrong-number failure mode. The only shape worth a pilot is a per-column sidecar cache inside store.rs; recommendation: do not start it. [performance-columnar.md](performance-columnar.md) |
+| 2026-11-25 | minor | §50 (new): inline numbers refuted before they were built — 
+ead_probe runs the two chains (payload → number table against the number in the payload slot) and both cost **2.3 ns a cell**: a band's table is a few hundred entries, always in L1, so the load is free. The corrected attribution: of a 10.5 ns column read, 2.3 is the chain, 1.4 the kind run, 1.1 the formula test, and **8–9 is the row walk itself** |
 | 2026-11-25 | minor | §49 (fixed): a spill is **one array at its anchor** now, not a BTreeMap entry a cell — =A2:A (1M, spills) **142 → 77 ms**, BITAND 247 → 173, and on the page DROP 749 → **574**, CHOOSECOLS 267 → **150**, TOCOL 139 → 96, VSTACK 189 → 139, SORT 255 → 207, HSTACK 331 → 284, MAP 423 → 335. Sixty reader sites moved to Sheet::spilled/spilled_in; no function that does not spill moved |
 | 2026-11-25 | minor | §49 (new): the spill lay-out is **75–78 ms** of a million-cell array, priced phase by phase (=A2:A 142 ms = 10.6 read + 53.8 building the array + 75 laying it out; =BITAND 247 = 166.5 eval + 77.8 spill). So the fix is to keep the evaluator's Arc<Array> as the spill's value instead of a BTreeMap node a cell — 60 non-test reader sites across five crates, inventoried and ordered in plan/spill-store.md |
 | 2026-11-25 | minor | §48 (new): the column-read wall is a chain of **three dependent loads a cell** (the row's `cells_at`, the payload, the number). The dense-band stride read works — 11.5 → **8.1 ns a cell** on a one-column sheet, 9.9 on eight — and moves the page by nothing (`SUM` 20 → 21 ms, inside ±2), so it is reverted. The width sweep is the proof it is latency, not bandwidth: 8.1 ns at one column wide against 9.9 at eight. Under it needs the number inline in the payload stripe — a storage format change, not a loop |

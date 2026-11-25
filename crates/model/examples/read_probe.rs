@@ -94,6 +94,44 @@ fn run() -> Result<(), String> {
         println!("{:<44} {:>12} {:>12}", "chain: number in the payload", fmt_ms(flat.0), format!("{f:.1}"));
         println!("{:<44} {:>12}", "one load less would be worth", format!("{:.1} ns/cell", c - f));
     }
+    // What a column-major store would buy, and what it would cost. A column kept contiguous is the
+    // best a column fold can ever be; a row read out of columns is the worst it would become. Both
+    // are measured over a million rows so the two can be put beside the store's own numbers above
+    // (`docs/performance-columnar.md`).
+    {
+        use std::hint::black_box;
+        let n = 1_000_000usize;
+        let cols = 8usize;
+        let columns: Vec<Vec<f64>> = (0..cols).map(|c| (0..n).map(|r| (r * cols + c) as f64).collect()).collect();
+        let rows: Vec<Vec<f64>> = (0..n).map(|r| (0..cols).map(|c| (r * cols + c) as f64).collect()).collect();
+        let columnar = best(5, || {
+            let mut acc = 0.0f64;
+            for v in black_box(&columns[0]) {
+                acc = black_box(acc + *v);
+            }
+            acc.to_bits()
+        });
+        let rowmajor = best(5, || {
+            let mut acc = 0.0f64;
+            for row in black_box(&rows) {
+                acc += row[0];
+            }
+            acc.to_bits()
+        });
+        let row_of_columns = best(5, || {
+            let mut acc = 0.0f64;
+            for r in 0..n {
+                for column in black_box(&columns) {
+                    acc += column[r];
+                }
+            }
+            acc.to_bits()
+        });
+        let per = |ms: f64, cells: usize| ms * 1e6 / cells as f64;
+        println!("{:<44} {:>12} {:>12}", "column contiguous (a column-major fold)", fmt_ms(columnar.0), format!("{:.1}", per(columnar.0, n)));
+        println!("{:<44} {:>12} {:>12}", "column strided in rows (row-major today)", fmt_ms(rowmajor.0), format!("{:.1}", per(rowmajor.0, n)));
+        println!("{:<44} {:>12} {:>12}", "a row read out of columns (column-major)", fmt_ms(row_of_columns.0), format!("{:.1}", per(row_of_columns.0, n * cols)));
+    }
     report(
         "visit_values  A2:A{last}",
         cells,
