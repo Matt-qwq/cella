@@ -2011,6 +2011,43 @@ rows before anything else is touched.
 **Left behind:** the probe rows (and the two that price a text column against a number column), so the
 next round starts from the same numbers.
 
+**Fixed the same day (§54).** The requeue was the graph marking the formula **dynamic**: the bare
+aggregate name in `GROUPBY(rf, vals, SUM)` parses as a name, and an unresolvable name is conservatively
+dynamic — so every pass that laid out a spill evaluated the grouper again. `GROUPBY` 649 → **326 ms**
+(few groups), 1.78 → **928 ms** (a million text groups), `PIVOTBY` 4.00 → **2.09 s**.
+
+### 54. A grouper was "dynamic" because its aggregate is spelled without quotes (P, found and fixed 11-25)
+
+**What:** the doubling in §53. `GROUPBY(rf, vals, SUM)` puts `SUM` in the formula as a bare name, and
+`precedents_at` (`crates/calc/src/eval/special.rs`) answers an unresolvable `Expr::Name` with
+`dynamic = true` — "an unknown name may come back as a table or a sheet-scoped name". A dynamic formula
+is evaluated again by every pass that lays out a spill (the `dynamic_again` bucket in
+`crates/calc/src/recalc.rs`), so every grouper ran **twice**.
+
+**Now:** a name that is a registered function's own, resolves to no definition and to no table, is no
+reference at all — a call is `Expr::Call`, so the only thing it can be is that argument. It stays out of
+the dynamic set. A name that *is* defined keeps the old conservative answer even when its definition
+does not parse (`Rate` defined as `Sheet1!B1`); the first attempt at this rule lost that case and a test
+caught it.
+
+**Measured** (`fn_probe`, fastest of two; page five passes):
+
+| call | before | after |
+|---|---:|---:|
+| `GROUPBY(MOD(A,4), C, SUM)` — four groups | 649 ms | **326** |
+| `GROUPBY(A, C, SUM)` — a million number groups | 1.36 s | **711 ms** |
+| `GROUPBY(D, C, SUM)` — a million text groups | 1.78 s | **928 ms** |
+| `PIVOTBY(D, MOD(A,4), C, SUM)` | 4.00 s | **2.09 s** |
+| page: `PIVOTBY` | 1.03 s | **519 ms** |
+
+Functions that spill but whose text carries no bare name (`SORT`, `FILTER`, `UNIQUE`, `BYROW`, `DROP`)
+did not move — they were never double-evaluated, which is the control that says the name was the cause
+and not the spill.
+
+**Pinned by** `crates/calc/src/tests.rs::a_groupers_bare_aggregate_name_is_not_a_dynamic_reference`: an
+unrelated edit does not recalculate a grouper over fixed ranges, and a defined-but-unparsable name still
+does. calc 176, engine 649, wasm, `perf` 59/59.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
