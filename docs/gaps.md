@@ -1737,6 +1737,31 @@ So the 11.9 ns is the callback dispatch plus the row iteration itself: a column 
 cells to a caller's closure, and that is the floor of this shape. Going under it means handing over
 something other than a cell at a time — the dense-band stride read or the spill store.
 
+### 47. A whole-column sum folds inside the store (P, found and fixed 11-25)
+
+**What:** `SUM`, `COUNT`, `MAX`, `MIN` and `AVERAGE` over a million rows read **25–26 ms** each, and
+the plan's target for the family was 15.
+
+**What was tried first, and refuted by measurement:** giving a column read its own tight loop with the
+arithmetic inside — `CellStore::fold_column` — measured **11.5 ns a cell against the packed walk's
+12.4** on the store directly. So the callback a cell was only about **1 ns** of the 11.9 the walk
+costs; the row iteration is the rest, and no amount of moving the callback about touches it.
+
+**Now:** the fold exists and is wired: `visit_aggregate` takes it for a one-column block of values
+(the walk stays for a row, a two-column block, or a column that holds formulas). It is worth what the
+page measures — the arithmetic, the count `AVERAGE` divides by and the extreme `MAX`/`MIN` keep all
+move into the store's loop, and a formula or an array in the column declines so the evaluator's own
+paths take the block.
+
+**Measured:** `SUM` **25 → 20 ms**, `COUNT` **26 → 21**, `MAX` **26 → 20**, `MIN` **26 → 21**,
+`AVERAGE` 25 → 24 (the page's call is two columns, and an average pays the count as well).
+
+**What it settles about the aim:** a million-row column read costs 11.5 ns a cell whatever the
+callback does, so a two-column `SUM` cannot go under ~23 ms by moving work around — the 15 ms aim in
+this round's brief is retracted. It needs the **dense-band stride read** (a band marked "every row
+full from column 0", so a column's payloads are a stride apart and the fold never visits a row) or
+nothing.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2200,6 +2225,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §47 (new): a whole-column sum folds inside the store — `CellStore::fold_column` runs the arithmetic in its own loop, so `SUM` **25 → 20 ms**, `COUNT` **26 → 21**, `MAX` **26 → 20**, `MIN` **26 → 21**. The same fold costs 11.5 ns a cell against the packed walk's 12.4, which is the round's other finding: the callback a cell was ~1 ns of the walk. The 15 ms aim is retracted — a two-column sum cannot go under ~23 ms without a dense-band stride read |
 | 2026-11-25 | minor | §46 (new): a column read spent 62 % of its time finding the rows — by ablation the row walk alone cost 9.8 ns a cell of a 15.9 ns read. Walking the band's rows in order instead of looking each key up: **15.9 → 11.9 ns a cell (−25 %)**, and on the page `SUM`/`COUNT`/`MAX`/`MIN` 29–32 → **25–26 ms**, the criteria family 17–18 → **15–16**, the lookups 17 → **15–16**. A million-row column read costs 9.8 ms doing *nothing*, which is what the plan's 10 ms target is up against |
 | 2026-11-25 | minor | §44 (extended): the whole single-criterion family answers from the scan — AVERAGEIF **27 → 17 ms**, AVERAGEIFS **28 → 18**, COUNTIFS **24 → 18**, SUMIFS **31 → 18** — all seven spellings at the walk's price, with Excel's 255-unit difference between the two families kept and tested |
 | 2026-11-25 | minor | §45 (new): a million-cell dynamic array pays for its **spill**, not its lift. One call measured three ways: `SUM(A2:A)` 16 ms, `SUM(BITAND(A2:A,B2:B))` 87 (the lift ≈71), `BITAND(A2:A,B2:B)` 230 (the spill ≈143). Plan item 10's ≤80 ms target therefore needs the spill store (`BTreeMap<CellRef, Value>`, a node a cell) redesigned, not a tighter lift. Two fixes were built, measured (231 → 223 and 229 → 234 — both inside the noise) and reverted |
