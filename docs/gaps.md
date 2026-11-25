@@ -2163,6 +2163,14 @@ entries a cell, sixteen cells copied for a four-by-four report. Borrowed now: `f
 **1.77 s** (−7 %), the page 398 → 389 ms (inside the noise; the page's grid has less to copy). What is
 left of `PIVOTBY`'s second is the same unexplained block `GROUPBY` has.
 
+### 59. The data model wants a professional SQL engine (evaluation, 11-25)
+
+**What the owner decided:** use an existing SQL engine rather than a hand-written executor — hidden bugs in a hand-rolled query engine are the risk to avoid. The survey, the candidates, Cella's constraints and the spike that decides between them are in [sql-engine-research.md](sql-engine-research.md); this is the summary.
+
+**The one number that matters:** DuckDB is the best engine for a 5M-row group-by and the **only candidate that fails a Cella rule** — its Rust crate does not build for `wasm32` (the browser build would lose the feature). DataFusion is pure Rust, Apache-2.0 and wasm-proven by a third party; SQLite is the risk-free floor (public domain, everywhere, ~1–2 MB) that trades speed for certainty; Polars' SQL layer is a transpiler with partial coverage and no upstream wasm; GlareDB is young; chDB needs an external library, which fails "no installs".
+
+**Recommendation:** put the engine behind one internal interface (`open`/`query`) so the choice is replaceable, then **spike DataFusion and DuckDB on the same 5M-row Parquet and the same SQL** — five passes each, recording query ms, load ms, memory, build time and the wasm build's size or failure — and pick with numbers. Within ~2× of DuckDB with wasm green → DataFusion; a large gap with a desktop-only data model acceptable as a product statement → DuckDB; both unacceptable on build time or size → SQLite behind the same interface.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
