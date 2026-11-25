@@ -965,6 +965,76 @@ pub fn value_filter_kept(wb: &Workbook, src: &Source, pt: &PivotTable, vf: &Pivo
     Ok(order.into_iter().filter(|l| acc.get(l).and_then(|a| a.result(func).as_f64()).is_some_and(|x| vf.passes(x))).collect())
 }
 
+/// [`value_filter_kept`] answered by the engine: one query groups the field by its own values (or
+/// by the bucket a grouped field stands for) and the measure's aggregate is compared with the
+/// filter's test. `Ok(None)` when this report is not one SQL can answer; the scan then does.
+///
+/// A file-backed table needs this: the scan cannot walk its records, and before this a value
+/// filter on one was refused.
+pub fn value_filter_sql(
+    wb: &Workbook,
+    src: &Source,
+    pt: &PivotTable,
+    vf: &PivotValueFilter,
+    engine: Option<&cella_sql::Engine>,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(engine) = engine else { return Ok(None) };
+    let Some(table_name) = src.model_table.as_deref() else { return Ok(None) };
+    let Some(table) = wb.model.table(table_name) else { return Ok(None) };
+    let plan = plan_source(wb, table);
+    let Some(c) = src.col(&vf.source_col) else { return Ok(None) };
+    let Some(field) = pt.rows.iter().chain(pt.columns.iter()).find(|f| f.source_col.eq_ignore_ascii_case(&vf.source_col)) else {
+        return Ok(None);
+    };
+    let group = Grouping::of(field);
+    let Some(axis) = axis_sql(wb, &plan, c, field) else { return Ok(None) };
+    let from = plan_from(&plan);
+    let Some(where_sql) = plan_where(wb, pt, src, engine, &plan, &from)? else { return Ok(None) };
+    // The value the filter tests: a value field's own function, or a measure's formula.
+    let expr = match value_measure(src, pt, &vf.measure) {
+        Ok((col, func)) => {
+            let Some(q) = plan_ref(&plan, col) else { return Ok(None) };
+            let numeric = src.numeric.get(col).copied().unwrap_or(false);
+            match func {
+                PivotFunc::Sum if numeric => format!("SUM({q})"),
+                PivotFunc::Average if numeric => format!("AVG({q})"),
+                PivotFunc::Min if numeric => format!("MIN({q})"),
+                PivotFunc::Max if numeric => format!("MAX({q})"),
+                PivotFunc::Count => format!("COUNT({q})"),
+                PivotFunc::CountNumbers if numeric => format!("COUNT({q})"),
+                _ => return Ok(None),
+            }
+        }
+        Err(_) => {
+            let Some(i) = src.measures.iter().position(|m| m.eq_ignore_ascii_case(&vf.measure)) else { return Ok(None) };
+            let Some(measure) = wb.model.measures.get(i) else { return Ok(None) };
+            let Some(sql) = measure_sql(wb, &plan, &measure.formula, &[], 0) else { return Ok(None) };
+            sql
+        }
+    };
+    let mut sql = format!("SELECT {axis}, {expr} FROM {from}");
+    if !where_sql.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_sql);
+    }
+    sql.push_str(" GROUP BY 1");
+    let answer = engine.query(&sql).map_err(|e| e.to_string())?;
+    let fmt = src.formats.get(c).cloned().unwrap_or_else(|| "General".to_string());
+    // One row a label: `axis_sql` groups by the bucket a grouped field stands for, so nothing is
+    // combined here — the answer is the label's own aggregate.
+    let mut order: Vec<String> = Vec::new();
+    let mut passes: Vec<bool> = Vec::new();
+    for row in &answer.rows {
+        let raw = row.first().cloned().unwrap_or(Value::Empty);
+        let label = item_label(wb, &raw, group, &fmt);
+        if order.iter().any(|l| l.eq_ignore_ascii_case(&label)) {
+            continue;
+        }
+        passes.push(row.get(1).and_then(Value::as_f64).is_some_and(|x| vf.passes(x)));
+        order.push(label);
+    }
+    Ok(Some(order.into_iter().zip(passes).filter(|(_, ok)| *ok).map(|(label, _)| label).collect()))
+}
 /// Distinct item labels of a source column, sorted like the field list shows them.
 pub fn distinct_labels(wb: &Workbook, src: &Source, col: usize, group: Grouping, limit: usize) -> Vec<String> {
     let mut fi = FieldItems::default();

@@ -297,6 +297,37 @@ fn a_measure_over_a_date_grouped_axis_and_a_dimension_agrees() {
 }
 
 #[test]
+fn a_value_filter_keeps_what_the_scan_would_keep() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // "Keep the regions whose total is above ten": the engine groups the field in one query and the
+    // scan walks the records. The two lists of kept labels must be the same.
+    let mut s = related();
+    let name = make(&mut s, json!({"rows": ["Region[Name]"], "values": ["Sales[Amount]"]}));
+    run(
+        &mut s,
+        "pivot.filterByValue",
+        json!({"pivot": name, "field": "Region[Name]", "measure": "Sales[Amount]", "op": "greaterThan", "value": 10.0}),
+    );
+    let engine = s.model_sql_for();
+    let d = s.doc().expect("a document");
+    let sheet = d.wb.sheets.iter().position(|sh| sh.pivots.iter().any(|p| p.name == name)).expect("a sheet");
+    let idx = d.wb.sheet(sheet).and_then(|sh| sh.pivots.iter().position(|p| p.name == name)).expect("an index");
+    let pt = d.wb.sheet(sheet).and_then(|sh| sh.pivots.get(idx)).expect("the report").clone();
+    let rule = pt.value_filters.last().expect("the rule the command stored").clone();
+    let src = cella_engine::pivot::read_source_kind(&d.wb, pt.source_kind, &pt.source, sheet).expect("the source");
+    let scanned = cella_engine::pivot::value_filter_kept(&d.wb, &src, &pt, &rule).expect("the scan's answer");
+    let fast = cella_engine::pivot::value_filter_sql(&d.wb, &src, &pt, &rule, engine.as_deref()).expect("the engine's answer");
+    let mut fast = fast.expect("the engine should answer a value filter over a model table");
+    let mut scanned = scanned;
+    fast.sort();
+    scanned.sort();
+    assert_eq!(fast, scanned, "the engine and the scan keep the same items");
+    assert!(!fast.is_empty(), "at least one region is above ten");
+}
+
+#[test]
 fn a_report_with_no_model_behind_it_is_unaffected() {
     // A sheet-sourced report never looks at the engine, so it computes the same either way.
     let mut s = Session::new();

@@ -1619,6 +1619,8 @@ fn filter_by_value(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(bad(C, "`between`/`notBetween` need `value2`"));
     }
     let measure = str_param(p, "measure").map(str::to_string);
+    // Taken before the workbook is borrowed: a model-sourced report answers this in SQL.
+    let sql = s.model_sql_for();
     update(s, p, move |pt, src, wb| {
         let field = canonical(C, src, &field)?;
         axis_field(C, pt, &field)?.collapsed_items.clear();
@@ -1636,7 +1638,12 @@ fn filter_by_value(s: &mut Session, p: &Json) -> Result<Json> {
         // The new filter replaces this field's own selection; the other fields still narrow the
         // records it aggregates over.
         clear_item_filter(pt, &field);
-        let kept = pv::value_filter_kept(wb, src, pt, &rule).map_err(other)?;
+        // The engine groups the field in one query where the scan walks every record: the only
+        // way a file-backed table (whose rows the document does not hold) can be filtered this way.
+        let kept = match pv::value_filter_sql(wb, src, pt, &rule, sql.as_deref()).map_err(other)? {
+            Some(kept) => kept,
+            None => pv::value_filter_kept(wb, src, pt, &rule).map_err(other)?,
+        };
         let n = kept.len();
         set_item_filter(pt, &field, kept);
         pt.value_filters.push(rule);
