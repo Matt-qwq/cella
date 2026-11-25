@@ -416,7 +416,7 @@ impl Item {
 #[derive(Default)]
 struct FieldItems {
     items: Vec<Item>,
-    index: HashMap<String, u32>,
+    index: HashMap<ItemKey, u32>,
 }
 
 fn cmp_items(a: &Item, b: &Item) -> Ordering {
@@ -440,8 +440,63 @@ impl Grouping {
     }
 }
 
-/// (identity key, item) for a source value under a field's grouping.
-fn make_item(wb: &Workbook, v: &Value, group: Grouping, fmt: &str, first: usize) -> (String, Item) {
+/// What identifies a field item, before its label exists.
+///
+/// The record loop asks this of every value in every axis field — a million records times the fields
+/// — and the old key was a formatted `String`, so a numeric field formatted the number to its display
+/// text *and* built a key string for every record even when the item was already known: 740 ms of a
+/// 890 ms refresh at a million rows. The key is an enum now, allocation free for numbers, blanks,
+/// booleans and errors; only text pays for its lower-cased copy (as it did before).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum ItemKey {
+    Blank,
+    /// A number's bits: two records share an item when they hold the same number.
+    Number(u64),
+    /// A bucketed number or date group, keyed by its label as the old key was.
+    Grouped(String),
+    Text(String),
+    Bool(bool),
+    Error(&'static str),
+}
+
+/// The cheap half of a field item: what it is and how it sorts, with no formatting.
+struct Classified {
+    key: ItemKey,
+    class: u8,
+    num: f64,
+}
+
+fn classify(wb: &Workbook, v: &Value, group: Grouping) -> Classified {
+    match v {
+        Value::Empty => Classified { key: ItemKey::Blank, class: 4, num: 0.0 },
+        Value::Number(n) => {
+            if let Some(ng) = group.number
+                && let Some((label, key)) = ng.bucket(*n)
+            {
+                return Classified { key: ItemKey::Grouped(format!("r{}", label.to_lowercase())), class: 0, num: key };
+            }
+            if group.date != PivotDateGroup::None
+                && let Some(dt) = datetime_from_serial(wb.date_system, *n)
+            {
+                let key = match group.date {
+                    PivotDateGroup::Years => dt.year as f64,
+                    PivotDateGroup::Quarters => ((dt.month.saturating_sub(1)) / 3 + 1) as f64,
+                    PivotDateGroup::Months => dt.month as f64,
+                    _ => (dt.month * 100 + dt.day) as f64,
+                };
+                return Classified { key: ItemKey::Grouped(format!("g{key}")), class: 0, num: key };
+            }
+            Classified { key: ItemKey::Number(n.to_bits()), class: 0, num: *n }
+        }
+        Value::Text(t) => Classified { key: ItemKey::Text(t.to_lowercase()), class: 1, num: 0.0 },
+        Value::Bool(b) => Classified { key: ItemKey::Bool(*b), class: 2, num: f64::from(*b as u8) },
+        Value::Error(e) => Classified { key: ItemKey::Error(e.as_str()), class: 3, num: 0.0 },
+        Value::Array(_) => classify(wb, &v.scalar(), group),
+    }
+}
+
+/// The item itself, whose label is only built when the item is new.
+fn item_of(wb: &Workbook, v: &Value, group: Grouping, fmt: &str, first: usize, c: &Classified) -> Item {
     let it = |value: Value, label: String, class: u8, num: f64, formatted: bool| Item {
         text: label.to_lowercase(),
         value,
@@ -453,50 +508,50 @@ fn make_item(wb: &Workbook, v: &Value, group: Grouping, fmt: &str, first: usize)
         blank: false,
     };
     match v {
-        Value::Empty => ("b".into(), Item { blank: true, ..it(Value::text("(blank)"), "(blank)".into(), 4, 0.0, false) }),
+        Value::Empty => Item { blank: true, ..it(Value::text("(blank)"), "(blank)".into(), c.class, c.num, false) },
         Value::Number(n) => {
             if let Some(ng) = group.number
                 && let Some((label, key)) = ng.bucket(*n)
             {
-                return (format!("r{}", label.to_lowercase()), it(Value::text(label.as_str()), label, 0, key, false));
+                return it(Value::text(label.as_str()), label, c.class, key, false);
             }
             if group.date != PivotDateGroup::None
-                && let Some(dt) = datetime_from_serial(wb.date_system, *n)
+                && let Some(label) = datetime_from_serial(wb.date_system, *n).map(|dt| date_label(dt, group.date))
             {
-                let mon = MONTHS.get(dt.month.saturating_sub(1) as usize).copied().unwrap_or("Jan");
-                let (label, key) = match group.date {
-                    PivotDateGroup::Years => (dt.year.to_string(), dt.year as f64),
-                    PivotDateGroup::Quarters => {
-                        let q = (dt.month.saturating_sub(1)) / 3 + 1;
-                        (format!("Qtr{q}"), q as f64)
-                    }
-                    PivotDateGroup::Months => (mon.to_string(), dt.month as f64),
-                    _ => (format!("{}-{mon}", dt.day), (dt.month * 100 + dt.day) as f64),
-                };
-                return (format!("g{key}"), it(Value::text(label.as_str()), label, 0, key, false));
+                return it(Value::text(label.as_str()), label, c.class, c.num, false);
             }
             let label = crate::display::format(v, fmt, wb).text;
-            (format!("n{}", n.to_bits()), it(v.clone(), label, 0, *n, true))
+            it(v.clone(), label, c.class, c.num, true)
         }
-        Value::Text(t) => (format!("t{}", t.to_lowercase()), it(v.clone(), t.to_string(), 1, 0.0, false)),
+        Value::Text(t) => it(v.clone(), t.to_string(), c.class, c.num, false),
         Value::Bool(b) => {
             let l = if *b { "TRUE" } else { "FALSE" };
-            (format!("l{l}"), it(Value::Bool(*b), l.into(), 2, *b as u8 as f64, false))
+            it(Value::Bool(*b), l.into(), c.class, c.num, false)
         }
-        Value::Error(e) => (format!("e{}", e.as_str()), it(v.clone(), e.as_str().into(), 3, 0.0, false)),
-        Value::Array(_) => make_item(wb, &v.scalar(), group, fmt, first),
+        Value::Error(e) => it(v.clone(), e.as_str().into(), c.class, c.num, false),
+        Value::Array(_) => item_of(wb, &v.scalar(), group, fmt, first, c),
+    }
+}
+/// The caption a date grouping gives a decoded serial date.
+fn date_label(dt: cella_core::date::DateTime, date: PivotDateGroup) -> String {
+    let mon = MONTHS.get(dt.month.saturating_sub(1) as usize).copied().unwrap_or("Jan");
+    match date {
+        PivotDateGroup::Years => dt.year.to_string(),
+        PivotDateGroup::Quarters => format!("Qtr{}", (dt.month.saturating_sub(1)) / 3 + 1),
+        PivotDateGroup::Months => mon.to_string(),
+        _ => format!("{}-{mon}", dt.day),
     }
 }
 
 impl FieldItems {
     fn intern(&mut self, wb: &Workbook, v: &Value, group: Grouping, fmt: &str, first: usize) -> u32 {
-        let (key, item) = make_item(wb, v, group, fmt, first);
-        if let Some(i) = self.index.get(&key) {
+        let c = classify(wb, v, group);
+        if let Some(i) = self.index.get(&c.key) {
             return *i;
         }
         let i = self.items.len() as u32;
-        self.items.push(item);
-        self.index.insert(key, i);
+        self.items.push(item_of(wb, v, group, fmt, first, &c));
+        self.index.insert(c.key, i);
         i
     }
     /// Appends a calculated item's caption: it sorts after the real items (`class` 4) and never
@@ -526,7 +581,8 @@ impl FieldItems {
 
 /// The label of a source value under a date grouping (for filters and field lists).
 pub fn item_label(wb: &Workbook, v: &Value, group: Grouping, fmt: &str) -> String {
-    make_item(wb, v, group, fmt, 0).1.label
+    let c = classify(wb, v, group);
+    item_of(wb, v, group, fmt, 0, &c).label
 }
 
 /// Whether a record is hidden by the report's page filters and item selections. A label or value
@@ -1551,7 +1607,20 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     // ---- aggregate
     let mut row_items: Vec<FieldItems> = rows.iter().map(|_| FieldItems::default()).collect();
     let mut col_items: Vec<FieldItems> = cols.iter().map(|_| FieldItems::default()).collect();
+    // The accumulator map is keyed by **two path ids**, not two vectors. A record contributes to
+    // every prefix pair (each sub-total), so with one row and one column field it entered four
+    // entries — eight `Vec` allocations a record, eight million at a million rows. A prefix is one
+    // integer here: the trie node of `(parent id, item)`, interned once per distinct path.
     let mut aggs: AggMap = HashMap::new();
+    let mut fast_aggs: HashMap<(u32, u32), Vec<Acc>> = HashMap::new();
+    let mut row_nodes: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut col_nodes: HashMap<(u32, u32), u32> = HashMap::new();
+    // Id 0 is the empty path (the grand total); the rest are interned prefixes, and their paths are
+    // kept so the report's path-keyed map can be built once at the end.
+    let mut row_id_path: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut col_id_path: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut row_ids = [0u32; MAX_AXIS_FIELDS + 1];
+    let mut col_ids = [0u32; MAX_AXIS_FIELDS + 1];
     let mut row_set: HashSet<Vec<u32>> = HashSet::new();
     let mut col_set: HashSet<Vec<u32>> = HashSet::new();
     let mut col_leaves: HashSet<Vec<u32>> = HashSet::new();
@@ -1572,9 +1641,37 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
         for (((c, f), fi), fmt) in cols.iter().zip(col_items.iter_mut()).zip(col_fmts.iter()) {
             cp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), Grouping::of(f), fmt, ri));
         }
-        for a in 0..=rp.len() {
-            for b in 0..=cp.len() {
-                let e = aggs.entry((rp[..a].to_vec(), cp[..b].to_vec())).or_insert_with(|| vec![Acc::default(); k + extra.len()]);
+        // This record's prefixes, as ids: one lookup a depth, then the sub-total pairs are two
+        // integers each.
+        row_ids[0] = 0;
+        for (d, item) in rp.iter().enumerate() {
+            let key = (row_ids[d], *item);
+            row_ids[d + 1] = match row_nodes.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let Some(id) = u32::try_from(row_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                    row_id_path.push(rp[..=d].to_vec());
+                    row_nodes.insert(key, id);
+                    id
+                }
+            };
+        }
+        col_ids[0] = 0;
+        for (d, item) in cp.iter().enumerate() {
+            let key = (col_ids[d], *item);
+            col_ids[d + 1] = match col_nodes.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let Some(id) = u32::try_from(col_id_path.len()).ok() else { return Err("The PivotTable report is too large.".into()) };
+                    col_id_path.push(cp[..=d].to_vec());
+                    col_nodes.insert(key, id);
+                    id
+                }
+            };
+        }
+        for &rid in &row_ids[..=rp.len()] {
+            for &cid in &col_ids[..=cp.len()] {
+                let e = fast_aggs.entry((rid, cid)).or_insert_with(|| vec![Acc::default(); k + extra.len()]);
                 for (acc, (vs, _)) in e.iter_mut().zip(vals.iter()) {
                     if let ValSrc::Col(c) = vs {
                         acc.add(rec.get(*c).unwrap_or(&Value::Empty));
@@ -1601,11 +1698,19 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
         if !cols.is_empty() && data_cols_exceed_sheet(col_leaves.len(), pt.grand_totals_rows, k) {
             return Err("The PivotTable report will not fit on the sheet.".into());
         }
-        if aggs.len() > 5_000_000 {
+        if fast_aggs.len() > 5_000_000 {
             return Err("The PivotTable report is too large.".into());
         }
     }
 
+
+    // ---- the report's own map
+    // The report reads its accumulators by path; the small set of distinct groups is the only place
+    // the paths are needed, so the conversion happens once, here.
+    for ((r, c), acc) in fast_aggs.drain() {
+        let (Some(rp), Some(cp)) = (row_id_path.get(r as usize), col_id_path.get(c as usize)) else { continue };
+        aggs.insert((rp.clone(), cp.clone()), acc);
+    }
     // ---- axes
     // Calculated items first: they extend their field's items and get a report path under every
     // parent group the axis already has.
