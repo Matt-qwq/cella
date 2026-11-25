@@ -2116,6 +2116,29 @@ against the gate's own scenario:
 The smaller sheet gains more, which is what per-row overhead looks like when it is a larger share of
 the run. Engine 649, clippy, fmt, wasm, `perf` 59/59.
 
+### 57. A `GROUPBY` built its report a line at a time (P, found and fixed 11-25)
+
+**Where the million-group report's second went.** With the sort measured at **25 ms** for a million
+keys and the key build at 127 (text) / ~40 (numbers), what was left was the report itself: `groupby`
+built a `Vec<Vec<Value>>` — an allocation a line, a million of them for a report keyed by an item
+column — and then copied every line into an array through `from_rows`.
+
+**Now:** the report is written into **one block** in the order it reads, and every group's aggregates
+are computed once into a second flat block (which is also what a value-column sort needs to look at,
+instead of sorting lines of `Value`s).
+
+**Measured** (`fn_probe`, fastest of two; page five passes):
+
+| call (1M rows) | before | after |
+|---|---:|---:|
+| `GROUPBY(A, C, SUM)` — a million number groups | 709 ms | **583** |
+| `GROUPBY(D, C, SUM)` — a million text groups | 928 ms | **750** |
+| `GROUPBY(MOD(A,4), C, SUM)` — four groups (control) | 196 | 197 |
+| page: `GROUPBY` | 703 ms | **585 ms** |
+
+`PIVOTBY` did not move: its report still goes through `from_rows`, and the same change is waiting
+there. Functions 172, calc 176, engine 649, clippy, wasm, `perf` 59/59.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
