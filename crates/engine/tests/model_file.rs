@@ -210,6 +210,32 @@ fn a_query_with_a_real_step_stays_in_memory() {
 }
 
 #[test]
+fn a_file_backed_table_can_be_filtered_by_value() {
+    if !cfg!(feature = "sql-engine") {
+        return;
+    }
+    // The scan cannot walk this table's records, so a value filter on it — "keep the regions whose
+    // total is above a number" — is only possible because the engine answers it.
+    let path = temp("filtered.csv");
+    write_sales(&path, 2_000);
+    let mut s = Session::new();
+    s.new_workbook();
+    run(&mut s, "data.model.loadFile", json!({"path": path.display().to_string(), "name": "Sales"}));
+    let out =
+        run(&mut s, "insert.pivotTable", json!({"source": "Sales", "rows": ["Sales[Region]"], "values": ["Sales[Amount]"], "destination": "new"}));
+    let name = out["name"].as_str().expect("a name").to_string();
+    // Every region's total is the same here, so a threshold at the total keeps all of them and one
+    // above it keeps none — a pass either way is the engine having answered.
+    let kept = run(
+        &mut s,
+        "pivot.filterByValue",
+        json!({"pivot": name, "field": "Sales[Region]", "measure": "Sales[Amount]", "op": "greaterThan", "value": 0.0}),
+    );
+    assert_eq!(kept["items"], 64, "all 64 regions are above zero");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn without_an_engine_a_file_backed_table_says_so() {
     if cfg!(feature = "sql-engine") {
         return;
