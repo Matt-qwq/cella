@@ -539,7 +539,10 @@ fn load_into_model(s: &mut Session, name: &str, table: &Table) -> Result<()> {
         // rows behind it changed: this edit recalculates the workbook.
         cx.structural = true;
         Ok(())
-    })
+    })?;
+    // The engine's copy of the table is stale from here.
+    s.model_changed();
+    Ok(())
 }
 
 /// Writes `table` onto a sheet as a table object named after the query, replacing whatever the
@@ -943,6 +946,7 @@ fn delete(s: &mut Session, p: &Json) -> Result<Json> {
         cx.wb.model.relationships.retain(|r| !r.from_table.eq_ignore_ascii_case(&name) && !r.to_table.eq_ignore_ascii_case(&name));
         Ok(())
     })?;
+    s.model_changed();
     Ok(json!({"deleted": name}))
 }
 

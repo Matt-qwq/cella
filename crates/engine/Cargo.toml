@@ -26,6 +26,7 @@ cella-xlsx = { workspace = true }
 cella-parquet = { workspace = true }
 cella-query = { workspace = true }
 cella-dax = { workspace = true }
+cella-sql = { workspace = true }
 cella-chart = { workspace = true }
 cella-pdf = { workspace = true }
 image = { workspace = true }
@@ -46,3 +47,7 @@ sha2 = { workspace = true }
 # dependency decision the owner took on 11-14 (gaps 12): bundled SQLite (a C toolchain, every
 # platform we ship) and ureq with rustls (pure-Rust TLS, no OpenSSL).
 connectors = ["dep:rusqlite", "dep:ureq"]
+# The data model's SQL engine (DuckDB through `cella-sql`): bundled C++, so native only. The
+# desktop and CLI apps turn it on; the browser build leaves it off and the engine's commands say
+# the model's SQL needs the desktop app. See docs/sql-engine-research.md.
+sql-engine = ["cella-sql/duckdb"]

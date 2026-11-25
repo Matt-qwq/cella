@@ -11,7 +11,7 @@ description = "Cella desktop app"
 workspace = true
 
 [dependencies]
-cella-engine = { workspace = true, features = ["connectors"] }
+cella-engine = { workspace = true, features = ["connectors", "sql-engine"] }
 cella-ui-egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 egui = { workspace = true }

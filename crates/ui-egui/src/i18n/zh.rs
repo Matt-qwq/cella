@@ -1997,6 +1997,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Rename Query" => "重命名查询",
         "Delete Query" => "删除查询",
         "Load To" => "加载到",
+        "Run SQL" => "运行 SQL",
         "Queries" => "查询",
         "Query Steps" => "查询步骤",
         // zh-grid - entries the grid, the ribbon, the tooltips and the paper view need (wave 4).

@@ -902,6 +902,9 @@ fn undo(s: &mut Session, p: &Json) -> Result<Json> {
         None => d.calc.restore(&now, &d.wb),
     };
     d.revision += 1;
+    // An undone step can put an older model back (a query's load, a table removed), so the SQL
+    // engine's copy of the model is stale from here.
+    s.model_changed();
     Ok(json!({"undone": label}))
 }
 
@@ -933,6 +936,7 @@ fn redo(s: &mut Session, p: &Json) -> Result<Json> {
         None => d.calc.restore(&now, &d.wb),
     };
     d.revision += 1;
+    s.model_changed();
     Ok(json!({"redone": label}))
 }
 

@@ -150,3 +150,18 @@ What that means for the next round:
 * **A pivot or a slicer re-queries.** 5–15 ms means a drag is one query, so the report's shape
   (drill, collapse, top-N) can be answered by SQL instead of a hand-written grouping pass.
 
+## The engine now holds the model (11-25)
+
+`crates/engine` gained a `sql-engine` feature (on in the desktop and CLI apps, off in the browser,
+where the command says so) and **`data.model.query {sql} → {columns, rows}`**: read-only SQL over
+the model's tables, from the command set, the control channel and MCP. The engine keeps a copy of
+every model table, filled once on first use and rebuilt whenever the model changes (a load, a
+removal, an undo, another document); `cella_sql::is_read_only` refuses anything that is not a
+query before it reaches the engine, so a query box cannot write a file or attach a database.
+
+At 1M rows × 4 columns (`cargo run -p cella-engine --example model_sql_probe --release --features
+sql-engine`): the 768-cell group-by is **5.4 ms** and the same report with a 4-of-64 slicer is
+**3.6 ms**, against **640 ms** for our own `pivot.refresh` of that report — 118×. The pivot does not
+ask the engine yet (its cells still come from `compute`'s scan); that is the next round, and it is
+also what lets the 4M-cell model cap go, since the rows stop having to live in the document.
+

@@ -912,6 +912,7 @@ dependencies = [
  "cella-parquet",
  "cella-pdf",
  "cella-query",
+ "cella-sql",
  "cella-xlsx",
  "image",
  "log",

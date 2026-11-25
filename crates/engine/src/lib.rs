@@ -772,6 +772,15 @@ pub enum UiRequest {
 /// the measure takes (egui's: see `theme::cell_text_width` in the UI crate).
 pub type TextWidth = Arc<dyn Fn(&str, &model::Font, bool) -> f32 + Send + Sync>;
 
+/// The data model's SQL engine and the document generation its copy of the tables was built from.
+pub struct ModelSql {
+    engine: cella_sql::Engine,
+    /// The document it was built for: another document's model is a different set of tables.
+    doc: u64,
+    /// [`Session::model_generation`] at the moment it was built.
+    generation: u64,
+}
+
 #[derive(Default)]
 pub struct Session {
     docs: Vec<DocState>,
@@ -830,6 +839,12 @@ pub struct Session {
     /// The next group id. A token carries it, so an ended group's token is refused instead of
     /// ending someone else's group.
     next_group: u64,
+    /// The data model's SQL engine, and what it was built from: started on first use, rebuilt when
+    /// the model changed or another document became active ([`Session::model_engine`]).
+    model_sql: Option<ModelSql>,
+    /// Bumped by every command that changes `wb.model` ([`Session::model_changed`]). The engine's
+    /// copy of the tables is stale from then on.
+    model_generation: u64,
 }
 
 impl Session {
@@ -858,6 +873,46 @@ impl Session {
     }
     pub fn doc_mut(&mut self) -> Result<&mut DocState> {
         self.active_mut().ok_or(EngineError::NoDocument)
+    }
+
+    /// The model changed: the SQL engine's copy of its tables is stale from the next query on.
+    ///
+    /// Called by every command that writes `wb.model` (a query loading into the model, a table
+    /// removed, a refresh) and by undo/redo, which can put an older model back.
+    pub fn model_changed(&mut self) {
+        self.model_generation = self.model_generation.wrapping_add(1);
+    }
+
+    /// The SQL engine that holds the model's tables, started and filled on first use and rebuilt
+    /// after any change to the model ([`Session::model_changed`]) or a switch of document.
+    ///
+    /// Filling it costs `cella_sql::Engine::load_rows`'s ~720 ns a row — 0.7 s for a million-row
+    /// model — **once** rather than on every query, which is why the copy is kept. A build with no
+    /// engine (the browser) answers with the message the UI shows instead.
+    pub fn model_engine(&mut self) -> Result<&cella_sql::Engine> {
+        let doc = self.doc()?.uid;
+        let fresh = matches!(&self.model_sql, Some(m) if m.doc == doc && m.generation == self.model_generation);
+        if !fresh {
+            // `Arc::clone`, not a copy of the rows: a model table can be millions of rows, and the
+            // engine reads them out of the workbook's own copy.
+            let wb = self.doc()?.wb.clone();
+            let mut engine = cella_sql::Engine::in_memory().map_err(|e| match e {
+                cella_sql::SqlError::Unavailable => {
+                    EngineError::Other("The data model's SQL engine needs the desktop app: this build has no engine.".into())
+                }
+                other => EngineError::Other(format!("The data model's SQL engine could not start: {other}")),
+            })?;
+            for table in &wb.model.tables {
+                engine
+                    .load_rows(&table.name, &table.columns, &table.rows)
+                    .map_err(|e| EngineError::Other(format!("The model's table \"{}\" could not be loaded into the engine: {e}", table.name)))?;
+            }
+            self.model_sql = Some(ModelSql { engine, doc, generation: self.model_generation });
+        }
+        match &self.model_sql {
+            Some(m) => Ok(&m.engine),
+            None => Err(EngineError::Other("The data model's SQL engine did not start.".into())),
+        }
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
         self.docs.push(d);

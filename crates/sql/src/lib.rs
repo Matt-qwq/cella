@@ -330,6 +330,29 @@ pub fn quote_literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
+/// Whether a statement only reads.
+///
+/// [`Engine::query`] runs against the database the model lives in, so a query box must not become
+/// a way to write to the disk or to attach another database: a statement that does not start with
+/// a reading keyword is refused before it reaches the engine. Comments are skipped first, so
+/// `-- get everything\nDROP TABLE t` is still a `DROP`.
+///
+/// It is a first-keyword test, not a parser — `prepare` is what guarantees a single statement.
+pub fn is_read_only(sql: &str) -> bool {
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail).trim_start();
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail).trim_start();
+        } else {
+            break;
+        }
+    }
+    let word: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+    matches!(word.to_ascii_uppercase().as_str(), "SELECT" | "WITH" | "DESCRIBE" | "SHOW" | "SUMMARIZE" | "VALUES")
+}
+
 fn check_sql(sql: &str) -> Result<(), SqlError> {
     if sql.trim().is_empty() {
         return Err(SqlError::Invalid("a query cannot be empty".into()));

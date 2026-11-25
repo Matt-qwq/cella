@@ -55,6 +55,39 @@ fn the_table_surface_answers_without_panicking() {
     assert!(Table::default().is_empty());
 }
 
+#[test]
+fn a_statement_that_does_not_read_is_refused() {
+    for sql in [
+        "SELECT 1",
+        "  select region from sales",
+        "WITH x AS (SELECT 1) SELECT * FROM x",
+        "-- a comment\nSELECT 1",
+        "/* note */ SELECT 1",
+        "DESCRIBE sales",
+        "SHOW TABLES",
+        "SUMMARIZE sales",
+        "VALUES (1)",
+    ] {
+        assert!(is_read_only(sql), "{sql}");
+    }
+    for sql in [
+        "DROP TABLE sales",
+        "COPY (SELECT 1) TO 'x.parquet'",
+        "ATTACH 'other.db' AS o",
+        "INSERT INTO sales VALUES (1)",
+        "CREATE TABLE t (a INTEGER)",
+        "PRAGMA database_list",
+        "INSTALL httpfs",
+        "LOAD httpfs",
+        "EXPORT DATABASE 'dir'",
+        "-- get everything\nDROP TABLE sales",
+        "/* nested */ /* still refused */ DELETE FROM sales",
+        "",
+    ] {
+        assert!(!is_read_only(sql), "{sql}");
+    }
+}
+
 // ---------------------------------------------------------------- without the engine
 
 #[cfg(not(all(feature = "duckdb", not(target_arch = "wasm32"))))]

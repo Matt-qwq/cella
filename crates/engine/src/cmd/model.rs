@@ -64,6 +64,15 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             has_doc,
             measure_evaluate
         ),
+        cmd!(
+            query "data.model.query",
+            "Run SQL",
+            ["Data", "Queries & Connections"],
+            None,
+            "{sql} -> {columns, rows} — a read-only query over the model's tables, run by the engine the model lives on (desktop only; `data.model.tables` names them)",
+            has_doc,
+            sql_query
+        ),
     ]
 }
 
@@ -114,6 +123,7 @@ fn remove_table(s: &mut Session, p: &Json) -> Result<Json> {
         cx.wb.model.relationships.retain(|r| !r.from_table.eq_ignore_ascii_case(&name) && !r.to_table.eq_ignore_ascii_case(&name));
         Ok(())
     })?;
+    s.model_changed();
     Ok(json!({"removed": name}))
 }
 
@@ -294,4 +304,21 @@ fn measure_evaluate(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let value = cella_dax::evaluate(&d.wb.model, &m.formula, &ctx).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"value": value_json(&value), "display": value.display()}))
+}
+
+/// `data.model.query`: SQL over the model's tables, answered by the engine the model lives on.
+///
+/// Read-only by design: the database is the one holding the model, so a statement that could
+/// write a file, attach another database or change rows is refused before it reaches the engine
+/// ([`cella_sql::is_read_only`]). The tables are named as `data.model.tables` lists them; quote a
+/// name with spaces or capitals (`SELECT * FROM "My Table"`).
+fn sql_query(s: &mut Session, p: &Json) -> Result<Json> {
+    let sql = str_param(p, "sql").map(str::trim).filter(|q| !q.is_empty()).ok_or_else(|| bad("data.model.query", "missing sql"))?;
+    model(s)?;
+    if !cella_sql::is_read_only(sql) {
+        return Err(bad("data.model.query", "only a query (SELECT …) runs here: the model's SQL is read-only"));
+    }
+    let table = s.model_engine()?.query(sql).map_err(|e| bad("data.model.query", e.to_string()))?;
+    let rows: Vec<Json> = table.rows.iter().map(|r| Json::Array(r.iter().map(value_json).collect())).collect();
+    Ok(json!({"columns": table.columns, "rows": rows}))
 }
