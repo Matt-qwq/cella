@@ -1051,7 +1051,7 @@ fn fields(s: &mut Session, p: &Json) -> Result<Json> {
     if let Some(m) = out.as_object_mut() {
         m.insert("fields".into(), Json::Array(list));
         if let Ok(src) = &src {
-            m.insert("records".into(), json!(src.rows.len()));
+            m.insert("records".into(), json!(src.height()));
         }
         if let Err(e) = src {
             m.insert("error".into(), json!(e));
@@ -1706,7 +1706,7 @@ fn group(s: &mut Session, p: &Json) -> Result<Json> {
             // Starting at/Ending at default to the field's own extent, floored/ceiled to whole
             // numbers the way Excel's dialog fills them in.
             let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-            for row in &src.rows {
+            for row in src.rows() {
                 if let Some(Value::Number(n)) = row.get(c).map(Value::scalar)
                     && n.is_finite()
                 {
@@ -1860,7 +1860,7 @@ fn grand_totals(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn refresh(s: &mut Session, p: &Json) -> Result<Json> {
-    update(s, p, |_, src, _| Ok(json!({"records": src.rows.len()})))
+    update(s, p, |_, src, _| Ok(json!({"records": src.height()})))
 }
 
 fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
@@ -2163,7 +2163,7 @@ fn suggestions(wb: &Workbook, src: &pv::Source) -> Vec<Json> {
     let n = src.headers.len();
     let h = |i: usize| src.headers.get(i).cloned().unwrap_or_default();
     let distinct = |i: usize| pv::distinct_labels(wb, src, i, crate::pivot::Grouping::default(), 1001).len();
-    let records = src.rows.len().max(1);
+    let records = src.height().max(1);
     let is_num = |i: usize| src.numeric.get(i).copied().unwrap_or(false);
     let is_date = |i: usize| src.dates.get(i).copied().unwrap_or(false);
     // Category columns: text with repeats.

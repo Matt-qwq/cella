@@ -62,7 +62,12 @@ pub struct Source {
     pub numeric: Vec<bool>,
     /// Numeric with a date number format.
     pub dates: Vec<bool>,
-    pub rows: Vec<Vec<Value>>,
+    /// Every record, row-major, `width` values each: one allocation, and a record is a slice of it.
+    /// A `Vec` a record was a second allocation a row, which the source read paid a million times
+    /// (`gaps` §56).
+    pub data: Vec<Value>,
+    /// Values a record.
+    pub width: usize,
     /// The model table the records came from, when they are the model's rather than a sheet's.
     /// Header names are then `Table[Column]`, exactly the way Excel's field list names them.
     pub model_table: Option<String>,
@@ -72,6 +77,26 @@ pub struct Source {
 }
 
 impl Source {
+    /// One record.
+    pub fn row(&self, r: usize) -> &[Value] {
+        let w = self.width.max(1);
+        let start = r.saturating_mul(w);
+        self.data.get(start..start.saturating_add(w)).unwrap_or(&[])
+    }
+    /// Every record, in order.
+    pub fn rows(&self) -> impl Iterator<Item = &[Value]> {
+        let w = self.width.max(1);
+        self.data.chunks(w)
+    }
+    /// How many records there are.
+    pub fn height(&self) -> usize {
+        let w = self.width.max(1);
+        self.data.len() / w
+    }
+    /// Adds a record (a slice of `width` values).
+    pub fn push_row(&mut self, rec: &[Value]) {
+        self.data.extend_from_slice(rec);
+    }
     pub fn col(&self, name: &str) -> Option<usize> {
         self.headers.iter().position(|h| h.eq_ignore_ascii_case(name))
     }
@@ -177,7 +202,7 @@ pub fn read_source(wb: &Workbook, text: &str, default_sheet: usize) -> Result<So
         formats.push(fmt);
     }
     let w = headers.len();
-    let mut rows = Vec::new();
+    let mut data: Vec<Value> = Vec::new();
     let mut numeric = vec![true; w];
     let mut any = vec![false; w];
     if r.end.row > r.start.row {
@@ -198,14 +223,14 @@ pub fn read_source(wb: &Workbook, text: &str, default_sheet: usize) -> Result<So
                     }
                 }
             }
-            rows.push(rec);
+            data.extend_from_slice(&rec);
         }
     }
     for (n, a) in numeric.iter_mut().zip(any.iter()) {
         *n = *n && *a;
     }
     let dates = numeric.iter().zip(formats.iter()).map(|(n, f)| *n && crate::display::number_format(f).is_date()).collect();
-    Ok(Source { sheet: si, range: r, headers, formats, numeric, dates, rows, model_table: None, measures: Vec::new() })
+    Ok(Source { sheet: si, range: r, headers, formats, numeric, dates, data, width: w, model_table: None, measures: Vec::new() })
 }
 
 /// What a pivot's source text names: one of the model's tables, or a sheet block (a range, a table
@@ -337,7 +362,7 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
     }
     let mut numeric = vec![true; width];
     let mut any = vec![false; width];
-    let mut rows: Vec<Vec<Value>> = Vec::with_capacity(table.height());
+    let mut data: Vec<Value> = Vec::with_capacity(table.height().saturating_mul(width));
     for rec in &table.rows {
         let mut row: Vec<Value> = (0..table.width()).map(|c| rec.get(c).cloned().unwrap_or(Value::Empty)).collect();
         // The rows each hop resolved to, so a chained hop can read its key out of its parent.
@@ -364,7 +389,7 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
                 *n = false;
             }
         }
-        rows.push(row);
+        data.extend_from_slice(&row);
     }
     for (n, a) in numeric.iter_mut().zip(any.iter()) {
         *n = *n && *a;
@@ -377,7 +402,8 @@ fn model_source(wb: &Workbook, name: &str) -> Result<Source, String> {
         formats,
         numeric,
         dates,
-        rows,
+        data,
+        width,
         model_table: Some(table.name.clone()),
         measures: model.measures.iter().map(|m| m.name.clone()).collect(),
     })
@@ -643,7 +669,7 @@ pub fn value_filter_kept(wb: &Workbook, src: &Source, pt: &PivotTable, vf: &Pivo
     let (vc, func) = value_measure(src, pt, &vf.measure)?;
     let mut acc: HashMap<String, Acc> = HashMap::new();
     let mut order: Vec<String> = vec![];
-    for rec in &src.rows {
+    for rec in src.rows() {
         if !record_passes(wb, src, pt, rec) {
             continue;
         }
@@ -663,7 +689,7 @@ pub fn value_filter_kept(wb: &Workbook, src: &Source, pt: &PivotTable, vf: &Pivo
 pub fn distinct_labels(wb: &Workbook, src: &Source, col: usize, group: Grouping, limit: usize) -> Vec<String> {
     let mut fi = FieldItems::default();
     let fmt = src.formats.get(col).map(String::as_str).unwrap_or("General");
-    for (i, r) in src.rows.iter().enumerate() {
+    for (i, r) in src.rows().enumerate() {
         if let Some(v) = r.get(col) {
             fi.intern(wb, v, group, fmt, i);
         }
@@ -1401,7 +1427,7 @@ fn bucket_members(wb: &Workbook, src: &Source, f: &PivotField, group: Grouping, 
     let c = src.col(&f.source_col)?;
     let fmt = src.formats.get(c).map(String::as_str).unwrap_or("General");
     let mut out: Vec<Value> = Vec::new();
-    for rec in &src.rows {
+    for rec in src.rows() {
         let v = rec.get(c).unwrap_or(&Value::Empty);
         let l = item_label(wb, v, group, fmt);
         if !l.eq_ignore_ascii_case(label) {
@@ -1433,7 +1459,7 @@ fn page_context(mut ctx: cella_dax::Context, page: &[(usize, &PivotFilter, Group
         let Some((table, column)) = split_model_header(&pf.source_col) else { continue };
         let fmt = src.formats.get(*c).map(String::as_str).unwrap_or("General");
         let mut values: Vec<Value> = Vec::new();
-        for rec in &src.rows {
+        for rec in src.rows() {
             let v = rec.get(*c).unwrap_or(&Value::Empty);
             let l = item_label(wb, v, *group, fmt);
             if !sel.iter().any(|s| s.eq_ignore_ascii_case(&l)) {
@@ -1626,7 +1652,7 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
     let mut col_leaves: HashSet<Vec<u32>> = HashSet::new();
     let row_fmts: Vec<String> = rows.iter().map(|(c, _)| fmt_of(*c)).collect();
     let col_fmts: Vec<String> = cols.iter().map(|(c, _)| fmt_of(*c)).collect();
-    'rec: for (ri, rec) in src.rows.iter().enumerate() {
+    'rec: for (ri, rec) in src.rows().enumerate() {
         if !record_passes(wb, &src, pt, rec) {
             continue 'rec;
         }
@@ -1702,7 +1728,6 @@ pub fn compute_with_source(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -
             return Err("The PivotTable report is too large.".into());
         }
     }
-
 
     // ---- the report's own map
     // The report reads its accumulators by path; the small set of distinct groups is the only place
@@ -2500,9 +2525,9 @@ pub fn details_with_cap(wb: &Workbook, pt: &PivotTable, sheet: usize, cell: Cell
     let mut row_items: Vec<FieldItems> = rows_f.iter().map(|_| FieldItems::default()).collect();
     let mut col_items: Vec<FieldItems> = cols_f.iter().map(|_| FieldItems::default()).collect();
     let cap = detail_row_cap(src.headers.len(), max_cells);
-    let mut kept: Vec<Vec<Value>> = Vec::new();
+    let mut kept: Vec<Value> = Vec::new();
     let mut skipped = 0u64;
-    for (ri, rec) in src.rows.iter().enumerate() {
+    for (ri, rec) in src.rows().enumerate() {
         if !record_passes(wb, &src, pt, rec) {
             continue;
         }
@@ -2521,11 +2546,11 @@ pub fn details_with_cap(wb: &Workbook, pt: &PivotTable, sheet: usize, cell: Cell
         if !rp.starts_with(&row_path) || !cp.starts_with(&col_path) {
             continue;
         }
-        if kept.len() as u64 >= cap {
+        if (kept.len() / src.headers.len().max(1)) as u64 >= cap {
             skipped = skipped.saturating_add(1);
             continue;
         }
-        kept.push(rec.clone());
+        kept.extend_from_slice(rec);
     }
     // An item past the field's real items is a calculated item: it has no records of its own.
     let calc =
@@ -2533,7 +2558,13 @@ pub fn details_with_cap(wb: &Workbook, pt: &PivotTable, sheet: usize, cell: Cell
     if kept.is_empty() && (calc(&row_items, &row_path) || calc(&col_items, &col_path)) {
         return Err("Show Details isn't available for a calculated item.".into());
     }
-    Ok(Detail { title, headers: src.headers.clone(), formats: src.formats.clone(), rows: kept, skipped })
+    Ok(Detail {
+        title,
+        headers: src.headers.clone(),
+        formats: src.formats.clone(),
+        rows: kept.chunks(src.headers.len().max(1)).map(<[Value]>::to_vec).collect(),
+        skipped,
+    })
 }
 
 /// An error when the report written on the sheet is no longer what its definition computes:

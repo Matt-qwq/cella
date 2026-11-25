@@ -206,7 +206,7 @@ fn source_items(src: &pv::Source, col: usize) -> Vec<SlicerItem> {
     const MAX: usize = 100_000;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for row in &src.rows {
+    for row in src.rows() {
         if row.iter().all(|v| v.scalar().is_empty()) {
             continue;
         }
@@ -332,7 +332,7 @@ fn apply_pivot_slicer(wb: &mut Workbook, widget: &PivotSlicer) -> Result<usize> 
             None => None,
             Some(keys) => {
                 let mut out: Vec<String> = vec![];
-                for row in &src.rows {
+                for row in src.rows() {
                     let v = row.get(col).cloned().unwrap_or(Value::Empty);
                     if !keys.contains(&SlicerValue::from_value(&v).key()) {
                         continue;
@@ -391,7 +391,7 @@ fn range_labels(wb: &Workbook, src: &pv::Source, col: usize, group: crate::pivot
     const MAX: usize = 100_000;
     let fmt = src.formats.get(col).cloned().unwrap_or_default();
     let mut out: Vec<String> = vec![];
-    for row in &src.rows {
+    for row in src.rows() {
         let Some(v) = row.get(col) else { continue };
         let Value::Number(n) = v.scalar() else { continue };
         if !range.contains(n) {
@@ -829,7 +829,7 @@ fn iso_text(wb: &Workbook, serial: f64) -> Option<String> {
 fn field_bounds(wb: &Workbook, src: &pv::Source, col: usize) -> Option<(f64, f64)> {
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
-    for row in &src.rows {
+    for row in src.rows() {
         let Some(Value::Number(n)) = row.get(col).map(|v| v.scalar()) else { continue };
         if !n.is_finite() || cella_core::date::datetime_from_serial(wb.date_system, n).is_none() {
             continue;
