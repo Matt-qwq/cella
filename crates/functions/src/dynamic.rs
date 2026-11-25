@@ -946,40 +946,63 @@ fn groupby(args: &[Arg], c: &mut dyn Ctx) -> R<Value> {
     let sort_in_keys = if sort.unsigned_abs() as usize <= rf.cols { sort } else { 0 };
     let ordered = ordered_ids(&keys, &key_values, sort_in_keys);
     let mut agg_row = |rows: &[usize]| -> Vec<Value> { (0..vals.cols).map(|col| aggregate_rows(f, &vals, rows, col, c)).collect() };
-    let mut lines: Vec<Vec<Value>> = ordered
-        .into_iter()
-        .map(|id| {
-            let rows = groups.get(id as usize).cloned().unwrap_or_default();
-            let mut line = key_values.get(id as usize).cloned().unwrap_or_default();
-            line.extend(agg_row(&rows));
-            line
-        })
-        .collect();
+    // The report is written into one block. A `Vec` a line — a million of them for a report keyed by
+    // an item column — then copied into an array was two allocations and a copy a line; the block is
+    // the array's own storage, filled in the order the report reads it.
+    let width = rf.cols + vals.cols;
+    let mut order: Vec<u32> = ordered;
+    // Every group's aggregates once, row-major by group id: a value-column sort needs them before
+    // the order is known, and asking twice is what sorting lines used to cost.
+    let mut per_id: Vec<Value> = Vec::with_capacity(keys.len().saturating_mul(vals.cols));
+    for id in 0..keys.len() as u32 {
+        let rows = groups.get(id as usize).cloned().unwrap_or_default();
+        per_id.extend(agg_row(&rows));
+    }
+    let agg_of = |id: u32, col: usize| -> Value {
+        (id as usize).saturating_mul(vals.cols).saturating_add(col).checked_sub(0).and_then(|i| per_id.get(i)).cloned().unwrap_or(Value::Empty)
+    };
     // Sorting by a value column.
     if sort.unsigned_abs() as usize > rf.cols {
         let ci = sort.unsigned_abs() as usize - 1;
-        lines
-            .sort_by(|a, b| cmp_keys(&[a.get(ci).cloned().unwrap_or(Value::Empty)], &[b.get(ci).cloned().unwrap_or(Value::Empty)], &[sort.signum()]));
+        let col = ci.saturating_sub(rf.cols);
+        let dir = sort.signum();
+        order.sort_by(|&a, &b| cmp_keys(&[agg_of(a, col)], &[agg_of(b, col)], &[dir]));
     }
-    let mut out = Vec::new();
+    let mut out: Vec<Value> = Vec::with_capacity((order.len() + 2).saturating_mul(width));
+    let emit = |out: &mut Vec<Value>, id: u32| {
+        let keys_line = key_values.get(id as usize).map(Vec::as_slice).unwrap_or(&[]);
+        out.extend_from_slice(keys_line);
+        if keys_line.len() < rf.cols {
+            out.resize(out.len() + (rf.cols - keys_line.len()), Value::Empty);
+        }
+        for col in 0..vals.cols {
+            out.push(agg_of(id, col));
+        }
+    };
     if p.show_headers {
         let mut h = p.field_headers.clone();
         h.extend(p.value_headers.iter().cloned());
-        out.push(h);
+        h.resize(width, Value::Empty);
+        out.extend(h);
     }
     let mut total_line = vec![Value::from("Total")];
     total_line.resize(rf.cols, Value::Empty);
     total_line.extend(agg_row(&p.rows));
+    total_line.resize(width, Value::Empty);
     if total < 0 {
-        out.push(total_line);
-        out.extend(lines);
+        out.extend_from_slice(&total_line);
+        for id in &order {
+            emit(&mut out, *id);
+        }
     } else {
-        out.extend(lines);
+        for id in &order {
+            emit(&mut out, *id);
+        }
         if total > 0 {
-            out.push(total_line);
+            out.extend_from_slice(&total_line);
         }
     }
-    from_rows(out, &Value::Empty)
+    Ok(Array::new(out.len() / width.max(1), width, out).map(Value::from).unwrap_or(Value::Error(CellError::Calc)))
 }
 
 /// Height and width of a PIVOTBY grid: `header_rows` (one per column field, plus the value-name row) and
