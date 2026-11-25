@@ -1911,6 +1911,34 @@ aggregate over a million rows is on someone's interactive path — a live dashbo
 page already has these rows among the fastest we know of; the remaining chase is engineering, not
 user-facing.
 
+### 52. A pivot refresh formatted every number to decide it had seen it (P, found and fixed 11-25)
+
+**What the owner's question turned up.** "Users have several million rows and drag pivot fields and
+slicers all day" is the one interactive workload this repository had not measured. `pivot.refresh` —
+what a slicer drag runs — cost **889 ms at a million rows** (1.65 s budget, 54 % of it).
+
+**Where it went** (phase timer, then reading the loop): the source read was 132 ms and everything
+after it 740. Inside that, the record loop called `make_item` for **every value of every axis field**:
+a number was formatted with `display::format` (numfmt, ~300 ns) *and* had a `String` key built
+(`"n" + bits`) **even when the item was already known**. A million records × the fields, on a report
+with **five groups**. The accumulator map also keyed by two `Vec<u32>`s while a record enters *every
+prefix pair*, so one row field and one column field allocated eight vectors a record.
+
+**Now:** the key is an enum — blank / number bits / grouped / text / boolean / error — so the loop pays
+no formatting and no allocation for numbers, and the label is built only when an item is new; the
+accumulators key by two interned path ids (a trie node per `(parent, item)`).
+
+**Measured:** `pivot.refresh` **889 → 384 ms at 1M (−57 %)**, and **42 ms at 100k** of a 160 ms budget.
+The budgets are tightened to 600 ms / 80 ms so the win is held. What is left of the 384 is the source
+read (~122 ms — one `sh.value` a cell, the next knife) and the report's own build.
+
+**The product context this exposed, recorded here because it decides the next work:** a Cella sheet
+holds 1,048,576 rows like Excel's, so "several million rows" cannot be one sheet's range — a pivot's
+`Range` source is capped there, and the other source kind (`DataModel`, a Power Pivot/OLAP model) is
+carried but **never recomputed** ("the seam an OLAP engine plugs into"). So for the owner's users the
+options are the 1M-row ceiling, a data model behind that seam, or a multi-sheet source — a product
+decision, not a performance one.
+
 ## After beta
 
 ### 11. Localization: two languages, deliberately (L)
@@ -2374,6 +2402,7 @@ decide whether it is Excel's behaviour to begin with, and either widen it or doc
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | §52 (new, fixed): a pivot refresh **formatted every number to decide it had seen it** — `make_item` ran `display::format` and built a `String` key per record per axis field. The key is an enum now and the accumulators key by interned path ids: **`pivot.refresh` 889 → 384 ms at 1M (−57 %)**, 42 ms at 100k; budgets tightened to 600/80 ms. It also records that a sheet holds 1,048,576 rows (like Excel) and a `DataModel` source is carried but never recomputed — the product decision behind "several million rows" |
 | 2026-11-25 | minor | §51 (new, evaluation): column storage measured and sized — a contiguous Vec<f64> fold costs **2.2 ns/cell** against the store's 10.5 (4.8× ceiling; SUM ~6 ms), but a full column-major store is 70 public functions and 380 call sites with a wrong-number failure mode. The only shape worth a pilot is a per-column sidecar cache inside store.rs; recommendation: do not start it. [performance-columnar.md](performance-columnar.md) |
 | 2026-11-25 | minor | §50 (new): inline numbers refuted before they were built — 
 ead_probe runs the two chains (payload → number table against the number in the payload slot) and both cost **2.3 ns a cell**: a band's table is a few hundred entries, always in L1, so the load is free. The corrected attribution: of a 10.5 ns column read, 2.3 is the chain, 1.4 the kind run, 1.1 the formula test, and **8–9 is the row walk itself** |

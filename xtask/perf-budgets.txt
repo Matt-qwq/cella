@@ -25,7 +25,8 @@ mem_drift             100000  11
 open.csv              100000  130
 open.xlsx             100000  520
 paste.block           100000  210
-pivot.refresh         100000  160
+# The pivot refresh no longer formats a number to recognise it (gaps §52): 38 ms at 100k.
+pivot.refresh         100000   80
 print.pdf             100000  4450
 rebuild.graph         100000  110
 save.repeat           100000  370
@@ -58,7 +59,8 @@ find.replaceAll      1000000  9000
 open.csv             1000000  1250
 open.xlsx            1000000  5900
 paste.block          1000000  2150
-pivot.refresh        1000000  1650
+# .. and 384 ms at a million rows, from 889. It is what a slicer drag runs.
+pivot.refresh        1000000  600
 print.pdf            1000000  8250
 rebuild.graph        1000000  1450
 save.repeat          1000000  3200
