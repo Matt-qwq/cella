@@ -1,0 +1,22 @@
+[package]
+name = "cella-sql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cella SQL engine: the data model's query backend (DuckDB on desktop, nothing in the browser)"
+
+[lints]
+workspace = true
+
+[dependencies]
+cella-core = { workspace = true }
+thiserror = { workspace = true }
+
+# DuckDB is C++ compiled into the binary, so it does not build for `wasm32`: the engine is an
+# optional, native-only dependency and every call reports `Unavailable` without it. The owner
+# accepted a desktop-only data model on 11-25 (`docs/sql-engine-research.md`, `gaps` 59).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+duckdb = { version = "1", features = ["bundled"], optional = true }
+
+[features]
+duckdb = ["dep:duckdb"]

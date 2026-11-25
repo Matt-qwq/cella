@@ -43,6 +43,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // The measure language: formulas over the data model, evaluated for a pivot cell or a
     // MEASURE() formula. It reads the model and nothing else, so calc and engine may both use it.
     ("dax", Class::Layer(2)),
+    // The SQL engine the data model runs on. Desktop only (the engine is C++ and does not build
+    // for `wasm32`), so the crate compiles everywhere and every call reports `Unavailable`
+    // without the `duckdb` feature — the browser build keeps it off.
+    ("sql", Class::Layer(2)),
     ("chart", Class::Layer(3)),
     ("engine", Class::Layer(5)),
     // Vendored from craft-libs (`vendor/craft-libs/print`, MIT OR Apache-2.0): the system print

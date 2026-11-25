@@ -97,6 +97,10 @@ machine that was busy at the time:
 | join to a 64-row lookup table, then group-by | 8.2 ms |
 | **20 M rows, group-by in memory** | **11.6 ms** |
 
+**A correction to that table:** the synthetic rows used `i % 64` for the region and `i % 12` for the
+month, so only **192** of the 768 pairs ever occur — those timings are for a 192-cell report, not a
+768-cell one. The in-tree probe below derives each key from its own divisor.
+
 **Memory:** a process holding **5 M and 20 M rows** of this shape (25 M rows × 10 columns) was
 **1.75 GB** of working set — about **70 MB per million rows** with DuckDB's compression. So 5 M rows
 ≈ 350 MB, 20 M ≈ 1.4 GB.
@@ -112,4 +116,37 @@ rows in **3.8 ms** in memory and **18 ms** straight from a Parquet file. The tar
 What this does **not** say: how long it takes to get the data *into* the model from a spreadsheet, or
 how a pivot's cells map onto the query result — that is the integration work, not the engine.
 
-## Spike checklist (1–2 days)
+## The integration, measured in the tree (11-25)
+
+The engine landed as `crates/sql` (L2): `Engine::in_memory`, `load_rows` (rows Cella already
+holds), `load_file` (a Parquet/CSV file the engine reads itself), `query` (a bounded `Table` back)
+and `execute`, with DuckDB behind a `duckdb` feature the desktop build turns on and the browser
+build leaves off (every call there returns `Unavailable`; `available()` says so). The questions the
+spike could not answer are answered now, by
+`cargo run -p cella-sql --example sql_probe --release --features duckdb`:
+
+| case | 1 M rows | 5 M rows |
+|---|---:|---:|
+| Cella's `Value` rows → engine (`load_rows`) | **716 ms** (716 ns a row) | **3 677 ms** (735 ns a row) |
+| Parquet file → in-memory table (`load_file`) | **99 ms** (99 ns a row) | **109 ms** (22 ns a row) |
+| group-by into a 768-cell report | **6.4 ms** | **14.5 ms** |
+| slicer (4 of 64 regions) + group-by | 4.7 ms | 9.5 ms |
+| top-20 products | 1.7 ms | 4.2 ms |
+
+**The bridge is the slow part, and that decides the architecture.** A row of ours costs ~720 ns to
+cross the engine's interface; measured outside the tree, where the two halves could be timed
+separately, that is ~200 ns to turn ten `Value`s into parameters and ~375 ns for the append itself
+(a tuple instead of a `Vec` a row measures the same, so it is the per-value call, not our
+allocation). A file the engine parses itself costs **22–99 ns a row — seven to thirty times less**:
+a model table can only grow past a few million rows if the bytes arrive as a file.
+
+What that means for the next round:
+
+* **A model table loaded from a file keeps its path**, and the engine reads it (`read_parquet`), so
+  5 M rows are in the model in about a tenth of a second and no 4M-cell copy is stored in the
+  document.
+* **A sheet range still goes row by row** — 0.72 s a million rows, paid once when a person adds it
+  to the model, not on every refresh.
+* **A pivot or a slicer re-queries.** 5–15 ms means a drag is one query, so the report's shape
+  (drill, collapse, top-N) can be answered by SQL instead of a hand-written grouping pass.
+

@@ -27,6 +27,7 @@ cella-pdf = { path = "crates/pdf" }
 cella-parquet = { path = "crates/parquet" }
 cella-query = { path = "crates/query" }
 cella-dax = { path = "crates/dax" }
+cella-sql = { path = "crates/sql" }
 
 # foundation
 thiserror = "2"
