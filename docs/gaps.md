@@ -2570,21 +2570,26 @@ named on the command line), while an open no interface asked for — an agent, a
 keeps the defaults. A workbook that was opened with room says so in the info bar, with the sizes, so a
 slow open is explained rather than mysterious:
 
-> This workbook's parts unpack to 1894 MB (its largest part xl/worksheets/sheet4.xml to 469 MB), more
-> than Cella's usual 100 MB in one part and 200 MB in all. It was opened with room for that, which takes
+> This workbook's parts unpack to 1319 MB (its largest part xl/sharedStrings.xml to 618 MB), more than
+> Cella's usual 100 MB in one part and 200 MB in all. It was opened with room for that, which takes
 > about as much memory as it unpacks to.
+>
+> (That line came from the check that proves the path: the 112.8 MB workbook opened in the app with the
+> limits deliberately set to 100/200 MB. With the shipped defaults it opens without any line at all,
+> and so does the 219.4 MB one, whose 1,895 MB fits them.)
 
 **Measured on the owner's two biggest archives** (release build, this machine):
 
 | workbook | on disk | unpacked | ratio | CLI | app | peak RSS |
 | --- | --- | --- | --- | --- | --- | --- |
 | 白云京溪-个人档案修改结果 (5 sheets, 23.6 M cells) | 112.8 MB | 1,320 MB | 11.7× | 2.03 s | 3.2 s to a live window | 1.07 GB (live read) |
-| 荔湾华林-市平台就诊记录 (5 sheets, 62.7 M cells) | 219.4 MB | 1,895 MB | 8.6× | 5.76 s | 17.3 s | 311 MB (paged read) |
+| 荔湾华林-市平台就诊记录 (5 sheets, 62.7 M cells) | 219.4 MB | 1,895 MB | 8.6× | 5.76 s | 17.3 s first, 6.5–7.0 s after | 258–311 MB (paged read) |
 
 The second row is the paging paying off: the reader spills completed bands beside the document, so a
-219 MB workbook costs a third of a gigabyte rather than two — memory follows the page file, not the
+219 MB workbook costs a quarter of a gigabyte rather than two — memory follows the page file, not the
 workbook. (The threshold is 200 MiB of file, so the 112.8 MB one is read live and the 219.4 MB one is
-not.) 62.7 M cells is four times what Excel holds in one sheet.
+not.) 62.7 M cells is four times what Excel holds in one sheet, and the first open pays for writing
+the spill: 17.3 s then, 6.5–7.0 s on later opens.
 
 **Proven:** `crates/xlsx` `a_part_declaring_a_large_size_reads_when_the_cap_allows_it` (a part that
 declares 700 MB, over the old cap, is read rather than refused), `zip_bomb_is_rejected` (still
@@ -2593,7 +2598,8 @@ refused), and `crates/engine` `a_part_over_the_size_limit_says_how_to_get_the_da
 limits, remedies, no byte counts) + `the_limits_admit_the_archival_report_that_was_refused` +
 `force_opens_a_workbook_whose_parts_are_past_the_limits` (the same bytes refused unasked, opened with
 `force`, and the info-bar line naming the part) + `the_room_grows_with_the_file_and_stops_at_the_ceiling`
-+ `the_open_command_passes_force_through` (the command's parameter reaches both routes).
+(it never goes *below* the defaults, so a file that fits gets no line) +
+`the_open_command_passes_force_through` (the command's parameter reaches both routes).
 **Not run:** the 3,199-workbook corpus again; the three workbooks above were opened by hand, and the
 force path was proved on a real 219 MB file by setting the limits to 100/200 MB, which the app ignored
 as it should.

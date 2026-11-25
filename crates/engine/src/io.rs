@@ -307,7 +307,9 @@ pub fn open_from_path(name: &str, path: &str, password: Option<&str>, force: boo
     };
     fit_imported_rows(&mut wb);
     let mut warnings = report.warnings;
-    if let (Some((largest, total)), Some(_)) = (declared.as_ref(), room) {
+    if let (Some((largest, total)), Some(room)) = (declared.as_ref(), room)
+        && room_grew(room)
+    {
         warnings.push(room_warning(largest.as_ref(), *total));
     }
     Ok(Some((wb, warnings)))
@@ -359,7 +361,7 @@ fn open_plain(name: &str, bytes: &[u8], csv_as_text: bool, room: Option<(u64, u6
             e => EngineError::Other(format!("We can't open '{name}': {e}")),
         })?;
         let mut warnings = report.warnings;
-        if room.is_some()
+        if room.is_some_and(room_grew)
             && let Some(line) = room_warning_of(bytes)
         {
             warnings.push(line);
@@ -432,8 +434,17 @@ fn too_large_message(name: &str, detail: &str, limits: (u64, u64)) -> String {
 fn room_for(largest_part: u64, total: u64) -> (u64, u64) {
     const CEILING: u64 = 8 * 1024 * 1024 * 1024;
     let grow = |size: u64| size.saturating_add(size / 10).saturating_add(16 * 1024 * 1024).min(CEILING);
-    let total = grow(total).min(CEILING);
-    (grow(largest_part).min(total), total)
+    // Never less than the process limits: a file that fits is read exactly as it would be unasked.
+    let defaults = (cella_xlsx::max_part(), cella_xlsx::max_total());
+    let total = grow(total).min(CEILING).max(defaults.1);
+    let part = grow(largest_part).min(CEILING).max(defaults.0).min(total);
+    (part, total)
+}
+
+/// Whether the room given to a file went past the process limits — the only case worth telling the
+/// reader about, because it is the only case the open would otherwise have refused.
+fn room_grew(room: (u64, u64)) -> bool {
+    room != (cella_xlsx::max_part(), cella_xlsx::max_total())
 }
 
 /// [`room_for`] for bytes already in memory; `None` unless `force`.
@@ -1744,6 +1755,11 @@ mod tests {
         let (part, total) = room_for(620 * 1024 * 1024, 1400 * 1024 * 1024);
         assert!(part > 620 * 1024 * 1024 && total > 1400 * 1024 * 1024, "{part} {total}");
         assert!(total >= part, "a part is never bigger than the whole package");
+        // Never below the process limits: a file that fits opens exactly as it does unasked, and
+        // the info bar has nothing to say about it.
+        let (part, total) = room_for(64 * 1024 * 1024, 100 * 1024 * 1024);
+        assert_eq!((part, total), (cella_xlsx::max_part(), cella_xlsx::max_total()));
+        assert!(!room_grew((part, total)), "a file that fits is not news");
         let (part, total) = room_for(20 * 1024 * 1024 * 1024, 40 * 1024 * 1024 * 1024);
         assert_eq!((part, total), (8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024), "the ceiling holds");
     }
