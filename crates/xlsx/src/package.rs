@@ -478,6 +478,7 @@ pub(crate) fn pack(name: String, data: Vec<u8>) -> Result<Packed, IoError> {
 /// window). The encoder is never flushed between pushes, so the body it finishes with is the one
 /// [`deflate`] would produce from the whole buffer — the test below holds a chunked stream to the
 /// one-shot bytes — and the CRC and size accumulate over exactly the bytes it took.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PackStream {
     name: String,
     encoder: flate2::write::DeflateEncoder<Vec<u8>>,
@@ -488,6 +489,7 @@ pub(crate) struct PackStream {
     failed: Option<IoError>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PackStream {
     /// Opens the stream and takes `first`.
     pub(crate) fn new(name: String, first: &[u8]) -> PackStream {

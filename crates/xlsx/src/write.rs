@@ -657,7 +657,8 @@ fn write_xlsx_impl(wb: &Workbook, kind: XlsxKind, book_name: Option<&str>, preco
         // The worksheet's rows stream to the compression thread window by window (see
         // `write_sheet`); what it returns is the tail, registered here — exactly where a whole
         // part was — so the package's part order is unchanged.
-        let probe = !cfg!(target_arch = "wasm32") && std::env::var_os("CELLA_PROFILE").is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        let probe = std::env::var_os("CELLA_PROFILE").is_some();
         #[cfg(not(target_arch = "wasm32"))]
         #[allow(clippy::disallowed_methods)]
         let started = probe.then(std::time::Instant::now);

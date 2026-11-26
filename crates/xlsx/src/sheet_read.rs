@@ -94,7 +94,8 @@ pub(crate) struct ReadPlan {
     /// Bytes of rows held in memory at a time while streaming.
     pub window: usize,
     /// Rows region at least this long may be cut into parallel chunks. Tests lower it so a small
-    /// fixture exercises the chunked path.
+    /// fixture exercises the chunked path. The chunked path is native only (wasm has no threads).
+    #[cfg(not(target_arch = "wasm32"))]
     pub chunk_min: usize,
     /// Spill completed bands to a page file while reading. The engine turns this on for a
     /// workbook large enough that holding all its cells live is not worth it.
@@ -125,6 +126,7 @@ impl Default for ReadPlan {
         ReadPlan {
             stream_min: 64 * 1024 * 1024,
             window: 24 * 1024 * 1024,
+            #[cfg(not(target_arch = "wasm32"))]
             chunk_min: 8 * 1024 * 1024,
             paging: false,
             spill: None,
@@ -663,6 +665,9 @@ fn trim_end_len(bytes: &[u8]) -> usize {
 /// Decodes the complete rows in `bytes` into `sheet`: on several threads when the rows can be cut
 /// apart, otherwise in one pass whose [`RowState`] carries over from the previous window (a shared
 /// formula's master may sit in an earlier window).
+// Two of its arguments drive the parallel chunk path, which is native only: on wasm they are
+// unused by design rather than dead.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 #[allow(clippy::too_many_arguments)]
 fn decode_rows(
     bytes: &[u8],
@@ -734,6 +739,7 @@ struct DecodedCell {
 /// Rows decoded off one slice of the part: packed into bands on the thread that decoded them, with
 /// the row settings, pictures and stray cells (a `<c>` whose reference names another row) that the
 /// sheet, not the store, holds.
+#[cfg(not(target_arch = "wasm32"))]
 struct Chunk {
     bands: cella_model::BandBatch,
     rows: Vec<(u32, Option<LineInfo>)>,
@@ -753,6 +759,7 @@ fn threads() -> usize {
 }
 /// True when the rows depend on each other: a shared formula's uses need its master, and an array
 /// range's cached values are only read at the anchor.
+#[cfg(not(target_arch = "wasm32"))]
 fn has_cross_row_formulas(bytes: &[u8]) -> bool {
     find(bytes, b"t=\"shared\"").is_some() || find(bytes, b"t=\"array\"").is_some()
 }
@@ -843,6 +850,7 @@ fn plan_chunks(bytes: &[u8], min_bytes: usize) -> Option<Vec<(usize, usize)>> {
     cuts.push(bytes.len());
     Some(cuts.windows(2).map(|w| (w[0], w[1])).collect())
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_chunk(bytes: &[u8], dc: &DecodeCtx<'_>, default_height: f32) -> Chunk {
     let mut chunk = Chunk {
         bands: cella_model::BandBatch::new(),
@@ -1142,6 +1150,7 @@ fn starts_like_utf8_xml(head: &[u8]) -> bool {
         None => true,
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn apply_chunk(sheet: &mut Sheet, chunk: Chunk) {
     sheet.cells.insert_batch(chunk.bands);
     for (r, info) in chunk.rows {
@@ -1159,6 +1168,7 @@ fn apply_chunk(sheet: &mut Sheet, chunk: Chunk) {
     }
 }
 /// Packs one decoded row into the chunk's bands, keeping aside what the sheet holds itself.
+#[cfg(not(target_arch = "wasm32"))]
 fn pack_row(chunk: &mut Chunk, batch: &mut Vec<(u32, Cell)>, r: u32, info: Option<LineInfo>, cells: Vec<DecodedCell>) {
     chunk.rows.push((r, info));
     for d in cells {

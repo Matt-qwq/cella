@@ -413,16 +413,11 @@ const PARALLEL_MAX_THREADS: usize = 8;
 #[cfg(not(target_arch = "wasm32"))]
 const PARALLEL_MIN_PER_THREAD: usize = 2_048;
 
-/// The machine's threads, capped, or 1 where they cannot be had (wasm).
+/// The machine's threads, capped. Native only, like the parallel pass that is its one caller
+/// (`try_parallel` lives in a `not(wasm32)` impl): there is no wasm branch to keep alive.
+#[cfg(not(target_arch = "wasm32"))]
 fn parallel_threads() -> usize {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(PARALLEL_MAX_THREADS)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        1
-    }
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(PARALLEL_MAX_THREADS)
 }
 
 /// Independent formulas a pass needs before splitting across `threads` threads.
