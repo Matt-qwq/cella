@@ -2060,13 +2060,15 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
         // skips the list may only do it in a workbook with no formula at all.
         let formula_readers = cx.wb.sheets.iter().any(|s| s.cells.has_formulas());
         // A range-level style answers `style_id` per cell and holds no cell, so a clear has to reach
-        // it: the rectangles the clear touches are expanded into cells first (gaps §32, slice 5;
-        // splitting the band instead of expanding it is the cheaper follow-up).
-        if (what == "formats" || what == "all")
-            && let Some(sh) = cx.wb.sheet_mut(sheet)
-            && sh.style_bands.iter().any(|b| ranges.iter().any(|r| b.range.intersects(r)))
-        {
-            sh.materialise_style_bands();
+        // it: each cleared range is subtracted from every band it touches, and the rest of the band
+        // keeps the format (gaps §32, slice 5 — expanding the whole sheet was correct but wrote a
+        // cell per blank cell of the rectangle).
+        if what == "formats" || what == "all" {
+            for r in &ranges {
+                if let Some(sh) = cx.wb.sheet_mut(sheet) {
+                    sh.clip_style_bands(*r);
+                }
+            }
         }
         for wanted in &ranges {
             let Some(used) = cx.wb.sheet(sheet).and_then(|sh| sh.used_range()) else { continue };

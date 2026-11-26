@@ -469,6 +469,35 @@ impl Sheet {
             }
         }
     }
+    /// Removes `r` from every style band: a band keeps the parts of its rectangle outside `r` (up to
+    /// four strips), so a clear reaches the cells inside it while the rest of the rectangle keeps the
+    /// format — the cheap half of slice 5 in `plan/STYLE-BANDS.md` (expanding the whole sheet was
+    /// correct but wrote a cell per blank cell of the rectangle).
+    pub fn clip_style_bands(&mut self, r: RangeRef) {
+        if self.style_bands.is_empty() {
+            return;
+        }
+        let mut out: Vec<StyleBand> = Vec::with_capacity(self.style_bands.len() + 3);
+        let push = |out: &mut Vec<StyleBand>, a: CellRef, z: CellRef, style: StyleId| {
+            if a.row > z.row || a.col > z.col {
+                return;
+            }
+            out.push(StyleBand { range: RangeRef::new(a, z), style });
+        };
+        for b in std::mem::take(&mut self.style_bands) {
+            let Some(inter) = b.range.intersection(&r) else {
+                out.push(b);
+                continue;
+            };
+            let (bs, be, is, ie) = (b.range.start, b.range.end, inter.start, inter.end);
+            // Above and below run the band's whole width; left and right only the cleared rows.
+            push(&mut out, bs, CellRef::new(is.row.saturating_sub(1), be.col), b.style);
+            push(&mut out, CellRef::new(ie.row.saturating_add(1), bs.col), be, b.style);
+            push(&mut out, CellRef::new(is.row, bs.col), CellRef::new(ie.row, is.col.saturating_sub(1)), b.style);
+            push(&mut out, CellRef::new(is.row, ie.col.saturating_add(1)), CellRef::new(ie.row, be.col), b.style);
+        }
+        self.style_bands = out;
+    }
     /// This sheet with its style bands expanded ([materialise_style_bands](Self::materialise_style_bands)):
     /// what a save writes while the writer has no lazy expansion of its own.
     pub fn materialised(&self) -> Sheet {

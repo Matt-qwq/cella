@@ -1594,13 +1594,14 @@ mod tests {
         s.new_workbook();
         s.execute("home.formatCells", json!({"range": "A1:E1000000", "style": {"font": {"bold": true}}})).unwrap();
         assert_eq!(s.doc().unwrap().wb.sheet(0).unwrap().style_bands.len(), 1, "one band");
-        s.execute("edit.clearFormats", json!({"range": "A1:A10"})).unwrap();
+        s.execute("edit.clearFormats", json!({"range": "B2:C5"})).unwrap();
         let d = s.doc().unwrap();
         let sh = d.wb.sheet(0).unwrap();
-        assert!(sh.style_bands.is_empty(), "the band was expanded so the clear could reach it");
+        assert!(!sh.style_bands.is_empty(), "the band was clipped, not expanded: {len}", len = sh.style_bands.len());
         let bold = |a: &str| d.wb.styles.get(sh.style_id(CellRef::parse(a).unwrap())).font.bold;
-        assert!(!bold("A5"), "the cleared cells lost the format");
-        assert!(bold("E999999"), "the rest of the rectangle kept it");
+        assert!(!bold("B3") && !bold("C5"), "the cleared cells lost the format");
+        assert!(bold("D3"), "the strip beside the clear kept it");
+        assert!(bold("E999999") && bold("B6"), "and the rest of the rectangle did");
     }
 
     #[test]

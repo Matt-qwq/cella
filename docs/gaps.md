@@ -1338,6 +1338,13 @@ rest on is pinned by `a_style_band_answers_where_no_cell_is_stored`: a stored ce
 (that is what "clear this cell" stores), typing into a formatted blank keeps the format (`set_value`
 reads `style_id`), the newest band wins, and a band makes the sheet used where it covers.
 
+**Band clipping landed 11-27 (slice 5's cheap half):** `Sheet::clip_style_bands` subtracts a cleared
+range from every band it touches — a band keeps up to four strips around the hole — and
+`edit.clearFormats` / `edit.clearAll` use it instead of expanding the whole sheet: clearing ten rows of
+a 5,000,000-cell rectangle used to write five million cells and then clear them, and now writes none
+(`clearing_formats_reaches_a_banded_rectangle` checks the cells inside lost the format and the strips
+and the rest of the rectangle kept it).
+
 **Slice 2 landed 11-26 (the command writes a band):** `apply_style` — the one body behind Home ▸
 Bold/Italic/Fill/Font and `home.formatCells` — no longer refuses a rectangle past the cap: when every
 **blank** cell of it reads the same row/column line style (`line_style_of`), the rectangle becomes
