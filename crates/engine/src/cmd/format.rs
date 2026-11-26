@@ -274,8 +274,15 @@ pub(crate) fn apply_style(s: &mut Session, p: &Json, f: impl Fn(&mut Style)) -> 
                 cx.fit_rows.extend(cells.iter().map(|(c, _)| (sheet, c.row)));
                 continue;
             }
-            if r.count() > 4_000_000 {
-                return Err(bad("format", "selection too large to format cell by cell"));
+            if r.count() > MAX_CELL_STYLES {
+                return Err(bad(
+                    "format",
+                    format!(
+                        "selection too large to format cell by cell: {} cells, and the limit is {MAX_CELL_STYLES}; \
+                         format whole rows or columns (one style each), or split the range",
+                        r.count()
+                    ),
+                ));
             }
             if r.height() <= 100_000 {
                 cx.fit_rows.extend((r.start.row..=r.end.row).map(|row| (sheet, row)));
@@ -291,6 +298,20 @@ pub(crate) fn apply_style(s: &mut Session, p: &Json, f: impl Fn(&mut Style)) -> 
         Ok(Json::Null)
     })
 }
+
+/// Cells one selection may touch when the format is written per cell — Excel applies a format to a
+/// whole sheet, Cella stores a style per cell, so a rectangle is O(cells) work and stored cells.
+///
+/// Measured on 11-26 (`crates/engine/examples/format_range.rs`, release, 1M rows × 8 or 16 columns):
+/// a bold pass over **4M cells is 0.4 s** (the cap), **8M 0.82 s**, **16M 1.52 s** — and a pass that
+/// changes nothing is 0.18 s at 8M, so the writes are most of it. The cap stays at 4M: a quarter of a
+/// second for a rectangle is the interaction budget. The fix for whole-sheet formatting is a
+/// range-level style (one style a rectangle, expanded by the renderer, the writer and `cell.get`),
+/// which is a design change, not a bigger number (gaps §32).
+///
+/// Whole **rows and columns** do not come here: the line-style path above stores one style a row or a
+/// column, so "select all, bold" on a full sheet is a 16,384-column walk, not 17 billion cells.
+const MAX_CELL_STYLES: u64 = 4_000_000;
 
 /// The style of the active cell (what toggles read).
 pub(crate) fn active_style(s: &Session) -> Result<Style> {
@@ -1411,5 +1432,45 @@ mod tests {
     fn width_units() {
         assert_eq!(chars_to_points(8.43), 64.0);
         assert!((points_to_chars(64.0) - 8.43).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_rectangle_past_the_limit_says_so_and_names_the_way_round_it() {
+        // The limit is a priced number (4M cells ≈ 0.4 s, `examples/format_range.rs`); a rectangle
+        // past it is refused before a single cell is touched, and the message says how many cells,
+        // what the limit is and what to do instead.
+        let mut s = Session::new();
+        s.new_workbook();
+        // A rectangle that is neither whole rows nor whole columns is the one that pays per cell.
+        let err = s.execute("home.formatCells", json!({"range": "A1:H1000000", "style": {"font": {"bold": true}}})).unwrap_err().to_string();
+        assert!(err.contains("too large to format cell by cell"), "{err}");
+        assert!(err.contains("8000000 cells"), "the message names the size: {err}");
+        assert!(err.contains(&MAX_CELL_STYLES.to_string()), "and the limit: {err}");
+        assert!(err.contains("whole rows or columns"), "and the way round it: {err}");
+        // Nothing was formatted: a refusal must not half-apply.
+        let d = s.doc().unwrap();
+        assert!(!d.wb.styles.get(d.wb.active().unwrap().style_id(CellRef::parse("A1").unwrap())).font.bold);
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)] // a native test; the clock is the regression guard (wasm never runs it)
+    fn select_all_takes_the_line_style_path_not_seventeen_billion_cells() {
+        // Excel applies a format to a whole sheet; so does Cella, as one style a column. Proved by
+        // the time: 17 billion cells cell by cell is not a number that finishes, and this is a walk
+        // over the sheet's 16,384 columns.
+        let mut s = Session::new();
+        s.new_workbook();
+        let last_col = CellRef::new(0, cella_core::MAX_COLS - 1).a1().trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+        let all = format!("A1:{last_col}{}", cella_core::MAX_ROWS);
+        let t = std::time::Instant::now();
+        s.execute("home.formatCells", json!({"range": all, "style": {"font": {"bold": true}}})).expect("select all, bold");
+        // A per-cell walk of 17 billion cells would not finish; 16,384 line styles is milliseconds.
+        assert!(t.elapsed().as_secs_f64() < 5.0, "select all took {:?}", t.elapsed());
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        for at in ["A1", "XFD1048576", "ALL500000"] {
+            let c = CellRef::parse(at).unwrap();
+            assert!(d.wb.styles.get(sh.style_id(c)).font.bold, "{at} is bold");
+        }
     }
 }
