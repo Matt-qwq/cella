@@ -38,7 +38,7 @@ People trust Cella with their numbers; a crash loses their work. **This outranks
 - **Layering** is enforced by `cargo xtask layers`: `core`/`numfmt` (L0) → `formula`/`functions` (L1) → `model`/`calc`/`xlsx`/`pdf` (L2) → `chart` (L3) → `engine` (L5) → `ui-egui`/`mcp` (L6) → `apps/*` (L7). Nothing below L6 depends on egui/eframe/winit/rfd. **The UI crate is swappable.**
 - **The UI is thin**: panels read engine state and act through `app.run(id, params)`. Colours come from `theme::Tokens`.
 - **Rust only** (no handwritten JS/TS). **Never break wasm** (`cargo xtask wasm`).
-- **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, assets, layers, wasm). One task id per commit (`M2.1: borders gallery`). **Before a release:** `cargo xtask perf` — the performance gate against `xtask/perf-budgets.txt` (release build at 100k and 1M rows, deliberately outside `ci`; [docs/performance.md](docs/performance.md)).
+- **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, assets, layers, wasm, parity, keytips, i18n, docs, bench-coverage — `cargo xtask --help` lists them). One task id per commit (`M2.1: borders gallery`). **Before a release:** `cargo xtask perf` — the performance gate against `xtask/perf-budgets.txt` (release build at 100k and 1M rows, deliberately outside `ci`; [docs/performance.md](docs/performance.md)).
 
 ## How much testing (test budget)
 Fixing one bug means proving **that bug** stays fixed, not running everything. The full suite belongs to the commit gate, not to the edit loop. Measured on the dev machine, 2026-10:

@@ -28,7 +28,7 @@ including tests, 2026-10-10.
 | L6 | `ui-egui` | ~11.6k | Excel-style UI (title bar, QAT, ribbon, formula bar, virtualised grid, editor, tabs, status bar, dialogs, task panes, chart view) and the control channel |
 | L6 | `mcp` | ~1.4k | MCP server over stdio (hand-written JSON-RPC), headless or bridged to a running app |
 | L7 | `apps/cella`, `apps/cella-cli`, `apps/cella-web` | ~2.2k | Desktop (eframe/wgpu), CLI (`info`, `convert`, `eval`, `cat`, `run`, `commands`, `functions`, `mcp`, `send`), web (WASM via trunk) |
-| — | `xtask` | — | `ci`, `parity`, `assets`, `layers`, `wasm`, `version`, `stats` |
+| — | `xtask` | — | `ci`, `parity`, `assets`, `layers`, `wasm`, `docs`, `version`, `stats` |
 
 ## Data flow
 

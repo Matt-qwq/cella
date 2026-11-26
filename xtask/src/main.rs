@@ -10,6 +10,7 @@ mod assets;
 mod bench;
 #[cfg(feature = "engine")]
 mod corpus;
+mod docs;
 mod eol;
 mod i18n;
 mod ico;
@@ -32,11 +33,13 @@ usage: cargo xtask <command>
 
 commands:
   ci              fmt --check, clippy -D warnings, test, assets, layers, wasm, parity --check,
-                  keytips --check, i18n --check, bench-coverage --check (stops at the first
+                  keytips --check, i18n --check, docs, bench-coverage --check (stops at the first
                   failure; the parity check runs only if docs/parity-checklist.md exists)
   assets          check that every icon/image/font/sample file is attributed in ATTRIBUTION.md
   layers          enforce the crate dependency layering (AGENTS.md \"Layering\")
   wasm            cargo check --target wasm32-unknown-unknown for the L0-L5 crates (+ cella-web)
+  docs            every relative link and anchor in docs/**, README, ROADMAP and the other root
+                  pages resolves (the files this repository owns; the web is not checked)
   parity [--check] [--out PATH]
                   write docs/parity-checklist.md from cella_engine::catalog (implemented vs missing ids)
   oracle [--fixture=NAME] [--no-app] [--keep]
@@ -95,6 +98,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("assets") => assets::run(&root()),
         Some("layers") => cmd_layers(),
+        Some("docs") => docs::run(&root()),
         Some("wasm") => cmd_wasm(),
         Some("ci") => cmd_ci(),
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
@@ -289,6 +293,7 @@ fn cmd_ci() -> Result<(), String> {
         ),
         ("keytips", Box::new(|| keytips::run(&root(), &["--check"]))),
         ("i18n", Box::new(|| i18n::run(&root(), &["--check"]))),
+        ("docs", Box::new(|| docs::run(&root()))),
         (
             "bench-coverage",
             Box::new(|| {
