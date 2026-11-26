@@ -257,11 +257,27 @@ pub(crate) struct Series {
 }
 
 impl Series {
-    /// Position of a time stamp relative to the last point (0 = last point, 1 = next step).
-    pub fn horizon(&self, t: f64) -> R<f64> {
+    /// Position of a time stamp relative to the last point (0 = last point, 1 = next step), for any
+    /// time stamp at all: negative inside and before the timeline.
+    ///
+    /// Excel's `FORECAST.ETS` answers a target *inside* the timeline (and even one before its start)
+    /// with the model's value at that position — measured 11-26 in Excel 16: a 60-point series gives
+    /// 100.57 at its first point and 125.75 halfway between two points, not `#NUM!`. The interval and
+    /// statistic functions do keep refusing such targets (`#NUM!`, as Excel does), so they use
+    /// [`Self::horizon`], which clamps and refuses.
+    pub fn position(&self, t: f64) -> R<f64> {
         let p = self.axis.position(t).ok_or(CellError::Num)?;
         let h = p - (self.y.len() as f64 - 1.0);
-        if !h.is_finite() || h < -1e-9 {
+        if !h.is_finite() {
+            return Err(CellError::Num);
+        }
+        Ok(h)
+    }
+
+    /// Position of a time stamp relative to the last point (0 = last point, 1 = next step).
+    pub fn horizon(&self, t: f64) -> R<f64> {
+        let h = self.position(t)?;
+        if h < -1e-9 {
             return Err(CellError::Num);
         }
         Ok(h.max(0.0))
@@ -811,7 +827,9 @@ fn forecast_ets(a: &[Arg], c: C) -> R<Value> {
     let target = num(a, 0)?;
     let opts = options(a, Some(3), 4, 5)?;
     let p = prepare(a, c, 1, 2, opts)?;
-    let h = p.series.horizon(target)?;
+    // Any time stamp: Excel answers one inside the timeline (the fitted value) and one before its
+    // start (the model extrapolated backwards) with a number, so this is `position`, not `horizon`.
+    let h = p.series.position(target)?;
     num_val(fit(&p.series.y, p.m).forecast(h))
 }
 
@@ -1046,6 +1064,35 @@ mod tests {
     }
 
     #[test]
+    fn a_target_inside_the_timeline_answers_the_models_value() {
+        // Excel 16, measured 11-26: a 60-point noisy seasonal series answers 100.57 at its first
+        // point, 123.02 at its 30th and 125.75 halfway between the 30th and the 31st — the model's
+        // value at that position, interpolated between two points. Before the fix Cella answered
+        // `#NUM!` for every one of those. A series it fits exactly answers the observed value.
+        let ys = seasonal(24);
+        let ts = timeline(24);
+        for t in [1usize, 5, 12, 20] {
+            let got = ev("FORECAST.ETS", vec![n(t as f64), range(&ys), range(&ts)]);
+            let want = 3.0 + 2.0 * t as f64 + [4.0, -2.0, 7.0, -9.0][(t - 1) % 4];
+            match got {
+                Value::Number(x) => assert!((x - want).abs() < 1e-6, "t={t}: {x} vs {want}"),
+                other => panic!("t={t}: {other:?}"),
+            }
+        }
+        // Halfway between two points is the average of the two (a straight line is exact here).
+        let half = ev("FORECAST.ETS", vec![n(12.5), range(&ys), range(&ts)]);
+        let (a, b) = (ev("FORECAST.ETS", vec![n(12.0), range(&ys), range(&ts)]), ev("FORECAST.ETS", vec![n(13.0), range(&ys), range(&ts)]));
+        if let (Value::Number(h), Value::Number(a), Value::Number(b)) = (half, a, b) {
+            assert!((h - (a + b) / 2.0).abs() < 1e-6, "{h} between {a} and {b}");
+        }
+        // Before the start the model extrapolates backwards instead of refusing (Excel: 94.75 for a
+        // target of 0.5 on its series, where the first point is 1).
+        assert!(matches!(ev("FORECAST.ETS", vec![n(0.5), range(&ys), range(&ts)]), Value::Number(_)));
+        // The interval function does refuse an in-sample target, as Excel does (`#NUM!`).
+        assert_eq!(ev("FORECAST.ETS.CONFINT", vec![n(12.0), range(&ys), range(&ts)]), Value::Error(CellError::Num));
+    }
+
+    #[test]
     fn noisy_series_statistics_are_consistent() {
         // A seasonal series with deterministic pseudo-noise.
         let ys: Vec<f64> = seasonal(48).iter().enumerate().map(|(i, v)| v + ((i * 37 % 11) as f64 - 5.0) * 0.4).collect();
@@ -1105,8 +1152,13 @@ mod tests {
         let ys = seasonal(12);
         let ts = timeline(12);
         let ets = |args: Vec<Arg>| ev("FORECAST.ETS", args);
-        // Target before the end of the timeline.
-        is_err(ets(vec![n(5.0), range(&ys), range(&ts)]), CellError::Num);
+        // A target inside the timeline is a value, not an error (Excel 16, measured 11-26): the
+        // model's value at that position. A target before the start extrapolates backwards, which
+        // Excel also answers with a number.
+        assert!(matches!(ets(vec![n(5.0), range(&ys), range(&ts)]), Value::Number(_)), "an in-sample target answers a value");
+        assert!(matches!(ets(vec![n(0.5), range(&ys), range(&ts)]), Value::Number(_)), "and so does one before the start");
+        // The interval keeps refusing it (`#NUM!`, as Excel does).
+        is_err(ev("FORECAST.ETS.CONFINT", vec![n(5.0), range(&ys), range(&ts)]), CellError::Num);
         // Timeline and values of different sizes.
         is_err(ets(vec![n(13.0), range(&ys), range(&ts[..11])]), CellError::NA);
         // No constant step.
