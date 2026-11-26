@@ -1401,6 +1401,38 @@ mod tests {
     /// save: a styled blank is a stored cell the writer emits as `<c r="C3" s="2"/>`, and that is
     /// what makes the format survive a reopen — the half a range-level style (gaps §32) has to keep
     /// doing however it stores the rectangle.
+    /// A style band is a live-model answer; the file has no range style, so a save must expand it
+    /// into cells — a blank inside the band keeps its format through the round trip (slice 3 of
+    /// `plan/STYLE-BANDS.md`; the lazy per-row expansion comes later, the answer must not differ).
+    #[test]
+    fn a_style_band_reaches_the_file_as_cells() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
+        let bold = {
+            let d = s.doc_mut().unwrap();
+            let wb = std::sync::Arc::make_mut(&mut d.wb);
+            let style = wb.styles.derive(cella_model::StyleId::DEFAULT, |st| st.font.bold = true);
+            let sh = wb.sheet_mut(0).unwrap();
+            sh.style_bands.push(cella_model::StyleBand { range: cella_core::RangeRef::parse("B2:D3").unwrap(), style });
+            style
+        };
+        let bold_at = |s: &crate::Session, a: &str| {
+            let d = s.doc().unwrap();
+            let c = cella_core::CellRef::parse(a).unwrap();
+            let sh = d.wb.sheet(0).unwrap();
+            (sh.style_id(c) == bold, d.wb.styles.get(sh.style_id(c)).font.bold)
+        };
+        assert_eq!(bold_at(&s, "C3"), (true, true), "the band answers in the live model");
+        let saved = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap();
+        s.execute("file.open", json!({"name": "band.xlsx", "base64": saved["base64"]})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        assert!(sh.style_bands.is_empty(), "the file carries cells, not a band");
+        assert_eq!(bold_at(&s, "C3"), (true, true), "the blank kept its format through the save");
+        assert!(!bold_at(&s, "A1").1, "and the cell outside the band did not");
+    }
+
     #[test]
     fn a_rectangle_formats_the_blank_cells_it_covers_through_a_save() {
         let mut s = crate::Session::new();

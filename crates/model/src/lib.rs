@@ -38,7 +38,7 @@ pub use preserved::{Preserved, PreservedPart, PreservedRel, PreservedSheet, Pres
 pub use query::{
     HttpFormat, MAX_NAME, MAX_STEPS, Query, QueryAggregate, QueryColumnType, QueryFilterOp, QueryLoad, QuerySource, QueryStep, query_name_is_free,
 };
-pub use sheet::{DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT, LineIndex, Sheet, SheetKind, SheetViewMode, Visibility, points_to_chars};
+pub use sheet::{DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT, LineIndex, Sheet, SheetKind, SheetViewMode, StyleBand, Visibility, points_to_chars};
 pub use slicer::{DEFAULT_SLICER_STYLE, PivotSlicer, PivotTimeline, SLICER_STYLES, SlicerItem, SlicerSort, SlicerValue, TimeUnit, TimelineRange};
 pub use store::{
     BAND, BandBatch, CellStore, Compacted, FoldAcc, FoldMode, Packed, PageCacheStats, SpillOptions, StoreMemory, btree_index_bytes, hash_index_bytes,

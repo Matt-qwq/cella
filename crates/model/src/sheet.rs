@@ -444,6 +444,38 @@ impl Sheet {
     pub fn band_style(&self, c: CellRef) -> Option<StyleId> {
         self.style_bands.iter().rev().find(|b| b.range.contains(c)).map(|b| b.style)
     }
+    /// Expands the style bands into stored cells: an unstored cell takes the newest band covering
+    /// it, and a stored cell keeps its own style (that is what [`style_id`](Self::style_id) already
+    /// answers, so the sheet reads the same before and after). The bands are gone afterwards.
+    ///
+    /// A band is a live-model answer — the file has no range style and a structural edit moves
+    /// cells — so the writer and every edit that moves cells ask this first
+    /// (`plan/STYLE-BANDS.md`, slices 3 and 4).
+    pub fn materialise_style_bands(&mut self) {
+        if self.style_bands.is_empty() {
+            return;
+        }
+        let bands = std::mem::take(&mut self.style_bands);
+        // Newest first: the first band to reach a cell is the one it answers with, and the older
+        // ones find the cell taken.
+        for b in bands.iter().rev() {
+            for row in b.range.start.row..=b.range.end.row {
+                for col in b.range.start.col..=b.range.end.col {
+                    let at = CellRef::new(row, col);
+                    if self.cells.get(at).is_none() {
+                        self.cells.set(at, Cell { style: b.style, ..Cell::default() });
+                    }
+                }
+            }
+        }
+    }
+    /// This sheet with its style bands expanded ([materialise_style_bands](Self::materialise_style_bands)):
+    /// what a save writes while the writer has no lazy expansion of its own.
+    pub fn materialised(&self) -> Sheet {
+        let mut sh = self.clone();
+        sh.materialise_style_bands();
+        sh
+    }
     pub fn set_value(&mut self, c: CellRef, v: Value) {
         let style = self.style_id(c);
         self.set_cell(c, Cell { value: v, formula: None, style });

@@ -204,7 +204,18 @@ pub fn write_sheet(
     stream: bool,
 ) -> Result<(String, Rels), IoError> {
     let mut rels = Rels::default();
-    let Some(sheet) = wb.sheet(si) else { return Ok((String::new(), rels)) };
+    // A style band is a live-model answer: the file has no range style, so the rectangle reaches it
+    // cell by cell. The writer expands the bands into a copy rather than into the document (the
+    // lazy per-row expansion is slice 3 of plan/STYLE-BANDS.md).
+    let expanded;
+    let sheet = match wb.sheet(si) {
+        None => return Ok((String::new(), rels)),
+        Some(sh) if !sh.style_bands.is_empty() => {
+            expanded = sh.materialised();
+            &expanded
+        }
+        Some(sh) => sh,
+    };
     let styles = StyleIds { count: wb.styles.len() as u32 };
 
     // A table's dropdown filter is kept in `sheet.autofilter`, not in `Table::filter` (the

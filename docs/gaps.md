@@ -1324,10 +1324,19 @@ rest on is pinned by `a_style_band_answers_where_no_cell_is_stored`: a stored ce
 (that is what "clear this cell" stores), typing into a formatted blank keeps the format (`set_value`
 reads `style_id`), the newest band wins, and a band makes the sheet used where it covers.
 
+**Slice 3 landed 11-26 (the band reaches the file):** `Sheet::materialise_style_bands` expands a
+band into stored cells — an unstored cell takes the newest band covering it, a stored cell keeps its
+own style, which is the answer `style_id` already gives, so the sheet reads the same before and after
+— and `write_sheet` writes a materialised copy of a banded sheet. The file has no range style, so a
+rectangle has to reach it cell by cell anyway; doing the expansion on a copy keeps the lazy writer
+out of this slice, and the round trip is pinned by `a_style_band_reaches_the_file_as_cells` (the band
+answers in the model, the file carries cells, the blank's format survives the reopen). The lazy
+per-row expansion — no copy, no 4M-cell spike on save — stays as slice 3b.
+
 **Fix (still the design question):** a range-level style (a rectangle or a column band) that the
 renderer, the writer and `cell.get` expand lazily, instead of one style id per cell. **Estimate:**
-6–10 h, with the surface list above and slices 1–5 in `plan/STYLE-BANDS.md`. The probe prices whatever
-replaces it.
+6–10 h, with the surface list above and slices 2–5 left in `plan/STYLE-BANDS.md` (slice 1 and the
+save half of slice 3 are in). The probe prices whatever replaces it.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md); `crates/engine/examples/format_range.rs`.
 
