@@ -1,8 +1,12 @@
-//! Prices `home.formatCells` over a large range — what a rectangle of bold costs, and why the
-//! 4,000,000-cell cap in `cmd/format.rs` exists (gaps §32).
+//! Prices two halves of `home.formatCells` — what a rectangle of bold costs the **command**, and
+//! what it costs the **file** (gaps §32).
 //!
-//! Measured 11-26 on the development machine (release, 1M rows): 4M cells **0.4 s**, 8M **0.82 s**,
-//! 16M **1.52 s**; a pass with nothing to change is 0.18 s at 8M, so the writes are most of it.
+//! The 4,000,000-cell cap in `cmd/format.rs` is a style per cell, so a rectangle is O(cells) work and
+//! stores a cell for each. Measured 11-26 on the development machine (release, 1M rows): 4M cells
+//! **0.4 s**, 8M **0.82 s**, 16M **1.52 s**, and a pass with nothing to change is 0.18 s at 8M. The
+//! second half is the one a range-level style would change: a styled **blank** is a stored cell, so
+//! the save carries it — the probe saves the workbook before and after the format and reports both
+//! files.
 //!
 //! ```text
 //! cargo run --release -p cella-engine --example format_range -- [rows] [cols]
@@ -34,6 +38,13 @@ fn main() {
     let last_col = CellRef::new(0, cols - 1).a1().trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
     let range = format!("A1:{last_col}{rows}");
 
+    // What the file carries before any format: the values, as stored cells.
+    let path = std::env::temp_dir().join("cella-format-range.xlsx");
+    let t = Instant::now();
+    s.execute("file.save", json!({"path": path.to_string_lossy()})).expect("save");
+    let plain = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!("plain save: {:.1} MB in {:?}", plain as f64 / 1e6, t.elapsed());
+
     for pass in 1..=2 {
         let t = Instant::now();
         match s.execute("home.formatCells", json!({"range": range, "style": {"font": {"bold": true}}})) {
@@ -44,6 +55,22 @@ fn main() {
             }
         }
     }
+    // What the file carries after it: a style per cell, blank cells included.
+    let t = Instant::now();
+    s.execute("file.save", json!({"path": path.to_string_lossy()})).expect("save");
+    let bold = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "bold save: {:.1} MB in {:?} (+{:.1} MB, {:.1} bytes a cell)",
+        bold as f64 / 1e6,
+        t.elapsed(),
+        (bold.saturating_sub(plain)) as f64 / 1e6,
+        (bold.saturating_sub(plain)) as f64 / (u64::from(rows) * u64::from(cols)) as f64
+    );
+    println!("saved to {}", path.display());
+    if std::env::var_os("CELLA_KEEP").is_none() {
+        let _ = std::fs::remove_file(&path);
+    }
+
     // One row of 1,000 columns: the wide shape the shape ruler also prices.
     let t = Instant::now();
     match s.execute(

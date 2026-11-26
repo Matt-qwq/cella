@@ -1397,6 +1397,27 @@ mod tests {
         assert_eq!(s.doc().unwrap().wb.active().unwrap().merges.len(), 2);
     }
 
+    /// A rectangle's style must reach the **blank** cells it covers, and keep reaching them after a
+    /// save: a styled blank is a stored cell the writer emits as `<c r="C3" s="2"/>`, and that is
+    /// what makes the format survive a reopen — the half a range-level style (gaps §32) has to keep
+    /// doing however it stores the rectangle.
+    #[test]
+    fn a_rectangle_formats_the_blank_cells_it_covers_through_a_save() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
+        s.execute("home.formatCells", json!({"range": "A1:C3", "style": {"font": {"bold": true}}})).unwrap();
+        let bold = |s: &crate::Session, a: &str| {
+            let d = s.doc().unwrap();
+            let c = cella_core::CellRef::parse(a).unwrap();
+            d.wb.styles.get(d.wb.sheet(0).unwrap().style_id(c)).font.bold
+        };
+        assert!(bold(&s, "C3"), "the blank corner took the format");
+        let saved = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap();
+        s.execute("file.open", json!({"name": "formats.xlsx", "base64": saved["base64"]})).unwrap();
+        assert!(bold(&s, "C3"), "the format of a blank cell survives the file");
+    }
+
     #[test]
     fn the_default_symbol_reproduces_the_accounting_format() {
         assert_eq!(accounting_format("$"), ACCOUNTING);
