@@ -345,6 +345,11 @@ pub struct SheetApp {
     frame_asked: bool,
     /// Whether CELLA_FONT_DEBUG has been served for this font set.
     fonts_dump_written: bool,
+    /// When the current run of passes began in which every one asked for another repaint while no
+    /// input arrived (in ms, `now_ms`), and how many passes it has run: "the window keeps flashing"
+    /// is that shape, and a burst is logged once with its numbers so the next report has evidence.
+    storm_started: Option<f64>,
+    storm_frames: u32,
 }
 
 impl SheetApp {
@@ -403,6 +408,8 @@ impl SheetApp {
             window_close_handled: std::collections::HashSet::new(),
             frame_asked: false,
             fonts_dump_written: false,
+            storm_started: None,
+            storm_frames: 0,
         }
     }
 
@@ -886,10 +893,16 @@ impl SheetApp {
             "open" => {
                 if let Some(start) = &self.services.open_async {
                     start();
-                } else if let Some(pick) = &self.services.pick_open
-                    && let Some(path) = pick()
-                {
-                    self.open_path(&path);
+                } else if let Some(pick) = &self.services.pick_open {
+                    // The dialog runs a system message loop inside this pass, so it is bracketed in
+                    // the log like the read it leads to (#73).
+                    let started = now_ms();
+                    log::info!("file dialog: up");
+                    let picked = pick();
+                    log::info!("file dialog: {} after {:.0} ms", if picked.is_some() { "a path" } else { "cancelled" }, now_ms() - started);
+                    if let Some(path) = picked {
+                        self.open_path(&path);
+                    }
                 }
             }
             "saveAs" => {
@@ -938,13 +951,27 @@ impl SheetApp {
         // that is past the usual size limits — a 300 MB archival workbook unpacks to gigabytes and
         // refusing it would be refusing real work (#73). The limits still guard every open no
         // interface asked for, and the reader still refuses a package that claims a bomb's size.
+        //
+        // The read blocks this pass (a 112 MB workbook takes 2–3 s, a 219 MB one 6–20 s), and the
+        // log line that brackets it is how a report of "the window kept flashing" gets measured
+        // rather than guessed at.
+        let started = now_ms();
+        log::info!("opening {path}");
         match self.run("file.open", json!({"path": path, "force": true})) {
-            Ok(r) => self.after_open(Some(path), &r),
+            Ok(r) => {
+                log::info!("opened {path} in {:.0} ms", now_ms() - started);
+                self.after_open(Some(path), &r);
+            }
             // A password-protected workbook: ask for the password; the dialog opens it.
             // `force` rides along into the password dialog's values, so the open it finally runs is
             // still the one the person asked for.
-            Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => self.open_dialog("openPassword", json!({"path": path, "force": true})),
-            Err(e) => self.message = Some(("Cella".into(), clean_error(&e))),
+            Err(e) if e.contains(cella_engine::io::PASSWORD_REQUIRED) => {
+                self.open_dialog("openPassword", json!({"path": path, "force": true}));
+            }
+            Err(e) => {
+                log::warn!("could not open {path} after {:.0} ms: {e}", now_ms() - started);
+                self.message = Some(("Cella".into(), clean_error(&e)));
+            }
         }
         self.after_engine();
     }
@@ -1307,8 +1334,39 @@ impl SheetApp {
         self.session.release_deferred()
     }
 
+    /// Watches for a frame loop with nothing to react to: passes that each ask for another repaint
+    /// while no input arrives. A window that keeps redrawing (a 1 GB sheet takes ~50 ms a pass, so
+    /// it strobes) looks exactly like that, and the log is where the evidence survives (#73): a
+    /// burst is reported once with its length, and its end again.
+    fn watch_repaint_storm(&mut self, ctx: &egui::Context) {
+        // A couple of passes in a row with no input is ordinary (a load repaints once when it lands).
+        // Only a run long enough to be seen as a flashing window is worth a line in the log.
+        const STORM_PASSES: u32 = 60;
+        let busy = ctx.has_requested_repaint() && ctx.input(|i| i.events.is_empty());
+        let now = now_ms();
+        let seconds = |since: f64| (now - since) / 1000.0;
+        if !busy {
+            if let Some(since) = self.storm_started.take()
+                && self.storm_frames >= STORM_PASSES
+            {
+                log::warn!("repaint storm ended after {} passes in {:.1} s", self.storm_frames, seconds(since));
+            }
+            self.storm_frames = 0;
+            return;
+        }
+        if self.storm_started.is_none() {
+            self.storm_started = Some(now);
+        }
+        self.storm_frames += 1;
+        if self.storm_frames == STORM_PASSES {
+            let since = self.storm_started.unwrap_or(now);
+            log::warn!("repainting every pass with no input for {:.1} s: something in the frame asks for a repaint every time", seconds(since));
+        }
+    }
+
     /// Per-frame logic (control channel, screenshots). Call before `ui`.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.watch_repaint_storm(ctx);
         // A step an edit's eviction deferred is freed here, on the frame's idle moment: never on
         // the command path (the edit does not pay the `free()`), and never left waiting for a
         // next command a user who stopped will not send (see `SheetApp::release_idle`).

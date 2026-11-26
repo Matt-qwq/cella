@@ -1168,7 +1168,9 @@ fn vertical_scrollbar(app: &mut SheetApp, ui: &mut egui::Ui, sh: &Sheet, geo: &G
         next -= ui.input(|i| i.smooth_scroll_delta.y) / geo.z;
     }
     next = next.clamp(0.0, limit);
-    if next != scroll {
+    // A tenth of a point cannot be seen, and acting on less than that is how a residual smooth-scroll
+    // value becomes a repaint in every pass (the window then redraws forever: #73).
+    if (next - scroll).abs() > 0.1 {
         if let Some(v) = app.view_mut() {
             v.scroll.y = next;
         }
@@ -1225,7 +1227,7 @@ pub(crate) fn horizontal_scrollbar(app: &mut SheetApp, ui: &mut egui::Ui, track:
         next -= (if d.x != 0.0 { dir * d.x } else { d.y }) / geo.z;
     }
     next = next.max(0.0);
-    if next != scroll {
+    if (next - scroll).abs() > 0.1 {
         if let Some(v) = app.view_mut() {
             v.scroll.x = next;
         }

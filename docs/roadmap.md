@@ -64,7 +64,8 @@ and the same 70 MB file was put in front of **Excel 16.0.20527 and WPS 12.1.0.25
 against 7.9–8.2 and 10.7, recalculating 0.75 s against 0.31 and 15.3, working set 1,054 MB against
 588 and 987, idle 246 MB against ~35 and 288. That last row was the one part buying nothing, so
 **OpenGL is the Windows default** now (183 MB lighter at the same 1.38–1.41 ms paint and 144 Hz;
-DirectX 12 is the retry path). Two more changes took the 1M chained recalculation 0.85 → 0.75 s
+DirectX 12 is the retry path) — until 11-26: the AMD OpenGL driver crashed on the owner's 112.8 MB
+workbook, so DirectX 12 took the default back and OpenGL became the retry path (hardware-parity.md). Two more changes took the 1M chained recalculation 0.85 → 0.75 s
 (a shared scalar fast path, an eight-deep inline chain stack, and a closure pass that probes each
 cell once), and the soak found one reference bug: Remove Duplicates' row compaction moved a formula
 without re-basing its shape, so it read from its old row in memory and from its new one after a

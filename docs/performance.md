@@ -1004,7 +1004,12 @@ costs 183 MB less with this document open** - and it is the **default** as of 20
 wgpu still finds one, and any failure to create the GL device is retried with DirectX 12. A run
 with no override confirms it: the log reads `backends Backends(GL)`, idle 246 MB, 1,051 MB with
 the document open, paint 1.41 ms and a 7.0 ms interval (144 Hz). The risk this takes on is other
-machines' OpenGL drivers, which is exactly what the retry path covers. Vulkan stays off (its
+machines' OpenGL drivers, which is exactly what the retry path covers — **and it arrived on
+2026-11-26**: AMD's `atio6axx.dll` (32.0.31044.16) crashed a session with a 112.8 MB workbook open
+(`0xc0000005`), the window flashing first as it had on the owner's machine before (#76). DirectX 12
+is the Windows default again, at **1,270 MB against 1,057 MB** with that workbook open in the same
+session — 213 MB, not the 183 MB this table measured on the 70 MB one. `WGPU_BACKEND=gl` still asks
+for OpenGL. Vulkan stays off (its
 readback hung on the visible desktop, on top of the known Intel `igvk64.dll` crash, #120). Wayland is not a
 render backend at all - it is the Linux window protocol (the app ships `wayland` and `x11`),
 so on Linux the choice is Vulkan or OpenGL under either protocol, which this machine cannot measure.

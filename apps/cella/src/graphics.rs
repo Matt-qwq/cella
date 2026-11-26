@@ -27,29 +27,38 @@ pub struct Dx12Adapter {
 /// The backends to initialize on Windows.
 ///
 /// An explicit `backend_override` (normally `Backends::from_env()`, i.e. `WGPU_BACKEND`) always
-/// wins. Otherwise DirectX 12 only, as long as `dx12_adapters` (what a DirectX 12-only probe found)
-/// contains a usable hardware GPU. Without one, OpenGL is the way to the GPU: graphics chips whose
-/// driver has no DirectX 12 support still have an OpenGL driver, and GL can't reach the AMD driver
-/// crash described in [`configure_backends`], because an AMD GPU with a driver shows up as a
-/// DirectX 12 adapter and keeps us on DirectX 12. When DirectX 12 offers only WARP, it stays
-/// enabled next to GL as a last resort for machines without an OpenGL driver either (virtual
-/// machines): wgpu prefers any GPU over a software adapter, so it's only picked when GL has
-/// nothing better. Vulkan is never part of the default.
+/// wins. Otherwise DirectX 12, as long as `dx12_adapters` (what a DirectX 12-only probe found)
+/// holds a usable hardware GPU. Without one, OpenGL is the way to the GPU: graphics chips whose
+/// driver has no DirectX 12 support still have an OpenGL driver. When DirectX 12 offers only WARP,
+/// both stay in the list, so a hardware GL driver wins and WARP is still there on a machine with no
+/// GL driver either (a virtual machine): wgpu prefers any GPU over a software adapter. Vulkan is
+/// never part of the default (#120).
+///
+/// **DirectX 12 is the default because OpenGL costs crashes on AMD.** The note on
+/// [`configure_backends`] has the creation case; painting is the other one: 2026-11-26 a 112.8 MB
+/// workbook (23.6 M cells) took the process down with 0xc0000005 in `atio6axx.dll` about ten seconds
+/// after it opened, on the machine whose owner reported the window flashing — the driver struggling
+/// before it died. Avoiding it costs memory: with that workbook open the same session used
+/// **1,270 MB on DirectX 12 against 1,057 MB on OpenGL** (one run each, same machine, same build).
+/// A crash outranks 213 MB, and `WGPU_BACKEND=gl` still gives the lighter backend to anyone who
+/// wants it.
 pub fn choose_backends(backend_override: Option<Backends>, dx12_adapters: &[Dx12Adapter]) -> Backends {
     if let Some(backends) = backend_override {
         return backends;
     }
-    // OpenGL first. Measured on the reference workbook: the same 1.4 ms a frame at 144 Hz as
-    // DirectX 12, and **183 MB lighter with the document open** (performance.md, 2026-11-18).
-    // DirectX 12 is what the retry path reaches for when the GL device cannot be created
-    // ([fallback_backends]), which is the only case that needs it: the probe above exists to keep
-    // Vulkan off (#120) and to know whether DirectX 12 has a usable GPU at all.
-    //
-    // A machine whose DirectX 12 offers nothing but WARP keeps both in the list: wgpu prefers a
-    // hardware adapter over a software one across backends, so a GL driver wins when there is one
-    // and WARP is still there when there is not.
-    let warp_only = !dx12_adapters.is_empty() && dx12_adapters.iter().all(|a| a.device_type == DeviceType::Cpu);
-    if warp_only { Backends::GL | Backends::DX12 } else { Backends::GL }
+    let hardware: Vec<&Dx12Adapter> = dx12_adapters.iter().filter(|a| a.device_type != DeviceType::Cpu).collect();
+    if hardware.iter().any(|a| a.meets_limits) {
+        Backends::DX12
+    } else if !hardware.is_empty() {
+        // A GPU whose DirectX 12 device cannot be created: GL is the way to it.
+        Backends::GL
+    } else if dx12_adapters.is_empty() {
+        // No DirectX 12 driver at all.
+        Backends::GL
+    } else {
+        // WARP only: keep both, a hardware GL adapter outranks a software one.
+        Backends::GL | Backends::DX12
+    }
 }
 
 /// The backends for a second start when the first one failed with a graphics error before the
@@ -83,7 +92,8 @@ pub fn configure_backends(options: &mut NativeOptions, backends: Backends) {
     if let WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup {
         create.instance_descriptor.backend_options.dx12.shader_compiler = dx12_compiler(Dx12Compiler::from_env());
         // eframe's default includes Vulkan and GL. Creating the GL backend can crash inside AMD's
-        // atio6axx.dll, and enumerating Vulkan adapters inside Intel's igvk64.dll (#120), before
+        // atio6axx.dll — painting with it can too (the workbook of 2026-11-26 saved by the default
+        // in `choose_backends`) — and enumerating Vulkan adapters inside Intel's igvk64.dll (#120), before
         // adapter selection or any Rust error handling runs, so the window never appears.
         // Choosing an adapter afterwards is too late: only leaving the backend out of the
         // instance avoids it. This matches the verified WGPU_BACKEND=dx12 workaround without
@@ -163,7 +173,7 @@ mod tests {
         };
         assert!(eframe_default.instance_descriptor.backends.contains(Backends::GL));
         let gpu = [adapter(DeviceType::IntegratedGpu, true)];
-        assert_eq!(configured_backends(choose_backends(None, &gpu)), Backends::GL);
+        assert_eq!(configured_backends(choose_backends(None, &gpu)), Backends::DX12);
         // #120: whatever the DirectX 12 probe finds, and whatever the retry picks, no Vulkan.
         let probes: [&[Dx12Adapter]; 4] = [&[], &gpu, &[adapter(DeviceType::Cpu, true)], &[adapter(DeviceType::IntegratedGpu, false)]];
         for adapters in probes {
@@ -189,23 +199,29 @@ mod tests {
     }
 
     #[test]
-    fn gl_when_dx12_has_no_usable_gpu() {
-        // No DirectX 12 driver, so DirectX 12 offers only WARP (or nothing) and lags.
+    fn dx12_when_the_probe_finds_a_usable_gpu() {
+        // A hardware GPU DirectX 12 can use: DirectX 12, which is also the backend the OpenGL
+        // driver crashes under on AMD.
+        let gpu = [adapter(DeviceType::IntegratedGpu, true)];
+        assert_eq!(choose_backends(None, &gpu), Backends::DX12);
+        let mixed = [adapter(DeviceType::Cpu, true), adapter(DeviceType::IntegratedGpu, false), adapter(DeviceType::DiscreteGpu, true)];
+        assert_eq!(choose_backends(None, &mixed), Backends::DX12);
+        // No DirectX 12 driver: GL is the way to the GPU; WARP-only keeps both.
         let warp_only = [adapter(DeviceType::Cpu, true)];
         assert_eq!(choose_backends(None, &warp_only), Backends::GL | Backends::DX12);
         assert_eq!(choose_backends(None, &[]), Backends::GL);
-        // A GPU that can't create eframe's device: GL alone, so it isn't picked over the GL one.
+        // A GPU whose DirectX 12 device can't be created: GL alone.
         let weak_gpu = [adapter(DeviceType::IntegratedGpu, false), adapter(DeviceType::Cpu, true)];
         assert_eq!(choose_backends(None, &weak_gpu), Backends::GL);
-        // OpenGL is the default whatever the DirectX 12 probe finds, because it is lighter at
-        // the same frame time; DirectX 12 is the retry path's backend.
-        let mixed = [adapter(DeviceType::Cpu, true), adapter(DeviceType::IntegratedGpu, false), adapter(DeviceType::DiscreteGpu, true)];
-        assert_eq!(choose_backends(None, &mixed), Backends::GL);
-        // Whatever the probe finds, the retry path offers DirectX 12 when the GL device fails - and
-        // a machine whose list already holds both has nothing left to retry with.
-        for adapters in [&[][..], &warp_only[..], &weak_gpu[..], &mixed[..]] {
+        // The retry path offers the backend the first start did not try; a list that already
+        // holds both has nothing left.
+        for adapters in [&[][..], &warp_only[..], &weak_gpu[..], &mixed[..], &gpu[..]] {
             let first = choose_backends(None, adapters);
-            let expected = if first == Backends::GL { Some(Backends::DX12) } else { None };
+            let expected = match first {
+                Backends::GL => Some(Backends::DX12),
+                Backends::DX12 => Some(Backends::GL),
+                _ => None,
+            };
             assert_eq!(fallback_backends(None, first), expected, "{adapters:?}");
         }
     }
