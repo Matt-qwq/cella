@@ -76,7 +76,36 @@ const MAX_WARNINGS: usize = 32;
 /// the other end of the line, so `"a "` on a right-to-left sheet is not drawn as stored. When in
 /// doubt this answers `true` and the engine decides.
 pub fn needs_shaping(text: &str, direction: Direction) -> bool {
-    direction.is_rtl() || !text.bytes().all(|b| b == b'\t' || (0x20..=0x7E).contains(&b))
+    if !direction.is_rtl() && text.bytes().all(|b| b == b'\t' || (0x20..=0x7E).contains(&b)) {
+        return false;
+    }
+    // An RTL paragraph reorders a line only through its neutrals and its strong characters. A line
+    // of ASCII digits with single separators between them is one number run — UBA W4/W5 fold a
+    // single ES/CS between two EN into EN, so every character ends at the same even level and no
+    // reversal touches it: an RTL base direction cannot move a single glyph. Measured on a
+    // right-to-left sheet of numbers, the shaped path was 2.4 ms of a 3.1 ms scrolling frame
+    // (gaps §30); such a line is drawn unshaped instead.
+    !(direction.is_rtl() && is_number_run(text))
+}
+
+/// Whether `text` is ASCII digits with single `.,-/` separators between them and nothing else —
+/// the one shape an RTL paragraph cannot reorder (see [`needs_shaping`]).
+fn is_number_run(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if !bytes.first().is_some_and(u8::is_ascii_digit) || !bytes.last().is_some_and(u8::is_ascii_digit) {
+        return false;
+    }
+    let mut after_separator = false;
+    for &b in bytes {
+        if b.is_ascii_digit() {
+            after_separator = false;
+        } else if matches!(b, b'.' | b',' | b'-' | b'/' | b':') && !after_separator {
+            after_separator = true;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 /// The base direction to shape a cell's text with: the text's own first strong character wins

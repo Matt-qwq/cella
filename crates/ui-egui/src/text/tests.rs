@@ -543,3 +543,23 @@ fn a_cjk_paragraph_breaks_between_characters() {
     assert_eq!(two[0].galley.text(), "中文");
     assert_eq!(two[1].galley.text(), "字");
 }
+
+#[test]
+fn numbers_need_no_shaping_even_in_a_right_to_left_paragraph() {
+    // Gaps §30: a right-to-left sheet of numbers paid 14 µs a cell and 2.4 ms of a 1.5 ms scrolling
+    // frame for shaping lines that an RTL base direction cannot reorder. UBA W4/W5 fold a single
+    // ES/CS between two EN into EN, so these are one number run and draw exactly as the unshaped
+    // galley has them — "1-2" must not come back as "2-1".
+    for digits in ["1", "42", "1,234", "1,234.56", "2026-11-26", "1/2", "12:30", "3.5-4"] {
+        assert!(!needs_shaping(digits, Direction::Rtl), "{digits}");
+        assert!(!needs_shaping(digits, Direction::Auto), "{digits}");
+    }
+    // Not one number run: a space between two numbers takes the paragraph direction (it moves), a
+    // trailing or leading separator sits at the line's edge (L1 moves it), and a sign, a currency
+    // symbol, a percent or a bracket is a neutral that can be reordered — all keep the shaper.
+    for shaped in ["1 2", "1-", "-1", "1.", "+1", "1,2,", "1,,2", "$1", "50%", "(1)", "1 234.5", "١٢٣"] {
+        assert!(needs_shaping(shaped, Direction::Rtl), "{shaped}");
+    }
+    // A plain left-to-right sheet still takes the unshaped fast path for all of them.
+    assert!(!needs_shaping("1-2", Direction::Auto));
+}
