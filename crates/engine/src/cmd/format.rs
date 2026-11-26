@@ -237,6 +237,47 @@ fn with(p: &Json, key: &str, v: Json) -> Json {
     Json::Object(m)
 }
 
+/// The one style every **blank** cell of `r` reads through its row and column line styles, when
+/// there is one — the answer a range-level style has to be able to give (gaps §32).
+///
+/// A row style beats a column style, so the rectangle is uniform when every row of the range carries
+/// the same style; with no row styles it is uniform when every column carries the same style, or
+/// none does. `None` is "the patch would land differently per cell", which keeps the per-cell cap.
+fn line_style_of(sh: &cella_model::Sheet, r: RangeRef) -> Option<StyleId> {
+    let mut rows_with = 0u32;
+    let mut row_style: Option<StyleId> = None;
+    for info in sh.rows.range(r.start.row..=r.end.row).map(|(_, i)| i) {
+        if let Some(st) = info.style {
+            rows_with += 1;
+            match row_style {
+                None => row_style = Some(st),
+                Some(s) if s == st => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    if let Some(st) = row_style {
+        return (rows_with == r.height()).then_some(st);
+    }
+    let mut cols_with = 0u32;
+    let mut col_style: Option<StyleId> = None;
+    for info in sh.cols.range(r.start.col..=r.end.col).map(|(_, i)| i) {
+        if let Some(st) = info.style {
+            cols_with += 1;
+            match col_style {
+                None => col_style = Some(st),
+                Some(s) if s == st => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    match (cols_with, col_style) {
+        (0, _) => Some(StyleId::default()),
+        (n, Some(st)) if n == r.width() => Some(st),
+        _ => None,
+    }
+}
+
 /// Applies `f` to the style of every targeted cell (whole rows/columns set the line format too).
 pub(crate) fn apply_style(s: &mut Session, p: &Json, f: impl Fn(&mut Style)) -> Result<Json> {
     let sheet = target_sheet(s, p)?;
@@ -275,14 +316,33 @@ pub(crate) fn apply_style(s: &mut Session, p: &Json, f: impl Fn(&mut Style)) -> 
                 continue;
             }
             if r.count() > MAX_CELL_STYLES {
-                return Err(bad(
-                    "format",
-                    format!(
-                        "selection too large to format cell by cell: {} cells, and the limit is {MAX_CELL_STYLES}; \
-                         format whole rows or columns (one style each), or split the range",
-                        r.count()
-                    ),
-                ));
+                // One style a rectangle instead of a cell a blank (gaps §32, slice 2 of
+                // plan/STYLE-BANDS.md): the cap is an interaction budget, and a rectangle whose
+                // unmade cells all read the same line style is one answer, not {count} of them.
+                let base = cx.wb.sheet(sheet).and_then(|sh| line_style_of(sh, *r));
+                let Some(base) = base else {
+                    return Err(bad(
+                        "format",
+                        format!(
+                            "selection too large to format cell by cell: {} cells, and the limit is {MAX_CELL_STYLES}; \
+                             format whole rows or columns (one style each), or split the range",
+                            r.count()
+                        ),
+                    ));
+                };
+                let band = *cache.entry(base).or_insert_with(|| cx.wb.styles.derive(base, &f));
+                cx.sheet_mut(sheet)?.style_bands.push(cella_model::StyleBand { range: *r, style: band });
+                // A stored cell keeps its own style (it beats the band), so it is derived one by
+                // one — exactly what the per-cell path gives it.
+                let cells: Vec<(CellRef, StyleId)> =
+                    cx.wb.sheet(sheet).map(|sh| sh.cells.iter_range(*r).map(|(c, x)| (c, x.style)).collect()).unwrap_or_default();
+                for (c, st) in cells {
+                    let new = *cache.entry(st).or_insert_with(|| cx.wb.styles.derive(st, &f));
+                    if new != st {
+                        cx.sheet_mut(sheet)?.set_style(c, new);
+                    }
+                }
+                continue;
             }
             if r.height() <= 100_000 {
                 cx.fit_rows.extend((r.start.row..=r.end.row).map(|row| (sheet, row)));
@@ -1404,6 +1464,25 @@ mod tests {
     /// A style band is a live-model answer; the file has no range style, so a save must expand it
     /// into cells — a blank inside the band keeps its format through the round trip (slice 3 of
     /// `plan/STYLE-BANDS.md`; the lazy per-row expansion comes later, the answer must not differ).
+    /// A rectangle past the per-cell cap is **one band**, not five million cells: the blank cells
+    /// read the band and no stored cell is made for them, while the cells the rectangle already
+    /// holds keep their own derived styles (gaps §32, slice 2 of plan/STYLE-BANDS.md).
+    #[test]
+    fn an_oversized_rectangle_is_one_band() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        s.execute("cell.set", json!({"cell": "A1", "input": "1"})).unwrap();
+        // 1,000,000 × 5 = 5,000,000 cells: past the 4,000,000 cap, and one line style.
+        s.execute("home.formatCells", json!({"range": "A1:E1000000", "style": {"font": {"bold": true}}})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        assert_eq!(sh.style_bands.len(), 1, "one style a rectangle");
+        let blank = CellRef::parse("E999999").unwrap();
+        assert!(d.wb.styles.get(sh.style_id(blank)).font.bold, "a blank reads the band");
+        assert!(sh.cells.get(blank).is_none(), "and nothing was stored for it");
+        assert!(d.wb.styles.get(sh.style_id(CellRef::parse("A1").unwrap())).font.bold, "the stored cell was derived as before");
+    }
+
     #[test]
     fn a_style_band_reaches_the_file_as_cells() {
         let mut s = crate::Session::new();
@@ -1487,22 +1566,43 @@ mod tests {
         assert!((points_to_chars(64.0) - 8.43).abs() < 0.01);
     }
 
+    /// Clear Formats has to reach a band: the rectangle is expanded into cells first, so the
+    /// cleared cells go back to the default style and the rest of the rectangle keeps the format
+    /// (gaps §32, slice 5).
     #[test]
-    fn a_rectangle_past_the_limit_says_so_and_names_the_way_round_it() {
-        // The limit is a priced number (4M cells ≈ 0.4 s, `examples/format_range.rs`); a rectangle
-        // past it is refused before a single cell is touched, and the message says how many cells,
-        // what the limit is and what to do instead.
+    fn clearing_formats_reaches_a_banded_rectangle() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        s.execute("home.formatCells", json!({"range": "A1:E1000000", "style": {"font": {"bold": true}}})).unwrap();
+        assert_eq!(s.doc().unwrap().wb.sheet(0).unwrap().style_bands.len(), 1, "one band");
+        s.execute("edit.clearFormats", json!({"range": "A1:A10"})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        assert!(sh.style_bands.is_empty(), "the band was expanded so the clear could reach it");
+        let bold = |a: &str| d.wb.styles.get(sh.style_id(CellRef::parse(a).unwrap())).font.bold;
+        assert!(!bold("A5"), "the cleared cells lost the format");
+        assert!(bold("E999999"), "the rest of the rectangle kept it");
+    }
+
+    #[test]
+    fn a_rectangle_past_the_limit_that_is_not_one_style_says_so_and_names_the_way_round_it() {
+        // A rectangle past the cap whose unstored cells all read one line style is **one band** now
+        // (gaps §32, slice 2); one whose rows or columns already carry different formats is still
+        // refused, before a single cell is touched, and the message says how many cells, what the
+        // limit is and what to do instead.
         let mut s = Session::new();
         s.new_workbook();
-        // A rectangle that is neither whole rows nor whole columns is the one that pays per cell.
-        let err = s.execute("home.formatCells", json!({"range": "A1:H1000000", "style": {"font": {"bold": true}}})).unwrap_err().to_string();
+        s.execute("home.bold", json!({"range": "A:A", "on": true})).unwrap();
+        let err = s.execute("home.formatCells", json!({"range": "A1:H1000000", "style": {"font": {"italic": true}}})).unwrap_err().to_string();
         assert!(err.contains("too large to format cell by cell"), "{err}");
         assert!(err.contains("8000000 cells"), "the message names the size: {err}");
         assert!(err.contains(&MAX_CELL_STYLES.to_string()), "and the limit: {err}");
         assert!(err.contains("whole rows or columns"), "and the way round it: {err}");
         // Nothing was formatted: a refusal must not half-apply.
         let d = s.doc().unwrap();
-        assert!(!d.wb.styles.get(d.wb.active().unwrap().style_id(CellRef::parse("A1").unwrap())).font.bold);
+        let sh = d.wb.active().unwrap();
+        assert!(sh.style_bands.is_empty(), "no band was made");
+        assert!(!d.wb.styles.get(sh.style_id(CellRef::parse("A1").unwrap())).font.italic);
     }
 
     #[test]

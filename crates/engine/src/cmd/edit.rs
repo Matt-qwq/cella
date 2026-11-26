@@ -2055,6 +2055,15 @@ fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {
         // the recalculation learns about a style change from the changed list — so a clear that
         // skips the list may only do it in a workbook with no formula at all.
         let formula_readers = cx.wb.sheets.iter().any(|s| s.cells.has_formulas());
+        // A range-level style answers `style_id` per cell and holds no cell, so a clear has to reach
+        // it: the rectangles the clear touches are expanded into cells first (gaps §32, slice 5;
+        // splitting the band instead of expanding it is the cheaper follow-up).
+        if (what == "formats" || what == "all")
+            && let Some(sh) = cx.wb.sheet_mut(sheet)
+            && sh.style_bands.iter().any(|b| ranges.iter().any(|r| b.range.intersects(r)))
+        {
+            sh.materialise_style_bands();
+        }
         for wanted in &ranges {
             let Some(used) = cx.wb.sheet(sheet).and_then(|sh| sh.used_range()) else { continue };
             let Some(r) = wanted.intersection(&used) else { continue };

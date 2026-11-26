@@ -1324,6 +1324,20 @@ rest on is pinned by `a_style_band_answers_where_no_cell_is_stored`: a stored ce
 (that is what "clear this cell" stores), typing into a formatted blank keeps the format (`set_value`
 reads `style_id`), the newest band wins, and a band makes the sheet used where it covers.
 
+**Slice 2 landed 11-26 (the command writes a band):** `apply_style` — the one body behind Home ▸
+Bold/Italic/Fill/Font and `home.formatCells` — no longer refuses a rectangle past the cap: when every
+**blank** cell of it reads the same row/column line style (`line_style_of`), the rectangle becomes
+**one band** with the patch applied to that style, and only the cells the rectangle already holds are
+derived one by one (they keep their own styles, exactly as the per-cell path gave them). A rectangle
+whose rows or columns already carry different formats is still refused, with the same message, before
+a cell is touched. What that buys is the case that used to be refused outright: a 5,000,000-cell
+rectangle of blanks is one band in about a millisecond (`an_oversized_rectangle_is_one_band`), while
+a **dense** rectangle still derives a style a stored cell — 5M stored cells are ~945 ms, because each
+of them needs its own style either way (measured with `format_range`, 1M × 5). `edit.clearFormats` /
+`edit.clearAll` expand the rectangles they touch first, so a clear reaches a band
+(`clearing_formats_reaches_a_banded_rectangle`; splitting the band instead of expanding it is the
+cheaper follow-up).
+
 **Slice 3 landed 11-26 (the band reaches the file):** `Sheet::materialise_style_bands` expands a
 band into stored cells — an unstored cell takes the newest band covering it, a stored cell keeps its
 own style, which is the answer `style_id` already gives, so the sheet reads the same before and after
