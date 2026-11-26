@@ -995,4 +995,15 @@ impl Ctx<'_> {
     pub fn touch(&mut self, sheet: usize, c: CellRef) {
         self.changed.push((sheet, c));
     }
+    /// Expands any style band this sheet carries into cells **before** an edit that moves them: a
+    /// band is a live-model rectangle, and a shift would move the cells under it while the
+    /// rectangle stayed where it was (gaps §32, slice 4 of plan/STYLE-BANDS.md). Free on a sheet
+    /// no format command has banded.
+    pub fn materialise_bands(&mut self, sheet: usize) {
+        if let Some(sh) = self.wb.sheet_mut(sheet)
+            && !sh.style_bands.is_empty()
+        {
+            sh.materialise_style_bands();
+        }
+    }
 }

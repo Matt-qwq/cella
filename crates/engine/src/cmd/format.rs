@@ -1569,6 +1569,25 @@ mod tests {
     /// Clear Formats has to reach a band: the rectangle is expanded into cells first, so the
     /// cleared cells go back to the default style and the rest of the rectangle keeps the format
     /// (gaps §32, slice 5).
+    /// A structural edit expands a band before it moves cells (`Ctx::materialise_bands`): an
+    /// inserted row above the rectangle must leave the format where it was, not shift the rectangle
+    /// away from it (gaps §32, slice 4 of plan/STYLE-BANDS.md).
+    #[test]
+    fn a_structural_edit_expands_a_band_before_moving_cells() {
+        let mut s = crate::Session::new();
+        s.new_workbook();
+        // 1,048,569 rows × 4 columns: past the cap, and one row of headroom for the insert below.
+        s.execute("home.formatCells", json!({"range": "B2:E1048570", "style": {"font": {"bold": true}}})).unwrap();
+        assert_eq!(s.doc().unwrap().wb.sheet(0).unwrap().style_bands.len(), 1, "one band");
+        s.execute("home.insertRows", json!({"rows": "1:1"})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        assert!(sh.style_bands.is_empty(), "the band was expanded before the rows moved");
+        let bold = |a: &str| d.wb.styles.get(sh.style_id(CellRef::parse(a).unwrap())).font.bold;
+        assert!(!bold("B1"), "the new first row is above the rectangle");
+        assert!(bold("B3") && bold("E1048571"), "the rectangle moved with its rows");
+    }
+
     #[test]
     fn clearing_formats_reaches_a_banded_rectangle() {
         let mut s = crate::Session::new();

@@ -456,6 +456,7 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
     };
     super::check_bulk(body.count())?;
     edit(s, |cx| {
+        cx.materialise_bands(sheet);
         let mut profile = SortProfile::start();
         // A store an undo handed back keeps its bands as pages and reads one at a time. A sort reads
         // the whole range in an order that has nothing to do with the bands (a permutation), so on a
@@ -1468,6 +1469,7 @@ fn remove_duplicates(s: &mut Session, p: &Json) -> Result<Json> {
     let start = r.start.row + header as u32;
     let mut removed = 0;
     edit(s, |cx| {
+        cx.materialise_bands(sheet);
         let Some(sh) = cx.wb.sheet(sheet) else { return Ok(()) };
         let mut seen = std::collections::HashSet::new();
         let mut keep: Vec<u32> = Vec::new();

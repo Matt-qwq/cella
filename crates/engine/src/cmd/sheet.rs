@@ -319,6 +319,7 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
     let out = edit(s, |cx| {
         let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
+        cx.materialise_bands(sheet);
         {
             let sh = cx.sheet_mut(sheet)?;
             match axis {
@@ -409,6 +410,7 @@ fn delete_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
     let out = edit(s, |cx| {
         let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
+        cx.materialise_bands(sheet);
         // Last area first, so the earlier ones keep their positions.
         for (at, count) in areas {
             {
@@ -468,6 +470,7 @@ fn move_columns(s: &mut Session, p: &Json) -> Result<Json> {
     let out = edit(s, |cx| {
         let name = cx.wb.sheet(sheet).map(|sh| sh.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
+        cx.materialise_bands(sheet);
 
         {
             let sh = cx.sheet_mut(sheet)?;
@@ -559,6 +562,7 @@ fn insert_cells(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let right = shift == "right";
     let out = edit(s, |cx| {
+        cx.materialise_bands(sheet);
         let sh = cx.sheet_mut(sheet)?;
         if right {
             sh.cells.shift_cols_in_rows(r.start.row, r.end.row, r.start.col, r.width() as i64);
@@ -594,6 +598,7 @@ fn delete_cells(s: &mut Session, p: &Json) -> Result<Json> {
     let left = shift == "left";
     let out = edit(s, |cx| {
         let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
+        cx.materialise_bands(sheet);
         {
             let sh = cx.sheet_mut(sheet)?;
             sh.take_cells(r);

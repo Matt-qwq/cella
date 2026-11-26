@@ -1354,6 +1354,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(EngineError::Other("The cut area doesn't fit at this position; nothing was moved.".into()));
     }
     edit(s, |cx| {
+        // A cut takes cells out of a sheet and puts them somewhere else: a band over either place
+        // would be left behind, so both are expanded first (gaps §32, slice 4).
+        cx.materialise_bands(dest_sheet);
+        cx.materialise_bands(clip.sheet);
         // Styles from another workbook must be re-interned.
         let mut style_map = std::collections::HashMap::new();
         let mut map_style = |id: StyleId, wb: &mut cella_model::Workbook| -> StyleId {

@@ -1347,6 +1347,16 @@ out of this slice, and the round trip is pinned by `a_style_band_reaches_the_fil
 answers in the model, the file carries cells, the blank's format survives the reopen). The lazy
 per-row expansion — no copy, no 4M-cell spike on save — stays as slice 3b.
 
+**Slice 4 landed 11-26 (a moving edit expands the band first):** `Ctx::materialise_bands` is called
+before every edit that moves cells — insert/delete rows, columns and cells, `sheet.moveColumns`,
+`data.sort`, `data.removeDuplicates`, and the cut half of a paste — so a band never outlives the
+geometry it was drawn on (`a_structural_edit_expands_a_band_before_moving_cells`: formatting
+B2:E1048570 and inserting a row at 1 leaves B1 plain and the rectangle on the rows it was drawn on).
+It is free on a sheet with no band. Text entered or pasted **into** a band needs no hook: `set_value`
+reads `style_id`, so the new cell takes the band's style, which is Excel's rule. What is not covered
+yet: the fuzzer's prepared workbook carries no band, so no random command sequence has moved one —
+that is the next thing to add, and it is the proof this slice wants.
+
 **Fix (still the design question):** a range-level style (a rectangle or a column band) that the
 renderer, the writer and `cell.get` expand lazily, instead of one style id per cell. **Estimate:**
 6–10 h, with the surface list above and slices 2–5 left in `plan/STYLE-BANDS.md` (slice 1 and the
