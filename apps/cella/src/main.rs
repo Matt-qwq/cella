@@ -517,7 +517,9 @@ fn main() -> eframe::Result<()> {
                         info.driver_info
                     );
                     if let Ok(mut shared) = renderer_handle.lock() {
-                        shared.current = format!("{name} · {}", info.name);
+                        // The interface shows the product name ("DirectX 12 · AMD Radeon…"), the
+                        // log keeps wgpu's own spelling.
+                        shared.current = format!("{} · {}", cella_ui_egui::backend_label(&name.to_ascii_lowercase()), info.name);
                     }
                     started_backend = renderer::choice_of_backend(&name);
                     if let (Some(dir), Some(choice)) = (prefs_dir.as_deref(), started_backend)
