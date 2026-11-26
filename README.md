@@ -74,6 +74,7 @@ cargo run -p cella-ui-egui --example snapshot -- --sample sales out.png   # offs
 - [`docs/roadmap.md`](docs/roadmap.md) — product position, milestones, what is next
 - [`ROADMAP.md`](ROADMAP.md) — the one-page summary and progress log
 - [`docs/performance.md`](docs/performance.md) — the reference workbook, the scenarios, the gate
+- [`docs/rendering.md`](docs/rendering.md) — the GPU backends, the numbers, how to change one, what a driver crash does
 - [`docs/architecture.md`](docs/architecture.md) — layers, crates, invariants
 - [`docs/gaps.md`](docs/gaps.md) — every known shortfall, ranked
 - [`docs/target-app-parity.md`](docs/target-app-parity.md) — the assessment against Excel

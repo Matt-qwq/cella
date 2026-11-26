@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (bound Undo's retained cell storage) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-26 · **Last updated:** 2026-11-26 · **Change:** minor (Rendering: the GPU backend is chosen before the window exists, saved as a choice, and moved off a backend a crashed run was using — [rendering.md](rendering.md)) · **Target:** Microsoft Excel (Microsoft 365)
 
 How Cella is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -60,7 +60,11 @@ including tests, 2026-10-10.
    past one is an error value, so a hostile file cannot recurse until the stack overflows (an abort
    no code can catch) with the user's workbook in the tab.
 4. **Rendering**: the egui grid reads display values (number formats applied in `engine/display.rs`)
-   for the visible window only; charts render through `crates/chart` primitives.
+   for the visible window only; charts render through `crates/chart` primitives. egui draws through
+   **wgpu**, and the backend under it is chosen before the window exists
+   (`apps/cella/src/graphics.rs`: DirectX 12 on Windows when the probe finds a usable GPU, OpenGL
+   otherwise, Metal on macOS, Vulkan on Linux), saved as a choice in `apps/cella/src/renderer.rs`
+   (`renderer.json`), and moved off a backend a crashed run was using ([rendering.md](rendering.md)).
 5. **Files**: `engine/io.rs` sniffs content (XLSX, XLSB, ODS) before trusting the extension and
    dispatches to `crates/xlsx` (and to `crates/parquet` for a `.parquet` export); imports that lose
    data return warnings shown to the user.
@@ -90,6 +94,7 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-26 | minor | Rendering: the backend is chosen by `graphics.rs` before the window exists, saved in `renderer.json`, and a run that dies leaves a marker so the next start takes the other backend (rendering.md) |
 | 2026-11-16 | major | The upstream-adoption round changed five subsystems this page describes: **the JSON workbook is a versioned envelope** (`{formatVersion, workbook}` with unknown fields retained at every level and read caps); **Undo groups** (`group_begin`/`group_end`/`group_rollback`, one group is one history entry and Undo/Redo refuse while one is open, which is what makes a script run atomic); **a macro engine** in `crates/engine/src/macros` (recorder, runner, trust policy, step-through) bound to the workbook's existing script list, so `macro.*` are aliases over `automate.*` rather than a second document shape; **form controls** as model objects (`crates/model/src/controls.rs`) written as ctrlProps + `mc:AlternateContent` + VML; **one view per window** (`WindowView { selection, sheet, sheet_name, sheet_selections }`, swapped around a command, and a swap is not an edit). The workbook's own data store moved from one literal per defined name to `_gc_<key>_<n>` chunks that respect Excel's 255-character literal and 8,192-unit formula limits || 2026-11-16 | minor | Document the evaluator's work budget, LAMBDA fuel and native-stack guard |
 | 2026-11-16 | minor | Document the registry value parameters (single-value arguments that reject a multi-cell reference) |
 | 2026-11-16 | minor | Document the evaluator work budget, LAMBDA fuel and native-stack guard |
