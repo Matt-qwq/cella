@@ -421,7 +421,10 @@ fn damaged_kept_content_is_dropped_without_failing_the_read() {
 
 #[test]
 fn oversized_kept_parts_are_dropped() {
-    let big = vec![0u8; crate::passthrough::MAX_KEPT_PART as usize + 1];
+    // The per-part allowance lowered to 4 KiB and a part twice that: a cap that never fires is no
+    // cap, and a dropped part must say so.
+    crate::passthrough::KEPT_PART_FOR_TEST.with(|c| c.set(4096));
+    let big = vec![0u8; 8192];
     let ct = CONTENT_TYPES;
     let wb_rels = rels(&[("rId1", "worksheet", "worksheets/sheet1.xml"), ("rId2", "customXml", "../customXml/item1.xml")]);
     let workbook = format!(
@@ -437,7 +440,9 @@ fn oversized_kept_parts_are_dropped() {
         ("customXml/item1.xml", &big),
     ]);
     drop(big);
-    let (wb, rep) = read_xlsx(&bytes).unwrap();
+    let read = read_xlsx(&bytes);
+    crate::passthrough::KEPT_PART_FOR_TEST.with(|c| c.set(crate::passthrough::MAX_KEPT_PART));
+    let (wb, rep) = read.unwrap();
     assert!(wb.preserved.is_none());
     assert!(rep.warnings.iter().any(|w| w.contains("customXml") && w.contains("dropped")), "{:?}", rep.warnings);
 }

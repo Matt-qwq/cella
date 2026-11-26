@@ -42,8 +42,9 @@
 //! - A PivotTable Cella reads but does not compute (a data-model or OLAP cache) is carried
 //!   whole: its own part, its cache definition, its records and the data model behind them, byte
 //!   for byte, keyed to the report's name. The workbook's data model (`xl/model/*`) is kept with
-//!   the workbook on its own, so it survives even every report built on it being deleted. The
-//!   model is never read, only carried.
+//!   the workbook on its own, so it survives even every report built on it being deleted; Excel
+//!   relates it from the workbook (`powerPivotData` → `model/item.data`), and a file that relates
+//!   it from a cache definition is kept too. The model is never read, only carried.
 //! - Not kept: chart `<extLst>` children and chart details, and Strict Open XML files (their
 //!   namespaces differ from what we write).
 //! - Sizes are bounded: per part, per owner and per workbook.
@@ -74,9 +75,18 @@ pub use write::{KeptOut, owner_extras, owner_kept, workbook_elements, write_pack
 pub(crate) use write::{NameMap, attach, live_parts, part_rels_xml, remap, sheet_names_in, write_parts};
 
 /// Most bytes kept for one workbook.
-pub const MAX_KEPT_TOTAL: usize = 256 * 1024 * 1024;
-/// Largest single kept part.
-pub const MAX_KEPT_PART: u64 = 64 * 1024 * 1024;
+///
+/// A Power Pivot data model is one part, and models grow with the workbook: the sample measured
+/// for gap §3 carries 8.4 MB beside 8.5 MB of sheets, and the owner's archives hold 112–219 MB
+/// workbooks. 64 MiB (the first number) dropped a model of any size past that with a warning; this
+/// allowance keeps every model a workbook of that size holds while still bounding a hostile file.
+pub const MAX_KEPT_TOTAL: usize = 768 * 1024 * 1024;
+/// Largest single kept part: room for a model, not for a dumped sheet (sheets are read and
+/// rewritten, never kept).
+pub const MAX_KEPT_PART: u64 = 256 * 1024 * 1024;
+/// A data model is one part, so the allowance has to hold one. Lowering it below this fails the
+/// build rather than silently dropping models again (the 64 MiB first number did exactly that).
+const _: () = assert!(MAX_KEPT_PART >= 256 * 1024 * 1024);
 /// Most parts kept for one workbook.
 const MAX_KEPT_PARTS: usize = 4096;
 /// Most relationships read from one rels part.
@@ -104,6 +114,8 @@ pub(crate) const CALC_SLOT: &str = "calcFeatures";
 thread_local! {
     /// A smaller kept-bytes allowance for tests on this thread.
     pub(crate) static KEPT_TOTAL_FOR_TEST: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_KEPT_TOTAL) };
+    /// A smaller per-part allowance for tests on this thread.
+    pub(crate) static KEPT_PART_FOR_TEST: std::cell::Cell<u64> = const { std::cell::Cell::new(MAX_KEPT_PART) };
 }
 fn kept_total() -> usize {
     #[cfg(test)]
@@ -113,6 +125,16 @@ fn kept_total() -> usize {
     #[cfg(not(test))]
     {
         MAX_KEPT_TOTAL
+    }
+}
+fn kept_part() -> u64 {
+    #[cfg(test)]
+    {
+        KEPT_PART_FOR_TEST.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        MAX_KEPT_PART
     }
 }
 const NS_REL_STRICT: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships";

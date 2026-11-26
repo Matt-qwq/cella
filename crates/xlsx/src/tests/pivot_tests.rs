@@ -1075,6 +1075,94 @@ fn the_data_model_survives_deleting_every_report_built_on_it() {
     assert!(parts.keys().all(|n| !n.starts_with("xl/pivotTables/")), "the report's parts went with it");
 }
 
+// The shape a workbook saved by Excel with "Add this data to the Data Model" really has (measured
+// on a Microsoft-authored sample, gaps §3): the *workbook* relates `xl/model/item.data` with the
+// `powerPivotData` type, the report's cache names the model through `xl/connections.xml`
+// (`type="5"`, "ThisWorkbookDataModel") and has no records part of its own — not, as the fixture
+// above has it, a relationship from the cache definition.
+
+const REAL_WB_RELS: &str = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/><Relationship Id="rId15" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/powerPivotData" Target="model/item.data"/><Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/connections" Target="connections.xml"/></Relationships>"#;
+
+const REAL_WB: &str = r#"<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets><pivotCaches><pivotCache cacheId="1" r:id="rId6"/></pivotCaches></workbook>"#;
+
+/// A data-model cache as Excel writes it: an external connection to the workbook's own model.
+const REAL_CACHE: &str = r#"<?xml version="1.0"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" saveData="0" recordCount="0" createdVersion="5" refreshedVersion="5" minRefreshableVersion="3"><cacheSource type="external" connectionId="2"/><cacheFields count="2"><cacheField name="[Sales].[Region]" caption="Region" numFmtId="0" hierarchy="60" level="32767"/><cacheField name="[Sales].[Amount]" caption="Amount" numFmtId="0" hierarchy="60" level="32767"/></cacheFields></pivotCacheDefinition>"#;
+
+/// `xl/connections.xml`: connection 2 is the workbook's data model (`type="5"`, the Power Pivot
+/// connection a model cache names by id), connection 1 is an ordinary external one.
+const REAL_CONNECTIONS: &str = r#"<?xml version="1.0"?><connections xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><connection id="1" name="SqlServer" type="100" refreshedVersion="5"/><connection id="2" name="ThisWorkbookDataModel" description="Data Model" type="5" refreshedVersion="5" minRefreshableVersion="5"><dbPr connection="Data Model Connection" command="Model" commandType="1"/><olapPr sendLocale="1" rowDrillCount="1000"/></connection></connections>"#;
+
+/// [`data_model_package`] in the shape above: the model hangs off the workbook and the cache
+/// knows it only through the connection id.
+fn real_data_model_package() -> Vec<u8> {
+    real_data_model_package_with(MODEL_DATA)
+}
+
+/// [`real_data_model_package`] carrying `model` bytes instead of [`MODEL_DATA`].
+fn real_data_model_package_with(model: &[u8]) -> Vec<u8> {
+    let ct = format!(
+        r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="data" ContentType="application/vnd.openxmlformats-officedocument.model+data"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="{CT_PT}"/><Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="{CT_PCD}"/><Override PartName="/xl/connections.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.connections+xml"/></Types>"#
+    );
+    let sheet = r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData><row r="3"><c r="D3" t="inlineStr"><is><t>Row Labels</t></is></c><c r="E3" t="inlineStr"><is><t>Sum of Amount</t></is></c></row><row r="4"><c r="D4" t="inlineStr"><is><t>East</t></is></c><c r="E4"><v>100</v></c></row></sheetData></worksheet>"#;
+    let sheet_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>"#;
+    let bytes: Vec<(&str, &[u8])> = vec![
+        ("[Content_Types].xml", ct.as_bytes()),
+        ("_rels/.rels", super::ROOT_RELS.as_bytes()),
+        ("xl/workbook.xml", REAL_WB.as_bytes()),
+        ("xl/_rels/workbook.xml.rels", REAL_WB_RELS.as_bytes()),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+        ("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels.as_bytes()),
+        ("xl/pivotTables/pivotTable1.xml", MODEL_PIVOT_TABLE.as_bytes()),
+        ("xl/pivotTables/_rels/pivotTable1.xml.rels", MODEL_PT_RELS.as_bytes()),
+        ("xl/pivotCache/pivotCacheDefinition1.xml", REAL_CACHE.as_bytes()),
+        ("xl/connections.xml", REAL_CONNECTIONS.as_bytes()),
+        ("xl/model/item.data", model),
+    ];
+    super::make_zip(&bytes)
+}
+
+#[test]
+fn a_data_model_related_from_the_workbook_is_kept_by_a_save() {
+    let (wb, report) = read_xlsx(&real_data_model_package()).unwrap();
+    assert!(
+        report.warnings.iter().any(|w| w.contains("data model") && w.contains("kept")),
+        "the file says it has a model, so the read must say it kept it: {:?}",
+        report.warnings
+    );
+    let sheet = wb.sheet(0).unwrap();
+    assert!(sheet.pivots[0].is_read_only());
+    let why = sheet.pivots[0].read_only_text();
+    assert!(why.contains("data model"), "a model cache is named as one, not as \"an external data source\": {why}");
+    let out = write_xlsx(&wb).unwrap();
+    crate::testing::check_package(&out).expect("the package with a carried data model is valid");
+    let after = unzip(&out);
+    assert_eq!(after.get("xl/model/item.data").map(|p| p.as_slice()), Some(MODEL_DATA), "the model is carried");
+    let wb_rels = String::from_utf8(after.get("xl/_rels/workbook.xml.rels").unwrap().clone()).unwrap();
+    assert!(wb_rels.contains("powerPivotData"), "the model keeps its relationship: {wb_rels}");
+    assert!(wb_rels.contains("model/item.data"), "{wb_rels}");
+    let ct = String::from_utf8(after.get("[Content_Types].xml").unwrap().clone()).unwrap();
+    assert!(ct.contains("model+data"), "the model part keeps a content type: {ct}");
+    // And the save reads back as the same read-only report.
+    let (again, _) = read_xlsx(&out).unwrap();
+    assert!(again.sheet(0).unwrap().pivots[0].is_read_only());
+}
+
+#[test]
+fn a_large_model_is_carried_whole() {
+    // A model is one part and it grows with the workbook, so the allowance for one kept part has
+    // to hold one (it was 64 MiB, which dropped every model past that with a warning); the
+    // constant carries a compile-time floor of 256 MiB.
+    // 2 MiB of incompressible model beside 2 KB of sheets: carried byte for byte, through the
+    // write path's deflate and back.
+    let model: Vec<u8> = (0..2 * 1024 * 1024u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+    let (wb, rep) = read_xlsx(&real_data_model_package_with(&model)).unwrap();
+    assert!(!rep.warnings.iter().any(|w| w.contains("dropped")), "{:?}", rep.warnings);
+    let out = write_xlsx(&wb).unwrap();
+    crate::testing::check_package(&out).expect("valid with a 2 MiB model");
+    let after = unzip(&out);
+    assert_eq!(after.get("xl/model/item.data").map(|p| p.as_slice()), Some(model.as_slice()), "the 2 MiB model came back unchanged");
+}
+
 #[test]
 fn a_range_pivot_is_still_computed() {
     // The regression: a report on a cell range is modelled as before — not read-only, no reason,

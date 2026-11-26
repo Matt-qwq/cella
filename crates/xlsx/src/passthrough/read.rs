@@ -237,7 +237,7 @@ impl KeptReader {
                 return Err("it has too many parts".into());
             }
             let content_type = self.content_type(&name).ok_or_else(|| format!("{name} has no content type"))?;
-            let data = match cx.pkg.read_limited(&name, MAX_KEPT_PART) {
+            let data = match cx.pkg.read_limited(&name, kept_part()) {
                 Ok(Some(d)) => d,
                 Ok(None) => return Err(format!("{name} is missing")),
                 Err(e) => return Err(e.to_string()),
@@ -516,14 +516,20 @@ impl KeptReader {
     }
 
     /// The parts of the workbook's data model (Power Pivot), kept with the workbook however the
-    /// reports that name them fare. A workbook whose cache definitions relate a `powerPivotData`
-    /// part has one; its content is opaque to Cella and is never read.
+    /// reports that name them fare. Two shapes name it: a cache definition relating a
+    /// `powerPivotData` part (the shape the older fixture here has), and the one Excel writes —
+    /// the *workbook* relating `model/item.data`. Either way its content is opaque to Cella and is
+    /// never read.
     fn keep_data_model(&mut self, cx: &mut Ctx<'_>, wb_xml: &xml::El, wb_rels: &[PreservedRel], p: &mut Preserved, seen: &mut HashSet<String>) {
         let caches: Vec<String> = wb_xml
             .child("pivotCaches")
             .map(|l| l.kids("pivotCache").filter_map(|c| c.attr("id")).map(str::to_string).collect::<Vec<_>>())
             .unwrap_or_default();
-        let mut roots: Vec<PreservedRel> = Vec::new();
+        // Excel relates the model from the **workbook** (`xl/_rels/workbook.xml.rels`,
+        // `powerPivotData` -> `model/item.data`); a file that hangs it off a cache definition
+        // instead is kept too. Measured on a workbook Excel saved with "Add this data to the Data
+        // Model": only the workbook had the relationship, so looking at the caches alone lost it.
+        let mut roots: Vec<PreservedRel> = wb_rels.iter().filter(|r| !r.external && is_kind(r, POWER_PIVOT_KINDS)).cloned().collect();
         for id in caches {
             let Some(cache) = wb_rels.iter().find(|r| r.id == id && !r.external && is_kind(r, &["pivotCacheDefinition"])) else { continue };
             roots.extend(raw_rels(cx, &cache.target).unwrap_or_default().into_iter().filter(|r| !r.external && is_kind(r, POWER_PIVOT_KINDS)));

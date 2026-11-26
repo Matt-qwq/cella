@@ -82,17 +82,24 @@ fn item_label_el(e: &El, sys: DateSystem) -> String {
         _ => v.to_string(),
     }
 }
+/// Whether a cache's `cacheSource` names the workbook's own data model: `xl/connections.xml` marks
+/// the connection `type="5"` (`xlConnectionTypeMODEL`, what Excel calls "ThisWorkbookDataModel").
+/// That is how a file Excel saved puts it — the cache only holds the connection id, and the model
+/// itself hangs off the workbook.
+fn is_model_connection(cx: &mut Ctx<'_>, src: &El) -> bool {
+    let Some(id) = src.attr("connectionId") else { return false };
+    let Ok(Some(bytes)) = cx.pkg.read_limited("xl/connections.xml", MAX_CONNECTIONS) else { return false };
+    let Ok(conns) = crate::xml::parse(&bytes) else { return false };
+    conns.kids("connection").any(|c| c.attr("id") == Some(id) && c.attr("type") == Some("5"))
+}
 /// Why a PivotTable whose cache is not a worksheet range is read-only, in words for the user.
 /// Only a range cache (the one kind Cella computes) skips this.
-fn not_computed_reason(cx: &mut Ctx<'_>, part: &str, ty: &str) -> String {
-    // A data-model cache carries its records in `xl/model/*`, related to the cache definition
-    // with the `powerPivotData` type; an OLAP cube's cache holds no such part. Either way the
-    // parts are kept and the source is never queried, so only the wording differs.
-    let model = cx.pkg.rels(part).map(|r| r.iter().any(|q| q.kind.eq_ignore_ascii_case("powerPivotData"))).unwrap_or(false);
+fn not_computed_reason(cx: &mut Ctx<'_>, ty: &str, model: bool) -> String {
     match (ty, model) {
         ("olap", true) => "built on the workbook's data model (Power Pivot), which Cella keeps but does not query".to_string(),
         ("olap", false) => "built on an OLAP connection, which Cella keeps but does not query".to_string(),
-        ("external", _) => "built on an external data source, which Cella keeps but does not query".to_string(),
+        ("external", true) => "built on the workbook's data model (Power Pivot), which Cella keeps but does not query".to_string(),
+        ("external", false) => "built on an external data source, which Cella keeps but does not query".to_string(),
         ("consolidation", _) => "built on several consolidated ranges, which Cella keeps but does not query".to_string(),
         _ => {
             cx.warn(format!("a PivotTable source of type \"{ty}\" is not computed by Cella; it is kept as it is"));
@@ -111,7 +118,13 @@ fn read_cache(cx: &mut Ctx<'_>, part: &str, sheet_name: &str) -> Option<CacheIn>
     // A cache Cella does not query (a data model, an OLAP cube, a connection): the report is
     // read as one Cella does not compute. Its cached values stay on the sheet, and the parts
     // the pass-through kept are written back as they came — never recomputed over a made-up range.
-    let read_only_reason = (ty != "worksheet").then(|| not_computed_reason(cx, part, ty));
+    // Two shapes name the workbook's own model: one related from the cache (`powerPivotData`), and
+    // the one Excel writes, a connection in `xl/connections.xml` of type 5.
+    let read_only_reason = (ty != "worksheet").then(|| {
+        let linked = cx.pkg.rels(part).is_ok_and(|r| r.iter().any(|q| q.kind.eq_ignore_ascii_case("powerPivotData")));
+        let model = linked || src.is_some_and(|s| is_model_connection(cx, s));
+        not_computed_reason(cx, ty, model)
+    });
     let ws = src.and_then(|s| s.child("worksheetSource"));
     let source = if read_only_reason.is_some() {
         String::new()

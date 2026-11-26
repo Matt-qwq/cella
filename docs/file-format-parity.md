@@ -6,7 +6,7 @@
 
 
 
-> **Last reviewed:** 2026-11-16 · **Last updated:** 2026-11-16 · **Change:** minor (status brought up to round 17: `.xls` **charts, autoshapes and text boxes** are read — the chart substream inside the worksheet and each shape's DrawingML fragment (or its OfficeArt type and anchor), its group kind and variants, series ranges, title, legend and the `msosptChart` anchor — and verified in Excel 16 by converting a five-kind workbook and reopening it with the same kinds, titles and anchors; the `.xls` row records pictures, `CF12`, charts and shapes as read and keeps OLE objects/controls/chart sheets out; **RC4 is recorded as not an ECMA-376 Standard cipher** ([MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 package), so the encrypted-`.xls` item waits for a `.xls` writer; no format or score change) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-11-26 · **Last updated:** 2026-11-26 · **Change:** 11-26: **the workbook's data model survives a save** — Excel relates `xl/model/item.data` from the **workbook**, which the pass-through never looked at (it only checked a report's cache), so an open-edit-save dropped the model without a word; both shapes are collected now and the per-part allowance is 256 MiB. Measured in Excel 16: a Microsoft-authored sample with 6 model tables and 4 pivot caches keeps 6 and 4 through Cella's save (0 before). Earlier: minor (status brought up to round 17: `.xls` **charts, autoshapes and text boxes** are read — the chart substream inside the worksheet and each shape's DrawingML fragment (or its OfficeArt type and anchor), its group kind and variants, series ranges, title, legend and the `msosptChart` anchor — and verified in Excel 16 by converting a five-kind workbook and reopening it with the same kinds, titles and anchors; the `.xls` row records pictures, `CF12`, charts and shapes as read and keeps OLE objects/controls/chart sheets out; **RC4 is recorded as not an ECMA-376 Standard cipher** ([MS-OFFCRYPTO] 2.3.4.5 requires AES and Excel refuses a hand-made RC4 package), so the encrypted-`.xls` item waits for a `.xls` writer; no format or score change) · **Target:** Microsoft Excel (Microsoft 365)
 
 
 
@@ -298,7 +298,7 @@ relationship graph walked from an owner, refused when it reaches content Cella r
 
 
 
-| **Dropped: the data model** (Power Pivot `xl/model/…`, `powerPivotData`) | — | — | the parts and the connection they hang off cannot be verified without modelling OLAP sources |
+| **Kept: the data model** (Power Pivot `xl/model/…`, `powerPivotData`) | the model's parts byte for byte, with the relationships that name them | workbook relationships + the kept parts | the model hangs off the **workbook** in a file Excel saves (`powerPivotData` → `model/item.data`) and off the cache definition in an older shape; both are collected, so a save no longer drops it. **Measured in Excel 16 (2026-11-26):** a Microsoft-authored sample (6 model tables, 4 pivot caches) keeps 6 tables and 4 caches through Cella's save; before the fix it kept 0. Reading is still only carrying — Cella does not query the model, so its reports are read-only. A part over 256 MiB is dropped, with a warning |
 
 
 
@@ -576,7 +576,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 
-| Preserve the data model (Power Pivot parts, OLAP caches); slicers, timelines, table query tables and unmodelled `extLst` entries are kept now (2026-10-30), chart extensions are not (gap #4) | 4–6 |
+| Preserve the data model (Power Pivot parts, OLAP caches) — **landed 11-26**; slicers, timelines, table query tables and unmodelled `extLst` entries since 2026-10-30, chart extensions are not (gap #4) | 0–1 |
 
 
 
@@ -615,6 +615,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 | Date | Change | Summary |
 
+| 2026-11-26 | minor | **The workbook's data model survives a save.** The pass-through looked for `powerPivotData` only on a report's cache definition; the file Excel writes relates the model from the **workbook** (`xl/_rels/workbook.xml.rels` → `model/item.data`), so the walk found nothing and the model was dropped without a warning. It is collected from the workbook's own relationships now (the cache-definition shape is still read), the per-part allowance grew 64 MiB → 256 MiB (a model is one part and grows with the workbook: a 120 MB model round-trips in 1.73 s at 373 MB peak, byte-identical), and a model cache is named as one ("built on the workbook's data model (Power Pivot)") instead of "an external data source". **Measured in Excel 16:** the Microsoft sample (6 model tables, 4 pivot caches) keeps 6 and 4 through Cella's save; the pre-fix save kept 0 tables. Tests: `a_data_model_related_from_the_workbook_is_kept_by_a_save`, `a_large_model_is_carried_whole` |
 | 2026-11-16 | major | **Upstream-adoption round** (eighteen batches taken from `storytold/gridcraft` v0.19.1, gate green). Format side: **the JSON workbook is versioned** — `{formatVersion, workbook}`, unknown fields kept verbatim at the envelope, workbook and sheet levels so an older build does not destroy a newer file, 512 MiB and 32 MiB per-string read caps, bare v0 files still load and upgrade on save; **form controls** are modelled and written three ways as Excel expects (`xl/ctrlProps/ctrlPropN.xml`, `<control>` in `mc:AlternateContent`, the legacy VML shape sharing the sheet's drawing with notes), read from the properties part or the VML, and carved out of `passthrough`; chart **data tables** (`c:dTable`) are modelled instead of patched; **WordArt** round-trips on the non-warping `a:prstTxWarp prst=\"textNoShape\"` marker (a filled rectangle with the same warp stays a rectangle); `workbookView` flags and `tabRatio`, `workbookPr filterPrivacy`, `calcPr refMode`, `sheetPr outlinePr` and `alignment readingOrder` survive open+save instead of being reset; **legacy implicit intersection** is applied on read (a formula without `cm` is rewritten the way Excel read it before dynamic arrays, `@` where one value is expected) and Google Sheets' `IFERROR(__xludf.DUMMYFUNCTION(\"…\"),…)` wrapper is unwrapped when every function inside can be calculated. The workbook's own JSON store moved to `_gc_<key>_<n>` chunks (255-character literals, 8,192-unit formulas, XML-illegal characters escaped as U+FDD0 + four hex digits), with the legacy `_sc_*` names still read. No format version bump for `.xlsx` |
 
 

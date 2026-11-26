@@ -36,6 +36,10 @@ use std::fmt::Write as _;
 mod read;
 mod write;
 
+/// Largest `xl/connections.xml` read to tell the workbook's own data model (`type="5"`, what a
+/// cache names through `cacheSource/@connectionId`) from an ordinary external connection.
+const MAX_CONNECTIONS: u64 = 8 * 1024 * 1024;
+
 pub use read::{CachesIn, read_pivots};
 pub use write::{PivotWriter, source_column, source_fields};
 
