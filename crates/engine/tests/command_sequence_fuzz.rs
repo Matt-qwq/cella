@@ -531,6 +531,21 @@ impl Harness {
     fn new(sample: &str) -> Harness {
         let mut s = Session::new();
         s.execute("file.new", json!({"sample": sample})).expect("sample opens");
+        // A **range-level style** over a rectangle of the sheet, so the sequences that move cells
+        // (insert/delete rows and columns, sort, remove duplicates, a cut, a clear) meet one: a
+        // band holds no cell, and every one of those edits has to expand it before it moves
+        // (gaps §32, slice 4 of plan/STYLE-BANDS.md). Small on purpose: the sample sheets are
+        // small, and the round trip below compares `style_id` cell by cell.
+        {
+            let mut wb = (*s.doc().expect("document").wb).clone();
+            let style = wb.styles.derive(StyleId::DEFAULT, |st| st.font.bold = true);
+            if let Some(sh) = wb.sheet_mut(0) {
+                // B2:D4 — inside the data of every sample, so inserts, deletes, sorts and cuts
+                // meet it.
+                sh.style_bands.push(cella_engine::model::StyleBand { range: RangeRef::new(CellRef::new(1, 1), CellRef::new(3, 3)), style });
+            }
+            s.doc_mut().expect("document").wb = Arc::new(wb);
+        }
         let base = s.doc().expect("document").wb.clone();
         Harness { s, base, dropped_at_start: 0 }
     }
@@ -840,6 +855,19 @@ fn roundtrip_diff(wb: &Workbook) -> Result<(), String> {
         }
         if kept_lines(&x.cols, &wb.styles, false) != kept_lines(&y.cols, &back.styles, false) {
             return Err(format!("{}: cols differ after reload", x.name));
+        }
+    }
+    // A range-level style answers `style_id` where no cell is stored, and the file carries it as
+    // cells: after a reload every used cell must answer with the style it answered with before
+    // (gaps §32). This is the check a band has to pass — the cells it covers are written out, so a
+    // band that is dropped, or one left behind by a move, shows up here.
+    for (x, y) in wb.sheets.iter().zip(&back.sheets) {
+        let Some(used) = x.used_range() else { continue };
+        for c in used.iter().take(1_000_000) {
+            let (a, b) = (x.style_id(c), y.style_id(c));
+            if a != b {
+                return Err(format!("{}: {} is style {a:?} before the save and {b:?} after it", x.name, c.a1()));
+            }
         }
     }
     if wb.calc.mode == CalcMode::Automatic && !wb.calc.iterative {
