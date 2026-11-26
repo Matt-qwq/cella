@@ -1030,9 +1030,10 @@ pub fn render_shapes(f: &Facts, c: &ShapeCatalogue) -> String {
     s += "Two things to read with care. **A command that works on one sheet sees only the active \
           sheet's cells in the `sheets` shape** (10,000 × 8 = 80,000 of the eight million), so its \
           `sheets` cell is a smaller job, not the same one; `file.saveBytes` and `sheet.rename` are \
-          the rows whose axis really is the sheet count. And **`home.formatCells` refuses a range over \
-          4,000,000 cells** (`crates/engine/src/cmd/format.rs`), so its two big shapes show that \
-          refusal instead of a number.\n\n";
+          the rows whose axis really is the sheet count. And **`home.formatCells` refuses a rectangle \
+          over 4,000,000 cells that is neither whole rows nor whole columns** (`crates/engine/src/cmd/\
+          format.rs`, measured there: 0.4 s at 4M, 0.82 s at 8M, 1.52 s at 16M), so its two big shapes \
+          show that refusal instead of a number; a whole row or column takes the line-style path.\n\n";
 
     s += "| command | what it does |";
     for (name, ..) in &c.shapes {

@@ -204,10 +204,10 @@ FLOOR	FLOOR(2,0.05)
 FLOOR.MATH	FLOOR.MATH(2,0.05,0)
 FLOOR.PRECISE	FLOOR.PRECISE(2,0.05)
 FORECAST	FORECAST(1,$R2,$R)
-FORECAST.ETS	FORECAST.ETS($LS,$RS,$TS)	series of 200,000 points, the engine's cap: a whole column is #NUM!
-FORECAST.ETS.CONFINT	FORECAST.ETS.CONFINT($LS,$RS,$TS,0.95)	series of 200,000 points, the engine's cap: a whole column is #NUM!
-FORECAST.ETS.SEASONALITY	FORECAST.ETS.SEASONALITY($RS,$TS)	series of 200,000 points, the engine's cap: a whole column is #NUM!
-FORECAST.ETS.STAT	FORECAST.ETS.STAT($RS,$TS,1)	series of 200,000 points, the engine's cap: a whole column is #NUM!
+FORECAST.ETS	FORECAST.ETS($LS,$RS,$TS)	200,000-point series: the engine's cap, and a whole column past it is #NUM! (an ordinary column is fine; the cap counts the completed series)
+FORECAST.ETS.CONFINT	FORECAST.ETS.CONFINT($LS,$RS,$TS,0.95)	200,000-point series: the engine's cap, and a whole column past it is #NUM! (an ordinary column is fine; the cap counts the completed series)
+FORECAST.ETS.SEASONALITY	FORECAST.ETS.SEASONALITY($RS,$TS)	200,000-point series: the engine's cap, and a whole column past it is #NUM! (an ordinary column is fine; the cap counts the completed series)
+FORECAST.ETS.STAT	FORECAST.ETS.STAT($RS,$TS,1)	200,000-point series: the engine's cap, and a whole column past it is #NUM! (an ordinary column is fine; the cap counts the completed series)
 FORECAST.LINEAR	FORECAST.LINEAR(1,$R2,$R)
 FORMULATEXT	FORMULATEXT($Y)
 FREQUENCY	FREQUENCY($R,$R)
