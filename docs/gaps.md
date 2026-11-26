@@ -2653,6 +2653,31 @@ workbook). **So the trigger is intermittent and unmeasured; this entry says so i
    duration), and the native dialog bracketed (`file dialog: up` / `a path after N ms` / `cancelled`).
    A 100 MB+ read blocks the pass for seconds and that is now visible in `cella.log`.
 
+**Then the renderer became something the app knows about (same day, after the switch to DirectX 12):**
+
+1. **The adapter is logged, not guessed**: `renderer: Dx12 adapter "AMD Radeon RX 9070 GRE" (vendor
+   0x1002, device 0x7550, driver "32.0.31044.16")` — the backend wgpu actually selected, which is what
+   the old code could not say (that is why the WARP row of the backend comparison was marked
+   inconclusive).
+2. **File ▸ Options ▸ 图形 › 渲染器**: 自动 / DirectX 12 / OpenGL / Vulkan, saved in `renderer.json`,
+   read before the window exists (a restart applies it), with the adapter this run got shown beneath
+   it. An explicit choice is kept even after a crash — the person asked for it — while 自动 follows
+   the rule below.
+3. **A crash switches the backend**: a run writes `session.json` with its backend as soon as that is
+   known and removes it on a clean exit, so a start that finds the file knows the last run **died in
+   its driver**. With 自动 it then takes the other road and says so in the info bar
+   (“上次运行没有正常退出（DirectX 12 后端）。这次改用 OpenGL 后端启动；渲染器设为“自动”时，崩溃后总是这样切换。”).
+   `WGPU_BACKEND` still overrides everything, and a machine whose only road is OpenGL keeps it.
+
+**Proven by running it** (installed build, this machine): the marker is written on start and gone
+after `app.quit`; a hand-written `{"backend":"dx12"}` marker makes the next start log
+`backends Backends(GL) after a run that died on Dx12` and show the line above (screenshot in
+`plan/`); `{"choice":"vulkan"}` in `renderer.json` starts on `Backends(VULKAN)`; back to 自动 starts on
+`Backends(DX12)`; no crash dump came out of any of it. Tests: `apps/cella` `renderer::` (6)
++ `graphics::` (7, incl. the switch), `crates/ui-egui` `tests/renderer_options.rs` (4: the page offers
+the row only when the shell has one, the keys the page offers are the keys the shell takes, the notice
+both ways, the labels). A byte-order mark in either file is skipped — hand-edited files keep working.
+
 **Not fixed:** the read still runs on the UI thread, so a big workbook freezes the window while it
 loads (3.2 s for 112.8 MB, 17.3 s for the 219.4 MB first open, which also writes the spill). If the
 flashing comes back with a log line, the next step is to move the read to a worker and install the

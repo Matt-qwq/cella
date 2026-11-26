@@ -482,6 +482,21 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Web Page (.html)" => "网页 (.html)",
         "Save the workbook as a web page." => "将工作簿另存为网页。",
         "Options|General" => "常规",
+        "Options|Graphics" => "图形",
+        "Renderer" => "渲染器",
+        "DirectX 12" => "DirectX 12 后端",
+        "OpenGL" => "OpenGL 后端",
+        "Vulkan" => "Vulkan 后端",
+        "Metal" => "Metal 后端",
+        "the graphics driver" => "显卡驱动",
+        "In use now: {backend}" => "当前使用：{backend}",
+        "A change takes effect the next time Cella starts." => "修改后下次启动 Cella 时生效。",
+        "The last run did not close properly ({crashed}). Cella started on {started} instead; the Renderer setting on Automatic always switches after a crash." => {
+            "上次运行没有正常退出（{crashed}）。这次改用{started}启动；渲染器设为“自动”时，崩溃后总是这样切换。"
+        }
+        "The last run did not close properly ({crashed}). Your Renderer setting picks {started}, so nothing changed; File › Options › Renderer offers another." => {
+            "上次运行没有正常退出（{crashed}）。你的渲染器设置用的就是{started}，所以没有切换；可以在“文件 › 选项 › 渲染器”里换一个。"
+        }
         "Options|Save" => "保存",
         "Show formula bar" => "显示编辑栏",
         "Enable AutoComplete for cell values" => "为单元格值启用记忆式键入",

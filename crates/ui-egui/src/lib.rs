@@ -177,6 +177,20 @@ pub struct Notice {
     pub action: Option<(String, String)>,
 }
 
+/// The renderer as the shell sees it. The backend is chosen **before the window exists**, so the
+/// choice lives in a file the shell reads at startup and this is how the interface reaches it: what
+/// the file says, a way to change it, and what this run actually draws with ("DirectX 12 · AMD
+/// Radeon RX 9070 GRE"). The web build has none: its renderer is the browser's (WebGPU, else WebGL2).
+pub struct RendererService {
+    /// The saved choice's key: `"auto"`, `"dx12"`, `"gl"` or `"vulkan"`.
+    pub choice: Box<dyn Fn() -> String>,
+    /// Save a choice (the key above). An unknown key, or a settings folder that cannot be written,
+    /// is the `Err` the Options page shows.
+    pub set: Box<dyn Fn(&str) -> Result<(), String>>,
+    /// What this run draws with, for display; empty before the window's adapter is known.
+    pub current: Box<dyn Fn() -> String>,
+}
+
 /// Host services the platform shell provides (file pickers, opening URLs).
 #[derive(Default)]
 pub struct Services {
@@ -212,10 +226,24 @@ pub struct Services {
     /// Web: hand PDF bytes to the browser's print flow directly (no download,
     /// no intermediate file) — opens the system print dialog on that PDF.
     pub print: Option<Box<dyn Fn(&[u8])>>,
+    /// Desktop: the graphics backend this run uses and the setting that picks it (see
+    /// [`RendererService`]).
+    pub renderer: Option<RendererService>,
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+
+/// The name the interface shows for a backend key (`"dx12"` → "DirectX 12").
+pub fn backend_label(key: &str) -> &'static str {
+    match key {
+        "dx12" => "DirectX 12",
+        "gl" => "OpenGL",
+        "vulkan" => "Vulkan",
+        "metal" => "Metal",
+        _ => "the graphics driver",
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Perf {
@@ -1027,6 +1055,22 @@ impl SheetApp {
             };
             self.notice = Some(Notice { text, kind: NoticeKind::Info, action: None });
         }
+    }
+
+    /// Says that this start follows a run that did not close: which backend that run was using and
+    /// which one this start is on (#76). Set once, when the window is created; a run that dies in
+    /// its driver never gets to say anything.
+    pub fn after_unclean_exit(&mut self, crashed: &str, started: &str) {
+        let lang = self.ui.language;
+        let crashed = lang.tr(backend_label(crashed));
+        let started = lang.tr(backend_label(started));
+        let text = if crashed == started {
+            lang.tr("The last run did not close properly ({crashed}). Your Renderer setting picks {started}, so nothing changed; File › Options › Renderer offers another.")
+        } else {
+            lang.tr("The last run did not close properly ({crashed}). Cella started on {started} instead; the Renderer setting on Automatic always switches after a crash.")
+        };
+        self.notice =
+            Some(Notice { text: text.replace("{crashed}", crashed).replace("{started}", started), kind: NoticeKind::Warning, action: None });
     }
 
     /// A window's name in the window menu and its title bar: the document's title, numbered

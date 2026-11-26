@@ -61,6 +61,61 @@ pub fn choose_backends(backend_override: Option<Backends>, dx12_adapters: &[Dx12
     }
 }
 
+/// What one start asks the graphics layer for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Plan {
+    /// The backends eframe initializes.
+    pub backends: Backends,
+    /// The backend a previous run died on, when this start moved off it (so the interface can say
+    /// why it is not on the one the user saw last).
+    pub crashed_on: Option<crate::renderer::Choice>,
+}
+
+/// The wgpu backends one [`crate::renderer::Choice`] names.
+fn backends_of(choice: crate::renderer::Choice) -> Backends {
+    match choice {
+        crate::renderer::Choice::Auto => Backends::GL | Backends::DX12 | Backends::VULKAN,
+        crate::renderer::Choice::Dx12 => Backends::DX12,
+        crate::renderer::Choice::Gl => Backends::GL,
+        crate::renderer::Choice::Vulkan => Backends::VULKAN,
+    }
+}
+
+/// The plan for this start.
+///
+/// An explicit `WGPU_BACKEND` (a debugging decision) wins outright. Otherwise the user's
+/// [`crate::renderer::Choice`] decides, and `Automatic` means [`choose_backends`]. One thing moves
+/// it: `crashed` — the backend the last run recorded but never cleared, i.e. it died instead of
+/// quitting — takes the **other** road, but only when the choice is `Automatic`. An explicit choice
+/// is kept even then (the interface says so instead of overruling the person who made it).
+pub fn plan(
+    choice: crate::renderer::Choice,
+    backend_override: Option<Backends>,
+    dx12_adapters: &[Dx12Adapter],
+    crashed: Option<crate::renderer::Choice>,
+) -> Plan {
+    if let Some(backends) = backend_override {
+        return Plan { backends, crashed_on: None };
+    }
+    if choice != crate::renderer::Choice::Auto {
+        return Plan { backends: backends_of(choice), crashed_on: None };
+    }
+    let mut backends = choose_backends(None, dx12_adapters);
+    let mut crashed_on = None;
+    if let Some(dead) = crashed
+        && backends == backends_of(dead)
+    {
+        // The other road has to exist on this machine: a GL-only machine has no DirectX 12 to try.
+        let other = if backends == Backends::DX12 { Backends::GL } else { Backends::DX12 };
+        let available = other != Backends::DX12 || choose_backends(None, dx12_adapters).contains(Backends::DX12);
+        if available {
+            backends = other;
+            crashed_on = Some(dead);
+        }
+    }
+    Plan { backends, crashed_on }
+}
+
 /// The backends for a second start when the first one failed with a graphics error before the
 /// app was created (no adapter, no device, no surface): the other one of DirectX 12 and OpenGL.
 /// `None` when `WGPU_BACKEND` chose the backends (the user asked for exactly those) or the first
@@ -102,25 +157,30 @@ pub fn configure_backends(options: &mut NativeOptions, backends: Backends) {
     }
 }
 
-/// Chooses the backends ([`choose_backends`]), applies them to `options` and returns them.
-/// Without a `backend_override` this first probes DirectX 12 with a short-lived instance of its
-/// own, which is dropped before eframe creates the real one.
+/// Chooses the backends ([`plan`]), applies them to `options` and returns the plan. The DirectX 12
+/// probe runs here with a short-lived instance of its own, dropped before eframe creates the real
+/// one; it is only asked when the choice is Automatic, which is the only case that needs it.
 #[cfg(target_os = "windows")]
-pub fn configure(options: &mut NativeOptions, backend_override: Option<Backends>) -> Backends {
-    let backends = match backend_override {
-        Some(backends) => {
-            log::info!("graphics: WGPU_BACKEND override, backends {backends:?}");
-            backends
-        }
-        None => {
-            let adapters = probe_dx12(options);
-            let backends = choose_backends(None, &adapters);
-            log::info!("graphics: {} DirectX 12 adapter(s) {adapters:?}, backends {backends:?}", adapters.len());
-            backends
-        }
-    };
-    configure_backends(options, backends);
-    backends
+pub fn configure(
+    options: &mut NativeOptions,
+    choice: crate::renderer::Choice,
+    crashed: Option<crate::renderer::Choice>,
+    backend_override: Option<Backends>,
+) -> Plan {
+    let adapters = if backend_override.is_none() && choice == crate::renderer::Choice::Auto { probe_dx12(options) } else { Vec::new() };
+    let plan = plan(choice, backend_override, &adapters, crashed);
+    match plan.crashed_on {
+        Some(dead) => log::info!(
+            "graphics: choice {:?}, {} DirectX 12 adapter(s); backends {:?} after a run that died on {:?}",
+            choice,
+            adapters.len(),
+            plan.backends,
+            dead
+        ),
+        None => log::info!("graphics: choice {:?}, {} DirectX 12 adapter(s) {adapters:?}; backends {:?}", choice, adapters.len(), plan.backends),
+    }
+    configure_backends(options, plan.backends);
+    plan
 }
 
 /// Lists the DirectX 12 adapters, checking each against the limits eframe's device descriptor
@@ -224,6 +284,47 @@ mod tests {
             };
             assert_eq!(fallback_backends(None, first), expected, "{adapters:?}");
         }
+    }
+
+    #[test]
+    fn the_choice_decides_the_backends() {
+        use crate::renderer::Choice;
+        let gpu = [adapter(DeviceType::DiscreteGpu, true)];
+        assert_eq!(plan(Choice::Dx12, None, &gpu, None).backends, Backends::DX12);
+        assert_eq!(plan(Choice::Gl, None, &gpu, None).backends, Backends::GL);
+        assert_eq!(plan(Choice::Vulkan, None, &gpu, None).backends, Backends::VULKAN);
+        // Automatic is the default rule: DirectX 12 when the probe finds a usable GPU.
+        assert_eq!(plan(Choice::Auto, None, &gpu, None).backends, Backends::DX12);
+        assert_eq!(plan(Choice::Auto, None, &[], None).backends, Backends::GL);
+        // An explicit WGPU_BACKEND wins over every choice.
+        for choice in Choice::ALL {
+            assert_eq!(plan(choice, Some(Backends::VULKAN), &gpu, None).backends, Backends::VULKAN);
+        }
+    }
+
+    #[test]
+    fn a_crashed_run_moves_automatic_to_the_other_backend() {
+        use crate::renderer::Choice;
+        let gpu = [adapter(DeviceType::DiscreteGpu, true)];
+        // Automatic on DirectX 12, and the last run died on DirectX 12: GL this time.
+        let p = plan(Choice::Auto, None, &gpu, Some(Choice::Dx12));
+        assert_eq!(p.backends, Backends::GL);
+        assert_eq!(p.crashed_on, Some(Choice::Dx12), "the interface has to be able to say why");
+        // Automatic on a machine whose only road is OpenGL, and GL died: there is nothing to
+        // move to, so it stays put and says nothing.
+        let p = plan(Choice::Auto, None, &[], Some(Choice::Gl));
+        assert_eq!((p.backends, p.crashed_on), (Backends::GL, None));
+        // A crash on a backend this start would not use anyway changes nothing.
+        let p = plan(Choice::Auto, None, &gpu, Some(Choice::Gl));
+        assert_eq!((p.backends, p.crashed_on), (Backends::DX12, None));
+        let p = plan(Choice::Auto, None, &gpu, Some(Choice::Vulkan));
+        assert_eq!((p.backends, p.crashed_on), (Backends::DX12, None));
+        // An explicit choice is kept: the person asked for this backend.
+        let p = plan(Choice::Dx12, None, &gpu, Some(Choice::Dx12));
+        assert_eq!((p.backends, p.crashed_on), (Backends::DX12, None));
+        // And an environment override is not moved either.
+        let p = plan(Choice::Auto, Some(Backends::GL), &gpu, Some(Choice::Gl));
+        assert_eq!((p.backends, p.crashed_on), (Backends::GL, None));
     }
 
     #[test]

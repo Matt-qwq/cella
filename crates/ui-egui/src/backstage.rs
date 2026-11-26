@@ -988,6 +988,38 @@ fn options(app: &mut SheetApp, ui: &mut Ui) {
     if ui.checkbox(&mut autosave, lang.tr("Save .xlsx workbooks automatically after every change")).changed() {
         app.toggle_autosave();
     }
+    // The renderer is picked before the window exists, so this writes the file the next start
+    // reads instead of switching anything now — and says what this run actually got (#76).
+    let mut renderer_error: Option<String> = None;
+    if let Some(service) = app.services.renderer.as_ref() {
+        let current = (service.choice)();
+        let running = (service.current)();
+        ui.add_space(18.0);
+        section(ui, lang, "Options|Graphics");
+        let selected = match current.as_str() {
+            "dx12" => "DirectX 12",
+            "gl" => "OpenGL",
+            "vulkan" => "Vulkan",
+            _ => "Automatic",
+        };
+        let title = format!("{}: {}", lang.tr("Renderer"), lang.tr(selected));
+        egui::ComboBox::from_id_salt("backstage_renderer").width(220.0).selected_text(title).show_ui(ui, |ui| {
+            for (key, label) in [("auto", "Automatic"), ("dx12", "DirectX 12"), ("gl", "OpenGL"), ("vulkan", "Vulkan")] {
+                if ui.selectable_label(current == key, lang.tr(label)).clicked()
+                    && let Err(e) = (service.set)(key)
+                {
+                    renderer_error = Some(e);
+                }
+            }
+        });
+        if !running.is_empty() {
+            dim(ui, &lang.tr("In use now: {backend}").replace("{backend}", &running));
+        }
+        dim(ui, lang.tr("A change takes effect the next time Cella starts."));
+    }
+    if let Some(e) = renderer_error {
+        app.message = Some((lang.tr("Renderer").to_string(), e));
+    }
     let Some(calc) = app.session.active().map(|d| d.wb.calc.clone()) else { return };
     ui.add_space(18.0);
     section(ui, lang, "Formulas");

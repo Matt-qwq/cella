@@ -17,6 +17,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod print;
+mod renderer;
 mod window;
 
 use std::cell::RefCell;
@@ -25,6 +26,18 @@ use std::rc::Rc;
 use cella_engine::Session;
 use cella_ui_egui::{Services, SheetApp};
 use serde_json::json;
+
+/// What the interface may ask about the renderer (see [`renderer`]): the saved choice, and what
+/// this run actually draws with, which is known only once the window has been created.
+#[derive(Default)]
+struct RendererShared {
+    settings: renderer::Settings,
+    /// "DirectX 12 · AMD Radeon RX 9070 GRE", or empty before the adapter is known.
+    current: String,
+}
+
+/// Shared between the shell and the interface.
+type RendererHandle = std::sync::Arc<std::sync::Mutex<RendererShared>>;
 
 /// Frame statistics for a benchmark run (`CELLA_FRAME_STATS=1`): what one frame of the app costs
 /// and how far apart frames are. A memory number says nothing about smoothness, and a screenshot
@@ -247,7 +260,8 @@ fn read_clipboard<T>(
     read(clipboard.as_mut()?).ok()
 }
 
-fn services() -> Services {
+fn services(renderer_handle: RendererHandle) -> Services {
+    let (choice_of, current_of, set_to) = (renderer_handle.clone(), renderer_handle.clone(), renderer_handle);
     // Keep the owner alive: X11/Wayland serve clipboard data from this handle.
     let clipboard: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
     let (html_clipboard, text_clipboard) = (clipboard.clone(), clipboard.clone());
@@ -295,6 +309,24 @@ fn services() -> Services {
         open_url: Some(Box::new(|url: &str| open_with_system(url))),
         printers: Some(print::discover()),
         print_native: Some(print::submit()),
+        // The renderer is picked before the window exists, so the Options page reads and writes
+        // the file the next start reads, and shows what this run got (#76).
+        renderer: Some(cella_ui_egui::RendererService {
+            choice: Box::new(move || {
+                choice_of.lock().map(|shared| shared.settings.choice.key().to_string()).unwrap_or_else(|_| renderer::Choice::Auto.key().to_string())
+            }),
+            set: Box::new(move |key: &str| {
+                if !prefs_enabled() {
+                    return Err("this run keeps no preferences (CELLA_NO_PREFS)".to_string());
+                }
+                let choice = renderer::Choice::from_key(key).ok_or_else(|| format!("unknown renderer `{key}`"))?;
+                let dir = config_dir().ok_or_else(|| "no settings folder".to_string())?;
+                let mut shared = set_to.lock().map_err(|_| "the renderer settings are unavailable".to_string())?;
+                shared.settings.choice = choice;
+                shared.settings.save(&dir).map_err(|e| format!("renderer.json: {e}"))
+            }),
+            current: Box::new(move || current_of.lock().map(|shared| shared.current.clone()).unwrap_or_default()),
+        }),
         ..Default::default()
     }
 }
@@ -390,7 +422,14 @@ fn main() -> eframe::Result<()> {
     }
     // The preferences come first: they decide the UI language, and the Normal style of the blank
     // workbook created below (等线 on a Chinese install, as Excel's own default is).
-    let mut app = SheetApp::new(Session::new(), services());
+    // The renderer is chosen before the window exists: its saved choice and the marker a run that
+    // died left behind are read here. `CELLA_NO_PREFS` runs keep no files at all.
+    let prefs_dir = if prefs_enabled() { config_dir() } else { None };
+    let renderer_settings = renderer::Settings::load(prefs_dir.as_deref());
+    let crashed_backend = if prefs_enabled() { renderer::Marker::load(prefs_dir.as_deref()).map(|m| m.backend) } else { None };
+    let renderer_handle: RendererHandle =
+        std::sync::Arc::new(std::sync::Mutex::new(RendererShared { settings: renderer_settings.clone(), current: String::new() }));
+    let mut app = SheetApp::new(Session::new(), services(renderer_handle.clone()));
     app.watch_desktop_theme();
     let control_port = control_port;
     load_prefs(&mut app);
@@ -430,11 +469,13 @@ fn main() -> eframe::Result<()> {
     // DirectX 12 has no GPU driver, and never touches Vulkan unless asked (see graphics.rs).
     #[cfg(target_os = "windows")]
     let backend_override = eframe::wgpu::Backends::from_env();
+    // The saved choice, moved off the backend a run that never exited was drawing with — only when
+    // the choice is Automatic (see graphics::plan).
     #[cfg(target_os = "windows")]
     let (options, first_backends) = {
-        let mut options = options;
-        let backends = graphics::configure(&mut options, backend_override);
-        (options, backends)
+        let mut configured = options;
+        let plan = graphics::configure(&mut configured, renderer_settings.choice, crashed_backend, backend_override);
+        (configured, plan.backends)
     };
     #[cfg(target_os = "windows")]
     let retry_options = options.clone();
@@ -460,6 +501,35 @@ fn main() -> eframe::Result<()> {
                 // its bold and italic fell back to Latin faces with no Chinese glyphs.
                 cella_ui_egui::fonts::start_scan();
                 SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
+                // What this run actually draws with, from the adapter wgpu selected: logged, shown
+                // by the Options page, and written as the marker the next start reads as "the last
+                // run died" when it is still there (#76). Nothing here may stop a start.
+                let mut started_backend: Option<renderer::Choice> = None;
+                if let Some(state) = cc.wgpu_render_state.as_ref() {
+                    let info = state.adapter.get_info();
+                    let name = format!("{:?}", info.backend);
+                    log::info!(
+                        "renderer: {name} adapter {:?} (vendor 0x{:04x}, device 0x{:04x}, driver {:?} {:?})",
+                        info.name,
+                        info.vendor,
+                        info.device,
+                        info.driver,
+                        info.driver_info
+                    );
+                    if let Ok(mut shared) = renderer_handle.lock() {
+                        shared.current = format!("{name} · {}", info.name);
+                    }
+                    started_backend = renderer::choice_of_backend(&name);
+                    if let (Some(dir), Some(choice)) = (prefs_dir.as_deref(), started_backend)
+                        && let Err(e) = renderer::Marker::write(dir, choice)
+                    {
+                        log::warn!("renderer: no session marker: {e}");
+                    }
+                }
+                if let (Some(crashed), Some(started)) = (crashed_backend, started_backend) {
+                    log::warn!("renderer: the last run did not close (it was on {}); this one is on {}", crashed.key(), started.key());
+                    app.after_unclean_exit(crashed.key(), started.key());
+                }
                 if let Some(port) = control_port {
                     match control_server::start(port, cc.egui_ctx.clone()) {
                         Ok(rx) => {
@@ -486,7 +556,7 @@ fn main() -> eframe::Result<()> {
     // A graphics error before the app existed: start once more with the other backend (eframe
     // reuses its event loop for the second run). Errors after that, or from winit, are returned.
     #[cfg(target_os = "windows")]
-    if let Err(eframe::Error::Wgpu(e)) = &result
+    let result = if let Err(eframe::Error::Wgpu(e)) = &result
         && let Some(app) = pending.take()
         && let Some(backends) = graphics::fallback_backends(backend_override, first_backends)
     {
@@ -494,7 +564,15 @@ fn main() -> eframe::Result<()> {
         pending.set(Some(app));
         let mut options = retry_options;
         graphics::configure_backends(&mut options, backends);
-        return run(options);
+        run(options)
+    } else {
+        result
+    };
+    // A run that quits on purpose clears the marker, so the next start is not read as a crash.
+    if result.is_ok()
+        && let Some(dir) = prefs_dir.as_deref()
+    {
+        renderer::Marker::clear(dir);
     }
     result
 }
