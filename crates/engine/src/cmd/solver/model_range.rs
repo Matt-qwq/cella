@@ -99,6 +99,16 @@ fn options_width(formula: &str) -> u32 {
     u32::try_from(formula.split(',').count()).unwrap_or(u32::MAX)
 }
 
+/// Whether the spill cell `c` belongs to a formula this save is replacing.
+///
+/// `Sheet::spill_anchor` answers "which formula produced this *spilled* value" and returns `None`
+/// for the anchor itself, so an anchor of our own (the options row a previous Save Model wrote) read
+/// as another formula's spill and a save over the same cell was refused (#69). For this question an
+/// anchor is its own anchor: a cell we are about to write counts as ours.
+fn spill_is_ours(sheet: &Sheet, c: CellRef, ours: &[CellRef]) -> bool {
+    ours.contains(&sheet.spill_anchor(c).unwrap_or(c))
+}
+
 /// The options row is an array constant that spills width - 1 cells to the right of its anchor.
 /// Refused, before anything is written, when the spill would run off the sheet or be blocked
 /// (the anchor would show #SPILL!): a cell there holds content or another formula's spilled
@@ -126,7 +136,7 @@ fn check_options_spill(sheet: &Sheet, anchor: CellRef, width: u32, ours: &[CellR
         if sheet.cells.contains(c) {
             return Err(blocked(format!("{} isn't empty", c.a1())));
         }
-        if sheet.spill_anchor(c).is_none_or(|a| !ours.contains(&a)) && sheet.any_spilled_in(RangeRef::new(c, c)) {
+        if !spill_is_ours(sheet, c, ours) && sheet.any_spilled_in(RangeRef::new(c, c)) {
             return Err(blocked(format!("{} holds the values of another formula", c.a1())));
         }
     }
@@ -145,7 +155,7 @@ fn check_options_spill(sheet: &Sheet, anchor: CellRef, width: u32, ours: &[CellR
 /// are as in check_options_spill: a model saved at the same place before may be replaced.
 fn check_column_spills(sheet: &Sheet, column: RangeRef, ours: &[CellRef]) -> Result<()> {
     for c in column.iter() {
-        if sheet.spill_anchor(c).is_none_or(|a| !ours.contains(&a)) && sheet.any_spilled_in(RangeRef::new(c, c)) {
+        if !spill_is_ours(sheet, c, ours) && sheet.any_spilled_in(RangeRef::new(c, c)) {
             return Err(EngineError::Other(format!(
                 "The saved model would cover {}, which holds the values of another formula; choose another place to save it.",
                 c.a1()

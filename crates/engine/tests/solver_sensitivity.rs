@@ -186,6 +186,19 @@ fn reset_all_removes_the_sheets_model_and_the_saved_cells_bring_it_back() {
     assert_eq!(run(&mut s, "data.solver", json!({}))["model"]["goal"], "min");
 }
 
+/// The other half of the same guard: a column that holds *another* formula's spilled values is still
+/// refused, even with overwrite — the model's formulas would leave that formula showing #SPILL!.
+#[test]
+fn a_saved_model_still_refuses_another_formulas_spilled_values() {
+    let mut s = wyndor();
+    run(&mut s, "data.solver", wyndor_params());
+    // H6 spills ten cells down through the column a model saved at H8 would take.
+    run(&mut s, "cell.set", json!({"cell": "H6", "input": "=SEQUENCE(10)"}));
+    let e = s.execute("data.solverSaveModel", json!({"to": "H8", "overwrite": true})).unwrap_err().to_string();
+    assert!(e.contains("holds the values of another formula"), "{e}");
+    assert!(e.contains("H8"), "the first cell of the spill it would cover: {e}");
+}
+
 #[test]
 fn a_nonlinear_model_gets_reduced_gradients_and_lagrange_multipliers() {
     // The largest rectangle with a perimeter of at most 20: the area (P/4)^2 grows by P/8 = 2.5
