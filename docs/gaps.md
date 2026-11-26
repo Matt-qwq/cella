@@ -763,19 +763,24 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   localization work. [localization-parity.md](localization-parity.md)
 
 ### 6. Calculation correctness bugs (F)
-- **Found 11-26 by the command-sequence soak, not fixed yet — a merge over filled formulas leaves a
-  dependent stale.** Four commands on the `sales` sample are enough, and none of them is a §32 band
-  (proved with the band stashed):
+- **Found 11-26 by the command-sequence soak, not fixed yet — a range read misses cells, so a
+  formula over them is stale.** The soak failed at seed 0 step 46; `CELLA_FUZZ_SHRINK=1` cut it to
+  four commands on the `sales` sample (no §32 band involved — the same soak fails with the harness
+  change stashed):
   ```text
   home.deleteColumns {"cols":"H:H"}   home.insertColumns {"cols":"A:A"}
   edit.fillRight {"range":"D4:H11"}   home.mergeCenter {"range":"H6:J9"}
   ```
-  after which `D17` (`=SUM(G5:G10)/SUM(D5:D10)-1`) reads **0.0** in memory and **−0.4759** after a
-  full recalculation. `edit.fillRight` writes the formulas, so the merge clears cells the graph holds
-  as precedents and the recalculation that follows does not learn about it — the same family as the
-  cleared-blocker bug of 10-30, one edit later. The soak found it at seed 0 step 46 (20 × 120 with
-  `CELLA_FUZZ_SHRINK=1`, capture under the session temp dir); the shrink cut 46 steps to these four.
-  Reproduce with the four `execute` calls above, then compare `cell.get` with `formulas.calculateNow`.
+  They leave `D17` (`=SUM(G5:G10)/SUM(D5:D10)-1`) at **0.0** in memory against **−0.4759** from a
+  from-scratch recalculation, and the probes below found the cause is **not** the merge at all: after
+  the first three commands, `cell.get G7` reads 55,300 and `=G7` reads 55,300, but
+  **`=SUM(G7:G9)` and `=COUNT(G7:G9)` both read 0** while those three cells store 48,200-class
+  numbers — G7, G8 and G9 are skipped by the **range** walk while single-cell reads see them
+  (`SUM(G5:G10)` = 159,760 = G5 + G6 + G10). So a column insert/delete (or the fill that follows it)
+  leaves cells a range scan cannot find, which also explains the stale dependent: the recalculation
+  reads the same miss. Next: reproduce with those three commands alone and look at the store's row and
+  column maps for rows 7-9 of column G (`Sheet`'s own `value()` sees them, the range walk does not).
+  Scratch probes were run against `crates/engine/examples/merge_probe.rs` and removed.
 - **Closed 10-30.** Missing: nothing known. The four this entry tracked have landed: 15-significant-digit
   equality (#57, so `=0.1+0.2=0.3` is TRUE and MATCH and COUNTIF agree), spill updates after
   structural edits and cleared blockers (#133, #139; PRs #148, #157), 3-D span deletion (#140),
