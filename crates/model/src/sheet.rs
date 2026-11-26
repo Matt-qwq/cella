@@ -96,6 +96,20 @@ fn drop_row(spans: &mut Vec<(u32, u32)>, row: u32) {
     *spans = out;
 }
 
+/// A style a **rectangle** carries where no cell is stored: one style for a rectangle of blanks
+/// instead of a stored cell for each (`gaps` §32, slice 1 of `plan/STYLE-BANDS.md`).
+///
+/// The last band covering a cell wins; a **stored cell's own style still beats every band**, and a
+/// band beats the row and column line styles — so typing into a formatted blank keeps the format
+/// (`set_value` reads `style_id`), and clearing a cell inside a band stores the default style and
+/// thereby says "not the band". Nothing writes a band yet: the format command, the writer and every
+/// structural edit learn about them in the next slices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StyleBand {
+    pub range: RangeRef,
+    pub style: StyleId,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sheet {
     pub name: String,
@@ -122,6 +136,10 @@ pub struct Sheet {
     pub default_col_width: f32,
     pub default_row_height: f32,
     pub merges: Vec<RangeRef>,
+    /// Styles a rectangle carries where no cell is stored ([StyleBand]): the answer for a blank
+    /// cell, behind the cell's own style and in front of the line styles.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_bands: Vec<StyleBand>,
     /// Frozen rows and columns (top/left).
     pub freeze: Option<(u32, u32)>,
     pub tab_color: Option<Color>,
@@ -239,6 +257,7 @@ impl Sheet {
             default_col_width: DEFAULT_COL_WIDTH,
             default_row_height: DEFAULT_ROW_HEIGHT,
             merges: vec![],
+            style_bands: vec![],
             freeze: None,
             tab_color: None,
             visibility: Visibility::Visible,
@@ -412,10 +431,18 @@ impl Sheet {
         if let Some(style) = self.cells.style(c) {
             return style;
         }
+        if let Some(style) = self.band_style(c) {
+            return style;
+        }
         if let Some(s) = self.rows.get(&c.row).and_then(|r| r.style) {
             return s;
         }
         self.cols.get(&c.col).and_then(|r| r.style).unwrap_or_default()
+    }
+    /// The style the newest [`StyleBand`](StyleBand) covering `c` carries: the answer for a blank
+    /// cell, which [`style_id`](Self::style_id) reads after the cell's own style.
+    pub fn band_style(&self, c: CellRef) -> Option<StyleId> {
+        self.style_bands.iter().rev().find(|b| b.range.contains(c)).map(|b| b.style)
     }
     pub fn set_value(&mut self, c: CellRef, v: Value) {
         let style = self.style_id(c);
@@ -618,6 +645,11 @@ impl Sheet {
         for sr in self.spill_ranges.values() {
             r = Some(r.map_or(*sr, |x| x.union(sr)));
         }
+        // A formatted blank is a used cell as far as a save, `Ctrl+End` and every range command is
+        // concerned — that is what a stored styled blank already made it, and a band replaces those.
+        for b in &self.style_bands {
+            r = Some(r.map_or(b.range, |x| x.union(&b.range)));
+        }
         r
     }
     pub fn is_protected(&self) -> bool {
@@ -784,6 +816,38 @@ mod tests {
     }
 
     /// A chart sheet is one chart and no cells, and older JSON (which has no kind) is a worksheet.
+    /// A band answers for the cells no stored cell holds — behind the cell's own style, in front of
+    /// the line styles — and it makes the sheet "used" where it covers (`gaps` §32, slice 1 of
+    /// `plan/STYLE-BANDS.md`).
+    #[test]
+    fn a_style_band_answers_where_no_cell_is_stored() {
+        let mut sh = Sheet::new("S");
+        let band = StyleId(7);
+        sh.style_bands.push(StyleBand { range: RangeRef::parse("B2:D9").unwrap(), style: band });
+        assert_eq!(sh.style_id(CellRef::parse("C5").unwrap()), band, "a blank inside the band");
+        assert_eq!(sh.style_id(CellRef::parse("A1").unwrap()), StyleId::DEFAULT, "outside it, nothing");
+        // A stored cell beats every band — what "clear this cell" stores, and what a value written
+        // before the band was made already holds.
+        sh.set_value(CellRef::parse("C5").unwrap(), Value::Number(1.0));
+        assert_eq!(sh.style_id(CellRef::parse("C5").unwrap()), band, "typing into a formatted blank keeps it");
+        sh.set_style(CellRef::parse("C5").unwrap(), StyleId::DEFAULT);
+        assert_eq!(sh.style_id(CellRef::parse("C5").unwrap()), StyleId::DEFAULT, "a cleared cell says not-the-band");
+        // A line style is behind the band; a second band over the first wins.
+        sh.rows.entry(1).or_default().style = Some(StyleId(9));
+        assert_eq!(sh.style_id(CellRef::new(1, 2)), band, "the band is in front of the row style");
+        assert_eq!(sh.style_id(CellRef::new(1, 0)), StyleId(9), "and behind it outside the band");
+        sh.style_bands.push(StyleBand { range: RangeRef::parse("D5:D9").unwrap(), style: StyleId(5) });
+        assert_eq!(sh.style_id(CellRef::new(5, 3)), StyleId(5), "the newest band wins over the older one");
+        assert_eq!(sh.style_id(CellRef::new(4, 2)), StyleId::DEFAULT, "the cleared cell still beats both");
+        // Used range: the band is a used area on its own.
+        let bare = Sheet::new("T");
+        assert_eq!(bare.used_range(), None);
+        assert_eq!(
+            Sheet { style_bands: vec![StyleBand { range: RangeRef::parse("B2:D9").unwrap(), style: band }], ..Sheet::new("U") }.used_range(),
+            Some(RangeRef::parse("B2:D9").unwrap())
+        );
+    }
+
     #[test]
     fn chart_sheets_hold_one_chart_and_no_cells() {
         let chart = Chart { id: 7, kind: crate::features::ChartKind::ColumnClustered, title: Some("Sales".into()), ..Chart::default() };

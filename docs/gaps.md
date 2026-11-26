@@ -1316,9 +1316,18 @@ merges and conditional formats, or **materialising** them into cells first (the 
 plus `clearFormats` splitting or masking a band, the JSON envelope's field, and undo (a band is part
 of the `Sheet` a snapshot copies).
 
+**Slice 1 landed 11-26 (behaviour-neutral):** `Sheet::style_bands: Vec<StyleBand { range, style }>`
+with `Sheet::band_style`, consulted by `style_id` **after** the cell's own style and **before** the row
+and column line styles, and folded into `used_range`; the field is serde-default so an older JSON
+opens unchanged. Nothing writes a band yet, so no behaviour moved — but the invariant the next slices
+rest on is pinned by `a_style_band_answers_where_no_cell_is_stored`: a stored cell beats every band
+(that is what "clear this cell" stores), typing into a formatted blank keeps the format (`set_value`
+reads `style_id`), the newest band wins, and a band makes the sheet used where it covers.
+
 **Fix (still the design question):** a range-level style (a rectangle or a column band) that the
 renderer, the writer and `cell.get` expand lazily, instead of one style id per cell. **Estimate:**
-6–10 h, now with the surface list above. The probe prices whatever replaces it.
+6–10 h, with the surface list above and slices 1–5 in `plan/STYLE-BANDS.md`. The probe prices whatever
+replaces it.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md); `crates/engine/examples/format_range.rs`.
 
