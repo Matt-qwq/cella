@@ -2177,47 +2177,101 @@ fn subtotal(s: &mut Session, p: &Json) -> Result<Json> {
         "product" => "Product",
         _ => "Total",
     };
-    // Group boundaries (header in the first row).
+    // Group boundaries (header in the first row), read before the sheet moves.
     let d = s.doc()?;
     let sh = d.wb.sheet(sheet).ok_or(EngineError::NoDocument)?;
     let mut groups: Vec<(u32, u32, String)> = Vec::new();
     let first = r.start.row + u32::from(header);
     let mut start = first;
+    let mut prev = sh.value(CellRef::new(first, group_col));
     for row in first..=r.end.row + 1 {
-        let cur = sh.value(CellRef::new(row, group_col)).display();
-        let prev = sh.value(CellRef::new(start, group_col)).display();
-        if row > r.end.row || cur != prev {
-            groups.push((start, row - 1, prev));
+        if row > r.end.row {
+            groups.push((start, r.end.row, prev.display()));
+            break;
+        }
+        let cur = sh.value(CellRef::new(row, group_col));
+        // A group is a run of one displayed value. Compare the values first — free for a run that
+        // repeats exactly, which is every row of a sorted report — and format only the pair that
+        // differs but may still print the same (1e20 against 1e20 + 1): the scan used to format
+        // two cells a row, a million allocations for a column of ten-digit integers.
+        if cur != prev && cur.display() != prev.display() {
+            groups.push((start, row - 1, prev.display()));
             start = row;
+            prev = cur;
         }
     }
-    // Insert a total row after each group, bottom-up so indices stay valid.
-    let mut inserted = 0;
-    for (g0, g1, name) in groups.iter().rev() {
-        s.execute("home.insertRows", json!({"sheet": sheet, "rows": format!("{}:{}", g1 + 2, g1 + 2)}))?;
-        let row = g1 + 1;
-        let lbl = CellRef::new(row, group_col).a1();
-        s.execute("cell.set", json!({"sheet": sheet, "cell": lbl, "input": format!("{name} {label}")}))?;
+    let n = groups.len() as u32;
+    // One line opens before each group's total row, in the coordinates the sheet has now; the
+    // grand total opens one past the last of them — on the same line, when the last group ends at
+    // the range's own last row.
+    let mut at: Vec<u32> = groups.iter().map(|(_, g1, _)| g1 + 1).collect();
+    at.push(r.end.row + 1);
+    // The batch pushes everything from its first insert down: refuse to shift data off the sheet.
+    if let Some(u) = sh.used_range()
+        && u.end.row >= first
+        && u64::from(u.end.row) + u64::from(n) + 1 >= u64::from(cella_core::MAX_ROWS)
+    {
+        return Err(EngineError::Other("To prevent possible loss of data, Excel cannot shift nonblank cells off of the worksheet.".into()));
+    }
+    super::sheet::check_lines_protection(s, p, cella_formula::adjust::Axis::Rows, first, 1, true)?;
+    // One commit for the whole report: the batch is expensive because it *was* one insert a
+    // group — every insert copied the workbook, rewrote every formula and recalculated everything
+    // (Θ(groups × rows) instead of Θ(rows)).
+    let drawn = edit(s, |cx| {
+        let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
+        cx.protection_checked = true;
+        super::sheet::insert_rows_at(cx, sheet, &at)?;
+        super::sheet::rewrite_inserts(&mut cx.wb, &name, &at);
+        let mut shapes = cella_formula::ShapeTable::default();
+        for (i, (g0, g1, group)) in groups.iter().enumerate() {
+            let i = i as u32;
+            // The group's rows as the batch left them, and the total row it opened after them.
+            let (top, bottom, row) = (g0 + i, g1 + i, g1 + 1 + i);
+            let lbl = CellRef::new(row, group_col);
+            let cell = super::edit::input_to_cell(&format!("{group} {label}"), sheet, lbl, &mut cx.wb, &mut shapes)?.unwrap_or_default();
+            cx.sheet_mut(sheet)?.set_cell(lbl, cell);
+            cx.touch(sheet, lbl);
+            for c in &cols {
+                let range = RangeRef::new(CellRef::new(top, *c), CellRef::new(bottom, *c)).a1();
+                let at_cell = CellRef::new(row, *c);
+                let input = format!("=SUBTOTAL({code},{range})");
+                let cell = super::edit::input_to_cell(&input, sheet, at_cell, &mut cx.wb, &mut shapes)?.unwrap_or_default();
+                cx.sheet_mut(sheet)?.set_cell(at_cell, cell);
+                cx.touch(sheet, at_cell);
+            }
+            // Bold across the range (Home › Bold), then the group goes one level in (Data › Group).
+            let mut cache: std::collections::HashMap<StyleId, StyleId> = std::collections::HashMap::new();
+            for c in r.start.col..=r.end.col {
+                let at = CellRef::new(row, c);
+                let st = cx.wb.sheet(sheet).map(|sh| sh.style_id(at)).unwrap_or_default();
+                let bold = *cache.entry(st).or_insert_with(|| cx.wb.styles.derive(st, |s| s.font.bold = true));
+                cx.sheet_mut(sheet)?.set_style(at, bold);
+            }
+            let sh = cx.sheet_mut(sheet)?;
+            for line in top..=bottom {
+                let e = sh.rows.entry(line).or_default();
+                e.outline = (e.outline + 1).min(outline::MAX_LEVEL);
+            }
+        }
+        // The grand total: one line past the last group's, over every total row above it.
+        let last = r.end.row + 1 + n;
+        let lbl = CellRef::new(last, group_col);
+        let cell = super::edit::input_to_cell(&format!("Grand {label}"), sheet, lbl, &mut cx.wb, &mut shapes)?.unwrap_or_default();
+        cx.sheet_mut(sheet)?.set_cell(lbl, cell);
+        cx.touch(sheet, lbl);
         for c in &cols {
-            let range = RangeRef::new(CellRef::new(*g0, *c), CellRef::new(*g1, *c)).a1();
-            s.execute("cell.set", json!({"sheet": sheet, "cell": CellRef::new(row, *c).a1(), "input": format!("=SUBTOTAL({code},{range})")}))?;
+            let range = RangeRef::new(CellRef::new(first, *c), CellRef::new(last - 1, *c)).a1();
+            let at_cell = CellRef::new(last, *c);
+            let input = format!("=SUBTOTAL({code},{range})");
+            let cell = super::edit::input_to_cell(&input, sheet, at_cell, &mut cx.wb, &mut shapes)?.unwrap_or_default();
+            cx.sheet_mut(sheet)?.set_cell(at_cell, cell);
+            cx.touch(sheet, at_cell);
         }
-        s.execute(
-            "home.bold",
-            json!({"sheet": sheet, "range": RangeRef::new(CellRef::new(row, r.start.col), CellRef::new(row, r.end.col)).a1(), "on": true}),
-        )?;
-        s.execute("data.group", json!({"sheet": sheet, "rows": format!("{}:{}", g0 + 1, g1 + 1)}))?;
-        inserted += 1;
-    }
-    let last = r.end.row + inserted + 1;
-    let lbl = CellRef::new(last, group_col).a1();
-    s.execute("home.insertRows", json!({"sheet": sheet, "rows": format!("{}:{}", last + 1, last + 1)}))?;
-    s.execute("cell.set", json!({"sheet": sheet, "cell": lbl, "input": format!("Grand {label}")}))?;
-    for c in &cols {
-        let range = RangeRef::new(CellRef::new(first, *c), CellRef::new(last - 1, *c)).a1();
-        s.execute("cell.set", json!({"sheet": sheet, "cell": CellRef::new(last, *c).a1(), "input": format!("=SUBTOTAL({code},{range})")}))?;
-    }
-    Ok(json!({"groups": inserted}))
+        cx.structural = true;
+        Ok(n)
+    })?;
+    super::sheet::cancel_copy_mode(s);
+    Ok(json!({"groups": drawn}))
 }
 
 #[cfg(test)]
@@ -2394,6 +2448,63 @@ mod tests {
         assert_eq!(get(&mut s, "B3")["value"], json!(30.0), "East's subtotal counts both East rows");
         assert_eq!(get(&mut s, "A7")["text"], json!("Grand Total"));
         assert_eq!(get(&mut s, "B7")["value"], json!(100.0), "the grand total counts every data row");
+    }
+
+    /// The batch of rows `data.subtotal` opens moves the formulas below it by one step map, and a
+    /// formula that does not move still has its references rewritten: this is `adjust_inserts`
+    /// over the whole batch (three rows in, at two different depths), not an answer per group.
+    #[test]
+    fn subtotal_rewrites_the_formulas_below_the_block_once() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1", "values": [["G", "V"], ["East", 1], ["East", 2], ["West", 3], ["West", 4]]})).unwrap();
+        s.execute("cell.set", json!({"cell": "B6", "input": "7"})).unwrap();
+        // D1 reads a row above both inserts, the row the first one opens at, and the row past them.
+        s.execute("cell.set", json!({"cell": "D1", "input": "=B2+B4+B6"})).unwrap();
+        s.execute("data.subtotal", json!({"range": "A1:B5", "groupBy": "A", "columns": ["B"]})).unwrap();
+        let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap();
+        assert_eq!(get(&mut s, "A4")["text"], json!("East Total"));
+        assert_eq!(get(&mut s, "A7")["text"], json!("West Total"));
+        assert_eq!(get(&mut s, "A8")["text"], json!("Grand Total"));
+        assert_eq!(get(&mut s, "D1")["formula"], json!("=B2+B5+B9"), "row 1 stays, row 3 moves one, row 5 moves three");
+        assert_eq!(get(&mut s, "D1")["value"], json!(11.0), "1 + 3 + 7");
+    }
+
+    /// The total row is bold across the range and the group's own rows go one outline level in,
+    /// exactly what the twelve inner commands did before: Home › Bold, Data › Group.
+    #[test]
+    fn subtotal_bolds_the_total_rows_and_groups_the_rows_they_total() {
+        let mut s = Session::new();
+        s.new_workbook();
+        let values = json!([["Group", "Value"], ["East", 1], ["East", 2], ["West", 3], ["West", 4]]);
+        s.execute("range.setValues", json!({"range": "A1", "values": values})).unwrap();
+        s.execute("data.subtotal", json!({"range": "A1:B5", "groupBy": "A", "columns": ["B"]})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.sheet(0).unwrap();
+        let bold = |row: u32| d.wb.styles.get(sh.style_id(CellRef::new(row, 1))).font.bold;
+        assert!(bold(3) && bold(6), "both total rows are bold");
+        assert!(!bold(0) && !bold(7), "the header and the grand total keep their style");
+        let level = |row: u32| sh.rows.get(&row).map(|i| i.outline).unwrap_or(0);
+        assert_eq!((level(1), level(2)), (1, 1), "East's rows are one level in");
+        assert_eq!((level(3), level(4), level(5)), (0, 1, 1), "the total row stays out, West's rows go in");
+        assert_eq!((level(6), level(7)), (0, 0), "the grand total is not grouped");
+    }
+
+    /// Subtotal totals *adjacent* equal values, so a column of distinct ones is a group a row —
+    /// the case that never finished while every group cost a row insert of every row below it.
+    #[test]
+    fn subtotal_bounds_the_one_row_a_group_case() {
+        let mut s = Session::new();
+        s.new_workbook();
+        let values: Vec<Json> = (0..2_000).map(|i| json!([i, i])).collect();
+        s.execute("range.setValues", json!({"range": "A1", "values": values})).unwrap();
+        let out = s.execute("data.subtotal", json!({"range": "A1:B2000", "groupBy": "A", "columns": ["B"], "header": false})).unwrap();
+        assert_eq!(out["groups"], json!(2_000));
+        let get = |s: &mut Session, a: &str| s.execute("cell.get", json!({"cell": a})).unwrap();
+        assert_eq!(get(&mut s, "A2")["text"], json!("0 Total"));
+        assert_eq!(get(&mut s, "B2")["value"], json!(0.0));
+        assert_eq!(get(&mut s, "A4")["text"], json!("1 Total"), "a total row opens after each data row");
+        assert_eq!(get(&mut s, "A4001")["text"], json!("Grand Total"), "the last of 2,000 total rows plus the grand total");
     }
 
     /// A filter hides rows as a bitmap, not as a line info each. Five thousand hidden rows used

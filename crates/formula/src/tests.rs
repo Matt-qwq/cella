@@ -1,5 +1,5 @@
 use super::*;
-use crate::adjust::{Axis, Edit, adjust, rename_sheet, shift_relative};
+use crate::adjust::{Axis, Edit, adjust, adjust_inserts, rename_sheet, shift_relative};
 
 fn rt(src: &str) -> String {
     print(&parse(src).unwrap_or_else(|e| panic!("{src}: {e}")))
@@ -182,6 +182,26 @@ fn insert_delete() {
     assert_eq!(print(&adjust(e, "Other", "Sheet1", &del)), "Sheet1!A2");
     let e = parse("SUM(A:A)").unwrap();
     assert_eq!(print(&adjust(e, "S", "S", &del)), "SUM(#REF!)");
+}
+
+/// A batch of one-line inserts is the edit a report makes when it opens a total row per group.
+/// The answer must be the one the same inserts give one at a time, bottom-up: a cell below the
+/// batch moves by every insert above it, a span holding the batch grows by the ones inside it,
+/// a whole column stays whole, another sheet's reference does not move, and a coordinate pushed
+/// past the last row is `#REF!` — exactly what `Insert` one line at a time answers.
+#[test]
+fn a_batch_of_inserts_answers_as_the_inserts_one_at_a_time() {
+    let at = [2u32, 5, 5, 9];
+    let src = "A1+A6+SUM(A2:A12)+SUM(A:A)+Other!A6";
+    let once = |e: Expr| at.iter().rev().fold(e, |e, &line| adjust(e, "S", "S", &Edit::Insert { axis: Axis::Rows, at: line, count: 1 }));
+    let batch = adjust_inserts(parse(src).unwrap(), "S", "S", Axis::Rows, &at);
+    assert_eq!(print(&batch), print(&once(parse(src).unwrap())));
+    // Rows 3, 6, 6 and 10 open: row 1 stays, row 6 lands on row 9, row 12 on row 16.
+    assert_eq!(print(&batch), "A1+A9+SUM(A2:A16)+SUM(A:A)+Other!A6");
+    // A cell the batch pushes off the sheet is `#REF!`, as an insert per line would make it.
+    assert_eq!(print(&adjust_inserts(parse("A1048576").unwrap(), "S", "S", Axis::Rows, &[0])), "#REF!");
+    // No insert at all is no move.
+    assert_eq!(print(&adjust_inserts(parse(src).unwrap(), "S", "S", Axis::Rows, &[])), src);
 }
 
 #[test]

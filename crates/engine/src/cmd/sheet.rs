@@ -242,12 +242,25 @@ fn shift_sheet_features(sh: &mut Sheet, axis: Axis, at: u32, count: u32, insert:
 /// Rewrites every formula reference (and chart series) for a structural edit on `target`.
 pub(super) fn rewrite(wb: &mut cella_model::Workbook, target: &str, e: &Edit) {
     super::edit::rewrite_all_formulas(wb, target, e);
+    rewrite_objects(wb, |expr, host| cella_formula::adjust::adjust(expr, host, target, e));
+}
+
+/// [`rewrite`] for a **batch** of one-line row inserts run as one edit (`data.subtotal`): the
+/// formulas move by the batch's step map, and so do the objects that spell a range.
+pub(super) fn rewrite_inserts(wb: &mut cella_model::Workbook, target: &str, at: &[u32]) {
+    super::edit::rewrite_all_formulas_inserts(wb, target, at);
+    rewrite_objects(wb, |expr, host| cella_formula::adjust::adjust_inserts(expr, host, target, Axis::Rows, at));
+}
+
+/// The chart series, sparklines and PivotTable sources of every sheet, their ranges moved by
+/// `adjust`.
+fn rewrite_objects(wb: &mut cella_model::Workbook, adjust: impl Fn(cella_formula::Expr, &str) -> cella_formula::Expr) {
     for si in 0..wb.sheets.len() {
         let host = wb.sheets.get(si).map(|s| s.name.clone()).unwrap_or_default();
         let Some(sh) = wb.sheet_mut(si) else { continue };
         let fix = |text: &str| -> String {
             match cella_formula::parse(text) {
-                Ok(expr) => cella_formula::print(&cella_formula::adjust::adjust(expr, &host, target, e)),
+                Ok(expr) => cella_formula::print(&adjust(expr, &host)),
                 Err(_) => text.to_string(),
             }
         };
@@ -269,7 +282,7 @@ pub(super) fn rewrite(wb: &mut cella_model::Workbook, target: &str, e: &Edit) {
             let body = pt.source.trim().trim_start_matches('=');
             if let Ok(expr) = cella_formula::parse(body) {
                 let before = cella_formula::print(&expr);
-                let after = cella_formula::print(&cella_formula::adjust::adjust(expr, &host, target, e));
+                let after = cella_formula::print(&adjust(expr, &host));
                 if after != before {
                     pt.source = after;
                 }
@@ -280,7 +293,7 @@ pub(super) fn rewrite(wb: &mut cella_model::Workbook, target: &str, e: &Edit) {
 
 /// Inserting or deleting cells moves the copied block away from the stored source range, so, like
 /// Excel, it cancels copy/cut mode for this workbook (a later paste would take the wrong cells).
-fn cancel_copy_mode(s: &mut Session) {
+pub(super) fn cancel_copy_mode(s: &mut Session) {
     let uid = s.doc().map(|d| d.uid).ok();
     if s.clipboard.as_ref().is_some_and(|c| Some(c.doc_uid) == uid) {
         s.clipboard = None;
@@ -329,6 +342,29 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
     })?;
     cancel_copy_mode(s);
     Ok(out)
+}
+
+/// Opens one blank row before each index of `at` (ascending) on `sheet`, inside the caller's own
+/// commit: the same movement of features and line info as `home.insertRows`, done for a whole
+/// batch so the workbook is copied, rewritten and recalculated **once** (`data.subtotal`).
+///
+/// The inserts run from the bottom up, so every index is in the coordinates the sheet had before
+/// the batch: the j-th (ascending) lands at `at[j] + j`, which is where the caller writes its rows.
+pub(super) fn insert_rows_at(cx: &mut Ctx, sheet: usize, at: &[u32]) -> Result<()> {
+    for &line in at.iter().rev() {
+        let sh = cx.sheet_mut(sheet)?;
+        sh.cells.shift_rows(line, 1);
+        shift_sheet_features(sh, Axis::Rows, line, 1, true);
+        // New lines take the format of the line before (Excel's "Format Same As Above"). The line
+        // above is untouched: the batch runs downwards from the last insert.
+        if line > 0
+            && let Some(info) = sh.rows.get(&(line - 1)).copied()
+        {
+            let info = cella_model::LineInfo { hidden: false, outline: 0, collapsed: false, ..info };
+            sh.rows.insert_range(line, 1, &info);
+        }
+    }
+    Ok(())
 }
 
 /// The areas a line delete/insert targets as `(first line, count)`, merged and sorted from the
@@ -767,7 +803,7 @@ pub(crate) fn drop_sheet(cx: &mut Ctx, i: usize) {
 
 /// Sheet protection for inserting or deleting rows/columns: the protection must allow it, and
 /// deleted lines must not hold locked cells.
-fn check_lines_protection(s: &Session, p: &Json, axis: Axis, at: u32, count: u32, insert: bool) -> Result<()> {
+pub(super) fn check_lines_protection(s: &Session, p: &Json, axis: Axis, at: u32, count: u32, insert: bool) -> Result<()> {
     let sheet = target_sheet(s, p)?;
     let wb = &s.doc()?.wb;
     let Some(sh) = wb.sheet(sheet) else { return Ok(()) };
@@ -1015,6 +1051,22 @@ pub(crate) fn map_range(r: RangeRef, e: &Edit) -> Option<RangeRef> {
         kind: cella_formula::RefKind::Range(start, end),
     });
     match cella_formula::adjust::adjust(expr, "S", "S", e) {
+        cella_formula::Expr::Ref(r) => Some(r.range()),
+        _ => None,
+    }
+}
+
+/// [`map_range`] for a batch of one-line row inserts: each end moves by the inserts at or above
+/// it, so a range holding an insert grows and one below every insert stays put.
+pub(crate) fn map_range_inserts(r: RangeRef, at: &[u32]) -> Option<RangeRef> {
+    let (Some(start), Some(end)) = (cella_formula::Anchor::at(r.start, false, false), cella_formula::Anchor::at(r.end, false, false)) else {
+        return Some(r);
+    };
+    let expr = cella_formula::Expr::Ref(cella_formula::Reference {
+        sheet: cella_formula::SheetSel::Current,
+        kind: cella_formula::RefKind::Range(start, end),
+    });
+    match cella_formula::adjust::adjust_inserts(expr, "S", "S", Axis::Rows, at) {
         cella_formula::Expr::Ref(r) => Some(r.range()),
         _ => None,
     }

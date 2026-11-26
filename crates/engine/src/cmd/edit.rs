@@ -1963,6 +1963,76 @@ pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str,
     }
 }
 
+/// [`rewrite_all_formulas`] for a **batch** of one-line row inserts done as one edit
+/// (`data.subtotal`): every formula moves by the batch's step map, so each one is parsed,
+/// adjusted and printed once instead of once per inserted line.
+///
+/// The batch takes the per-cell road: a shape is a cache of (text, position) and the position
+/// every cell of a fill moved to is the batch's answer, which `Shape::straddles` — written for a
+/// single insert — cannot see. The cost is a parse and a print a formula, against a whole pass a
+/// group. A formula that did not move and whose text does not change keeps its shape: the shape is
+/// canonical, so the one it held still spells the same formula at the cell it sits at now.
+pub(crate) fn rewrite_all_formulas_inserts(wb: &mut cella_model::Workbook, target: &str, at: &[u32]) {
+    use cella_formula::adjust::Axis;
+    let mut shapes = cella_formula::ShapeTable::default();
+    for si in 0..wb.sheets.len() {
+        let host = wb.sheets.get(si).map(|s| s.name.clone()).unwrap_or_default();
+        // The store yields formulas from its side tables, not by walking every cell: a sheet with
+        // no formula must not make an insert walk ten million cells.
+        let keys: Vec<(CellRef, std::sync::Arc<Formula>)> =
+            wb.sheets.get(si).map(|s| s.cells.formulas().map(|(c, f, _)| (c, f)).collect()).unwrap_or_default();
+        if keys.is_empty() {
+            continue;
+        }
+        let on_target = host.eq_ignore_ascii_case(target);
+        let Some(sheet) = wb.sheet_mut(si) else { continue };
+        for (c, f) in keys {
+            // The store has already moved the cells (the batch's shifts ran first): the position a
+            // formula's text was written for is the batch's inverse map. No inserted row holds a
+            // formula, so a stored formula always has one.
+            let before = cell_before_inserts(c, at);
+            let array: Option<RangeRef> = match f.array.as_deref() {
+                Some(a) if on_target => super::sheet::map_range_inserts(*a, at),
+                a => a.copied(),
+            };
+            let Some(expr) = f.text_tree_at(before) else { continue };
+            let new = cella_formula::adjust::adjust_inserts(expr, &host, target, Axis::Rows, at);
+            let text = cella_formula::print(&new);
+            let array_changed = array != f.array.as_deref().copied();
+            if before == c && !array_changed && f.text_at(before).as_deref() == Some(text.as_str()) {
+                continue;
+            }
+            let Some(mut cell) = sheet.cells.get(c) else { continue };
+            // A shape that still spells this text at this cell is the answer: the tree is
+            // canonical, so the offsets the old shape holds are the ones the batch gives.
+            if !array_changed && let Some(shape) = f.shape.as_ref().filter(|sh| sh.print_at(c).as_deref() == Some(text.as_str())) {
+                let nf = Formula { text: None, shape: Some(std::sync::Arc::clone(shape)), array: array.map(Box::new), dynamic: f.dynamic };
+                cell.formula = Some(std::sync::Arc::new(nf));
+                sheet.cells.set(c, cell);
+                continue;
+            }
+            let rewrite = cella_xlsx::needs_file_rewrite(&new);
+            let mut nf = Formula::from_expr_at(new, c, &mut shapes, rewrite);
+            nf.array = array.map(Box::new);
+            nf.dynamic = f.dynamic;
+            cell.formula = Some(std::sync::Arc::new(nf));
+            sheet.cells.set(c, cell);
+        }
+    }
+    for n in wb.names.iter_mut() {
+        if let Ok(expr) = cella_formula::parse_name(&n.formula) {
+            let new = cella_formula::adjust::adjust_inserts(expr, "\u{0}", target, Axis::Rows, at);
+            n.formula = cella_formula::print(&new);
+        }
+    }
+}
+
+/// The row a cell at `c` stood on before a batch of one-line inserts ([`at`], ascending).
+fn cell_before_inserts(c: CellRef, at: &[u32]) -> CellRef {
+    let moved = at.partition_point(|&line| line <= c.row) as u32;
+    CellRef::new(c.row.saturating_sub(moved), c.col)
+}
+
 // ---------------------------------------------------------------- clear
 
 fn clear(s: &mut Session, p: &Json, what: &str) -> Result<Json> {

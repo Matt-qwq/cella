@@ -261,32 +261,108 @@ fn map_span(lo: i32, hi: i32, at: u32, count: u32, insert: bool, max: u32) -> Op
     }
 }
 
+/// Where a line edit puts each index: one insert/delete, or a batch of one-line inserts.
+#[derive(Clone, Copy, Debug)]
+enum LineMap<'a> {
+    Single {
+        at: u32,
+        count: u32,
+        insert: bool,
+    },
+    /// One blank line before each index, ascending (`data.subtotal`'s whole batch).
+    Many(&'a [u32]),
+}
+
+impl LineMap<'_> {
+    fn index(&self, v: i32, max: u32) -> Option<i32> {
+        match *self {
+            LineMap::Single { at, count, insert } => map_index(v, at, count, insert, max),
+            LineMap::Many(at) => map_insert_index(v, at, max),
+        }
+    }
+    fn span(&self, lo: i32, hi: i32, max: u32) -> Option<(i32, i32)> {
+        match *self {
+            LineMap::Single { at, count, insert } => map_span(lo, hi, at, count, insert, max),
+            LineMap::Many(at) => map_insert_span(lo, hi, at, max),
+        }
+    }
+}
+
+/// How far an index moves through a batch of one-line inserts: one for every insert at or before
+/// it. `at` is ascending, so the count is a binary search away.
+fn insert_shift(v: i32, at: &[u32]) -> i64 {
+    at.partition_point(|&line| i64::from(line) <= i64::from(v)) as i64
+}
+
+/// [`map_index`] for a batch of inserts: `None` when the shift pushes the index off the sheet
+/// (`#REF!`, as an insert per line would).
+fn map_insert_index(v: i32, at: &[u32], max: u32) -> Option<i32> {
+    let n = i64::from(v) + insert_shift(v, at);
+    if n >= i64::from(max) {
+        return None;
+    }
+    i32::try_from(n).ok()
+}
+
+/// [`map_span`] for a batch of inserts: each end moves by its own count, so a span holding an
+/// insert grows and one below every insert stays where it is.
+fn map_insert_span(lo: i32, hi: i32, at: &[u32], max: u32) -> Option<(i32, i32)> {
+    let lo2 = map_insert_index(lo, at, max)?;
+    let hi2 = (i64::from(hi) + insert_shift(hi, at)).min(i64::from(max) - 1);
+    let hi2 = i32::try_from(hi2).ok()?;
+    if lo2 > hi2 {
+        return None;
+    }
+    Some((lo2, hi2))
+}
+
+/// One reference's new shape under a line map (`None` when it leaves the sheet).
+fn shift_kind(kind: &RefKind, axis: Axis, map: &LineMap<'_>) -> Option<RefKind> {
+    Some(match (kind, axis) {
+        (RefKind::Cell(a), Axis::Rows) => RefKind::Cell(Anchor { row: map.index(a.row, MAX_ROWS)?, ..*a }),
+        (RefKind::Cell(a), Axis::Cols) => RefKind::Cell(Anchor { col: map.index(a.col, MAX_COLS)?, ..*a }),
+        (RefKind::Range(a, b), Axis::Rows) => {
+            let (lo, hi) = map.span(a.row.min(b.row), a.row.max(b.row), MAX_ROWS)?;
+            RefKind::Range(Anchor { row: lo, ..*a }, Anchor { row: hi, ..*b })
+        }
+        (RefKind::Range(a, b), Axis::Cols) => {
+            let (lo, hi) = map.span(a.col.min(b.col), a.col.max(b.col), MAX_COLS)?;
+            RefKind::Range(Anchor { col: lo, ..*a }, Anchor { col: hi, ..*b })
+        }
+        (RefKind::Rows(r0, a0, r1, a1), Axis::Rows) => {
+            let (lo, hi) = map.span(*r0.min(r1), *r0.max(r1), MAX_ROWS)?;
+            RefKind::Rows(lo, *a0, hi, *a1)
+        }
+        (RefKind::Cols(c0, a0, c1, a1), Axis::Cols) => {
+            let (lo, hi) = map.span(*c0.min(c1), *c0.max(c1), MAX_COLS)?;
+            RefKind::Cols(lo, *a0, hi, *a1)
+        }
+        (k, _) => k.clone(),
+    })
+}
+
+/// Adjusts a formula after a batch of line inserts on one sheet: one blank line before each index
+/// in `at` (ascending), all as one edit.
+///
+/// `data.subtotal` finds every group boundary before it opens a row for it, so the whole batch
+/// moves a formula by one step map — the answer a row insert per group reaches one insert at a
+/// time, in a single pass over the workbook.
+pub fn adjust_inserts(e: Expr, host: &str, target: &str, axis: Axis, at: &[u32]) -> Expr {
+    let map = LineMap::Many(at);
+    e.map(&mut |x| match x {
+        Expr::Ref(r) if on_target(&r, host, target) => match shift_kind(&r.kind, axis, &map) {
+            Some(kind) => Expr::Ref(Reference { sheet: r.sheet, kind }),
+            None => Expr::Error(CellError::Ref),
+        },
+        other => other,
+    })
+}
+
 fn adjust_ref(r: Reference, edit: &Edit) -> Option<Reference> {
     match edit {
         Edit::Insert { axis, at, count } | Edit::Delete { axis, at, count } => {
-            let insert = matches!(edit, Edit::Insert { .. });
-            let kind = match (&r.kind, axis) {
-                (RefKind::Cell(a), Axis::Rows) => RefKind::Cell(Anchor { row: map_index(a.row, *at, *count, insert, MAX_ROWS)?, ..*a }),
-                (RefKind::Cell(a), Axis::Cols) => RefKind::Cell(Anchor { col: map_index(a.col, *at, *count, insert, MAX_COLS)?, ..*a }),
-                (RefKind::Range(a, b), Axis::Rows) => {
-                    let (lo, hi) = map_span(a.row.min(b.row), a.row.max(b.row), *at, *count, insert, MAX_ROWS)?;
-                    RefKind::Range(Anchor { row: lo, ..*a }, Anchor { row: hi, ..*b })
-                }
-                (RefKind::Range(a, b), Axis::Cols) => {
-                    let (lo, hi) = map_span(a.col.min(b.col), a.col.max(b.col), *at, *count, insert, MAX_COLS)?;
-                    RefKind::Range(Anchor { col: lo, ..*a }, Anchor { col: hi, ..*b })
-                }
-                (RefKind::Rows(r0, a0, r1, a1), Axis::Rows) => {
-                    let (lo, hi) = map_span(*r0.min(r1), *r0.max(r1), *at, *count, insert, MAX_ROWS)?;
-                    RefKind::Rows(lo, *a0, hi, *a1)
-                }
-                (RefKind::Cols(c0, a0, c1, a1), Axis::Cols) => {
-                    let (lo, hi) = map_span(*c0.min(c1), *c0.max(c1), *at, *count, insert, MAX_COLS)?;
-                    RefKind::Cols(lo, *a0, hi, *a1)
-                }
-                (k, _) => k.clone(),
-            };
-            Some(Reference { sheet: r.sheet, kind })
+            let map = LineMap::Single { at: *at, count: *count, insert: matches!(edit, Edit::Insert { .. }) };
+            Some(Reference { sheet: r.sheet, kind: shift_kind(&r.kind, *axis, &map)? })
         }
         Edit::InsertCells { axis, range } | Edit::DeleteCells { axis, range } => {
             // Like inserting/deleting lines, for references that lie within the shifted
