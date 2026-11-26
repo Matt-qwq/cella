@@ -1137,3 +1137,19 @@ fn fixed_regressions_from_the_soak() {
         panic!("seed 295 regression: invariant [{}]: {}", f.kind, f.what);
     }
 }
+
+/// The 11-26 soak's failure, shrunk from 46 steps to four: a **column fold** read the physical
+/// column instead of the logical one, so `=SUM(G7:G9)` answered the values of H7:H9 after a column
+/// was inserted (`CellStore::fold_column` maps the column now; gaps §6).
+#[test]
+fn a_range_sum_follows_the_column_a_insert_moved() {
+    let steps: &[Step] = &[
+        ("home.deleteColumns".to_string(), json!({"cols":"H:H"})),
+        ("home.insertColumns".to_string(), json!({"cols":"A:A"})),
+        ("edit.fillRight".to_string(), json!({"range":"D4:H11"})),
+        ("home.mergeCenter".to_string(), json!({"range":"H6:J9"})),
+    ];
+    if let Some(f) = replay("sales", steps) {
+        panic!("the 11-26 soak regression: invariant [{}]: {}", f.kind, f.what);
+    }
+}

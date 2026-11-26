@@ -763,29 +763,25 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   localization work. [localization-parity.md](localization-parity.md)
 
 ### 6. Calculation correctness bugs (F)
-- **Found 11-26 by the command-sequence soak, not fixed yet — a range read misses cells, so a
-  formula over them is stale.** The soak failed at seed 0 step 46; `CELLA_FUZZ_SHRINK=1` cut it to
-  four commands on the `sales` sample (no §32 band involved — the same soak fails with the harness
-  change stashed):
-  ```text
-  home.deleteColumns {"cols":"H:H"}   home.insertColumns {"cols":"A:A"}
-  edit.fillRight {"range":"D4:H11"}   home.mergeCenter {"range":"H6:J9"}
-  ```
-  They leave `D17` (`=SUM(G5:G10)/SUM(D5:D10)-1`) at **0.0** in memory against **−0.4759** from a
-  from-scratch recalculation, and the probes below found the cause is **not** the merge at all: after
-  the first three commands, `cell.get G7` reads 55,300 and `=G7` reads 55,300, but
-  **`=SUM(G7:G9)` and `=COUNT(G7:G9)` both read 0** while those three cells store 48,200-class
-  numbers — G7, G8 and G9 are skipped by the **range** walk while single-cell reads see them
-  (`SUM(G5:G10)` = 159,760 = G5 + G6 + G10). So a column insert/delete (or the fill that follows it)
-  leaves cells a range scan cannot find, which also explains the stale dependent: the recalculation
-  reads the same miss. Next: reproduce with those three commands alone and look at the store's row and
-  column maps for rows 7-9 of column G (`Sheet`'s own `value()` sees them, the range walk does not).
-  Scratch probes were run against `crates/engine/examples/merge_probe.rs` and removed.
-- **Closed 10-30.** Missing: nothing known. The four this entry tracked have landed: 15-significant-digit
-  equality (#57, so `=0.1+0.2=0.3` is TRUE and MATCH and COUNTIF agree), spill updates after
-  structural edits and cleared blockers (#133, #139; PRs #148, #157), 3-D span deletion (#140),
-  and qualified names after a sheet rename (#134). Iterative calculation for circular references
-  landed too (no Options dialog yet, which is §13's).
+- **Fixed 11-26 (found by the command-sequence soak) — a column fold read the physical column, so
+  every range SUM was one column off after a column insert.** The soak failed at seed 0 step 46 and
+  `CELLA_FUZZ_SHRINK=1` cut it to four commands on the `sales` sample (no §32 band involved: the same
+  soak failed with the harness change stashed) — `home.deleteColumns H:H`, `home.insertColumns A:A`,
+  `edit.fillRight D4:H11`, `home.mergeCenter H6:J9` — after which `D17`
+  (`=SUM(G5:G10)/SUM(D5:D10)-1`) read **0.0** in memory against **−0.4759** from a from-scratch
+  recalculation. Probes against a scratch example (removed) ruled out the merge and the store: with
+  only `home.insertColumns {"cols":"A:A"}` on a plain 12 × 10 number grid, `cell.get G7` and `=G7`
+  both answered 605, and the store's own walks (`visit_values`, `iter_range`, `row`, `row_reader`)
+  all answered G7:G9 as 605/705/805 — but `=SUM(G7:G9)` answered **2118**, the values of H7:H9, and
+  `=SUM(F7:F9)` answered G's: **every range aggregate was one logical column to the right**, while
+  single-cell references were right. The path that did it is `CellStore::fold_column`, the store's
+  fast fold the evaluator takes for a one-column `SUM`/`COUNT`/`AVERAGE`/`MIN`/`MAX`: it used the
+  **logical** column as a physical slot index (`row.index_of(band, col)`), never through the column
+  map, so any column insert or delete moved the answer. It now maps the column
+  (`self.col_map.map(r.start.col)`, and an unmapped column declines to the evaluator). Tests:
+  `a_column_fold_follows_the_column_map` (model) and `a_range_sum_follows_the_column_a_insert_moved`
+  (the four squeezed commands, as a permanent soak regression). The **20 seeds × 120 steps soak is
+  green** where it failed before.
 - **Soak (10-30):** a 400-seed × 200-command release soak found class-level defects the reported bugs
   never showed. Fixed here: a `u16` payload index in the cell store's per-row wide table **wrapped past
   65,535 entries** on a row rewritten thousands of times, so rewriting one cell's text aliased another

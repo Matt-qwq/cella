@@ -4464,7 +4464,12 @@ impl CellStore {
         if r.start.col != r.end.col {
             return false;
         }
-        let col = r.start.col;
+        // The logical column is not the physical one once a column has been inserted or deleted, and
+        // the row's slots are physical: the fold has to translate first. Without it a fold read the
+        // column **one to the right** of the one asked for after a single insert — `=SUM(G7:G9)`
+        // answered the values of H7:H9, and a SUM over the empty column read 0 (gaps §6, found by
+        // the command-sequence soak). An unmapped logical column has nothing to fold.
+        let Some(col) = self.col_map.map(r.start.col) else { return false };
         let mut take = |band: &Band, row: &BandRow, i: usize| -> bool {
             let kind = row.kind_at(band, i);
             match kind {
@@ -8406,6 +8411,26 @@ mod tests {
         assert_eq!(now.entries, 2, "the old page's charge is still queued");
         assert_eq!(now.bytes, old.bytes.saturating_add(rewritten.cached_bytes()));
         assert!(snapshot.pages.get(&0).is_some_and(|page| page.is_cached()), "the snapshot still holds the old band");
+    }
+
+    /// A column fold reads the column it was asked for, not its physical neighbour: the row's slots
+    /// are physical, so a store whose column map has shifted must translate first. Without that,
+    /// `=SUM(G7:G9)` answered the values of H7:H9 after one column was inserted (gaps §6).
+    #[test]
+    fn a_column_fold_follows_the_column_map() {
+        let mut s = CellStore::new();
+        for col in 0..10u32 {
+            s.set(CellRef::new(0, col), Cell::value(Value::Number(f64::from(col))));
+        }
+        let range = RangeRef::new(CellRef::new(0, 6), CellRef::new(0, 6));
+        let mut acc = FoldAcc::default();
+        assert!(s.fold_column(range, FoldMode::Sum, &mut acc));
+        assert_eq!(acc.sum, 6.0, "identity map: logical G is physical G");
+        s.shift_cols(0, 1);
+        let mut acc = FoldAcc::default();
+        assert!(s.fold_column(range, FoldMode::Sum, &mut acc));
+        assert_eq!(acc.sum, 5.0, "after the insert, logical G holds what was at F");
+        assert_eq!(s.get(CellRef::new(0, 6)).map(|c| c.value), Some(Value::Number(5.0)));
     }
 
     /// [`CellStore::visit_values`] walks exactly what [`CellStore::iter_range`] yields: the same
