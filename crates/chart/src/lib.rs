@@ -100,6 +100,10 @@ pub enum Prim {
         size: f32,
         color: Rgba,
         bold: bool,
+        /// A data label's own italic; the chart's other text is never italic.
+        italic: bool,
+        /// A data label's own typeface name; `None` draws the chart's face.
+        family: Option<String>,
         align: HAlign,
         valign: VAlign,
         rotation: f32,
@@ -274,20 +278,27 @@ pub struct SeriesData {
 }
 
 /// A label font with its colour resolved against the workbook's theme.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LabelStyle {
     /// Size in points; `None` draws at the chart's label size.
     pub size: Option<f32>,
     pub bold: Option<bool>,
+    /// Italic; `None` is upright.
+    pub italic: Option<bool>,
+    /// A typeface the label named; `None` draws the chart's own face.
+    pub typeface: Option<std::sync::Arc<str>>,
     /// `None` keeps the contrast colour the label is drawn in.
     pub color: Option<Rgba>,
 }
 
 impl LabelStyle {
+    /// The empty style, for a drawing path that takes one by reference.
+    pub const NONE: LabelStyle = LabelStyle { size: None, bold: None, italic: None, typeface: None, color: None };
+
     /// Whether the style says anything (a style with nothing set is no style).
     pub fn is_set(&self) -> bool {
-        self.size.is_some() || self.bold.is_some() || self.color.is_some()
+        self.size.is_some() || self.bold.is_some() || self.italic.is_some() || self.typeface.is_some() || self.color.is_some()
     }
 }
 

@@ -103,9 +103,9 @@ amount, or a re-coloured series rewrites that one element from the model, so for
 *inside* it (rich title runs, legend entry layout, a trendline label's formatting, an error bar's
 line style) goes with it. A change the part cannot express — a different chart kind, a different set
 of series, or a chartex chart's data reference — regenerates the whole part, which is where
-unmodelled XML is still lost. A label's typeface, italic, fill and callout
-shape are not modelled: they are kept while their element is untouched and are lost when that
-label's font is edited (the size, weight and colour that are modelled are written back). A per-point label *prefix/suffix* is not expressible in either
+unmodelled XML is still lost. A label's **fill and callout shape** are not modelled: they are kept
+while their element is untouched and are lost when that label's font is edited (the typeface, size,
+weight, italic and colour that are modelled are written back). A per-point label *prefix/suffix* is not expressible in either
 format, so it is not modelled: `c:dLbl` carries a text (a cell reference or rich text, CT_Tx), not
 a prefix field, and chartex's `cx:dataLabel` has no text element at all — a custom label is the
 point's own text (`PointLabel::text`), as Excel writes one. A kept chartex part's own `cx:chartSpace`

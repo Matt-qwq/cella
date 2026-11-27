@@ -567,31 +567,40 @@ pub enum LabelPosition {
     Bottom,
 }
 
-/// A label's own text formatting (`c:txPr/a:p/a:pPr/a:defRPr`): its size, weight and colour.
+/// A label's own text formatting (`c:txPr/a:p/a:pPr/a:defRPr`): its typeface, size, weight, italic
+/// and colour.
 ///
-/// A chartex part spells the same three fields the same way (`cx:txPr/a:p/a:pPr/a:defRPr`), so a
-/// label's font can be set on either kind of part.
+/// A chartex part spells the same fields the same way (`cx:txPr/a:p/a:pPr/a:defRPr`), so a label's
+/// font can be set on either kind of part.
 ///
-/// The typeface, italic and the label's fill are not modelled: they stay with the part while the
-/// element is untouched and are lost when the point's or series' label font is edited.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The label's own fill and its callout shape are still not modelled: they stay with the part while
+/// the element is untouched and are lost when the point's or series' label font is edited.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LabelFont {
     /// Size in points (`sz`, hundredths of a point in the file); `None` keeps the chart's size.
     pub size: Option<f32>,
     pub bold: Option<bool>,
+    /// Italic (`i` on the run properties).
+    pub italic: Option<bool>,
+    /// A typeface name (`a:latin@typeface`). A theme reference (`+mn-lt`) is not a typeface and is
+    /// kept with the part instead, the way a cell's font keeps one.
+    pub typeface: Option<std::sync::Arc<str>>,
     pub color: Option<Color>,
 }
 
 impl LabelFont {
     /// Whether the font says anything (a font with nothing set is no font).
     pub fn is_set(&self) -> bool {
-        self.size.is_some() || self.bold.is_some() || self.color.is_some()
+        self.size.is_some() || self.bold.is_some() || self.italic.is_some() || self.typeface.is_some() || self.color.is_some()
     }
 
-    /// The font with its size forced into the range the file and the command accept.
+    /// The font with its size forced into the range the file and the command accept, and a typeface
+    /// trimmed and bounded (a file can name one of any length; a font name is not a paragraph).
     pub fn sane(&self) -> LabelFont {
-        LabelFont { size: self.size.filter(|s| s.is_finite() && (1.0..=400.0).contains(s)), ..*self }
+        let typeface =
+            self.typeface.as_deref().map(str::trim).filter(|t| !t.is_empty() && t.len() <= 64 && !t.starts_with('+')).map(std::sync::Arc::from);
+        LabelFont { size: self.size.filter(|s| s.is_finite() && (1.0..=400.0).contains(s)), typeface, ..self.clone() }
     }
 }
 
@@ -758,7 +767,7 @@ impl PointLabel {
             || self.show_category == Some(true)
             || self.show_percentage == Some(true)
             || self.position != LabelPosition::Auto
-            || self.font.is_some_and(|f| f.is_set())
+            || self.font.as_ref().is_some_and(|f| f.is_set())
     }
 
     /// Nothing but its index: the record carries no label and is dropped.

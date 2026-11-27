@@ -687,9 +687,24 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         None => None,
     };
     let font_bold = bool_param(p, "bold");
+    let font_italic = bool_param(p, "italic");
+    // A label's own typeface: a font name, not a theme reference (the file's `+mn-lt` form is kept
+    // with the part, the way a cell's font keeps one).
+    let font_name = p.get("fontName").and_then(Json::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    if let Some(t) = &font_name
+        && (t.len() > 64 || t.starts_with('+'))
+    {
+        return Err(bad(cmd, "`fontName` must be a font name (at most 64 characters)"));
+    }
     let font_color = p.get("color").map(|v| color_param_for(cmd, v, "color")).transpose()?.flatten();
-    let font_given = font_size.is_some() || font_bold.is_some() || p.get("color").is_some();
-    let font = font_given.then_some(LabelFont { size: font_size, bold: font_bold, color: font_color });
+    let font_given = font_size.is_some() || font_bold.is_some() || font_italic.is_some() || font_name.is_some() || p.get("color").is_some();
+    let font = font_given.then_some(LabelFont {
+        size: font_size,
+        bold: font_bold,
+        italic: font_italic,
+        typeface: font_name.map(std::sync::Arc::from),
+        color: font_color,
+    });
     let flags = ["value", "percentage", "seriesName", "categoryName", "legendKey"].iter().map(|k| (*k, bool_param(p, k))).collect::<Vec<_>>();
     let any_flag = flags.iter().any(|(_, v)| v.is_some());
     let other_options = position.is_some()
@@ -753,7 +768,7 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
             let mut o = c.series.get(i).and_then(|se| se.labels.clone()).unwrap_or_default();
             o.hidden = false;
             apply_label_options(&mut o, &flags, position, separator, number_format);
-            if let Some(f) = font {
+            if let Some(f) = font.clone() {
                 o.font = Some(merge_font(o.font, f));
             }
             if !o.shows_anything() && !any_flag && !font_given {
@@ -973,7 +988,7 @@ fn set_chartex_labels(
         o.hidden = !on;
         if on {
             apply_label_options(&mut o, flags, position, separator.clone(), number_format.clone());
-            if let Some(f) = font {
+            if let Some(f) = font.clone() {
                 o.font = Some(merge_font(o.font, f));
             }
             if !o.shows_anything() && !flags.iter().any(|(_, v)| v.is_some()) && o.font.is_none() {
@@ -1000,7 +1015,14 @@ fn set_chartex_labels(
 /// had (setting a colour alone does not clear its size).
 fn merge_font(old: Option<LabelFont>, now: LabelFont) -> LabelFont {
     let old = old.unwrap_or_default();
-    LabelFont { size: now.size.or(old.size), bold: now.bold.or(old.bold), color: now.color.or(old.color) }.sane()
+    LabelFont {
+        size: now.size.or(old.size),
+        bold: now.bold.or(old.bold),
+        italic: now.italic.or(old.italic),
+        typeface: now.typeface.or(old.typeface),
+        color: now.color.or(old.color),
+    }
+    .sane()
 }
 
 fn apply_label_options(

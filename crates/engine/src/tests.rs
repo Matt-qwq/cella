@@ -6624,21 +6624,25 @@ fn a_label_font_is_set_at_each_level_and_survives_a_save() {
     s.execute("insert.chart", json!({"type": "column", "range": "A1:E7"})).unwrap();
     let chart = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts[0].clone();
 
-    // The chart's labels: size, weight and colour together.
-    s.execute("chart.setDataLabels", json!({"value": true, "fontSize": 11, "bold": true, "color": "C00000"})).unwrap();
+    // The chart's labels: typeface, size, weight, italic and colour together.
+    s.execute("chart.setDataLabels", json!({"value": true, "fontSize": 11, "bold": true, "italic": true, "fontName": "Arial", "color": "C00000"}))
+        .unwrap();
     assert_eq!(
         chart(&s).labels.font,
-        Some(LabelFont { size: Some(11.0), bold: Some(true), color: Some(Color::Rgb(0xC00000)) }),
+        Some(LabelFont { size: Some(11.0), bold: Some(true), italic: Some(true), typeface: Some("Arial".into()), color: Some(Color::Rgb(0xC00000)) }),
         "the chart's label font"
     );
+    // A theme-reference-looking or oversized name is refused, not stored.
+    assert!(s.execute("chart.setDataLabels", json!({"fontName": "+mn-lt"})).is_err());
+    assert!(s.execute("chart.setDataLabels", json!({"fontName": "x".repeat(65)})).is_err());
     // One series' labels take only the size; the rest stays at the chart's (absent) values.
     s.execute("chart.setDataLabels", json!({"series": 0, "fontSize": 8.5})).unwrap();
     assert_eq!(chart(&s).series[0].labels.as_ref().unwrap().font, Some(LabelFont { size: Some(8.5), ..LabelFont::default() }));
     assert_eq!(chart(&s).series[1].labels, None, "another series is untouched");
-    // One point's label: weight and colour, no size of its own.
-    s.execute("chart.setDataLabels", json!({"series": 0, "point": 1, "bold": false, "color": "0070C0"})).unwrap();
+    // One point's label: weight, colour and italic, no size and no typeface of its own.
+    s.execute("chart.setDataLabels", json!({"series": 0, "point": 1, "bold": false, "italic": true, "color": "0070C0"})).unwrap();
     let label = chart(&s).series[0].point_label(1).cloned().unwrap();
-    assert_eq!(label.font, Some(LabelFont { size: None, bold: Some(false), color: Some(Color::Rgb(0x0070C0)) }));
+    assert_eq!(label.font, Some(LabelFont { size: None, bold: Some(false), italic: Some(true), typeface: None, color: Some(Color::Rgb(0x0070C0)) }));
 
     // A size outside the range the file holds is refused, not clamped.
     assert!(s.execute("chart.setDataLabels", json!({"fontSize": 0})).is_err());
@@ -6650,7 +6654,7 @@ fn a_label_font_is_set_at_each_level_and_survives_a_save() {
     let treemap = s.doc().unwrap().wb.active().unwrap().charts[1].id;
     s.execute("chart.setDataLabels", json!({"chart": treemap, "fontSize": 10})).unwrap();
     // The treemap is the second chart on the sheet; `chart()` above is the column one.
-    let treemap_labels = s.doc().unwrap().wb.active().unwrap().charts[1].series[0].labels.as_ref().and_then(|l| l.font);
+    let treemap_labels = s.doc().unwrap().wb.active().unwrap().charts[1].series[0].labels.as_ref().and_then(|l| l.font.clone());
     assert_eq!(treemap_labels, Some(LabelFont { size: Some(10.0), ..LabelFont::default() }), "a chartex label font lives on the series");
 
     // Every level survives a save and reopen.
@@ -6658,9 +6662,15 @@ fn a_label_font_is_set_at_each_level_and_survives_a_save() {
     let b64 = r["base64"].as_str().unwrap().to_string();
     s.execute("file.open", json!({"name": "label-font.xlsx", "base64": b64})).unwrap();
     let c = chart(&s);
-    assert_eq!(c.labels.font, Some(LabelFont { size: Some(11.0), bold: Some(true), color: Some(Color::Rgb(0xC00000)) }));
+    assert_eq!(
+        c.labels.font,
+        Some(LabelFont { size: Some(11.0), bold: Some(true), italic: Some(true), typeface: Some("Arial".into()), color: Some(Color::Rgb(0xC00000)) })
+    );
     assert_eq!(c.series[0].labels.as_ref().unwrap().font, Some(LabelFont { size: Some(8.5), ..LabelFont::default() }));
-    assert_eq!(c.series[0].point_label(1).and_then(|l| l.font), Some(LabelFont { size: None, bold: Some(false), color: Some(Color::Rgb(0x0070C0)) }));
+    assert_eq!(
+        c.series[0].point_label(1).and_then(|l| l.font.clone()),
+        Some(LabelFont { size: None, bold: Some(false), italic: Some(true), typeface: None, color: Some(Color::Rgb(0x0070C0)) })
+    );
 }
 
 #[test]
@@ -6803,10 +6813,10 @@ fn a_chartex_point_and_point_label_survive_a_save() {
     assert!(s.execute("chart.setDataLabels", json!({"series": 0, "point": 1, "position": "top"})).is_err());
     assert!(s.execute("chart.formatPoint", json!({"series": 0, "point": 1, "markerSize": 6})).is_err(), "no markers");
     let c = s.doc().unwrap().wb.active().unwrap().charts[0].clone();
-    assert_eq!(c.series[0].labels.as_ref().and_then(|l| l.font), Some(LabelFont { size: Some(9.0), ..LabelFont::default() }));
+    assert_eq!(c.series[0].labels.as_ref().and_then(|l| l.font.clone()), Some(LabelFont { size: Some(9.0), ..LabelFont::default() }));
     assert_eq!(c.series[0].point(1).map(|p| (p.fill, p.line)), Some((Some(Color::Rgb(0xFF0000)), Some(Color::Rgb(0x0070C0)))));
     assert_eq!(
-        c.series[0].point_label(2).and_then(|l| l.font),
+        c.series[0].point_label(2).and_then(|l| l.font.clone()),
         Some(LabelFont { bold: Some(true), color: Some(Color::Rgb(0xC00000)), ..LabelFont::default() })
     );
     assert!(c.series[0].point(3).is_some_and(|p| p.no_label));
@@ -6816,11 +6826,11 @@ fn a_chartex_point_and_point_label_survive_a_save() {
     s.execute("file.open", json!({"name": "waterfall.xlsx", "base64": b64})).unwrap();
     let c = s.doc().unwrap().wb.active().unwrap().charts[0].clone();
     assert_eq!(c.kind, cella_model::ChartKind::Waterfall);
-    assert_eq!(c.series[0].labels.as_ref().and_then(|l| l.font), Some(LabelFont { size: Some(9.0), ..LabelFont::default() }));
+    assert_eq!(c.series[0].labels.as_ref().and_then(|l| l.font.clone()), Some(LabelFont { size: Some(9.0), ..LabelFont::default() }));
     assert!(c.series[0].labels.as_ref().is_some_and(|l| l.show_value));
     assert_eq!(c.series[0].point(1).map(|p| (p.fill, p.line)), Some((Some(Color::Rgb(0xFF0000)), Some(Color::Rgb(0x0070C0)))));
     assert_eq!(
-        c.series[0].point_label(2).and_then(|l| l.font),
+        c.series[0].point_label(2).and_then(|l| l.font.clone()),
         Some(LabelFont { bold: Some(true), color: Some(Color::Rgb(0xC00000)), ..LabelFont::default() })
     );
     assert!(c.series[0].point(3).is_some_and(|p| p.no_label), "the point whose label is off stays off: {:?}", c.series[0].points);

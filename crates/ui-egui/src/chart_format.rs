@@ -1284,7 +1284,7 @@ fn data_point(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: O
             m.insert("deleteLabel".into(), json!(no_label));
             app.run_or_alert("chart.formatPoint", Json::Object(m));
         }
-        label_font_controls(app, ui, id, Some(scope), Some(index as u32), s.point_label(index).and_then(|l| l.font));
+        label_font_controls(app, ui, id, Some(scope), Some(index as u32), s.point_label(index).and_then(|l| l.font.clone()));
         if ui.button(tr(ui, "Clear point formatting")).clicked() {
             let mut m = Map::new();
             m.insert("chart".into(), json!(id));
@@ -1403,6 +1403,31 @@ fn label_font_controls(app: &mut SheetApp, ui: &mut Ui, id: u32, series: Option<
         m.insert("bold".into(), json!(bold));
         app.run_or_alert("chart.setDataLabels", Json::Object(m));
     }
+    let mut italic = f.italic.unwrap_or(false);
+    if ui.checkbox(&mut italic, crate::widgets::tr(ui, "Italic label")).changed() {
+        let mut m = params.clone();
+        m.insert("italic".into(), json!(italic));
+        app.run_or_alert("chart.setDataLabels", Json::Object(m));
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr(ui, "Label font"));
+        let field = egui::Id::new(("cella.chart_label_font_name", id, series, point));
+        // The workbook's own faces first, then what this label already names.
+        let mut names: Vec<String> = app.session.active().map(|d| d.wb.styles.iter().map(|(_, s)| s.font.name.clone()).collect()).unwrap_or_default();
+        names.sort();
+        names.dedup();
+        if let Some(t) = f.typeface.as_deref()
+            && !names.iter().any(|n| n == t)
+        {
+            names.insert(0, t.to_string());
+        }
+        let current = f.typeface.as_deref().unwrap_or("").to_string();
+        if let Some(v) = crate::widgets::committed_text(ui, field, current.as_str(), Some(140.0)) {
+            let mut m = params.clone();
+            m.insert("fontName".into(), json!(v.trim()));
+            app.run_or_alert("chart.setDataLabels", Json::Object(m));
+        }
+    });
     let theme = app.session.active().map(|d| d.wb.theme.clone()).unwrap_or_default();
     colour_row(app, ui, &theme, "Label colour", f.color, "chart.setDataLabels", &params, "color", "");
 }

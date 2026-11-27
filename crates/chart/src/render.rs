@@ -115,14 +115,38 @@ impl Ctx<'_> {
         String::new()
     }
     fn text(&mut self, x: f32, y: f32, s: &str, size: f32, color: Rgba, align: HAlign, valign: VAlign) {
-        self.text_styled(x, y, s, size, color, false, align, valign);
+        self.text_styled(x, y, s, size, color, false, false, None, align, valign);
     }
     #[allow(clippy::too_many_arguments)]
-    fn text_styled(&mut self, x: f32, y: f32, s: &str, size: f32, color: Rgba, bold: bool, align: HAlign, valign: VAlign) {
+    fn text_styled(
+        &mut self,
+        x: f32,
+        y: f32,
+        s: &str,
+        size: f32,
+        color: Rgba,
+        bold: bool,
+        italic: bool,
+        family: Option<&str>,
+        align: HAlign,
+        valign: VAlign,
+    ) {
         if s.is_empty() {
             return;
         }
-        self.out.push(Prim::Text { x, y, text: s.to_string(), size, color, bold, align, valign, rotation: 0.0 });
+        self.out.push(Prim::Text {
+            x,
+            y,
+            text: s.to_string(),
+            size,
+            color,
+            bold,
+            italic,
+            family: family.map(str::to_string),
+            align,
+            valign,
+            rotation: 0.0,
+        });
     }
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, fill: Rgba, stroke: Option<(Rgba, f32)>) {
         self.out.push(Prim::Rect { x, y, w, h, fill: Some(fill), stroke, radius: 0.0 });
@@ -324,9 +348,11 @@ fn label_text(chart: &Chart, data: &ChartData, s: &SeriesData, j: usize, total: 
 /// series', else the chart's (a point that sets only a size keeps the chart's weight and colour).
 fn label_style(s: &SeriesData, j: usize, data: &ChartData) -> Option<LabelStyle> {
     let mut out = LabelStyle::default();
-    for f in [data.label_font, s.label_font, s.point_label(j).and_then(|l| l.font)].into_iter().flatten() {
+    for f in [data.label_font.as_ref(), s.label_font.as_ref(), s.point_label(j).and_then(|l| l.font.as_ref())].into_iter().flatten() {
         out.size = f.size.or(out.size);
         out.bold = f.bold.or(out.bold);
+        out.italic = f.italic.or(out.italic);
+        out.typeface = f.typeface.clone().or(out.typeface);
         out.color = f.color.or(out.color);
     }
     out.is_set().then_some(out)
@@ -360,8 +386,10 @@ fn draw_label_colored(
     let size = font.size.unwrap_or(LABEL_SIZE).clamp(4.0, 400.0);
     let color = font.color.unwrap_or(color);
     let bold = font.bold.unwrap_or(false);
+    let italic = font.italic.unwrap_or(false);
+    let family = font.typeface.as_deref();
     if !o.show_legend_key {
-        ctx.text_styled(x, y, text, size, color, bold, align, valign);
+        ctx.text_styled(x, y, text, size, color, bold, italic, family, align, valign);
         return;
     }
     let s = size * 0.65;
@@ -372,7 +400,7 @@ fn draw_label_colored(
         HAlign::Center => (x - (tw + s + 2.0) / 2.0, x + (s + 2.0) / 2.0),
     };
     ctx.rect(kx, y - s / 2.0, s, s, key, None);
-    ctx.text_styled(tx, y, text, size, color, bold, align, valign);
+    ctx.text_styled(tx, y, text, size, color, bold, italic, family, align, valign);
 }
 
 /// A text primitive drawn with a label's own font: its size, weight and colour when it set them.
@@ -381,7 +409,18 @@ fn draw_label_colored(
 fn styled_text(ctx: &mut Ctx, text: &str, x: f32, y: f32, color: Rgba, font: Option<LabelStyle>, align: HAlign, valign: VAlign) {
     let f = font.unwrap_or_default();
     let size = f.size.unwrap_or(LABEL_SIZE).clamp(4.0, 400.0);
-    ctx.text_styled(x, y, text, size, f.color.unwrap_or(color), f.bold.unwrap_or(false), align, valign);
+    ctx.text_styled(
+        x,
+        y,
+        text,
+        size,
+        f.color.unwrap_or(color),
+        f.bold.unwrap_or(false),
+        f.italic.unwrap_or(false),
+        f.typeface.as_deref(),
+        align,
+        valign,
+    );
 }
 
 /// The formatting override of point `j`, if any. The list is sorted by index (resolve sorts it).
@@ -529,7 +568,7 @@ fn sanitize_vals(v: &[Option<f64>]) -> Vec<Option<f64>> {
 
 fn sanitize(d: &ChartData) -> ChartData {
     ChartData {
-        label_font: d.label_font,
+        label_font: d.label_font.clone(),
         palette: d.palette.iter().take(MAX_POINTS).copied().collect(),
         categories: d.categories.iter().take(MAX_POINTS).cloned().collect(),
         category_levels: d.category_levels.iter().take(3).map(|l| l.iter().take(MAX_POINTS).cloned().collect()).collect(),
@@ -549,7 +588,7 @@ fn sanitize(d: &ChartData) -> ChartData {
                 trendlines: s.trendlines.iter().take(MAX_TRENDLINES).cloned().collect(),
                 number_format: s.number_format.clone(),
                 labels: s.labels.clone(),
-                label_font: s.label_font,
+                label_font: s.label_font.clone(),
                 error_bars: s.error_bars.as_ref().map(|e| ErrorBarsData {
                     spec: e.spec.clone(),
                     plus: e.plus.iter().take(MAX_POINTS).copied().collect(),
@@ -663,6 +702,8 @@ fn axis_titles(ctx: &mut Ctx, chart: &Chart, mut area: Bx) -> Bx {
                 size: AXIS_TITLE_SIZE,
                 color: TEXT,
                 bold: false,
+                italic: false,
+                family: None,
                 align: HAlign::Center,
                 valign: VAlign::Top,
                 rotation: -PI / 2.0,
@@ -2521,9 +2562,9 @@ fn treemap(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
         if b.w > 24.0 && b.h > LABEL_SIZE * 1.6 {
             // A box's name and value carry the point's own label font, if it set one.
             let font = label_style(s, j, data);
-            let size = font.and_then(|f| f.size).unwrap_or(LABEL_SIZE).clamp(4.0, 400.0);
+            let size = font.as_ref().and_then(|f| f.size).unwrap_or(LABEL_SIZE).clamp(4.0, 400.0);
             let name = ctx.fit(&cat_label(data, j), size, b.w - 8.0);
-            styled_text(ctx, &name, b.x + 4.0, b.y + 4.0, on(fill), font, HAlign::Left, VAlign::Top);
+            styled_text(ctx, &name, b.x + 4.0, b.y + 4.0, on(fill), font.clone(), HAlign::Left, VAlign::Top);
             if chart.data_labels && b.h > LABEL_SIZE * 3.2 && !s.points.iter().any(|p| p.index == j && p.no_label) {
                 let v = items.iter().find(|x| x.0 == j).map(|x| x.1).unwrap_or(0.0);
                 let t = ctx.fit(&f.format(v, None), size, b.w - 8.0);
@@ -2821,11 +2862,11 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
                 }
                 Some(Prim::Circle { cx: x, cy: y, r, fill, stroke: clamp_stroke(stroke) })
             }
-            Prim::Text { x, y, text, size, color, bold, align, valign, rotation } => {
+            Prim::Text { x, y, text, size, color, bold, italic, family, align, valign, rotation } => {
                 if !(fin(x) && fin(y) && fin(size) && fin(rotation)) || text.is_empty() {
                     return None;
                 }
-                Some(Prim::Text { x: cx(x), y: cy(y), text, size: size.clamp(1.0, 200.0), color, bold, align, valign, rotation })
+                Some(Prim::Text { x: cx(x), y: cy(y), text, size: size.clamp(1.0, 200.0), color, bold, italic, family, align, valign, rotation })
             }
         })
         .collect()

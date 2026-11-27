@@ -955,7 +955,7 @@ fn patch_point_labels(plan: &mut Plan, xml: &str, dlbls: &Node, then: &LabelStat
                 pe.set("delete", b.no_label.then(|| "<c:delete val=\"1\"/>".to_string()));
                 let label = b.label.as_ref().filter(|_| !b.no_label);
                 pe.set("tx", label.and_then(|l| l.text.as_deref()).map(|t| crate::chart::label_tx_xml(t, wb, si)));
-                pe.set("txPr", label.and_then(|l| l.font).filter(|f| f.is_set()).map(|f| crate::chart::label_tx_pr_xml(&f, wb)));
+                pe.set("txPr", label.and_then(|l| l.font.as_ref()).filter(|f| f.is_set()).map(|f| crate::chart::label_tx_pr_xml(f, wb)));
                 pe.set(
                     "dLblPos",
                     label

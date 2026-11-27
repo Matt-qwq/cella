@@ -174,7 +174,7 @@ fn point_labels(wb: &Workbook, sheet: usize, labels: &[PointLabel], theme: &Them
                 show_series: l.show_series,
                 show_category: l.show_category,
                 show_percentage: l.show_percentage,
-                font: label_font(l.font, theme),
+                font: label_font(l.font.as_ref(), theme),
             })
         })
         .collect();
@@ -183,9 +183,15 @@ fn point_labels(wb: &Workbook, sheet: usize, labels: &[PointLabel], theme: &Them
 }
 
 /// A label font with its colour resolved against the theme; `None` when it sets nothing.
-fn label_font(f: Option<LabelFont>, theme: &Theme) -> Option<LabelStyle> {
+fn label_font(f: Option<&LabelFont>, theme: &Theme) -> Option<LabelStyle> {
     let f = f?.sane();
-    let style = LabelStyle { size: f.size, bold: f.bold, color: f.color.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]) };
+    let style = LabelStyle {
+        size: f.size,
+        bold: f.bold,
+        italic: f.italic,
+        typeface: f.typeface,
+        color: f.color.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]),
+    };
     style.is_set().then_some(style)
 }
 
@@ -355,11 +361,11 @@ pub fn resolve(wb: &Workbook, sheet: usize, chart: &Chart) -> ChartData {
             error_bars: s.error_bars.as_ref().map(|e| error_bars(wb, sheet, e)),
             points: point_styles(&s.points, &wb.theme),
             point_labels: point_labels(wb, sheet, &s.point_labels, &wb.theme),
-            label_font: label_font(s.labels.as_ref().and_then(|l| l.font), &wb.theme),
+            label_font: label_font(s.labels.as_ref().and_then(|l| l.font.as_ref()), &wb.theme),
         });
     }
     let n = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
     let categories = categories.unwrap_or_else(|| (1..=n).map(|i| i.to_string()).collect());
     let palette = default_palette(&wb.theme, n.min(PALETTE_CYCLE));
-    ChartData { categories, category_levels, series, palette, label_font: label_font(chart.labels.font, &wb.theme) }
+    ChartData { categories, category_levels, series, palette, label_font: label_font(chart.labels.font.as_ref(), &wb.theme) }
 }

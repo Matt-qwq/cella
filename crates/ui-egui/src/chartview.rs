@@ -163,8 +163,16 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32, text: Opti
                     p.circle_stroke(pt(*cx, *cy), r * z, Stroke::new(w * z.max(0.5), rgba(*c)));
                 }
             }
-            Prim::Text { x, y, text: label, size, color, bold, align, valign, rotation } => {
-                let font: FontId = if *bold { theme::ui_bold(size * z) } else { theme::ui_font(size * z) };
+            Prim::Text { x, y, text: label, size, color, bold, italic, family, align, valign, rotation } => {
+                // A data label's own typeface and italic (its size, weight and colour already came
+                // through); the chart's other text keeps the interface face.
+                let font: FontId = if family.is_some() || *italic {
+                    FontId::new(size * z, theme::cell_family(family.as_deref().unwrap_or(""), *bold, *italic))
+                } else if *bold {
+                    theme::ui_bold(size * z)
+                } else {
+                    theme::ui_font(size * z)
+                };
                 // A label the bidi/joining/mark engines can change is shaped like cell text; the
                 // same galley is what the layout measured above.
                 let galley = match text {

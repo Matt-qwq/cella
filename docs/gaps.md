@@ -701,11 +701,18 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   the series' own `cx:txPr` (chart → series → point, field by field, drawn), together with per-point
   `cx:dataPt/cx:spPr` fills and outlines and the label position and visibility flags; what chartex
   has no element for (percentage, separator, per-point text, markers) is still refused with the
-  reason. The typeface, italic and the label's own fill/callout stay unmodelled
-  (kept while their element is untouched, lost when that label's font is edited).
-- **Missing:** a label's typeface, italic, fill and callout shape are not modelled; date-axis units
-  are kept but not editable; from-cells labels, callouts added through the UI, chart templates and
-  an element-level pane for shapes/pictures are not there.
+  reason.
+- **Landed 11-27 (label typeface and italic):** a label's font carries its **typeface**
+  (`a:latin@typeface`) and **italic** (`i`) as well as size, weight and colour, on a classic and a
+  chartex part alike: read, patched, drawn (the pane's grid prim takes the family and the italic, the
+  SVG export writes `font-family`/`font-style`), settable from `chart.setDataLabels {fontName,
+  italic}` and the Format pane's two new controls, merging field by field across chart → series →
+  point. A theme reference (`+mn-lt`) and a name past 64 characters are refused rather than stored;
+  `a_label_font_is_set_at_each_level_and_survives_a_save` and the chartex golden patch pin the round
+  trip.
+- **Missing:** a label's own **fill** and **callout shape** are not modelled; date-axis units are kept
+  but not editable; from-cells labels, callouts added through the UI, chart templates and an
+  element-level pane for shapes/pictures are not there.
 - **Evidence:** `Chart` (`crates/model/src/features.rs`) holds the option families above;
   `chart_options_roundtrip` and `chart_unmodelled_kinds` pin build → save → reopen → second save
   byte equality; the patch path is pinned per chart kind; `ui-egui` `chart_format_pane` and
@@ -763,6 +770,27 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   localization work. [localization-parity.md](localization-parity.md)
 
 ### 6. Calculation correctness bugs (F)
+- **Found 11-27 by a 200 × 200 release soak (nine seeds), not diagnosed yet.** The soak is reproducible:
+  `CELLA_FUZZ_SEEDS=200 CELLA_FUZZ_STEPS=200 CELLA_FUZZ_SEED_BUDGET_MS=30000 CELLA_FUZZ_KEEP_GOING=1`
+  on release (330 s), and each failing seed wrote a capture that `CELLA_FUZZ_REPLAY=<file>` replays. Two
+  shapes:
+  - **six `[xlsx roundtrip]`, all "formulas differ after reload"** (seeds 50, 95, 141, 160, 176, 191,
+    after `edit.fillDown`, `sheet.moveColumns`, `selection.set`, `home.unmergeCells`, `insert.table`):
+    the model before the save has a cell whose normalized formula is **`=`** (an empty formula) where the
+    reloaded one has the real text at a *different column* — e.g. seed 160: `(row 4, col 0, "=") vs
+    (row 4, col 5, "=E5/D5")`. That reads as a **shared-formula family** whose members no longer agree
+    after a structural edit: the writer emits one `<f t="shared" si>` family and the reader resolves the
+    members from a master that moved, so a member comes back with no text. Next: replay seed 160 (10
+    steps), print the formulas of that row in the model and in the reloaded sheet, and look at the
+    written `sheet1.xml`'s shared formulas.
+  - **three `[recalc]` on spills** — a `UNIQUE` spill child stale (`Number(0.0)` against `91.0`,
+    seed 44 after `cell.set INDIRECT`), `=SORT(J24:N30)` answering `#CIRC!` in memory and `#SPILL!`
+    after a full recalc (seed 189 after `home.mergeCells`), and `=SUM('Sales (2)'!XFC73#)` `#REF!`
+    against `#CIRC!` (seed 135 after `edit.paste`). All three say the same thing: a spill that a
+    structural edit (or a merge) blocks is marked differently by the incremental pass and a from-scratch
+    one.
+  Captures from that run are under the session temp dir (`.b/tmp/cella-soak-seed-*.txt`).
+
 - **Fixed 11-26 (found by the command-sequence soak) — a column fold read the physical column, so
   every range SUM was one column off after a column insert.** The soak failed at seed 0 step 46 and
   `CELLA_FUZZ_SHRINK=1` cut it to four commands on the `sales` sample (no §32 band involved: the same

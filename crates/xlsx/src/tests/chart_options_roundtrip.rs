@@ -65,7 +65,7 @@ fn full_chart() -> Chart {
         separator: Some(" / ".into()),
         number_format: Some("0.0".into()),
         hidden: false,
-        font: Some(LabelFont { size: Some(11.0), bold: Some(true), color: Some(Color::Rgb(0xC00000)) }),
+        font: Some(LabelFont { size: Some(11.0), bold: Some(true), color: Some(Color::Rgb(0xC00000)), ..LabelFont::default() }),
     };
     c.series[0].labels = Some(LabelOptions {
         show_value: false,
@@ -1082,7 +1082,7 @@ fn chartex_point_formats_and_label_fonts_round_trip() {
         show_value: true,
         show_category: true,
         position: LabelPosition::Center,
-        font: Some(LabelFont { size: Some(9.0), bold: Some(true), color: Some(Color::Rgb(0x1F4E79)) }),
+        font: Some(LabelFont { size: Some(9.0), bold: Some(true), color: Some(Color::Rgb(0x1F4E79)), ..LabelFont::default() }),
         ..LabelOptions::default()
     });
     c.series[0].points = vec![
@@ -1182,13 +1182,19 @@ fn chartex_point_and_label_edits_keep_the_rest_of_the_part() {
         let labels = s.labels.as_ref().expect("series labels");
         assert!(labels.show_value && labels.show_category && !labels.show_series);
         assert_eq!(labels.position, LabelPosition::Center);
-        assert_eq!(labels.font, Some(LabelFont { size: Some(9.0), bold: Some(false), color: None }));
+        assert_eq!(labels.font, Some(LabelFont { size: Some(9.0), bold: Some(false), ..LabelFont::default() }));
         assert_eq!(s.point_labels.len(), 1, "{:?}", s.point_labels);
         assert_eq!((s.point_labels[0].index, s.point_labels[0].show_value), (2, Some(true)));
         // The edits: one point's fill, the labels' font, and the point's own flags.
         s.points[0].fill = Some(Color::Rgb(0x123456));
         if let Some(l) = s.labels.as_mut() {
-            l.font = Some(LabelFont { size: Some(12.0), bold: Some(true), color: Some(Color::Rgb(0xFF0000)) });
+            l.font = Some(LabelFont {
+                size: Some(12.0),
+                bold: Some(true),
+                italic: Some(true),
+                typeface: Some("Arial".into()),
+                color: Some(Color::Rgb(0xFF0000)),
+            });
         }
         let mut point_label = s.point_labels[0].clone();
         point_label.show_value = Some(false);
@@ -1207,7 +1213,10 @@ fn chartex_point_and_label_edits_keep_the_rest_of_the_part() {
     // The labels' font changed and the point's flags with it; everything else is byte for byte the
     // part as read.
     let patch = [
-        (r##"<a:defRPr sz="1200" b="1"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:defRPr>"##, r##"<a:defRPr sz="900" b="0"/>"##),
+        (
+            r##"<a:defRPr sz="1200" b="1" i="1"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:latin typeface="Arial"/></a:defRPr>"##,
+            r##"<a:defRPr sz="900" b="0"/>"##,
+        ),
         (
             r##"<cx:dataLabel idx="2"><cx:visibility seriesName="0" categoryName="1" value="0"/>"##,
             r##"<cx:dataLabel idx="2"><cx:visibility seriesName="0" categoryName="0" value="1"/>"##,
@@ -1224,7 +1233,10 @@ fn chartex_point_and_label_edits_keep_the_rest_of_the_part() {
     let (again, _rep) = read_xlsx(&back).unwrap();
     let s = &again.sheets[0].charts[0].series[0];
     assert_eq!(s.points[0].fill, Some(Color::Rgb(0x123456)));
-    assert_eq!(s.labels.as_ref().and_then(|l| l.font), Some(LabelFont { size: Some(12.0), bold: Some(true), color: Some(Color::Rgb(0xFF0000)) }));
+    assert_eq!(
+        s.labels.as_ref().and_then(|l| l.font.clone()),
+        Some(LabelFont { size: Some(12.0), bold: Some(true), italic: Some(true), typeface: Some("Arial".into()), color: Some(Color::Rgb(0xFF0000)) })
+    );
     assert_eq!(s.point_labels[0].show_value, Some(false));
     assert_eq!(s.point_labels[0].show_category, Some(true));
     // A second save of the reopened workbook changes nothing.

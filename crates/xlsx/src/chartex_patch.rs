@@ -18,7 +18,7 @@ use cella_model::{AxisOptions, Chart, LabelFont, LabelOptions, LabelPosition, Po
 use crate::chart::label_position_file;
 use crate::chart_patch::{MAX_PATCH_BYTES, Plan, SPPR_ORDER, attr, child, scan};
 use crate::drawing::srgb;
-use crate::xml::{esc, num};
+use crate::xml::{esc, esc_attr, num};
 
 // The schema orders a new element has to sit in (ECMA-376 Part 1, 21.2.2 chartex).
 
@@ -81,8 +81,8 @@ pub(super) fn labels_xml(l: Option<&LabelOptions>, points: &[PointLabelState], w
         x.push_str(&point_state_xml(p, l, wb));
     }
     // `cx:txPr` comes after the points' `cx:dataLabel` elements.
-    if let Some(f) = l.and_then(|l| l.font).filter(|f| f.is_set()) {
-        x.push_str(&label_font_xml(&f, wb));
+    if let Some(f) = l.and_then(|l| l.font.as_ref()).filter(|f| f.is_set()) {
+        x.push_str(&label_font_xml(f, wb));
     }
     x.push_str("</cx:dataLabels>");
     x
@@ -111,8 +111,14 @@ pub(super) fn label_font_xml(f: &LabelFont, wb: &Workbook) -> String {
     if let Some(b) = f.bold {
         let _ = write!(attrs, " b=\"{}\"", b as u8);
     }
+    if let Some(i) = f.italic {
+        let _ = write!(attrs, " i=\"{}\"", i as u8);
+    }
     let fill = f.color.as_ref().and_then(|c| srgb(c, &wb.theme)).map(|c| format!("<a:solidFill>{c}</a:solidFill>")).unwrap_or_default();
-    format!("<cx:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr{attrs}>{fill}</a:defRPr></a:pPr><a:endParaRPr lang=\"en-US\"/></a:p></cx:txPr>")
+    let latin = f.typeface.as_deref().map(|t| format!("<a:latin typeface=\"{}\"/>", esc_attr(t))).unwrap_or_default();
+    format!(
+        "<cx:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr{attrs}>{fill}{latin}</a:defRPr></a:pPr><a:endParaRPr lang=\"en-US\"/></a:p></cx:txPr>"
+    )
 }
 
 /// A point's own data label as a chartex part spells it. The part has one `cx:dataLabel` per point
@@ -133,7 +139,7 @@ pub(super) struct PointLabelState {
 impl PointLabelState {
     /// Nothing the part can hold: no element is written for the point.
     fn is_empty(&self) -> bool {
-        !self.hidden && !self.shows_anything() && !self.font.is_some_and(|f| f.is_set())
+        !self.hidden && !self.shows_anything() && !self.font.as_ref().is_some_and(|f| f.is_set())
     }
 
     /// Whether the point switches any part of the label on or off.
@@ -164,8 +170,8 @@ fn point_visibility_xml(p: &PointLabelState, o: Option<&LabelOptions>) -> String
 fn point_state_xml(p: &PointLabelState, o: Option<&LabelOptions>, wb: &Workbook) -> String {
     let mut x = format!("<cx:dataLabel idx=\"{}\">", p.index);
     x.push_str(&point_visibility_xml(p, o));
-    if let Some(f) = p.font.filter(|f| f.is_set()) {
-        x.push_str(&label_font_xml(&f, wb));
+    if let Some(f) = p.font.as_ref().filter(|f| f.is_set()) {
+        x.push_str(&label_font_xml(f, wb));
     }
     x.push_str("</cx:dataLabel>");
     x
@@ -185,7 +191,7 @@ pub(super) fn point_states(ser: &Series) -> Vec<PointLabelState> {
             show_value: l.show_value,
             show_series: l.show_series,
             show_category: l.show_category,
-            font: l.font,
+            font: l.font.clone(),
         };
         match out.iter_mut().find(|s| s.index == l.index) {
             Some(slot) => *slot = state,
@@ -519,8 +525,8 @@ fn patch_labels(
         };
         plan.set(d, DATALABELS_ORDER, "visibility", Some(text));
     }
-    if before.and_then(|b| b.font) != after.and_then(|a| a.font) {
-        let text = after.and_then(|a| a.font).filter(|f| f.is_set()).map(|f| label_font_xml(&f, wb));
+    if before.and_then(|b| b.font.as_ref()) != after.and_then(|a| a.font.as_ref()) {
+        let text = after.and_then(|a| a.font.as_ref()).filter(|f| f.is_set()).map(|f| label_font_xml(f, wb));
         plan.set(d, DATALABELS_ORDER, "txPr", text);
     }
     if before.map(|b| b.position) != after.map(|a| a.position) {
@@ -557,13 +563,13 @@ fn patch_labels(
             Some(n) => {
                 let flags_changed = a.map(|s| (s.hidden, s.show_value, s.show_series, s.show_category))
                     != Some((b.hidden, b.show_value, b.show_series, b.show_category));
-                let font_changed = a.and_then(|s| s.font) != b.font;
+                let font_changed = a.and_then(|s| s.font.as_ref()) != b.font.as_ref();
                 let pe = plan.edits(n, DATALABEL_ORDER);
                 if flags_changed {
                     pe.set("visibility", Some(point_visibility_xml(b, after)));
                 }
                 if font_changed {
-                    pe.set("txPr", b.font.filter(|f| f.is_set()).map(|f| label_font_xml(&f, wb)));
+                    pe.set("txPr", b.font.as_ref().filter(|f| f.is_set()).map(|f| label_font_xml(f, wb)));
                 }
             }
             None => plan.add(d, DATALABELS_ORDER, "dataLabel", point_state_xml(b, after, wb)),

@@ -267,14 +267,22 @@ pub(crate) fn label_position_file(p: LabelPosition) -> &'static str {
     }
 }
 
-/// A label's own text formatting (`c:txPr/a:p/a:pPr/a:defRPr`): size, bold and colour. A label
-/// without one follows the chart's size and the contrast colour of what it sits on.
+/// A label's own text formatting (`c:txPr/a:p/a:pPr/a:defRPr`): typeface, size, bold, italic and
+/// colour. A label without one follows the chart's size and the contrast colour of what it sits on.
 pub(crate) fn read_label_font(e: &El) -> Option<LabelFont> {
     let def = e.path(&["txPr", "p", "pPr", "defRPr"])?;
     let font = LabelFont {
         // `sz` is hundredths of a point; a hostile or absurd value is not a size.
         size: def.attr("sz").and_then(|v| v.trim().parse::<f32>().ok()).map(|v| v / 100.0).filter(|v| (1.0..=400.0).contains(v)),
         bold: def.attr_bool("b"),
+        italic: def.attr_bool("i"),
+        // A theme reference (`+mn-lt`) is not a typeface: it is kept with the part, as a cell's is.
+        typeface: def
+            .child("latin")
+            .and_then(|l| l.attr("typeface"))
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.len() <= 64 && !t.starts_with('+'))
+            .map(std::sync::Arc::from),
         color: def.child("solidFill").and_then(dml_color),
     };
     font.is_set().then_some(font)
@@ -1040,7 +1048,8 @@ pub(crate) fn label_tx_xml(t: &str, wb: &Workbook, si: usize) -> String {
 }
 
 /// `<c:txPr>` for a label font, in CT_TextBody order: body properties, the paragraph and its
-/// default run properties (size in hundredths of a point, bold, colour).
+/// default run properties (size in hundredths of a point, bold, italic, colour — the fill comes
+/// before the typeface, which is where CT_TextCharacterProperties puts `a:latin`).
 pub(crate) fn label_tx_pr_xml(f: &LabelFont, wb: &Workbook) -> String {
     let f = f.sane();
     let mut attrs = String::new();
@@ -1050,8 +1059,14 @@ pub(crate) fn label_tx_pr_xml(f: &LabelFont, wb: &Workbook) -> String {
     if let Some(b) = f.bold {
         let _ = write!(attrs, " b=\"{}\"", b as u8);
     }
+    if let Some(i) = f.italic {
+        let _ = write!(attrs, " i=\"{}\"", i as u8);
+    }
     let fill = f.color.as_ref().and_then(|c| srgb(c, &wb.theme)).map(|c| format!("<a:solidFill>{c}</a:solidFill>")).unwrap_or_default();
-    format!("<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr{attrs}>{fill}</a:defRPr></a:pPr><a:endParaRPr lang=\"en-US\"/></a:p></c:txPr>")
+    let latin = f.typeface.as_deref().map(|t| format!("<a:latin typeface=\"{}\"/>", esc_attr(t))).unwrap_or_default();
+    format!(
+        "<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr{attrs}>{fill}{latin}</a:defRPr></a:pPr><a:endParaRPr lang=\"en-US\"/></a:p></c:txPr>"
+    )
 }
 
 /// `<c:dLbl>` in CT_DLbl order: idx, delete, tx, dLblPos, the show flags.
@@ -1064,8 +1079,8 @@ pub(crate) fn dlbl_xml(index: u32, no_label: bool, label: Option<&PointLabel>, w
         if let Some(t) = l.text.as_deref().filter(|t| !t.trim().is_empty()) {
             x.push_str(&label_tx_xml(t, wb, si));
         }
-        if let Some(f) = l.font.filter(|f| f.is_set()) {
-            x.push_str(&label_tx_pr_xml(&f, wb));
+        if let Some(f) = l.font.as_ref().filter(|f| f.is_set()) {
+            x.push_str(&label_tx_pr_xml(f, wb));
         }
         if l.position != LabelPosition::Auto {
             let _ = write!(x, "<c:dLblPos val=\"{}\"/>", label_position_file(l.position));

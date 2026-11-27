@@ -68,7 +68,7 @@ fn prims_svg(prims: &[Prim], w: f32, h: f32, style: &str) -> String {
                 paint(&mut out, *fill, *stroke);
                 out.push_str("/>");
             }
-            Prim::Text { x, y, text, size, color, bold, align, valign, rotation } => {
+            Prim::Text { x, y, text, size, color, bold, italic, family, align, valign, rotation } => {
                 // Baseline offsets as in the PDF export.
                 let dy = match valign {
                     VAlign::Top => size * 0.78,
@@ -83,6 +83,12 @@ fn prims_svg(prims: &[Prim], w: f32, h: f32, style: &str) -> String {
                 let _ = write!(out, "<text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"{anchor}\"", num(*x), num(y + dy), num(*size));
                 if *bold {
                     out.push_str(" font-weight=\"bold\"");
+                }
+                if *italic {
+                    out.push_str(" font-style=\"italic\"");
+                }
+                if let Some(f) = family {
+                    let _ = write!(out, " font-family=\"{}\"", esc(f));
                 }
                 if rotation.is_finite() && *rotation != 0.0 {
                     let _ = write!(out, " transform=\"rotate({} {} {})\"", num(rotation.to_degrees()), num(*x), num(*y));
@@ -165,6 +171,8 @@ mod tests {
                 size: 10.0,
                 color: red,
                 bold: true,
+                italic: false,
+                family: None,
                 align: HAlign::Center,
                 valign: VAlign::Top,
                 rotation: -1.5,

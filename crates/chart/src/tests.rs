@@ -1248,18 +1248,26 @@ fn a_label_font_is_resolved_field_by_field_for_a_chartex_kind() {
     c.data_labels = true;
     c.labels = LabelOptions::values();
     let mut d = ChartData {
-        label_font: Some(LabelStyle { size: Some(18.0), bold: None, color: Some(chart_colour) }),
+        label_font: Some(LabelStyle { size: Some(18.0), bold: None, italic: None, typeface: None, color: Some(chart_colour) }),
         category_levels: vec![],
         palette: vec![],
         categories: vec!["a".into(), "b".into(), "c".into()],
         series: vec![series("S", &[10.0, 20.0, 30.0], [20, 96, 130, 255], ChartKind::Funnel)],
     };
     // The series sets the weight and a colour; the size stays the chart's.
-    d.series[0].label_font = Some(LabelStyle { size: None, bold: Some(true), color: Some(series_colour) });
+    d.series[0].label_font = Some(LabelStyle { size: None, bold: Some(true), italic: None, typeface: None, color: Some(series_colour) });
     // Point 1 sets a colour of its own, point 2 a size of its own.
     d.series[0].point_labels = vec![
-        PointLabelData { index: 1, font: Some(LabelStyle { size: None, bold: None, color: Some(point_colour) }), ..PointLabelData::default() },
-        PointLabelData { index: 2, font: Some(LabelStyle { size: Some(7.0), bold: None, color: None }), ..PointLabelData::default() },
+        PointLabelData {
+            index: 1,
+            font: Some(LabelStyle { size: None, bold: None, italic: None, typeface: None, color: Some(point_colour) }),
+            ..PointLabelData::default()
+        },
+        PointLabelData {
+            index: 2,
+            font: Some(LabelStyle { size: Some(7.0), bold: None, italic: None, typeface: None, color: None }),
+            ..PointLabelData::default()
+        },
     ];
     let prims = render(&c, &d, 520.0, 360.0, &ApproxMeasure);
     let label = |text: &str| {
