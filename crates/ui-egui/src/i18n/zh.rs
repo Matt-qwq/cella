@@ -1348,6 +1348,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Automatic colour" => "自动颜色",
         "Axis value" => "坐标轴值",
         "Bold label" => "标签加粗",
+        "Italic label" => "标签斜体",
+        "Label font" => "标签字体",
         "Bring Forward" => "上移一层",
         "Custom amounts come from these references." => "自定义值来自这些引用。",
         "Custom error bars need a plus or minus reference; type one below (a range or an array constant)." => {
