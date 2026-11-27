@@ -15,7 +15,7 @@ thiserror.workspace = true
 # The reference Apache implementation, without `arrow`: this crate only writes columns, so the
 # arrow compatibility layer and every compression codec are off. Compiling it is the alternative
 # to hand-writing Thrift metadata for a format three other tools will read.
-parquet = { version = "56", default-features = false, features = ["snap"] }
+parquet = { version = "60", default-features = false, features = ["snap"] }
 # The buffer type `parquet`'s `ChunkReader` hands back; already in the tree through `parquet`,
 # pure Rust, and it is what lets the reader slice a file in memory instead of copying it.
 bytes = "1"
