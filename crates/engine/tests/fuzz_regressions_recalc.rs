@@ -313,3 +313,46 @@ fn seed_247_a_rebased_fight_between_spills_agrees_with_a_full_recalc() {
 
     assert_eq!(value(&s, "J5"), Value::Error(CellError::Circ));
 }
+/// Seed 44. Two arrays share one sheet and one of them spills inside the range the other reads:
+/// `=FILTER(G1:G20,G1:G20>5)` spills `H17:H23`, and `=UNIQUE(E18:I22)` at `Y4` reads that area.
+/// A full pass evicted **every** other spill on the sheet when a pre-pass owner grew back — not
+/// only the ones whose cells it was taking back — and it removed the range but left the values.
+/// The `UNIQUE` was then re-evaluated with the `FILTER`'s cells reading empty, answered with two
+/// rows of zeros, queued the `FILTER` back, and the pass spent its eight rounds flipping between
+/// the two answers: it landed on whichever one its last round made. Only the areas an owner takes
+/// back are evicted now, and a value goes with its range (gaps §6).
+#[test]
+fn seed_44_a_spill_evicted_far_from_the_area_it_takes_back_agrees_with_a_full_recalc() {
+    let mut s = session("grades");
+
+    s.execute("cell.set", json!({"cell": "Y1", "input": "=UNIQUE(E10:I14)"})).ok();
+    s.execute("home.insertRows", json!({"rows": "1:3"})).ok();
+    s.execute("sheet.rename", json!({"name": "it's", "sheet": "Grades"})).ok();
+    s.execute("home.insertSheet", json!({"before": 1, "name": "Q4 2026"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "1:3"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "4:6"})).ok();
+    s.execute("sheet.move", json!({"copy": false, "sheet": "it's", "to": 1})).ok();
+    s.execute("home.insertRows", json!({"rows": "8:8"})).ok();
+    s.execute("cell.set", json!({"cell": "H19", "input": "=FILTER(G1:G20,G1:G20>5)"})).ok();
+    s.execute("edit.fillRight", json!({"range": "E:G"})).ok();
+    s.execute("cell.set", json!({"cell": "I20", "input": "=OFFSET(K15,1,1)"})).ok();
+    s.execute("home.deleteRows", json!({"rows": "11:12"})).ok();
+    s.execute("cell.set", json!({"cell": "L25", "input": "=INDIRECT(\"G11\")", "sheet": "Q4 2026"})).ok();
+
+    assert_recalc_agrees(&s);
+    let expected: Vec<Value> = [91.0, 80.0, 94.0, 70.0, 99.0].into_iter().map(Value::Number).collect();
+    let spilled = |s: &Session| {
+        let wb = wb(s);
+        let sh = wb.sheets.iter().find(|x| x.name == "it's").expect("the renamed sheet");
+        assert_eq!(sh.spill_ranges.get(&CellRef::new(3, 24)).map(|r| r.a1()).as_deref(), Some("Y4:AC8"));
+        assert_eq!(sh.spill_values.len(), sh.spill_ranges.len(), "a spill value has the range that reaches it");
+        (3..8u32).map(|r| sh.value(CellRef::new(r, 27))).collect::<Vec<_>>()
+    };
+
+    assert_eq!(spilled(&s), expected, "the array answers with the sample's numbers, not two rows of zeros");
+
+    // A full pass over a consistent workbook changes nothing: the oscillation is gone.
+    run(&mut s, "formulas.calculateNow", json!({}));
+
+    assert_eq!(spilled(&s), expected);
+}

@@ -210,15 +210,15 @@ impl CalcMemory {
             .fold(0usize, |sum, part| sum.saturating_add(*part))
     }
 }
-/// Arrays that own their cells when two spills want the same ones: everything already spilling.
-/// The reader rebuilds that state from the file (an anchor's `ref` names the range it spilled
-/// into, and the values inside it are cached), so F9 after a reload keeps the same owner. A
-/// blocked array has no range and is deliberately absent: it must not be laid out before the
-/// owner that sits further down the sheet, or it would take the cells by row-major order.
-fn spill_owners(wb: &Workbook) -> HashSet<Key> {
-    let mut owners: HashSet<Key> = HashSet::default();
+/// Arrays that own their cells when two spills want the same ones: everything already spilling,
+/// with the area it held. The reader rebuilds that state from the file (an anchor's `ref` names the
+/// range it spilled into, and the values inside it are cached), so F9 after a reload keeps the same
+/// owner. A blocked array has no range and is deliberately absent: it must not be laid out before
+/// the owner that sits further down the sheet, or it would take the cells by row-major order.
+fn spill_owners(wb: &Workbook) -> HashMap<Key, RangeRef> {
+    let mut owners: HashMap<Key, RangeRef> = HashMap::default();
     for (si, sh) in wb.sheets.iter().enumerate() {
-        owners.extend(sh.spill_ranges.keys().map(|c| (si, *c)));
+        owners.extend(sh.spill_ranges.iter().map(|(c, r)| ((si, *c), *r)));
     }
     owners
 }
@@ -1285,7 +1285,7 @@ impl Calc {
         if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("  open: rebuild {rebuild_ms:.1} ms, {} seeds, {} stale ({} ms)", seeds.len(), stale.len(), prof_now() - ts);
         }
-        self.run(wb, stale, true, &HashSet::default());
+        self.run(wb, stale, true, &HashMap::default());
     }
 
     /// Whether any formula on `sheet` reads a reference through the used range, so an edit that
@@ -1306,7 +1306,7 @@ impl Calc {
         }
         let seeds: Vec<Key> = self.graph.visibility.iter().copied().collect();
         let dirty = self.dirty_closure(wb, &seeds, None);
-        self.run(wb, dirty, false, &HashSet::default());
+        self.run(wb, dirty, false, &HashMap::default());
     }
 
     /// Updates the graph for cells whose content changed and recalculates what depends on them.
@@ -1431,10 +1431,13 @@ impl Calc {
                     }
                     None => {
                         self.graph.remove(k);
-                        // A formula replaced by a constant (or cleared) takes its spilled values with it.
+                        // A formula replaced by a constant (or cleared) takes its spilled values with
+                        // it: a value no range reaches is a cell that reads empty and a store that
+                        // keeps an array nothing will ever free.
                         if let Some(sh) = wb.sheet_mut(k.0)
                             && let Some(r) = sh.spill_ranges.remove(&k.1)
                         {
+                            sh.spill_values.remove(&k.1);
                             cleared.push((k.0, r));
                         }
                         // Only an unparseable formula needs its cached value replaced with #NAME?.
@@ -1467,7 +1470,7 @@ impl Calc {
         if wb.calc.mode == CalcMode::Manual {
             // Only the edited formulas themselves are evaluated.
             let own: Vec<Key> = changed.iter().copied().filter(|k| self.graph.has_node(*k)).collect();
-            self.run(wb, own, false, &HashSet::default());
+            self.run(wb, own, false, &HashMap::default());
             return;
         }
         let mut seeds: Vec<Key> = changed.to_vec();
@@ -1640,7 +1643,7 @@ impl Calc {
         let dirty = self.dirty_closure(wb, &seeds, node_seeds.as_deref());
         let t1 = prof_now();
         let n = dirty.len();
-        self.run(wb, dirty, false, &HashSet::default());
+        self.run(wb, dirty, false, &HashMap::default());
         if std::env::var_os("CELLA_PROFILE").is_some() {
             eprintln!("recalc: {} seeds, closure {} cells {:.1} ms, run {:.1} ms", seeds.len(), n, t1 - t0, prof_now() - t1);
         }
@@ -1706,7 +1709,7 @@ impl Calc {
     }
 
     /// Evaluates the dirty set and writes results (and spills) back.
-    fn run(&mut self, wb: &mut Workbook, mut dirty: Vec<Key>, full: bool, prefer: &HashSet<Key>) {
+    fn run(&mut self, wb: &mut Workbook, mut dirty: Vec<Key>, full: bool, prefer: &HashMap<Key, RangeRef>) {
         let mut dynamic_again = !self.graph.dynamic.is_empty();
         self.last_recalc_cells = 0;
         // Every loop the rounds met: a later round evaluates only its dependents, so the cells
@@ -1863,7 +1866,7 @@ impl Calc {
             // its owner; everything else follows in row-major order.
             let any_spills = !spills.is_empty() || wb.sheets.iter().any(|s| !s.spill_ranges.is_empty() || !s.spill_ranges.is_empty());
             let ordered: Vec<Key> = if any_spills {
-                dirty.iter().copied().filter(|k| prefer.contains(k)).chain(dirty.iter().copied().filter(|k| !prefer.contains(k))).collect()
+                dirty.iter().copied().filter(|k| prefer.contains_key(k)).chain(dirty.iter().copied().filter(|k| !prefer.contains_key(k))).collect()
             } else {
                 Vec::new()
             };
@@ -1886,28 +1889,44 @@ impl Calc {
                     sheet.spill_ranges.remove(&k.1);
                     sheet.spill_values.remove(&k.1);
                 }
+                // The area the array would take now, when it still spills.
+                let taken = new.map(|arr| {
+                    RangeRef::new(k.1, CellRef::new(k.1.row.saturating_add(arr.rows as u32 - 1), k.1.col.saturating_add(arr.cols as u32 - 1)))
+                });
                 // An array that owned its cells before the pass may grow back into cells another
                 // array took in an earlier round, after that array was laid out (this pass only
-                // learns the new shape now). The owner gets them back: the other array follows in
-                // the layout order and is blocked if it still wants them.
-                if prefer.contains(k) {
+                // learns the new shape now) — and that other array may have blocked it while it
+                // was evaluated, so this runs whether or not it spills now. The owner gets them
+                // back: the other array follows in the layout order and is blocked if it still
+                // wants them.
+                //
+                // Only a cell the owner claims: the area it held before the pass, plus the one it
+                // is taking now. Evicting every spill on the sheet made a full pass oscillate — a
+                // distant array's cells read empty to the formula that reads them, so its answer
+                // changed, which queued the first one back and so on to the round limit — and left
+                // the state on whichever round it stopped at (the seed-44 soak finding, gaps §6).
+                if let Some(claim) = prefer.get(k) {
+                    let claim = taken.map_or(*claim, |t| claim.union(&t));
                     let evicted: Vec<(CellRef, RangeRef)> = sheet
                         .spill_ranges
                         .iter()
-                        .filter(|(anchor, _)| **anchor != k.1 && !prefer.contains(&(k.0, **anchor)))
-                        .map(|(anchor, range)| (*anchor, *range))
+                        .filter(|(anchor, r)| **anchor != k.1 && !prefer.contains_key(&(k.0, **anchor)) && r.intersects(&claim))
+                        .map(|(anchor, r)| (*anchor, *r))
                         .collect();
-                    for (anchor, _range) in evicted {
+                    for (anchor, _) in evicted {
                         sheet.spill_ranges.remove(&anchor);
+                        // A value no range reaches reads empty to a range read while the store
+                        // keeps it: the two maps describe one spill, so they go together. The
+                        // array is laid out again (or blocked) later in this round.
+                        sheet.spill_values.remove(&anchor);
                         // It has to re-evaluate: the cells it took are gone, and it is either
                         // blocked now or spills somewhere else.
                         spill_changes.push((k.0, anchor));
                     }
                 }
                 let mut changed_range = old;
-                if let Some(arr) = new {
-                    let end = CellRef::new(k.1.row.saturating_add(arr.rows as u32 - 1), k.1.col.saturating_add(arr.cols as u32 - 1));
-                    let range = RangeRef::new(k.1, end);
+                if let (Some(arr), Some(range)) = (new, taken) {
+                    let end = range.end;
                     let blocked = end.row >= cella_core::MAX_ROWS
                         || end.col >= cella_core::MAX_COLS
                         || range.iter().any(|c| c != k.1 && (holds_content(sheet, c) || sheet.spill_anchor(c).is_some()))
