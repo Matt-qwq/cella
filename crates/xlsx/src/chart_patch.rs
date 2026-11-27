@@ -861,6 +861,32 @@ fn label_state(c: &Chart, s: Option<&Series>) -> Option<LabelState> {
     }
 }
 
+/// The label's `spPr` the patch should write: the geometry and fill the model sets, plus every child
+/// of the file's own element that Cella does not model (an outline, an effect). Never drops user
+/// formatting: with nothing to say the element is left exactly as it was.
+fn label_sp_pr(now: Option<String>, existing: Option<&Node>, xml: &str) -> Option<String> {
+    let Some(old) = existing else { return now };
+    let mut extras = String::new();
+    for c in &old.children {
+        if matches!(c.name.as_str(), "prstGeom" | "solidFill" | "noFill") {
+            continue;
+        }
+        if let Some(text) = xml.get(c.start..c.end) {
+            extras.push_str(text);
+        }
+    }
+    let now = match (now, extras.is_empty()) {
+        (None, true) => return None,
+        (Some(t), _) => t,
+        // Nothing of ours, but the file had something else: keep it under a fresh element.
+        (None, false) => String::from("<c:spPr></c:spPr>"),
+    };
+    if extras.is_empty() {
+        return Some(now);
+    }
+    Some(now.replacen("</c:spPr>", &format!("{extras}</c:spPr>"), 1))
+}
+
 /// Patches the `<c:dLbls>` of a group or a series.
 fn patch_dlbls(
     plan: &mut Plan,
@@ -898,6 +924,8 @@ fn patch_dlbls(
             match state.options.as_ref() {
                 Some(l) => {
                     for (tag, text) in label_children(l, wb) {
+                        // The box is spliced, not replaced: the file's own outline and effects stay.
+                        let text = if tag == "spPr" { label_sp_pr(text, child(d, "spPr"), xml) } else { text };
                         pe.set(tag, text);
                     }
                     if l.hidden {

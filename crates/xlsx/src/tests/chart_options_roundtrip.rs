@@ -67,6 +67,7 @@ fn full_chart() -> Chart {
         hidden: false,
         font: Some(LabelFont { size: Some(11.0), bold: Some(true), color: Some(Color::Rgb(0xC00000)), ..LabelFont::default() }),
         fill: Some(Color::Rgb(0xF2F2F2)),
+        callout: Some(cella_model::CalloutShape::RoundRect),
     };
     c.series[0].labels = Some(LabelOptions {
         show_value: false,
@@ -329,6 +330,7 @@ fn excel_style_labels_and_error_bars_are_read() {
             hidden: false,
             font: None,
             fill: None,
+            callout: None,
         }),
         "series-level labels"
     );

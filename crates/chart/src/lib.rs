@@ -293,11 +293,14 @@ pub struct LabelStyle {
     /// The box behind the label, resolved; `None` draws the text alone.
     #[serde(default)]
     pub fill: Option<Rgba>,
+    /// Whether the box is drawn with rounded corners (`roundRect`).
+    #[serde(default)]
+    pub round: bool,
 }
 
 impl LabelStyle {
     /// The empty style, for a drawing path that takes one by reference.
-    pub const NONE: LabelStyle = LabelStyle { size: None, bold: None, italic: None, typeface: None, color: None, fill: None };
+    pub const NONE: LabelStyle = LabelStyle { size: None, bold: None, italic: None, typeface: None, color: None, fill: None, round: false };
 
     /// Whether the style says anything (a style with nothing set is no style).
     pub fn is_set(&self) -> bool {
@@ -324,6 +327,9 @@ pub struct PointLabelData {
     /// This label's own box fill, overriding the series' or the chart's.
     #[serde(default)]
     pub fill: Option<Rgba>,
+    /// Whether this label's own box is rounded (`roundRect`).
+    #[serde(default)]
+    pub round: bool,
 }
 
 impl PointLabelData {

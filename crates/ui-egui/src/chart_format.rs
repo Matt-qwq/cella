@@ -1044,7 +1044,7 @@ fn data_labels(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: 
                     });
                 }
             }
-            label_font_controls(app, ui, id, series, None, o.font, o.fill);
+            label_font_controls(app, ui, id, series, None, o.font, o.fill, o.callout.clone());
         });
     });
 }
@@ -1306,6 +1306,7 @@ fn data_point(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: O
             Some(index as u32),
             s.point_label(index).and_then(|l| l.font.clone()),
             s.point_label(index).and_then(|l| l.fill),
+            s.point_label(index).and_then(|l| l.callout.clone()),
         );
         if ui.button(tr(ui, "Clear point formatting")).clicked() {
             let mut m = Map::new();
@@ -1410,6 +1411,7 @@ fn label_font_controls(
     point: Option<u32>,
     font: Option<LabelFont>,
     fill: Option<Color>,
+    callout: Option<cella_engine::model::CalloutShape>,
 ) {
     let f = font.unwrap_or_default();
     let mut params = Map::new();
@@ -1465,6 +1467,20 @@ fn label_font_controls(
     colour_row(app, ui, &theme, "Label colour", f.color, "chart.setDataLabels", &params, "color", "");
     // The box behind the label: its fill, or none at all.
     colour_row(app, ui, &theme, "Label fill", fill, "chart.setDataLabels", &params, "fill", "None");
+    // Its shape: the rounded box Excel starts from, or a square one.
+    let mut rounded = matches!(callout, Some(cella_engine::model::CalloutShape::RoundRect));
+    if ui.checkbox(&mut rounded, crate::widgets::tr(ui, "Rounded label box")).changed() {
+        let mut m = params.clone();
+        m.insert("callout".into(), json!(if rounded { "roundRect" } else { "none" }));
+        app.run_or_alert("chart.setDataLabels", Json::Object(m));
+    }
+    // Its shape: the rounded box Excel starts from, or a square one.
+    let mut rounded = matches!(callout, Some(cella_engine::model::CalloutShape::RoundRect));
+    if ui.checkbox(&mut rounded, crate::widgets::tr(ui, "Rounded label box")).changed() {
+        let mut m = params.clone();
+        m.insert("callout".into(), json!(if rounded { "roundRect" } else { "none" }));
+        app.run_or_alert("chart.setDataLabels", Json::Object(m));
+    }
 }
 
 /// The series a chart-level section works on, remembered per chart.

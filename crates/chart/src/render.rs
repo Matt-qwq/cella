@@ -149,7 +149,12 @@ impl Ctx<'_> {
         });
     }
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, fill: Rgba, stroke: Option<(Rgba, f32)>) {
-        self.out.push(Prim::Rect { x, y, w, h, fill: Some(fill), stroke, radius: 0.0 });
+        self.rect_round(x, y, w, h, fill, stroke, 0.0);
+    }
+    /// A rectangle with rounded corners (a label's `roundRect` box).
+    fn rect_round(&mut self, x: f32, y: f32, w: f32, h: f32, fill: Rgba, stroke: Option<(Rgba, f32)>, radius: f32) {
+        let radius = if radius.is_finite() { radius.clamp(0.0, w.min(h) / 2.0) } else { 0.0 };
+        self.out.push(Prim::Rect { x, y, w, h, fill: Some(fill), stroke, radius });
     }
     fn line(&mut self, pts: Vec<[f32; 2]>, color: Rgba, width: f32) {
         if pts.len() >= 2 {
@@ -358,6 +363,7 @@ fn label_style(s: &SeriesData, j: usize, data: &ChartData) -> Option<LabelStyle>
     // A point owns its box when it set one; the series and chart levels are read by the drawing
     // from the options it was handed (see draw_label_colored).
     out.fill = s.point_label(j).and_then(|l| l.fill);
+    out.round = s.point_label(j).is_some_and(|l| l.round);
     out.is_set().then_some(out)
 }
 
@@ -417,7 +423,8 @@ fn draw_label_colored(
             VAlign::Bottom => y - h,
             _ => y - h / 2.0,
         };
-        ctx.rect(bx, by, w, h, box_fill, None);
+        let round = font.round || matches!(o.callout, Some(cella_model::CalloutShape::RoundRect));
+        ctx.rect_round(bx, by, w, h, box_fill, None, if round { h * 0.1667 } else { 0.0 });
     }
     if !o.show_legend_key {
         ctx.text_styled(x, y, text, size, color, bold, italic, family, align, valign);

@@ -729,9 +729,17 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   point section of the pane has a **Label text** row. Test:
   `a_label_text_from_a_cell_is_a_reference_not_a_literal` (a reference survives a save/reopen as a
   reference, not as its spelling).
-- **Missing:** a label's own **callout shape** is not modelled (its fill and its text-from-cells landed 11-27,
-  above); date-axis units are kept but not editable; callouts added through the UI, chart templates and an
-  element-level pane for shapes/pictures are not there.
+- **Landed 11-27 (the label's callout shape):** `LabelOptions.callout` and `PointLabel.callout` model
+  `c:dLbls/c:spPr/a:prstGeom` and `c:dLbl/c:spPr/a:prstGeom` at the chart, series and point level: `rect`
+  and `roundRect` are drawn (the rounded one rounds its corners by a sixth of the box height), any other
+  `prst` a file names is kept verbatim and drawn as a rectangle, and the pane has a **Rounded label box**
+  checkbox beside Label fill. Set with `chart.setDataLabels {callout: "rect" | "roundRect" | "none"}`. The
+  patch splices `spPr` instead of replacing it, so an outline or effect Cella does not model survives a
+  label edit (before this round `spPr` was replaced whole). Tests:
+  `a_rounded_label_box_draws_with_rounded_corners`, the shape assertions in
+  `a_label_box_is_set_at_each_level_and_survives_a_save`, and `chart_options_roundtrip`'s box fixture.
+- **Missing:** date-axis units are kept but not editable; chart templates and an element-level pane for
+  shapes/pictures are not there.
 - **Evidence:** `Chart` (`crates/model/src/features.rs`) holds the option families above;
   `chart_options_roundtrip` and `chart_unmodelled_kinds` pin build → save → reopen → second save
   byte equality; the patch path is pinned per chart kind; `ui-egui` `chart_format_pane` and

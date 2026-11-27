@@ -1474,6 +1474,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Label colour" => "标签颜色",
         "Label fill" => "标签填充",
         "Label text" => "标签文字",
+        "Rounded label box" => "圆角标签框",
         "Labels every" => "标签间隔",
         "Legend" => "图例",
         "Legend key" => "图例项",

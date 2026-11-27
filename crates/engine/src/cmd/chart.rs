@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use cella_model::{
-    Anchor, AnchorMode, AxisCrossing, AxisOptions, Chart, ChartKind, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars, Gridlines,
-    LabelFont, LabelOptions, LabelPosition, LegendPos, PointFormat, PointLabel, Series, Sheet,
+    Anchor, AnchorMode, AxisCrossing, AxisOptions, CalloutShape, Chart, ChartKind, Color, DisplayUnits, ErrorBarDirection, ErrorBarKind, ErrorBars,
+    Gridlines, LabelFont, LabelOptions, LabelPosition, LegendPos, PointFormat, PointLabel, Series, Sheet,
 };
 use serde_json::{Value as Json, json};
 
@@ -709,6 +709,14 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         None => None,
         Some(v) => Some(color_param_for(cmd, v, "fill")?),
     };
+    // The box's shape: a callout name, or "none" to write no shape element at all.
+    let callout_given = p.get("callout").is_some();
+    let label_callout: Option<Option<CalloutShape>> = match p.get("callout").and_then(Json::as_str).map(str::trim) {
+        None if callout_given => return Err(bad(cmd, "`callout` must be a shape name (rect, roundRect) or none")),
+        None => None,
+        Some(s) if s.eq_ignore_ascii_case("none") || s.is_empty() => Some(None),
+        Some(s) => Some(Some(CalloutShape::from_prst(s).ok_or_else(|| bad(cmd, "`callout` must be rect, roundRect or none"))?)),
+    };
     let font_given = font_size.is_some() || font_bold.is_some() || font_italic.is_some() || font_name.is_some() || p.get("color").is_some();
     let font = font_given.then_some(LabelFont {
         size: font_size,
@@ -727,7 +735,8 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         || show.is_some()
         || text.is_some()
         || font_given
-        || fill_given;
+        || fill_given
+        || callout_given;
     if !on && other_options {
         return Err(bad(cmd, "`on: false` turns labels off; remove the other options"));
     }
@@ -765,7 +774,7 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
             return set_chartex_labels(c, cmd, on, series, point, &flags, position, separator.clone(), number_format.clone(), font, delete, show);
         }
         if let (Some(i), Some(pi)) = (series, point) {
-            set_one_point_label(c, i, pi, on, text, position, &flags, any_flag, font, label_fill);
+            set_one_point_label(c, i, pi, on, text, position, &flags, any_flag, font, label_fill, label_callout);
             return Ok(());
         }
         // A series can hide its labels while the chart keeps them: `on: false` with a series.
@@ -787,7 +796,10 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
             if let Some(fill) = label_fill {
                 o.fill = fill;
             }
-            if !o.shows_anything() && !any_flag && !font_given && !fill_given {
+            if let Some(shape) = label_callout.clone() {
+                o.callout = shape;
+            }
+            if !o.shows_anything() && !any_flag && !font_given && !fill_given && !callout_given {
                 o = LabelOptions::values();
             }
             if let Some(se) = c.series.get_mut(i) {
@@ -822,7 +834,10 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         if let Some(fill) = label_fill {
             o.fill = fill;
         }
-        if on && !o.shows_anything() && !any_flag && !font_given && !fill_given {
+        if let Some(shape) = label_callout {
+            o.callout = shape;
+        }
+        if on && !o.shows_anything() && !any_flag && !font_given && !fill_given && !callout_given {
             // No part asked for: the plain value label, as the on/off flag alone meant.
             o = LabelOptions::values();
         }
@@ -861,6 +876,7 @@ fn set_one_point_label(
     any_flag: bool,
     font: Option<LabelFont>,
     fill: Option<Option<Color>>,
+    callout: Option<Option<CalloutShape>>,
 ) {
     let Some(se) = c.series.get_mut(series) else { return };
     if !on {
@@ -885,6 +901,9 @@ fn set_one_point_label(
     if let Some(fill) = fill {
         label.fill = fill;
     }
+    if let Some(shape) = callout {
+        label.callout = shape;
+    }
     for (key, value) in flags {
         let Some(v) = value else { continue };
         match *key {
@@ -895,7 +914,12 @@ fn set_one_point_label(
             _ => {}
         }
     }
-    let given = any_flag || label.text.is_some() || label.position != LabelPosition::Auto || label.font.is_some() || label.fill.is_some();
+    let given = any_flag
+        || label.text.is_some()
+        || label.position != LabelPosition::Auto
+        || label.font.is_some()
+        || label.fill.is_some()
+        || label.callout.is_some();
     if !given {
         // Nothing asked for: the point's label shows again (the way `showPoint` does).
         if let Some(pt) = se.point(pi as usize).copied()

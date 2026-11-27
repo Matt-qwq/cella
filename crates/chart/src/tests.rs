@@ -1234,6 +1234,36 @@ fn a_label_box_is_drawn_behind_the_text() {
     );
 }
 
+/// A rounded label box draws with rounded corners: the rectangle's radius follows the callout shape.
+#[test]
+fn a_rounded_label_box_draws_with_rounded_corners() {
+    let box_fill = [0xF2, 0xF2, 0xF2, 0xFF];
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = true;
+    c.labels = LabelOptions {
+        show_value: true,
+        fill: Some(cella_model::Color::Rgb(0xF2F2F2)),
+        callout: Some(cella_model::CalloutShape::RoundRect),
+        ..LabelOptions::default()
+    };
+    let d = ChartData {
+        label_font: None,
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["a".into(), "b".into()],
+        series: vec![series("S", &[10.0, 20.0], [20, 96, 130, 255], ChartKind::ColumnClustered)],
+    };
+    let prims = render(&c, &d, 400.0, 300.0, &ApproxMeasure);
+    let radii: Vec<f32> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect { fill: Some(f), radius, .. } if *f == box_fill => Some(*radius),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(radii.len(), 2, "one box a label");
+    assert!(radii.iter().all(|r| *r > 0.0), "the corners are rounded: {radii:?}");
+}
 /// A chartex series' own point fills reach the drawn primitives: a funnel band, a treemap box, a
 /// waterfall bar and a box & whisker box take the point's colour over the series' one.
 #[test]
@@ -1286,24 +1316,33 @@ fn a_label_font_is_resolved_field_by_field_for_a_chartex_kind() {
     c.data_labels = true;
     c.labels = LabelOptions::values();
     let mut d = ChartData {
-        label_font: Some(LabelStyle { size: Some(18.0), bold: None, italic: None, typeface: None, color: Some(chart_colour), fill: None }),
+        label_font: Some(LabelStyle {
+            size: Some(18.0),
+            bold: None,
+            italic: None,
+            typeface: None,
+            color: Some(chart_colour),
+            fill: None,
+            round: false,
+        }),
         category_levels: vec![],
         palette: vec![],
         categories: vec!["a".into(), "b".into(), "c".into()],
         series: vec![series("S", &[10.0, 20.0, 30.0], [20, 96, 130, 255], ChartKind::Funnel)],
     };
     // The series sets the weight and a colour; the size stays the chart's.
-    d.series[0].label_font = Some(LabelStyle { size: None, bold: Some(true), italic: None, typeface: None, color: Some(series_colour), fill: None });
+    d.series[0].label_font =
+        Some(LabelStyle { size: None, bold: Some(true), italic: None, typeface: None, color: Some(series_colour), fill: None, round: false });
     // Point 1 sets a colour of its own, point 2 a size of its own.
     d.series[0].point_labels = vec![
         PointLabelData {
             index: 1,
-            font: Some(LabelStyle { size: None, bold: None, italic: None, typeface: None, color: Some(point_colour), fill: None }),
+            font: Some(LabelStyle { size: None, bold: None, italic: None, typeface: None, color: Some(point_colour), fill: None, round: false }),
             ..PointLabelData::default()
         },
         PointLabelData {
             index: 2,
-            font: Some(LabelStyle { size: Some(7.0), bold: None, italic: None, typeface: None, color: None, fill: None }),
+            font: Some(LabelStyle { size: Some(7.0), bold: None, italic: None, typeface: None, color: None, fill: None, round: false }),
             ..PointLabelData::default()
         },
     ];
@@ -1725,6 +1764,7 @@ fn every_kind_renders_sanely_with_every_option_set() {
         c.labels = LabelOptions {
             font: None,
             fill: None,
+            callout: None,
             show_value: true,
             show_percentage: true,
             show_series: true,

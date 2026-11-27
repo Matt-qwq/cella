@@ -182,6 +182,7 @@ fn point_labels(wb: &Workbook, sheet: usize, labels: &[PointLabel], theme: &Them
                 show_percentage: l.show_percentage,
                 font: label_font(l.font.as_ref(), theme),
                 fill: rgba(&l.fill, theme),
+                round: matches!(l.callout, Some(cella_model::CalloutShape::RoundRect)),
             })
         })
         .collect();
@@ -200,6 +201,7 @@ fn label_font(f: Option<&LabelFont>, theme: &Theme) -> Option<LabelStyle> {
         color: f.color.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]),
         // The box is not part of the font: the drawing resolves it from the label options.
         fill: None,
+        round: false,
     };
     style.is_set().then_some(style)
 }

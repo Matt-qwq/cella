@@ -649,6 +649,8 @@ pub struct LabelOptions {
     /// Only a classic part stores one: a chartex `cx:dataLabels` has no `spPr` Cella models, so this
     /// is not written to one.
     pub fill: Option<Color>,
+    /// The shape of the box (`c:dLbls/c:spPr/a:prstGeom`); `None` writes no shape element.
+    pub callout: Option<CalloutShape>,
 }
 
 impl LabelOptions {
@@ -663,6 +665,44 @@ impl LabelOptions {
     }
 }
 
+/// The shape of the box behind a data label (`c:dLbls/c:spPr/a:prstGeom@prst`): Excel's callout shapes.
+///
+/// Cella draws the first two as rectangles (the rounded one rounds its corners); any other `prst` a
+/// file names is kept and written back verbatim, drawn as a plain rectangle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum CalloutShape {
+    /// A square-cornered box (`rect`).
+    #[default]
+    Rect,
+    /// A rounded box (`roundRect`) — where Format Data Label ▸ Shape starts.
+    RoundRect,
+    /// A shape Cella models no drawing for: it is kept (bounded) and written back as it was.
+    Other(std::sync::Arc<str>),
+}
+
+impl CalloutShape {
+    /// The `prst` value this shape is written with.
+    pub fn as_prst(&self) -> &str {
+        match self {
+            CalloutShape::Rect => "rect",
+            CalloutShape::RoundRect => "roundRect",
+            CalloutShape::Other(p) => p,
+        }
+    }
+
+    /// The shape a `prst` value names; `None` for an empty or oversized one (a file's damage is not
+    /// turned into a shape).
+    pub fn from_prst(p: &str) -> Option<Self> {
+        let p = p.trim();
+        Some(match p {
+            "" => return None,
+            "rect" => CalloutShape::Rect,
+            "roundRect" => CalloutShape::RoundRect,
+            _ if p.len() <= 48 && p.chars().all(|c| c.is_ascii_alphanumeric()) => CalloutShape::Other(std::sync::Arc::from(p)),
+            _ => return None,
+        })
+    }
+}
 /// Which ends of an error bar are drawn (`c:errBarType`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorBarDirection {
@@ -759,6 +799,8 @@ pub struct PointLabel {
     /// This label's own box fill (`c:dLbl/c:spPr`), overriding the series' or the chart's. A classic
     /// part only, like the series-level one.
     pub fill: Option<Color>,
+    /// This label's own box shape (`c:dLbl/c:spPr/a:prstGeom`), overriding the levels above it.
+    pub callout: Option<CalloutShape>,
 }
 
 impl PointLabel {
@@ -777,6 +819,7 @@ impl PointLabel {
             || self.position != LabelPosition::Auto
             || self.font.as_ref().is_some_and(|f| f.is_set())
             || self.fill.is_some()
+            || self.callout.is_some()
     }
 
     /// Nothing but its index: the record carries no label and is dropped.

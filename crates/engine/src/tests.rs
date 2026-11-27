@@ -6745,7 +6745,7 @@ fn a_label_font_is_set_at_each_level_and_survives_a_save() {
 /// same way the font is, drawn as a rectangle behind the text, and kept through a save.
 #[test]
 fn a_label_box_is_set_at_each_level_and_survives_a_save() {
-    use cella_model::Color;
+    use cella_model::{CalloutShape, Color};
     let mut s = s();
     chart_data(&mut s);
     s.execute("insert.chart", json!({"type": "column", "range": "A1:E7"})).unwrap();
@@ -6759,6 +6759,13 @@ fn a_label_box_is_set_at_each_level_and_survives_a_save() {
     assert_eq!(chart(&s).series[0].labels.as_ref().unwrap().fill, Some(Color::Rgb(0xDDEBF7)));
     assert_eq!(chart(&s).labels.fill, Some(Color::Rgb(0xF2F2F2)), "the chart level is untouched");
     assert_eq!(chart(&s).series[1].labels, None, "another series has no box");
+    // The box's shape is a level of its own: the chart's rounded, the series' square.
+    s.execute("chart.setDataLabels", json!({"callout": "roundRect"})).unwrap();
+    assert_eq!(chart(&s).labels.callout, Some(CalloutShape::RoundRect), "the chart's rounded box");
+    s.execute("chart.setDataLabels", json!({"series": 0, "callout": "rect"})).unwrap();
+    assert_eq!(chart(&s).series[0].labels.as_ref().unwrap().callout, Some(CalloutShape::Rect));
+    assert!(s.execute("chart.setDataLabels", json!({"callout": "not a shape!"})).is_err());
+
     // One point: its own box, and only its own.
     s.execute("chart.setDataLabels", json!({"series": 0, "point": 1, "fill": "FFF2CC"})).unwrap();
     assert_eq!(chart(&s).series[0].point_label(1).and_then(|l| l.fill), Some(Color::Rgb(0xFFF2CC)));
@@ -6773,6 +6780,8 @@ fn a_label_box_is_set_at_each_level_and_survives_a_save() {
     assert_eq!(c.labels.fill, Some(Color::Rgb(0xF2F2F2)), "the chart's box, read back");
     assert_eq!(c.series[0].labels.as_ref().unwrap().fill, Some(Color::Rgb(0xDDEBF7)), "the series' box");
     assert_eq!(c.series[0].point_label(1).and_then(|l| l.fill), Some(Color::Rgb(0xFFF2CC)), "the point's box");
+    assert_eq!(c.labels.callout, Some(CalloutShape::RoundRect), "the chart's rounded box, read back");
+    assert_eq!(c.series[0].labels.as_ref().unwrap().callout, Some(CalloutShape::Rect), "the series' square box");
 
     // `"none"` takes a box away at the level asked.
     s.execute("chart.setDataLabels", json!({"fill": "none"})).unwrap();
