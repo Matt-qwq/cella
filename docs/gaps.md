@@ -827,13 +827,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
     change, `#CIRC!` with it, and a reader *outside* the range still answers `#N/A`) and
     `fuzz_regressions_recalc::seed_233_a_self_reading_range_with_an_earlier_error_agrees_with_a_full_recalc`
     (the shrunk thirteen-step capture).
-    by cell, seed 44's `UNIQUE` reads `E14:I18`, and the `FILTER` spills `H19:H27`: the two do not
-    overlap at all (the range was moved by the same row edits), and every cell of the input is `Empty`.
-    So one row of zeros **is** the right answer, `Graph::dependents_of_range` is right to answer nothing,
-    and the five-row answer with 91/80/94/70/99 that the capture used to show was the *foreign-sheet
-    rewrite bug* feeding it sample data from the wrong rows. What remains is a parity question, not a
-    recalculation one: Excel answers `#CALC!` ("empty array") to `UNIQUE` over an empty range where Cella
-    spills one row of zeros — `§15` function behaviour, one test.
+  - **Retracted — "a range read that overlaps another array's spill can lose its cells".** Measured
+    cell by cell, seed 44's `UNIQUE` reads `E14:I18`, and the `FILTER` spills `H19:H27`: the two do not
+    overlap at all (the range had been moved by the same row edits), and every cell of the input is
+    `Empty`. So one row of zeros **is** the right answer, `Graph::dependents_of_range` is right to answer
+    nothing, and the five-row answer with 91/80/94/70/99 the capture used to show was the *foreign-sheet
+    rewrite bug* feeding it sample data from the wrong rows. What remains is a **function-behaviour
+    question for §15, and it is not settled here**: a range of blanks is five values, so one row of zeros
+    may well be what Excel shows too — the engine's `#CALC!` is for a result with zero rows or columns
+    (`util.rs`'s `make_array`), not for an input that is merely blank.
   - **Fixed — a `#` reference entered after its anchor went circular** (seed 135, the ninth failure).
     `=SUM('Sales (2)'!XFC73#)` read `#REF!` in memory and `#CIRC!` from a full recalculation. The anchor
     (`=SORT(C20:D25)` at `XFC76`, moved to `XFC73` by a row delete) is in a cycle — the formula that reads
