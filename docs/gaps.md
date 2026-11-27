@@ -933,6 +933,17 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   transcription error resolved by the documented rule. An Excel-computed corpus run stays part of
   gate #1.
 - **Impact:** wrong numbers are worse than missing features.
+- **Found 11-27 (measured against Excel 16, not a corpus):** the `.xls` import loses a cell's **bold**.
+  Excel authored a workbook with `A3` bold and nothing else set, saved it as `.xls` (SaveAs 56) and as
+  `.xlsx` (51); Cella reads the `.xlsx` with `bold=True` and the `.xls` with `bold=False` (and a merged
+  bold cell comes back at the default 9 pt too), while **values, formulas, number formats, merges,
+  column widths and defined names all survive** both. So it is not the merge and not the model: the
+  BIFF8 path drops it, most likely in the `XF` → `FONT` mapping (`ifnt`) or in how a cell's `xf` index
+  reaches `FontIn::resolve`, which reads `grbit` bit 0 and `bls >= 700` correctly on its own. The probe is
+  five COM calls (`Workbooks.Add`, set cells, `SaveAs` 56/51); comparing the two files with openpyxl
+  prints `A3 (True, …)` for Excel's `.xlsx` and `A3 (False, …)` for Cella's copy. Next: dump the `.xls`'s
+  `FONT`/`XF` records (xlrd or a two-line probe on the reader) and fix the mapping; the font *size*
+  across the sheet agrees, so the font table is read and only the per-cell index is suspect.
 - **Estimate:** 2–5 h, all of it re-running the suite against an Excel-computed corpus; Excel 16 is
   available now, the corpus is gate #1's. [function-parity.md](function-parity.md#formula-language)
 
