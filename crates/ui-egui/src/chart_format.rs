@@ -1474,13 +1474,6 @@ fn label_font_controls(
         m.insert("callout".into(), json!(if rounded { "roundRect" } else { "none" }));
         app.run_or_alert("chart.setDataLabels", Json::Object(m));
     }
-    // Its shape: the rounded box Excel starts from, or a square one.
-    let mut rounded = matches!(callout, Some(cella_engine::model::CalloutShape::RoundRect));
-    if ui.checkbox(&mut rounded, crate::widgets::tr(ui, "Rounded label box")).changed() {
-        let mut m = params.clone();
-        m.insert("callout".into(), json!(if rounded { "roundRect" } else { "none" }));
-        app.run_or_alert("chart.setDataLabels", Json::Object(m));
-    }
 }
 
 /// The series a chart-level section works on, remembered per chart.
