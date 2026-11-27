@@ -180,6 +180,33 @@ fn spill_range_operator() {
     assert_eq!(t.num("E1"), 100.0);
 }
 
+/// A spill reference (`A1#`) to a cell that is **not** spilling answers `#REF!` — but it reads the
+/// cell first, and that read is what ties the two together. Here the anchor is already `#CIRC!` when a
+/// **second** reader is entered (`C1`), which is the seed-135 shape: the pass that made the anchor
+/// circular is over, so without the read `C1` would answer `#REF!` while a from-scratch recalculation,
+/// which sees the whole chain at once, answers `#CIRC!` (the soak's "incremental is not the full
+/// one"). A blocked array still answers `#REF!`: what a spill reference needs is a spill, and there is
+/// none.
+#[test]
+fn a_spill_reference_entered_after_its_anchor_went_circular_is_circular_too() {
+    let mut t = T::new();
+    t.set("A1", "5");
+    t.set("B1", "=SORT(A1:A2)");
+    assert_eq!(t.num("B1"), 5.0, "the anchor spills before anything reads it");
+    // The anchor now sorts a range its own reader sits in: the chain is circular.
+    t.set("A1", "=SUM(B1#)");
+    assert_eq!(t.get("B1"), Value::Error(CellError::Circ));
+    // A second reader, entered after the fact: it is in the same chain.
+    t.set("C1", "=SUM(B1#)");
+    assert_eq!(t.get("C1"), Value::Error(CellError::Circ));
+    // Which is what a full recalculation from a fresh graph says.
+    let mut fresh = t.wb.clone();
+    Calc::new().recalc_all(&mut fresh);
+    let sh = fresh.sheet(0).unwrap();
+    for at in ["A1", "B1", "C1"] {
+        assert_eq!(sh.value(c(at)), Value::Error(CellError::Circ), "{at}");
+    }
+}
 #[test]
 fn arrays_that_spill_as_before_do_not_requeue_their_dependents() {
     // Two arrays that each read the other's spill area, and a formula reading both spills.

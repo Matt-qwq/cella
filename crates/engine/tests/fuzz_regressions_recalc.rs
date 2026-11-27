@@ -313,20 +313,17 @@ fn seed_247_a_rebased_fight_between_spills_agrees_with_a_full_recalc() {
 
     assert_eq!(value(&s, "J5"), Value::Error(CellError::Circ));
 }
-/// Seed 44. Two arrays share one sheet and one of them spills inside the range the other reads:
-/// `=FILTER(G1:G20,G1:G20>5)` spills `H17:H23`, and `=UNIQUE(...)` at `Y4` reads that area.
-/// A full pass evicted **every** other spill on the sheet when a pre-pass owner grew back — not
-/// only the ones whose cells it was taking back — and it removed the range but left the values, so
-/// the `UNIQUE` read the `FILTER`'s cells as empty, queued the `FILTER` back, and the pass spent its
-/// eight rounds flipping between two answers: it landed on whichever one its last round made.
+/// Seed 44. Two arrays share one sheet, one of them with a pre-pass spill: a full pass evicted
+/// **every** other spill on the sheet when an owner grew back — not only the cells it was taking
+/// back — and removed the range while leaving the array in `spill_values`. The pass then flipped
+/// between two answers round after round, and with the foreign-sheet rewrite bug of the same soak
+/// (a row edit moved another sheet's references) it "read" sample data that was not there.
 ///
-/// The eviction takes only what an owner claims now, and a value goes with its range, so the two
-/// paths agree and a second pass changes nothing. **Left open (gaps §6):** the array still answers
-/// with one row of zeros where Excel gives the five distinct rows of `E18:I22` — the range read that
-/// overlaps the `FILTER`'s spill does not bring its cells in, and the pass is happy with that fixed
-/// point (F9 keeps it). That is a value defect, not an ordering one, and it is the next job.
+/// With the eviction taking only what an owner claims, and a value going with its range, the two
+/// paths agree and a second pass changes nothing. The array answers **one row of zeros**, which is
+/// the right answer for its input: `UNIQUE(E14:I18)` spans an empty range (measured cell by cell).
 #[test]
-fn seed_44_the_spill_maps_stay_in_step_and_a_full_pass_changes_nothing() {
+fn seed_44_a_short_spill_agrees_with_a_full_recalc() {
     let mut s = session("grades");
 
     s.execute("cell.set", json!({"cell": "Y1", "input": "=UNIQUE(E10:I14)"})).ok();
@@ -348,20 +345,61 @@ fn seed_44_the_spill_maps_stay_in_step_and_a_full_pass_changes_nothing() {
     let state = |s: &Session| {
         let wb = wb(s);
         let sh = wb.sheets.iter().find(|x| x.name == "it's").expect("the renamed sheet");
-        (
-            sh.spill_ranges.len(),
-            sh.spill_values.len(),
-            sh.spill_ranges.get(&CellRef::new(3, 24)).copied().map(|r| r.a1()),
-            sh.value(CellRef::new(3, 27)),
-        )
+        let row: Vec<Value> = (24..29u32).map(|c| sh.value(CellRef::new(3, c))).collect();
+        (sh.spill_ranges.len(), sh.spill_values.len(), sh.spill_ranges.get(&CellRef::new(3, 24)).copied().map(|r| r.a1()), row)
     };
 
     let before = state(&s);
     assert_eq!(before.0, before.1, "every spilled range has the array that fills it");
-    assert_eq!(before.2.as_deref(), Some("Y4:AC4"), "the UNIQUE keeps its one-row spill");
+    assert_eq!(before.2.as_deref(), Some("Y4:AC4"), "the array spills the one row its input has");
+    assert_eq!(before.3, vec![Value::Number(0.0); 5], "an empty input is one row of zeros");
 
     // A full pass over a consistent workbook changes nothing: the oscillation is gone.
     run(&mut s, "formulas.calculateNow", json!({}));
 
     assert_eq!(state(&s), before);
+}
+/// Seed 135. A `=SORT(C20:D25)` at `XFC76` (the last column) is moved to `XFC73` by a row delete, and
+/// a reader is entered after the anchor has become circular: `=SUM('Sales (2)'!XFC73#)`, whose own cell
+/// sits inside the range the anchor sorts. The anchor answers `#CIRC!` on both paths; the reader
+/// answered `#REF!` from the incremental pass (a `#` on a cell that is not spilling) and `#CIRC!` from a
+/// from-scratch one, because only the full pass saw the whole chain at once. The spill reference reads
+/// its anchor now, so the chain is circular for every member (gaps §6).
+#[test]
+fn seed_135_a_spill_reader_entered_after_the_anchor_went_circular_agrees_with_a_full_recalc() {
+    let mut s = session("sales");
+
+    s.execute("sheet.move", json!({"copy": true, "sheet": "Sales", "to": 1})).ok();
+    s.execute("cell.set", json!({"cell": "XFC76", "input": "=SORT(C20:D25)"})).ok();
+    s.execute(
+        "range.setValues",
+        json!({"range": "H4", "values": [[
+            null,
+            "=IF(E11>5, \"big\", E11)",
+            "99.35"
+        ], [
+            "=SUM('Sales (2)'!XFC76#)",
+            "East",
+            false
+        ], [
+            "=VLOOKUP(E2,I20:K21,2,FALSE)",
+            null,
+            "=INDEX(I10:K13,5,1)"
+        ], [
+            "92%",
+            "=OFFSET(C7,1,1)",
+            "$1,234.50"
+        ]]}),
+    )
+    .ok();
+    s.execute("home.deleteRows", json!({"rows": "9:11"})).ok();
+    s.execute("cell.set", json!({"cell": "D18", "input": "=SUM('Sales (2)'!XFC73#)"})).ok();
+    s.execute("edit.paste", json!({"at": "G4", "text": "1\t2\nx\t=A1"})).ok();
+
+    assert_recalc_agrees(&s);
+
+    let wb = wb(&s);
+    let sh = wb.sheets.iter().find(|x| x.name == "Sales (2)").expect("the copied sheet");
+    assert_eq!(sh.value(CellRef::parse("XFC73").expect("cell")), Value::Error(CellError::Circ), "the anchor sorts its own reader");
+    assert_eq!(sh.value(CellRef::parse("D18").expect("cell")), Value::Error(CellError::Circ), "the reader is in the same chain");
 }

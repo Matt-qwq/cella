@@ -681,7 +681,18 @@ impl<'h> Evaluator<'h> {
                 Ev::R(areas) => match areas.as_slice() {
                     [a] if a.range.is_single() => match self.host.spill_range(a.sheet, a.range.start) {
                         Some(range) => Ev::R(vec![Area { sheet: a.sheet, range }]),
-                        None => err(CellError::Ref),
+                        // A cell that is not spilling answers `#REF!` — but it is read first, and
+                        // that read is what ties this formula to it: a cycle made of a spill
+                        // reference and its own anchor is a chain of values, and only the read can
+                        // find it (seed 135: `=SUM(x!A1#)` where the anchor sorts a range the reader
+                        // sits in). A cell the pass marked `#CIRC!` is in that chain, so its reader is
+                        // too, and the whole chain answers the circular error as every other
+                        // dereference of a circular cell does. A blocked or plain cell still answers
+                        // `#REF!`: what a spill reference needs is a spill, and there is none.
+                        None => match self.host.cell_value(a.sheet, a.range.start) {
+                            Value::Error(CellError::Circ) => err(CellError::Circ),
+                            _ => err(CellError::Ref),
+                        },
                     },
                     _ => err(CellError::Ref),
                 },
