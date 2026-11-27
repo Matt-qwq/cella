@@ -721,9 +721,17 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   `a_label_box_is_set_at_each_level_and_survives_a_save` and `a_label_box_is_drawn_behind_the_text`;
   `chart_options_roundtrip` carries a box through build → save → reopen → save. Only a classic part: a
   chartex `cx:dataLabels` has no `spPr` Cella models, so a chartex label box is not written. [chart-parity.md](chart-parity.md)
-- **Missing:** a label's own **callout shape** is not modelled (its fill landed 11-27, above); date-axis
-  units are kept but not editable; from-cells labels, callouts added through the UI, chart templates and
-  an element-level pane for shapes/pictures are not there.
+- **Landed 11-27 (from-cells labels):** a point's label text may be a **cell reference** — Excel's "value
+  from cells": the file stores `c:dLbl/c:tx/c:strRef/c:f`, the model keeps the reference in
+  `PointLabel.text` (no `=`), the save writes the reference back with a `strCache` of what the cell holds,
+  and the drawing evaluates it (`resolve.rs`) so the label shows the cell's text rather than `=G1`.
+  `chart.setDataLabels {text: "=G1"}` and `{text: "G1"}` both work (the canonical form is stored) and the
+  point section of the pane has a **Label text** row. Test:
+  `a_label_text_from_a_cell_is_a_reference_not_a_literal` (a reference survives a save/reopen as a
+  reference, not as its spelling).
+- **Missing:** a label's own **callout shape** is not modelled (its fill and its text-from-cells landed 11-27,
+  above); date-axis units are kept but not editable; callouts added through the UI, chart templates and an
+  element-level pane for shapes/pictures are not there.
 - **Evidence:** `Chart` (`crates/model/src/features.rs`) holds the option families above;
   `chart_options_roundtrip` and `chart_unmodelled_kinds` pin build → save → reopen → second save
   byte equality; the patch path is pinned per chart kind; `ui-egui` `chart_format_pane` and

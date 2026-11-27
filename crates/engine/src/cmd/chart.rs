@@ -674,7 +674,13 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
     let on = bool_param(p, "on").unwrap_or(true);
     let series = u32_param(p, "series").map(|i| i as usize);
     let point = u32_param(p, "point");
-    let text = p.get("text").and_then(Json::as_str).map(str::to_string);
+    // A label's text: literal words, or a cell reference ("value from cells"). Excel types a reference
+    // with a leading `=`, the model and the file spell it without one, so both are accepted and the
+    // canonical form is stored (a save/reopen then keeps the same value).
+    let text = p.get("text").and_then(Json::as_str).map(|t| {
+        let t = t.trim();
+        t.strip_prefix('=').unwrap_or(t).to_string()
+    });
     let position = p.get("position").map(position_param).transpose()?;
     let separator = p.get("separator").and_then(Json::as_str).map(str::to_string);
     let number_format = p.get("numberFormat").and_then(Json::as_str).map(str::to_string);

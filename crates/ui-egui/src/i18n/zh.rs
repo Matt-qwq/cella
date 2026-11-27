@@ -1473,6 +1473,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Inside End" => "数据标签内",
         "Label colour" => "标签颜色",
         "Label fill" => "标签填充",
+        "Label text" => "标签文字",
         "Labels every" => "标签间隔",
         "Legend" => "图例",
         "Legend key" => "图例项",

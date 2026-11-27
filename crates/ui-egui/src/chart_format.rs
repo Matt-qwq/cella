@@ -1284,6 +1284,20 @@ fn data_point(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: O
             m.insert("deleteLabel".into(), json!(no_label));
             app.run_or_alert("chart.formatPoint", Json::Object(m));
         }
+        // The label's text: literal words, or a cell reference (=G1) for "value from cells".
+        ui.horizontal(|ui| {
+            ui.label(tr(ui, "Label text"));
+            let current = s.point_label(index).and_then(|l| l.text.clone()).unwrap_or_default();
+            let field = egui::Id::new(("cella.chart_label_text", id, scope, index));
+            if let Some(v) = crate::widgets::committed_text(ui, field, current.as_str(), Some(160.0)) {
+                let mut m = Map::new();
+                m.insert("chart".into(), json!(id));
+                m.insert("series".into(), json!(scope));
+                m.insert("point".into(), json!(index));
+                m.insert("text".into(), json!(v.trim()));
+                app.run_or_alert("chart.setDataLabels", Json::Object(m));
+            }
+        });
         label_font_controls(
             app,
             ui,

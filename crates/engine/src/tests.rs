@@ -6779,6 +6779,25 @@ fn a_label_box_is_set_at_each_level_and_survives_a_save() {
     assert_eq!(chart(&s).labels.fill, None);
     assert_eq!(chart(&s).series[0].labels.as_ref().unwrap().fill, Some(Color::Rgb(0xDDEBF7)), "a series keeps its own");
 }
+
+/// A point's label text may be a cell reference ("value from cells"): the file stores it as
+/// `c:tx/c:strRef`, the model keeps the reference, and the save writes the reference back.
+#[test]
+fn a_label_text_from_a_cell_is_a_reference_not_a_literal() {
+    let mut s = s();
+    chart_data(&mut s);
+    s.execute("insert.chart", json!({"type": "column", "range": "A1:E7"})).unwrap();
+    // A cell to take the text from, then a point label naming it.
+    s.execute("cell.set", json!({"cell": "G1", "input": "March"})).unwrap();
+    s.execute("chart.setDataLabels", json!({"series": 0, "point": 1, "text": "=G1"})).unwrap();
+    let label = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts[0].series[0].point_label(1).cloned();
+    assert_eq!(label(&s).and_then(|l| l.text), Some("G1".into()), "the reference is stored as the file spells it");
+    // It survives a save and reopen as a reference, not as the literal "=G1".
+    let r = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap();
+    let b64 = r["base64"].as_str().unwrap().to_string();
+    s.execute("file.open", json!({"name": "label-cell.xlsx", "base64": b64})).unwrap();
+    assert_eq!(label(&s).and_then(|l| l.text), Some("G1".into()), "read back as the reference");
+}
 #[test]
 fn a_combo_charts_secondary_axis_and_category_bounds_are_commands() {
     use cella_model::{AxisCrossing, ChartKind};
