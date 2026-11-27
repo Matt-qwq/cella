@@ -199,9 +199,21 @@ pub(crate) fn read_xls_with(bytes: &[u8], mut budget: Budget) -> Result<(Workboo
     // BoundSheet8 index → model sheet index.
     let mut model_index: Vec<Option<usize>> = Vec::with_capacity(g.sheets.len());
     for bs in &g.sheets {
+        if bs.kind == 2 {
+            // A chart sheet: one chart on a tab of its own.
+            wb.check_sheet_name(&bs.name, None).map_err(invalid)?;
+            match chart_sheet(&stream, bs, &g, &mut budget, &mut report)? {
+                Some(mut sheet) => {
+                    sheet.visibility = bs.visibility;
+                    model_index.push(Some(wb.sheets.len()));
+                    wb.sheets.push(Arc::new(sheet));
+                }
+                None => model_index.push(None),
+            }
+            continue;
+        }
         if bs.kind != 0 {
             report.warn(match bs.kind {
-                2 => "Chart sheets in .xls files are not imported yet and were skipped.",
                 1 => "Excel 4.0 macro sheets were skipped.",
                 _ => "VBA modules and other non-worksheet sheets were skipped.",
             });
@@ -236,11 +248,41 @@ pub(crate) fn read_xls_with(bytes: &[u8], mut budget: Budget) -> Result<(Workboo
     // The overview comes first.
     report.warnings.insert(
         0,
-        "Imported from an Excel 97-2003 (.xls) workbook: values, formulas, fonts, fills, borders, alignment, number formats, merged cells, column widths, row heights, comments, data validation, conditional formats (including colour scales, data bars and icon sets), hyperlinks, frozen panes and defined names, pictures, embedded charts, shapes and text boxes were read. Chart sheets, OLE objects and controls are not imported yet. Save as .xlsx; saving .xls is not supported.".into(),
+        "Imported from an Excel 97-2003 (.xls) workbook: values, formulas, fonts, fills, borders, alignment, number formats, merged cells, column widths, row heights, comments, data validation, conditional formats (including colour scales, data bars and icon sets), hyperlinks, frozen panes and defined names, pictures, embedded charts, shapes and text boxes were read. Chart sheets are read as one chart on a tab of their own; OLE objects and controls are not imported yet. Save as .xlsx; saving .xls is not supported.".into(),
     );
     Ok((wb, report))
 }
 
+/// A chart sheet ([MS-XLS] 2.1.5): one chart on a tab of its own, the same thing a `.xlsx` chart sheet
+/// is. The sheet is made only when the chart can be read — a kind the model does not express leaves the
+/// tab skipped with a warning, never half-read (the rule the `.xlsx` reader follows too).
+fn chart_sheet(stream: &[u8], bs: &BoundSheet, g: &Globals, budget: &mut Budget, report: &mut ReadReport) -> Result<Option<Sheet>, IoError> {
+    if bs.pos >= stream.len() {
+        return Err(invalid(format!("chart sheet '{}' points outside the Workbook stream", bs.name)));
+    }
+    let mut recs = Records::new(stream, bs.pos);
+    let first = recs.next_record()?.ok_or_else(|| invalid("missing chart sheet substream"))?;
+    let (vers, dt) = bof(&first)?;
+    // 0x0020 is a chart substream; anything else here is not the sheet kind the directory claims.
+    if vers != BIFF8 || dt != 0x0020 {
+        return Ok(None);
+    }
+    match chart::read(&mut recs, budget, &g.links, None) {
+        Ok(Some(mut chart)) => {
+            chart.id = 1;
+            Ok(Some(Sheet::chart_sheet(bs.name.clone(), chart)))
+        }
+        Ok(None) => {
+            report.warn("A chart sheet in an .xls file holds no chart kind Cella can draw and was skipped.");
+            Ok(None)
+        }
+        Err(IoError::Format(_)) => {
+            report.warn("A chart sheet in an .xls file could not be imported (an unsupported kind or damaged records).");
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
 fn bof(rec: &Record<'_>) -> Result<(u16, u16), IoError> {
     if rec.id != BOF {
         return Err(invalid("a substream does not start with a BOF record"));

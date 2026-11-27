@@ -749,6 +749,42 @@ fn styled_book(globals: &[u8], sheet_records: &[u8]) -> Vec<u8> {
 /// records after it count one lower. Reading the list straight by index shifted every font from the
 /// fifth on, which turned a bold 11 pt cell into the 9 pt regular record written before it (found
 /// 11-27 against an Excel-authored `.xls`, gaps §7).
+/// A chart sheet ([MS-XLS] 2.1.5) is one chart on a tab of its own, the same thing a `.xlsx` chart
+/// sheet is; a chart kind the model does not express leaves the tab skipped, never half-read.
+#[test]
+fn a_chart_sheet_is_read_as_one_chart_on_its_own_tab() {
+    use cella_model::ChartKind;
+    // A column chart with one series: BAR (transpose, stacked and hundred all clear), CHART, SERIES
+    // and a BRAI naming the series' values ($A$1 of the chart's own sheet).
+    let bar = rec(0x1017, &cat(&[&u16s(&[0, 0]), &u16s(&[0])]));
+    let values = cat(&[&[0x44], &u16s(&[0, 0xC000])]);
+    let brai = rec(0x1051, &cat(&[&[1, 2], &[0; 4], &(values.len() as u16).to_le_bytes(), &values]));
+    let chart = cat(&[&bof(0x0020), &rec(0x1002, &u16s(&[0, 0, 0, 0])), &bar, &rec(0x1003, &[]), &brai, &eof()]);
+    let sheet_records = cat(&[&rec(0x0203, &cat(&[&cell(0, 0, 0), &7.0f64.to_le_bytes()])), &eof()]);
+    let boundsheet = |pos: u32, kind: u8, name: &str| rec(0x0085, &cat(&[&pos.to_le_bytes(), &[0, kind, name.len() as u8, 0], name.as_bytes()]));
+    let globals = |positions: [u32; 2]| {
+        cat(&[
+            &bof(0x0005),
+            &rec(0x00E0, &cat(&[&u16s(&[0, 0, 0]), &[0; 14]])),
+            &boundsheet(positions[0], 0, "Data"),
+            &boundsheet(positions[1], 2, "Chart1"),
+            &eof(),
+        ])
+    };
+    let data = cat(&[&bof(0x0010), &sheet_records]);
+    let len = globals([0; 2]).len() as u32;
+    let p1 = len;
+    let p2 = p1 + data.len() as u32;
+    let file = cat(&[&globals([p1, p2]), &data, &chart]);
+    let (wb, _) = read_xls(&compound("Workbook", &file)).unwrap();
+    assert_eq!(wb.sheets.len(), 2, "the worksheet and the chart sheet");
+    let chart_sheet = &wb.sheets[1];
+    assert!(chart_sheet.is_chart_sheet(), "the second tab is a chart sheet");
+    assert_eq!(chart_sheet.charts.len(), 1, "a chart sheet holds exactly one chart");
+    let c = chart_sheet.chart_sheet_chart().unwrap();
+    assert_eq!(c.kind, ChartKind::ColumnClustered);
+    assert_eq!(c.id, 1, "the chart is addressable on its sheet");
+}
 #[test]
 fn xls_font_index_four_is_never_used() {
     let globals = cat(&[

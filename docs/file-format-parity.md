@@ -584,7 +584,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 
 
-| Legacy `.xls` (BIFF8): styles, comments, validation, conditional formats (cell-value and formula rules), hyperlinks, frozen panes, `CF12` colour scales/data bars/icon sets, pictures, embedded charts, shapes and text boxes landed 10-30/11-02/11-03; OLE objects, controls and chart sheets still to read; corpus run; then write | 2–6 |
+| Legacy `.xls` (BIFF8): styles, comments, validation, conditional formats (cell-value and formula rules), hyperlinks, frozen panes, `CF12` colour scales/data bars/icon sets, pictures, embedded charts, shapes and text boxes landed 10-30/11-02/11-03; chart sheets (one chart on a tab of its own) landed 11-27; OLE objects and controls still to read; corpus run; then write | 2–6 |
 
 
 
@@ -615,6 +615,7 @@ refresh. Counted under features (Get & Transform, ~10% ready), not here.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-27 | minor | **`.xls` chart sheets are read.** A `BoundSheet8` of kind 2 goes through the same chart reader an embedded chart does and becomes a chart sheet — one chart on a tab of its own, no cells, grid or headings — instead of being dropped with a warning; a chart kind the model does not express still skips the tab. Verified on an Excel-16-authored file (`Chart.Location(1, "Chart1")` then `SaveAs` 56): the tab order the file records survives and Cella's `.xlsx` lists both tabs with one chart. OLE objects and controls remain out (no model object) |
 | 2026-11-27 | minor | **A `.xls` cell's font index skips 4.** Excel reserves `FONT` index 4 as a place-holder and numbers the records around it (`[MS-XLS]` 2.4.122), so a cell whose `XF` says `ifnt=22` reads the 22nd record — reading the list straight by index shifted every font from the fifth on by one, and since Excel writes the bold variants after the regular ones a bold 11 pt cell came back as the regular 9 pt record just before it. Found by having Excel 16 author the same workbook as `.xls` (SaveAs 56) and `.xlsx` (51) and diffing what Cella makes of each (values, formulas, number formats, merges, widths and names were all fine); fixed in `xls/styles.rs` with `font_position`, where index 4 names no font and the cell keeps Normal |
 
 | 2026-11-26 | minor | **The workbook's data model survives a save.** The pass-through looked for `powerPivotData` only on a report's cache definition; the file Excel writes relates the model from the **workbook** (`xl/_rels/workbook.xml.rels` → `model/item.data`), so the walk found nothing and the model was dropped without a warning. It is collected from the workbook's own relationships now (the cache-definition shape is still read), the per-part allowance grew 64 MiB → 256 MiB (a model is one part and grows with the workbook: a 120 MB model round-trips in 1.73 s at 373 MB peak, byte-identical), and a model cache is named as one ("built on the workbook's data model (Power Pivot)") instead of "an external data source". **Measured in Excel 16:** the Microsoft sample (6 model tables, 4 pivot caches) keeps 6 and 4 through Cella's save; the pre-fix save kept 0 tables. Tests: `a_data_model_related_from_the_workbook_is_kept_by_a_save`, `a_large_model_is_carried_whole` |

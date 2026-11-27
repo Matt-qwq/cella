@@ -1044,14 +1044,24 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   fill, blue line), an oval, a right arrow, a text box ("Note") and a line converts to `.xlsx` and
   reopens with 5 shapes at the same left/top, the same text, fill and line (a block arrow becomes
   the model's arrowheaded line; a right edge inside a column rounds by a few points).
-- **Still missing:** OLE objects, controls and chart sheets (dropped with a warning; OLE has no
-  model object); BIFF5 is refused; `.xls` is never written. RC4/encrypted `.xls` output needs a
-  `.xls` writer and is not scheduled.
+- **Landed 11-27 (chart sheets):** a chart sheet in an `.xls` (`BoundSheet8` kind 2) is read as what it
+  is: one chart on a tab of its own, the same thing the `.xlsx` reader makes of a chart sheet — the chart
+  substream goes through the same reader an embedded chart does, the sheet has no cells, grid or
+  headings, and the tab keeps the chart addressable (`id = 1`). A tab whose chart is a kind the model
+  does not express (3-D, surface, bar of pie, damaged records) is still skipped with a warning rather than
+  half-read. Proven on an Excel-16-authored file (`ChartObjects.Add` → `Chart.Location(1, "Chart1")` →
+  `SaveAs` 56): the tab order the file records (Chart1 before Data) comes through, and Cella's `.xlsx` of
+  it lists both tabs with one chart on `Chart1`. Regression test
+  `a_chart_sheet_is_read_as_one_chart_on_its_own_tab`. OLE objects and controls stay out: they need a
+  model object the app does not have.
+- **Still missing:** OLE objects and controls (dropped with a warning; OLE has no model object); BIFF5
+  is refused; `.xls` is never written. RC4/encrypted `.xls` output needs an `.xls` writer and is not
+  scheduled.
 - **Evidence:** #121: Excel 97-2003 (BIFF8) `.xls` files now open (values, formulas, number
   formats, merges, sizes, names, styles, comments, validation, conditional formats (including
   colour scales, data bars and icon sets), hyperlinks, frozen panes, pictures, embedded charts,
-  autoshapes and text boxes); OLE objects, controls and chart sheets are not read, BIFF5 is refused
-  and `.xls` is never written.
+  autoshapes and text boxes); OLE objects and controls are not read, BIFF5 is refused and `.xls` is
+  never written.
   Password-encrypted `.xlsx` workbooks (Agile and Standard encryption) open with their password
   since #11 and are **saved back protected** with the scheme they had. RC4 is **not** an ECMA-376
   Standard cipher: [MS-OFFCRYPTO] 2.3.4.5 requires AES for an OOXML package, and Excel refuses a
@@ -1082,10 +1092,9 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   font differences and the command fails. [oracle.md](oracle.md)
 - **Impact:** common in finance, government and anything older than 2007; encrypted files are
   routine in business.
-- **Estimate:** 0–2 h for beta (`.xls` import is met: values, formats, pictures, charts and
-  shapes are read and verified in Excel 16). OLE objects need a model object the app does not
-  have, and a chart-sheet reader is 2–4 h, both full scope rather than gate work; encrypted `.xls`
-  write is out of scope without an `.xls` writer. [file-format-parity.md](file-format-parity.md)
+- **Estimate:** met for beta (`.xls` import: values, formats, pictures, charts, shapes and chart sheets
+  are read and verified in Excel 16). OLE objects need a model object the app does not have — full scope;
+  encrypted `.xls` write is out of scope without an `.xls` writer. [file-format-parity.md](file-format-parity.md)
 
 ### 8. PivotTables: data-model pivots and a real-world corpus (F)
 - **Landed 11-14 (a data-model report is carried, not dropped).** Opening a Power Pivot / OLAP
