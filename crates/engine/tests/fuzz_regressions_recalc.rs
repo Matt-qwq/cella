@@ -403,3 +403,40 @@ fn seed_135_a_spill_reader_entered_after_the_anchor_went_circular_agrees_with_a_
     assert_eq!(sh.value(CellRef::parse("XFC73").expect("cell")), Value::Error(CellError::Circ), "the anchor sorts its own reader");
     assert_eq!(sh.value(CellRef::parse("D18").expect("cell")), Value::Error(CellError::Circ), "the reader is in the same chain");
 }
+/// Seed 233. `=AVERAGE(J11:M16)*2` at `J15` sits inside the range it averages, which makes it circular,
+/// and `J13` in that range holds `#N/A`. The aggregate met the error first and stopped, so it never read
+/// the cell that closes the cycle: memory answered `#N/A` while a full recalculation answered `#CIRC!`.
+/// The aggregate walk keeps going past the first error now — the answer is still the first error, but
+/// every formula in the range is read — so the cycle is found on both paths (gaps §6).
+#[test]
+fn seed_233_a_self_reading_range_with_an_earlier_error_agrees_with_a_full_recalc() {
+    let mut s = session("grades");
+
+    s.execute("selection.set", json!({"range": "D7:D11"})).ok();
+    s.execute("home.deleteColumns", json!({"cols": "F:F"})).ok();
+    s.execute("range.setValues", json!({"range": "J18", "values": [["=COUNTIF(G:G,\">0\")"]]})).ok();
+    s.execute("cell.set", json!({"cell": "L6", "input": "=G14:I17"})).ok();
+    s.execute("formulas.deleteName", json!({"force": true, "name": "Data"})).ok();
+    s.execute("cell.set", json!({"cell": "G15", "input": "=C5&\"-\"&H19"})).ok();
+    s.execute("home.fillColor", json!({"color": "#00B050", "range": "E4:I5"})).ok();
+    s.execute("cell.set", json!({"cell": "A8", "input": "=IF(J6>3,\"big\",J6)"})).ok();
+    s.execute("home.deleteColumns", json!({"cols": "I:I"})).ok();
+    s.execute("cell.set", json!({"cell": "D16", "input": "='Grades'!D20*2"})).ok();
+    s.execute("edit.clearContents", json!({})).ok();
+    s.execute("cell.set", json!({"cell": "B3", "input": "2026-03-16"})).ok();
+    s.execute(
+        "range.setValues",
+        json!({"range": "I13", "values": [
+            [null, "#N/A"],
+            [70, null],
+            ["=FILTER(H1:H20,H1:H20>6)", "=AVERAGE(J11:M16)*2"]
+        ]}),
+    )
+    .ok();
+
+    assert_recalc_agrees(&s);
+
+    let wb = wb(&s);
+    let sh = wb.sheets.iter().find(|x| x.name == "Grades").expect("the sheet");
+    assert_eq!(sh.value(CellRef::parse("J15").expect("cell")), Value::Error(CellError::Circ), "its own cell is in the range");
+}

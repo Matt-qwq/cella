@@ -226,6 +226,27 @@ fn a_formula_that_reads_its_own_cell_in_a_range_is_circular() {
     assert_eq!(sh.value(c("A1")), Value::Error(CellError::Circ));
     assert_eq!(sh.value(c("B2")), Value::Error(CellError::Circ));
 }
+
+/// The same shape as [`a_formula_that_reads_its_own_cell_in_a_range_is_circular`], with an **earlier**
+/// error in the range: the aggregate meets the `#N/A` first, and it used to stop there — never reading
+/// the cell that makes the reference circular — so memory answered `#N/A` while a full recalculation
+/// answered `#CIRC!` (the seed-233 soak finding, gaps §6). The walk goes on past the first error now: the
+/// answer is still the first error, but every formula in the range is read.
+#[test]
+fn a_self_reading_range_is_circular_even_when_an_earlier_error_comes_first() {
+    let mut t = T::new();
+    t.set("J13", "#N/A");
+    t.set("M16", "3");
+    t.set("J15", "=AVERAGE(J11:M16)*2");
+    assert_eq!(t.get("J15"), Value::Error(CellError::Circ));
+    // A full recalculation from a fresh graph says the same thing.
+    let mut fresh = t.wb.clone();
+    Calc::new().recalc_all(&mut fresh);
+    assert_eq!(fresh.sheet(0).unwrap().value(c("J15")), Value::Error(CellError::Circ));
+    // A reader outside the range still answers with the first error the range holds.
+    t.set("O1", "=AVERAGE(J11:M16)*2");
+    assert_eq!(t.get("O1"), Value::Error(CellError::NA));
+}
 #[test]
 fn arrays_that_spill_as_before_do_not_requeue_their_dependents() {
     // Two arrays that each read the other's spill area, and a formula reading both spills.

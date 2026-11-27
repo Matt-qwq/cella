@@ -1585,13 +1585,19 @@ impl Host for PassHost<'_> {
         let mut error = None;
         let mut saw_owned = false;
         sh.cells.visit_packed(range, &mut |_, packed| match packed {
-            Some(v) => match trial.add_packed(kind, v) {
+            // After the first error the answer is decided, but the walk goes on: the range may hold a
+            // formula further out, and only the host walk reads one — a formula that reads its own
+            // cell through such a range is circular even when an error comes first (the seed-233 soak
+            // finding, gaps §6). The trial's totals are meaningless past an error, so nothing more is
+            // added to them.
+            Some(v) if error.is_none() => match trial.add_packed(kind, v) {
                 Ok(()) => true,
                 Err(e) => {
                     error = Some(e);
-                    false
+                    true
                 }
             },
+            Some(_) => true,
             None => {
                 saw_owned = true;
                 false
@@ -1648,6 +1654,12 @@ impl Host for PassHost<'_> {
         }
         let mut error = None;
         sh.cells.visit_packed(range, &mut |at, packed| {
+            // Past the first error the answer is decided; the walk continues so that every formula in
+            // the range is read, which is what finds a formula that reads its own cell (see the trial
+            // walk above).
+            if error.is_some() {
+                return true;
+            }
             let result = match packed {
                 Some(v) => acc.add_packed(kind, v),
                 // The trial fold stopped at a cell whose value the evaluator owns, so a formula or
@@ -1660,7 +1672,7 @@ impl Host for PassHost<'_> {
                 Ok(()) => true,
                 Err(e) => {
                     error = Some(e);
-                    false
+                    true
                 }
             }
         });
