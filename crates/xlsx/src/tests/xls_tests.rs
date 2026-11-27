@@ -745,6 +745,37 @@ fn styled_book(globals: &[u8], sheet_records: &[u8]) -> Vec<u8> {
     compound("Workbook", &cat(&[&g(g(0).len() as u32), &sheet]))
 }
 
+/// BIFF8 numbers the `FONT` records with index 4 skipped — Excel reserves it as a place-holder and the
+/// records after it count one lower. Reading the list straight by index shifted every font from the
+/// fifth on, which turned a bold 11 pt cell into the 9 pt regular record written before it (found
+/// 11-27 against an Excel-authored `.xls`, gaps §7).
+#[test]
+fn xls_font_index_four_is_never_used() {
+    let globals = cat(&[
+        // Records 0..=3 are fonts 0..=3; record 4 is font 5, and font 4 names no record at all.
+        &font(200, 0, 0x7FFF, 400, 0, 0, "Regular"),
+        &font(200, 0, 0x7FFF, 400, 0, 0, "Regular"),
+        &font(200, 0, 0x7FFF, 400, 0, 0, "Regular"),
+        &font(180, 0, 0x7FFF, 400, 0, 0, "Nine"),
+        &font(220, 0, 0x7FFF, 700, 0, 0, "Bold Eleven"),
+        &xf(&Xf::default()),
+        &xf(&Xf { ifnt: 5, ..Xf::default() }),
+        &xf(&Xf { ifnt: 4, ..Xf::default() }),
+    ]);
+    let sheet = cat(&[&rec(0x0203, &cat(&[&cell(0, 0, 1), &1.0f64.to_le_bytes()])), &rec(0x0203, &cat(&[&cell(1, 0, 2), &2.0f64.to_le_bytes()]))]);
+    let (wb, _) = read_xls(&styled_book(&globals, &sheet)).unwrap();
+    let sh = &wb.sheets[0];
+    let style = |a1: &str| wb.styles.get(sh.style_id(CellRef::parse(a1).unwrap())).clone();
+    let bold = style("A1");
+    assert_eq!(bold.font.name, "Bold Eleven", "index 5 names the fifth record, not the sixth");
+    assert!(bold.font.bold);
+    assert_eq!(bold.font.size, 11.0);
+    // Index 4 is the hole: the cell keeps the Normal font rather than a real record.
+    let hole = style("A2");
+    assert_eq!(hole.font.name, "Regular");
+    assert!(!hole.font.bold);
+    assert_eq!(hole.font.size, 10.0);
+}
 #[test]
 fn xls_fonts_palette_fills_and_borders_reach_the_model() {
     // Two custom palette colours; fonts: plain, then bold italic 14pt in palette colour 8 with

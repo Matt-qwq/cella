@@ -27,6 +27,20 @@ const MAX_STYLES: usize = 4096;
 
 /// BIFF8's font weight for bold ([MS-XLS] 2.4.122 `bls`).
 const BOLD_WEIGHT: u16 = 700;
+
+/// The `FONT` record a BIFF8 font index names. Index 4 is never a font — Excel reserves it as a
+/// place-holder and numbers the records around it — so every index past it names the record before
+/// it. Reading the list straight by index shifted every cell's font by one from the fifth on: a bold
+/// cell came back as the regular font written before it, which is how an 11 pt bold cell arrived as
+/// 9 pt regular (found 11-27 against an Excel-authored `.xls`, gaps §7).
+fn font_position(ifnt: u16) -> Option<usize> {
+    match usize::from(ifnt) {
+        n @ 0..=3 => Some(n),
+        4 => None,
+        n => Some(n - 1),
+    }
+}
+
 /// The "automatic" font colour index.
 const ICV_AUTOMATIC: u16 = 0x7FFF;
 /// The "automatic" border colour (and fill foreground).
@@ -244,7 +258,7 @@ impl XfIn {
             num_fmt: NumFmt::new(formats.get(&self.ifmt).map(String::as_str).or_else(|| builtin_format(u32::from(self.ifmt))).unwrap_or("General")),
             ..Style::default()
         };
-        if let Some(font) = fonts.get(usize::from(self.ifnt)).or_else(|| fonts.first()) {
+        if let Some(font) = font_position(self.ifnt).and_then(|i| fonts.get(i)).or_else(|| fonts.first()) {
             style.font = font.clone();
         }
         let line = |i: usize| BorderLine {

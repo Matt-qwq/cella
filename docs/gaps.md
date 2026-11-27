@@ -933,18 +933,21 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   transcription error resolved by the documented rule. An Excel-computed corpus run stays part of
   gate #1.
 - **Impact:** wrong numbers are worse than missing features.
-- **Found 11-27 (measured against Excel 16, not a corpus):** the `.xls` import loses a cell's **bold**.
-  Excel authored a workbook with `A3` bold and nothing else set, saved it as `.xls` (SaveAs 56) and as
-  `.xlsx` (51); Cella reads the `.xlsx` with `bold=True` and the `.xls` with `bold=False` (and a merged
-  bold cell comes back at the default 9 pt too), while **values, formulas, number formats, merges,
-  column widths and defined names all survive** both. So it is not the merge and not the model: the
-  BIFF8 path drops it, most likely in the `XF` → `FONT` mapping (`ifnt`) or in how a cell's `xf` index
-  reaches `FontIn::resolve`, which reads `grbit` bit 0 and `bls >= 700` correctly on its own. The probe is
-  five COM calls (`Workbooks.Add`, set cells, `SaveAs` 56/51); comparing the two files with openpyxl
-  prints `A3 (True, …)` for Excel's `.xlsx` and `A3 (False, …)` for Cella's copy. Next: dump the `.xls`'s
-  `FONT`/`XF` records (xlrd or a two-line probe on the reader) and fix the mapping; the font *size*
-  across the sheet agrees, so the font table is read and only the per-cell index is suspect.
-- **Estimate:** 2–5 h, all of it re-running the suite against an Excel-computed corpus; Excel 16 is
+- **Fixed 11-27 (measured against Excel 16, not a corpus) — a `.xls` cell's font index skips 4.** Excel
+  authored a workbook with `A3` bold and nothing else set, saved it as `.xls` (SaveAs 56) and as `.xlsx`
+  (51); Cella read the `.xlsx` with bold and the `.xls` without it (and at 9 pt instead of 11), while
+  values, formulas, number formats, merges, column widths and defined names survived both. The file was
+  not at fault: BIFF8 numbers its `FONT` records with **index 4 reserved** (Excel writes a place-holder
+  there and numbers the records around it — `[MS-XLS]` 2.4.122; xlrd documents the same rule), so a cell
+  whose `XF` says `ifnt=22` reads the **22nd** record, not the 23rd. Reading the list straight by index
+  shifted every font from the fifth record on by one, and because Excel writes the bold variants after
+  the regular ones a bold cell landed on the regular record just before it. `xls/styles.rs` maps the
+  index now (`font_position`), with index 4 naming **no** font so the cell keeps the Normal one. Proven
+  both ways: the test `xls_font_index_four_is_never_used` (a file with five `FONT` records where font 5
+  is the bold one, and a cell whose `XF` says 5 — "Regular" without the fix, "Bold Eleven" with it), and
+  the Excel-authored pair, where Cella's copy and Excel's now agree cell by cell (bold, 11 pt, number
+  format). The reproduction is five COM calls (`Workbooks.Add`, set the cells, `SaveAs` 56 and 51) plus
+  openpyxl to compare.
   available now, the corpus is gate #1's. [function-parity.md](function-parity.md#formula-language)
 
 ### 7. Legacy `.xls`: OLE objects and chart sheets; encrypted `.xls` cannot be written (FF)
