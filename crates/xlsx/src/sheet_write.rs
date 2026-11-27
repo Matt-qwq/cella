@@ -12,7 +12,7 @@ use crate::xml::{encode_xstring, esc, esc_attr, num};
 use cella_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
 use cella_model::{
     Cell, CfOperator, CfRule, CfValueKind, Chart, Color, CondFormat, ErrorStyle, FilterCriterion, LineInfo, NoteBox, NoteCorner, Orientation,
-    PageOrder, Sheet, SparklineKind, Style, Table, TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
+    PageOrder, Sheet, SparklineKind, Style, StyleId, Table, TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
@@ -204,18 +204,7 @@ pub fn write_sheet(
     stream: bool,
 ) -> Result<(String, Rels), IoError> {
     let mut rels = Rels::default();
-    // A style band is a live-model answer: the file has no range style, so the rectangle reaches it
-    // cell by cell. The writer expands the bands into a copy rather than into the document (the
-    // lazy per-row expansion is slice 3 of plan/STYLE-BANDS.md).
-    let expanded;
-    let sheet = match wb.sheet(si) {
-        None => return Ok((String::new(), rels)),
-        Some(sh) if !sh.style_bands.is_empty() => {
-            expanded = sh.materialised();
-            &expanded
-        }
-        Some(sh) => sh,
-    };
+    let Some(sheet) = wb.sheet(si) else { return Ok((String::new(), rels)) };
     let styles = StyleIds { count: wb.styles.len() as u32 };
 
     // A table's dropdown filter is kept in `sheet.autofilter`, not in `Table::filter` (the
@@ -302,7 +291,9 @@ pub fn write_sheet(
         }
         s.push_str("</sheetPr>");
     }
-    let mut used = sheet.cells.used_range();
+    // `Sheet::used_range` carries the style bands (a formatted blank is a used cell), which is
+    // what the dimension and the row windows need to cover (gaps §32, slice 3b).
+    let mut used = sheet.used_range();
     for c in extra.keys().chain(overrides.keys()) {
         let r = RangeRef::cell(*c);
         used = Some(used.map_or(r, |u| u.union(&r)));
@@ -1009,6 +1000,9 @@ fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMa
     let mut store = sheet.cells.iter_scan(window).peekable();
     let mut sparse = additions.range(window.start.row..=window.end.row).peekable();
     let mut info_rows = sheet.rows.range(window.start.row..=window.end.row).peekable();
+    // The rows a style band covers are written even when nothing is stored there: each of their
+    // columns is a styled blank cell (`RowBuilder` emits them; gaps §32, slice 3b).
+    let mut band_rows = band_rows(sheet, window).peekable();
     // Only a row the file's filters can own is written as one a filter hides; see
     // `written_filter_ranges`.
     let attributable = written_filter_ranges(sheet);
@@ -1024,7 +1018,12 @@ fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMa
         let next_sparse = sparse.peek().map(|(r, _)| **r);
         let next_info = info_rows.peek().map(|(r, _)| *r);
         let next_filter = filter_rows.peek().copied();
-        let Some(row) = [next_store, next_sparse, next_info, next_filter].into_iter().flatten().min() else { break };
+        let next_band = band_rows.peek().copied();
+        let Some(row) = [next_store, next_sparse, next_info, next_filter, next_band].into_iter().flatten().min() else { break };
+        let has_band = next_band == Some(row);
+        if has_band {
+            band_rows.next();
+        }
         let mut info = if next_info == Some(row) {
             info_rows.next().map(|(_, i)| *i).unwrap_or_default()
         } else {
@@ -1040,7 +1039,7 @@ fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMa
         } else {
             Vec::new().into_iter().peekable()
         };
-        let has_cells = next_store == Some(row) || adds.peek().is_some();
+        let has_cells = next_store == Some(row) || adds.peek().is_some() || has_band;
         if !has_cells && info == LineInfo::default() {
             continue;
         }
@@ -1079,6 +1078,24 @@ fn walk_rows<V: RowVisitor>(sheet: &Sheet, window: RangeRef, additions: &BTreeMa
         v.row_close();
     }
     Ok(())
+}
+
+/// The rows of `window` that a style band covers, ascending without repeats: a band writes a styled
+/// blank cell for every column it covers on every row of itself, so those rows must be visited even
+/// when the store holds nothing in them (gaps §32, slice 3b).
+fn band_rows(sheet: &Sheet, window: RangeRef) -> impl Iterator<Item = u32> + '_ {
+    let mut runs: Vec<(u32, u32)> =
+        sheet.style_bands.iter().map(|b| (b.range.start.row.max(window.start.row), b.range.end.row.min(window.end.row))).collect();
+    runs.retain(|(a, b)| a <= b);
+    runs.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(runs.len());
+    for (a, b) in runs {
+        match merged.last_mut() {
+            Some(last) if a <= last.1.saturating_add(1) => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    merged.into_iter().flat_map(|(a, b)| a..=b)
 }
 
 /// The texts one window of a sheet writes: its distinct strings in first-use order, the strings
@@ -1292,6 +1309,14 @@ fn collect_window(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'
     Ok(batch)
 }
 
+/// One column run a style band puts a style on for the row being written.
+#[derive(Clone, Copy, Debug)]
+struct BandRun {
+    next: u32,
+    last: u32,
+    style: StyleId,
+}
+
 /// Builds one window of a sheet's rows: the `<row>` elements into `xml` and the flags the workbook
 /// assembly reads back. It touches no [`Out`], which is what lets a window be built on a worker
 /// thread.
@@ -1302,11 +1327,17 @@ struct RowBuilder<'a> {
     sst: &'a Sst,
     xml: String,
     flags: RowFlags,
+    /// The band columns of the row being written, ascending, overlaps already resolved (the newest
+    /// band wins). A styled blank is a `<c>` element and nothing else, so it is emitted here while
+    /// the row is built — the file has no range style to carry it (gaps §32, slice 3b).
+    band_runs: Vec<BandRun>,
+    band_at: usize,
+    band_row: u32,
 }
 
 impl<'a> RowBuilder<'a> {
     fn new(wb: &'a Workbook, si: usize, styles: StyleIds, sst: &'a Sst) -> RowBuilder<'a> {
-        RowBuilder { wb, si, styles, sst, xml: String::new(), flags: RowFlags::default() }
+        RowBuilder { wb, si, styles, sst, xml: String::new(), flags: RowFlags::default(), band_runs: Vec::new(), band_at: 0, band_row: 0 }
     }
 }
 
@@ -1321,22 +1352,128 @@ impl RowBuilder<'_> {
         });
         write_cell(&mut self.xml, self.styles, self.sst, at, cell, a, array.as_ref(), &mut self.flags)
     }
+
+    /// The band columns of `row`, ascending and merged: the file has no range style, so the
+    /// rectangle becomes one styled blank a column. Where bands overlap, the newest wins (a later
+    /// format was applied on top), and runs of one style collapse into one entry.
+    fn band_runs_for(&self, row: u32) -> Vec<BandRun> {
+        let Some(sh) = self.wb.sheet(self.si) else { return Vec::new() };
+        if sh.style_bands.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<(usize, &cella_model::StyleBand)> =
+            sh.style_bands.iter().enumerate().filter(|(_, b)| row >= b.range.start.row && row <= b.range.end.row).collect();
+        if hits.is_empty() {
+            return Vec::new();
+        }
+        hits.sort_by_key(|(_, b)| b.range.start.col);
+        let mut edges: Vec<u32> = Vec::with_capacity(hits.len() * 2);
+        for (_, b) in &hits {
+            edges.push(b.range.start.col);
+            edges.push(b.range.end.col.saturating_add(1));
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        let mut runs: Vec<BandRun> = Vec::with_capacity(edges.len());
+        for window in edges.windows(2) {
+            let (lo, hi) = (window[0], window[1]);
+            if lo >= hi {
+                continue;
+            }
+            // The last band of the sheet covering this piece is the one the model answers with.
+            let Some((_, band)) = hits.iter().filter(|(_, b)| b.range.start.col <= lo && lo <= b.range.end.col).max_by_key(|(i, _)| *i) else {
+                continue;
+            };
+            let last = hi.saturating_sub(1);
+            match runs.last_mut() {
+                Some(run) if run.style == band.style && run.last.saturating_add(1) == lo => run.last = last,
+                _ => runs.push(BandRun { next: lo, last, style: band.style }),
+            }
+        }
+        runs
+    }
+
+    /// The next band column of the row being written, if any is left.
+    fn peek_band(&mut self) -> Option<(u32, StyleId)> {
+        loop {
+            let run = self.band_runs.get_mut(self.band_at)?;
+            if run.next > run.last {
+                self.band_at += 1;
+                continue;
+            }
+            return Some((run.next, run.style));
+        }
+    }
+
+    fn take_band(&mut self) {
+        if let Some(run) = self.band_runs.get_mut(self.band_at) {
+            run.next = run.next.saturating_add(1);
+        }
+    }
+
+    /// Writes the styled blank of a band column: `<c r="B3" s="7"/>`, and nothing at the default
+    /// style (a format the cell would have anyway is not a format).
+    fn write_band_cell(&mut self, col: u32, style: StyleId) {
+        let s = self.styles.get(style);
+        if s == 0 {
+            return;
+        }
+        self.xml.push_str("<c r=\"");
+        a1_into(&mut self.xml, CellRef::new(self.band_row, col));
+        self.xml.push_str("\" s=\"");
+        push_u32(&mut self.xml, s);
+        self.xml.push_str("\"/>");
+    }
+
+    /// Writes every band column before `before` (all of them when `None`), in column order.
+    fn flush_bands(&mut self, before: Option<u32>) {
+        while let Some((col, style)) = self.peek_band() {
+            if let Some(limit) = before
+                && col >= limit
+            {
+                break;
+            }
+            self.take_band();
+            self.write_band_cell(col, style);
+        }
+    }
 }
 
 impl RowVisitor for RowBuilder<'_> {
     fn row_open(&mut self, row: u32, info: &LineInfo) {
+        self.band_row = row;
+        self.band_runs = self.band_runs_for(row);
+        self.band_at = 0;
         write_row_open(&mut self.xml, row, info, self.styles);
     }
     fn row_empty(&mut self) {
-        self.xml.push_str("/>");
+        // A row the walker thought empty can still be a band's: the band cells are written here.
+        if self.peek_band().is_some() {
+            self.xml.push('>');
+            self.flush_bands(None);
+            self.xml.push_str("</row>");
+        } else {
+            self.xml.push_str("/>");
+        }
     }
     fn row_cells(&mut self) {
         self.xml.push('>');
     }
     fn row_close(&mut self) {
+        self.flush_bands(None);
         self.xml.push_str("</row>");
     }
     fn cell(&mut self, at: CellRef, cell: Option<&Cell>, a: &Additions<'_>) -> Result<(), IoError> {
+        // The file wants a row's cells in column order: the band's blanks before this cell first,
+        // and a band column the same as the cell is the cell's (its own style wins).
+        self.flush_bands(Some(at.col));
+        while let Some((col, _)) = self.peek_band() {
+            if col == at.col {
+                self.take_band();
+            } else {
+                break;
+            }
+        }
         self.push_cell(at, cell, a)
     }
 }
@@ -1369,7 +1506,9 @@ pub(crate) fn default_workers() -> usize {
 /// The last row a sheet writes: its last cell in the store, an addition (a spilled value, a table
 /// header, a picture), a row it has line info for, or one a filter hides.
 fn last_written_row(sheet: &Sheet, additions: &BTreeMap<u32, Vec<(u32, Additions<'_>)>>) -> u32 {
-    let store = sheet.cells.used_range().map(|u| u.end.row);
+    // The sheet's own used range, not the store's: a style band writes styled blanks on rows the
+    // store holds nothing for (gaps §32, slice 3b).
+    let store = sheet.used_range().map(|u| u.end.row);
     let lines = sheet.rows.keys().last();
     let hidden = sheet.filter_hidden.rows().last();
     let additions = additions.keys().next_back().copied();

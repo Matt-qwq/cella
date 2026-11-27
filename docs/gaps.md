@@ -1338,6 +1338,19 @@ rest on is pinned by `a_style_band_answers_where_no_cell_is_stored`: a stored ce
 (that is what "clear this cell" stores), typing into a formatted blank keeps the format (`set_value`
 reads `style_id`), the newest band wins, and a band makes the sheet used where it covers.
 
+**Slice 3b landed 11-27 (the writer expands a band per row):** `write_sheet` writes the sheet as it is
+— no materialised copy — and the row walk visits the rows a band covers (`band_rows`), treating one as
+having cells even when the store holds nothing there. `RowBuilder` resolves the band's columns for the
+row it is writing (newest band wins, runs of one style collapse), then emits a `<c r=".." s=".."/>` for
+each band column that no stored cell answers for, in column order, before the cell that follows it.
+**A/B on the same workbook: the two writers produce byte-identical files** (4161 bytes, one
+checksum), so the lazy path is a copy win and not a different file — and on a bigger one, a band over
+**5,000,000 blank cells** saved twice each way: **411 / 416 ms lazily against 430 / 419 ms
+materialised**, same 14.3 MB, same bytes. The wall gain is small because the XML emission dominates
+(5M `<c>` elements either way); what it removes is the extra copy of the rectangle — five million cells
+built into a throwaway sheet on every save. The 20 × 120 soak with a band in its prepared workbook is
+green over it.
+
 **Band clipping landed 11-27 (slice 5's cheap half):** `Sheet::clip_style_bands` subtracts a cleared
 range from every band it touches — a band keeps up to four strips around the hole — and
 `edit.clearFormats` / `edit.clearAll` use it instead of expanding the whole sheet: clearing ten rows of
