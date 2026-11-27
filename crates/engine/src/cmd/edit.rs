@@ -1859,10 +1859,22 @@ fn form_by_shape(
 ) -> Option<(String, std::sync::Arc<cella_formula::Shape>)> {
     use cella_formula::{Adjusted, adjust::CellMove};
     let shape = f.shape.clone()?;
-    let old = cell_before(c, e)?;
-    if shape.straddles(old, e) {
-        return None;
-    }
+    // A cell only moves when the edit is on its own sheet. A formula on another sheet keeps its
+    // position, so the text it holds is the one written for the cell it sits at — the "cell before"
+    // a line edit answers for it belongs to a movement that did not happen, and reading the shape
+    // there spells every reference the edit did not touch one band away (seed 189: a row delete on
+    // a blank sheet moved another sheet's `=SUM(J19:N25)` to `=SUM(J17:N23)`). The shape level
+    // still answers for it — unchanged, or per cell when a reference names the edited sheet.
+    let on_target = host.eq_ignore_ascii_case(target);
+    let old = if on_target {
+        let old = cell_before(c, e)?;
+        if shape.straddles(old, e) {
+            return None;
+        }
+        old
+    } else {
+        c
+    };
     let moves = old != c;
     let key = (std::sync::Arc::as_ptr(&shape) as usize, moves);
     let new = {
@@ -1941,7 +1953,8 @@ pub(crate) fn rewrite_all_formulas(wb: &mut cella_model::Workbook, target: &str,
             // The text as the cell held it before the edit: for a cell a cut moved, its old
             // position (the shape prints the text it was written for, not the one its new
             // position implies), and for every other cell its own.
-            let before = cell_before(c, e).unwrap_or(c);
+            // The same rule as `form_by_shape`: a formula on another sheet did not move.
+            let before = if host.eq_ignore_ascii_case(target) { cell_before(c, e).unwrap_or(c) } else { c };
             let Some(expr) = f.text_tree_at(before) else { continue };
             let new = cella_formula::adjust::adjust(expr, &host, target, e);
             let text = cella_formula::print(&new);

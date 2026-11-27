@@ -1110,6 +1110,37 @@ fn deleting_a_multi_area_row_selection_removes_every_area_and_undoes_once() {
 }
 
 #[test]
+fn a_line_edit_on_one_sheet_leaves_another_sheets_relative_references_alone() {
+    // The seed-189 soak finding (gaps §6): a row delete on a blank sheet rewrote a formula on a
+    // different sheet by the same number of rows. A cell only moves when the edit is on its own
+    // sheet; a reference *qualified* to the edited sheet still follows its cells.
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "Other"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A9", "input": "=B9+C10", "sheet": "Sheet1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A10", "input": "=Other!B9", "sheet": "Sheet1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "A3", "input": "=B9", "sheet": "Other"})).unwrap();
+    // A row insert and a row delete on `Other`.
+    s.execute("home.insertRows", json!({"rows": "3:4", "sheet": "Other"})).unwrap();
+    s.execute("home.deleteRows", json!({"rows": "12:12", "sheet": "Other"})).unwrap();
+    let text = |s: &mut Session, sheet: &str, cell: &str| {
+        s.execute("cell.get", json!({"cell": cell, "sheet": sheet})).unwrap()["formula"].as_str().unwrap_or_default().to_string()
+    };
+    assert_eq!(text(&mut s, "Sheet1", "A9"), "=B9+C10", "another sheet's own references do not move");
+    // The two rows inserted above row 9 move the qualified reference down two; the deleted row 12
+    // lies below the cell it names, so it moves nothing.
+    assert_eq!(text(&mut s, "Sheet1", "A10"), "=Other!B11");
+    // The edited sheet's own cell moved down with the insert, and so did what it reads: the offsets
+    // are the same, so the A1 text names the row it now reads.
+    assert_eq!(text(&mut s, "Other", "A5"), "=B11");
+    // Undo puts all three back.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(text(&mut s, "Sheet1", "A9"), "=B9+C10");
+    assert_eq!(text(&mut s, "Sheet1", "A10"), "=Other!B9");
+    assert_eq!(text(&mut s, "Other", "A3"), "=B9");
+}
+
+#[test]
 fn move_columns_reorders_without_overwriting_and_undoes_once() {
     let mut s = s();
     s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2, 3, 4, 5, 6, 7, 8]]})).unwrap();

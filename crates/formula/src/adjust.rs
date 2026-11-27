@@ -462,6 +462,14 @@ pub fn adjust_canonical(tree: &Expr, host: &str, target: &str, edit: &Edit, cell
             return if touches { Adjusted::PerCell } else { Adjusted::Unchanged };
         }
     };
+    // An edit on another sheet moves none of this shape's cells: a reference the edit does not
+    // reach keeps its spelling, and one that names the edited sheet is a coordinate on that sheet
+    // whose offset from a cell that stayed changes — which only the cell can spell (a relative part
+    // of a moved reference is no longer an offset from the cell).
+    if !host.eq_ignore_ascii_case(target) {
+        let touches = tree.references().iter().any(|r| on_target(r, host, target));
+        return if touches { Adjusted::PerCell } else { Adjusted::Unchanged };
+    }
     // The lines the cell itself gains (an insert) or loses (a delete): a relative reference the
     // edit does not touch keeps its coordinates, so the cell spells it that much further away.
     let carry = match (cell, insert) {
