@@ -1294,7 +1294,7 @@ which is the thing the early stop stops paying for; `all` still returns it.
 
 **Evidence:** [performance-shapes.md](performance-shapes.md).
 
-### 32. Formatting a range over four million cells is refused (P, measured 11-24; priced 11-26)
+### 32. A rectangle of blanks past four million cells was refused — **fixed 11-27** (one band, 5M cells in ~1 ms)
 
 **What:** `home.formatCells` over a rectangle that is neither whole rows nor whole columns is an error
 past 4,000,000 cells — "selection too large to format cell by cell" (`crates/engine/src/cmd/format.rs`).
@@ -1391,7 +1391,25 @@ reads `style_id`, so the new cell takes the band's style, which is Excel's rule.
 yet: the fuzzer's prepared workbook carries no band, so no random command sequence has moved one —
 that is the next thing to add, and it is the proof this slice wants.
 
-**Fix (still the design question):** a range-level style (a rectangle or a column band) that the
+**Fixed 11-27 — the range-level style, in five slices:** `Sheet::style_bands` (a rectangle, a style)
+answers `style_id` for every cell no stored cell holds, so the grid, `cell.get` and the writer read it
+without knowing; `apply_style` stores **one band** for an oversized rectangle of blanks whose line
+styles agree, and still refuses one whose rows or columns already disagree (with the size, the limit and
+the way round it); the writer expands the band **per row** into `<c r=".." s=".."/>` elements —
+byte-identical to materialising the sheet; every edit that moves cells expands the bands first; and a
+clear subtracts its range from them instead of expanding the sheet. What that buys: a **5,000,000-cell
+rectangle of blanks is one band in about a millisecond** where it used to be refused, the same rectangle
+saved is byte-identical and one copy lighter (411/416 ms against 430/419 ms), and the file is unchanged
+(+0.4 MB at 4M cells, because a styled blank is a cell on disk either way — xlsx has no range style).
+Tests: `a_style_band_answers_where_no_cell_is_stored`, `a_rectangle_formats_the_blank_cells_it_covers_through_a_save`,
+`a_style_band_reaches_the_file_as_cells`, `an_oversized_rectangle_is_one_band`, the rewritten cap test,
+`clearing_formats_reaches_a_banded_rectangle`, `a_structural_edit_expands_a_band_before_moving_cells`; the
+soak's prepared workbook carries a band and compares `style_id` across a save. **Left on purpose:** a
+structural edit materialises the band instead of shifting it (correct, and the shape today's model
+already had), and a band is not written to the file as a band — it reaches it as cells, which is what the
+file can say.
+
+**The design question it answered:** a range-level style (a rectangle or a column band) that the
 renderer, the writer and `cell.get` expand lazily, instead of one style id per cell. **Estimate:**
 6–10 h, with the surface list above and slices 2–5 left in `plan/STYLE-BANDS.md` (slice 1 and the
 save half of slice 3 are in). The probe prices whatever replaces it.
