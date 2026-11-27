@@ -207,6 +207,25 @@ fn a_spill_reference_entered_after_its_anchor_went_circular_is_circular_too() {
         assert_eq!(sh.value(c(at)), Value::Error(CellError::Circ), "{at}");
     }
 }
+/// A formula that reads a range holding its own cell is circular, and the evaluation finds it: the read
+/// of the cell itself answers `#CIRC!` and the aggregate carries it. (The seed-233 soak finding — a range
+/// with an **earlier** error, where the aggregate stops before it reaches its own cell — is open,
+/// gaps §6: `=AVERAGE(J11:M16)` at `J15` over a `#N/A` at `J13` answers `#N/A` in memory and `#CIRC!`
+/// from a full recalculation.)
+#[test]
+fn a_formula_that_reads_its_own_cell_in_a_range_is_circular() {
+    let mut t = T::new();
+    t.set("A1", "=SUM(A1:A9)");
+    assert_eq!(t.get("A1"), Value::Error(CellError::Circ));
+    t.set("B2", "=AVERAGE(B1:B6)");
+    assert_eq!(t.get("B2"), Value::Error(CellError::Circ));
+    // A full recalculation from a fresh graph says the same thing.
+    let mut fresh = t.wb.clone();
+    Calc::new().recalc_all(&mut fresh);
+    let sh = fresh.sheet(0).unwrap();
+    assert_eq!(sh.value(c("A1")), Value::Error(CellError::Circ));
+    assert_eq!(sh.value(c("B2")), Value::Error(CellError::Circ));
+}
 #[test]
 fn arrays_that_spill_as_before_do_not_requeue_their_dependents() {
     // Two arrays that each read the other's spill area, and a formula reading both spills.
