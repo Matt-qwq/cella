@@ -53,7 +53,9 @@ position. Round 18 ran a local real-world corpus: 3,084 workbooks opened with no
 files; all 37 readable `.xls`). #1 is met; the pinned corpus remains for CI. What is left of beta
 is the release run: **#10 is out of scope (11-14)** — the machines behind the field crash reports
 belong upstream, not to this repository, so nothing here can close it. The local net for stability
-stays the soak (`command_sequence_fuzz`, 150 seeds × 120 steps on demand) plus the fuzz budgets; what
+stays the soak (`command_sequence_fuzz`: 200 × 200 and 300 × 200 release runs, 60,000 random commands,
+**green as of 11-27** — five calculation defects it found are in `gaps` §6, each with a regression test)
+plus the fuzz budgets; what
 a specific GPU driver does on a machine we do not have is not verifiable from this codebase. `.xls` OLE objects,
 controls and chart sheets are full scope. The old open-PR queue is no longer the plan; if PRs are still open when picking up
 a gap, land/rebase them into that gap's task rather than scheduling a separate review wave.
