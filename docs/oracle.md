@@ -1,6 +1,6 @@
 # The foreign-implementation oracle
 
-> **Last reviewed:** 2026-11-03 · **Status:** Excel 16 is activated and is the gate probe (open,
+> **Last reviewed:** 2026-11-27 · **Status:** Excel 16 is activated and is the gate probe (open,
 > refresh every PivotTable, recalculate, save, re-read). The real-world corpus half of gate #1 ran
 > on 11-03 on a local 3,084-workbook folder (0 save/reopen mismatches, Excel 16-identical copies);
 > the pinned corpus remains the CI artefact — see [gaps.md §1](gaps.md).
@@ -38,6 +38,19 @@ The probe also fails if openpyxl *refuses* the package.
 Cella then reads that copy back and every value must survive. Excel is the gate probe; WPS is
 the second opinion (and the only one on a machine without Excel). Only Excel's localized PivotTable
 chrome (`Row Labels`, `Grand Total`) is tolerated as a text difference.
+
+**app, a real `.xls` (Excel only).** Excel opens the same Cella-written workbook, recalculates and
+saves it as **BIFF8** (`SaveAs` 56), and Cella's *legacy reader* reads that copy back; it must agree
+with the model on the values (as above) **and** on each cell's formula text, its number format, its
+font's weight and size, the merges, the column widths and the defined names. This is the ground truth
+the `.xls` importer was missing: no Excel-authored file is ever committed, so the probe builds one per
+run. Two differences are the legacy format's own and are tolerated: BIFF8 has no tables, so Excel
+expands every structured reference to the range it names (`Sales[Q1]` becomes `C5:C10`), and it keeps
+the accounting family as built-in ids 5..8, which render with the *locale* currency (a `$"` format comes
+back as `¥"` on a Chinese-locale machine — Excel's own `.xlsx` reports the same code). Number formats
+are otherwise compared by **what they render**, because one code has two spellings
+(`#,##0.00 "units"` comes back as `#,##0.00\ "units"`). It found the BIFF8 font-index bug of 11-27
+(`gaps` §7): with the reader as it was, `sales` reports six font differences.
 
 **The package validator** (`cella_xlsx::testing::check_package`, run on every package the test
 suite saves) gained the fifth repair-prompt cause: a part that uses a namespace prefix it never

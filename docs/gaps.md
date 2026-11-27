@@ -933,21 +933,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   transcription error resolved by the documented rule. An Excel-computed corpus run stays part of
   gate #1.
 - **Impact:** wrong numbers are worse than missing features.
-- **Fixed 11-27 (measured against Excel 16, not a corpus) — a `.xls` cell's font index skips 4.** Excel
-  authored a workbook with `A3` bold and nothing else set, saved it as `.xls` (SaveAs 56) and as `.xlsx`
-  (51); Cella read the `.xlsx` with bold and the `.xls` without it (and at 9 pt instead of 11), while
-  values, formulas, number formats, merges, column widths and defined names survived both. The file was
-  not at fault: BIFF8 numbers its `FONT` records with **index 4 reserved** (Excel writes a place-holder
-  there and numbers the records around it — `[MS-XLS]` 2.4.122; xlrd documents the same rule), so a cell
-  whose `XF` says `ifnt=22` reads the **22nd** record, not the 23rd. Reading the list straight by index
-  shifted every font from the fifth record on by one, and because Excel writes the bold variants after
-  the regular ones a bold cell landed on the regular record just before it. `xls/styles.rs` maps the
-  index now (`font_position`), with index 4 naming **no** font so the cell keeps the Normal one. Proven
-  both ways: the test `xls_font_index_four_is_never_used` (a file with five `FONT` records where font 5
-  is the bold one, and a cell whose `XF` says 5 — "Regular" without the fix, "Bold Eleven" with it), and
-  the Excel-authored pair, where Cella's copy and Excel's now agree cell by cell (bold, 11 pt, number
-  format). The reproduction is five COM calls (`Workbooks.Add`, set the cells, `SaveAs` 56 and 51) plus
-  openpyxl to compare.
+- **Estimate:** 2–5 h, all of it re-running the suite against an Excel-computed corpus; Excel 16 is
   available now, the corpus is gate #1's. [function-parity.md](function-parity.md#formula-language)
 
 ### 7. Legacy `.xls`: OLE objects and chart sheets; encrypted `.xls` cannot be written (FF)
@@ -1061,6 +1047,28 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   hand-made RC4 package at both 40 and 128 bits (tested 11-03), so RC4 belongs to Office binary
   documents (2.3.5/2.3.6) and an encrypted `.xls` write waits for a `.xls` writer. Encrypted `.xls`
   (FILEPASS) is still refused with a message.
+- **Fixed 11-27 (measured against Excel 16, not a corpus) — a `.xls` cell's font index skips 4.** Excel
+  authored a workbook with `A3` bold and nothing else set, saved it as `.xls` (SaveAs 56) and as `.xlsx`
+  (51); Cella read the `.xlsx` with bold and the `.xls` without it (and at 9 pt instead of 11), while
+  values, formulas, number formats, merges, column widths and defined names survived both. The file was
+  not at fault: BIFF8 numbers its `FONT` records with **index 4 reserved** (Excel writes a place-holder
+  there and numbers the records around it — `[MS-XLS]` 2.4.122; xlrd documents the same rule), so a cell
+  whose `XF` says `ifnt=22` reads the **22nd** record, not the 23rd. Reading the list straight by index
+  shifted every font from the fifth record on by one, and because Excel writes the bold variants after
+  the regular ones a bold cell landed on the regular record just before it. `xls/styles.rs` maps the
+  index now (`font_position`), with index 4 naming **no** font so the cell keeps the Normal one.
+  Regression test `xls_font_index_four_is_never_used` (a file with five `FONT` records where font 5 is
+  the bold one, and a cell whose `XF` says 5 — "Regular" without the fix, "Bold Eleven" with it).
+- **Landed 11-27 — the oracle's `.xls` probe: the Excel-computed ground truth this entry was missing.**
+  `cargo xtask oracle` now has each app probe followed by an **Excel-written `.xls`**: Excel opens the
+  Cella-written fixture, recalculates and `SaveAs` 56, and the *legacy reader* must agree with the model
+  on values, formula text, number formats (compared by what they **render**), each font's weight and
+  size, the merges, the column widths and the defined names — five fixtures, every one green. Nothing
+  Excel-authored is committed: the file is built per run, so the coverage is reproducible. Two
+  differences are the format's own and tolerated (BIFF8 has no tables, so Excel expands `Sales[Q1]` to
+  `C5:C10`; its accounting family renders with the locale currency, `$` → `¥` here, in Excel's own
+  `.xlsx` too). Proven to have teeth: with the font-index fix reverted, the `sales` probe reports six
+  font differences and the command fails. [oracle.md](oracle.md)
 - **Impact:** common in finance, government and anything older than 2007; encrypted files are
   routine in business.
 - **Estimate:** 0–2 h for beta (`.xls` import is met: values, formats, pictures, charts and

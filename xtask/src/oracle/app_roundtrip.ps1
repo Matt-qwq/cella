@@ -4,10 +4,13 @@
 # `-App` is the COM ProgID: Excel.Application (the gate check) or KET.Application (WPS, the
 # substitute used while Excel was unavailable). Exit codes: 0 = a copy was written, 2 = the
 # application is not installed, 1 = it refused or failed.
+# -Format is the SaveAs file format: 51 = xlOpenXMLWorkbook (the default), 56 = xlExcel8 (the
+# legacy .xls the reader is checked against).
 param(
     [Parameter(Mandatory=$true)][string]$Src,
     [Parameter(Mandatory=$true)][string]$Dst,
-    [Parameter(Mandatory=$true)][string]$ProgId
+    [Parameter(Mandatory=$true)][string]$ProgId,
+    [int]$Format = 51
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,8 +44,7 @@ try {
     } catch {
         [Console]::Error.WriteLine("recalculation failed: $_")
     }
-    # 51 = xlOpenXMLWorkbook
-    $wb.SaveAs($Dst, 51)
+    $wb.SaveAs($Dst, $Format)
     $wb.Close($false)
 } catch {
     [Console]::Error.WriteLine("open/save failed: $_")

@@ -69,10 +69,10 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
                         ("WPS", "KET.Application", app_skips.as_slice(), &[][..]),
                     ] {
                         let app_path = dir.join(format!("{name}.{label}.xlsx"));
-                        match probe_app(ps, &app_ps1, &gc_path, &app_path, progid, wb, skips, texts) {
+                        match probe_app(ps, &app_ps1, &gc_path, &app_path, progid, None) {
                             Ok(None) => println!("  app {label}: not installed"),
-                            Ok(Some(issues)) => {
-                                failed += report(&format!("app round-trip ({label})"), &issues);
+                            Ok(Some(reopened)) => {
+                                failed += report(&format!("app round-trip ({label})"), &compare_values(wb, &reopened, skips, texts));
                             }
                             Err(e) => {
                                 println!("  app {label}: FAILED — {e}");
@@ -81,6 +81,26 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
                         }
                         if !keep {
                             let _ = std::fs::remove_file(&app_path);
+                        }
+                        // The same workbook as an Excel-written **`.xls`**: the legacy reader's
+                        // ground truth (gaps §7). Only Excel writes the format.
+                        if label == "Excel" {
+                            let xls_path = dir.join(format!("{name}.excel.xls"));
+                            match probe_app(ps, &app_ps1, &gc_path, &xls_path, progid, Some(56)) {
+                                Ok(None) => println!("  app Excel (.xls): not installed"),
+                                Ok(Some(reopened)) => {
+                                    let mut issues = compare_values(wb, &reopened, skips, texts);
+                                    issues.extend(compare_xls(wb, &reopened, skips));
+                                    failed += report("app round-trip (Excel, a real .xls)", &issues);
+                                }
+                                Err(e) => {
+                                    println!("  app Excel (.xls): FAILED — {e}");
+                                    failed += 1;
+                                }
+                            }
+                            if !keep {
+                                let _ = std::fs::remove_file(&xls_path);
+                            }
                         }
                     }
                 }
@@ -383,27 +403,15 @@ fn close(a: f64, b: f64) -> bool {
 
 /// `Ok(None)` when no application answered COM at all (nothing installed), `Ok(Some(issues))` after
 /// a real open/save, `Err` when the application was there and refused the file.
-fn probe_app(
-    powershell: &str,
-    script: &Path,
-    src: &Path,
-    dst: &Path,
-    progid: &str,
-    wb: &Workbook,
-    skips: &[String],
-    text_skips: &[String],
-) -> Result<Option<Vec<String>>, String> {
-    let out = Command::new(powershell)
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(script)
-        .arg("-Src")
-        .arg(src)
-        .arg("-Dst")
-        .arg(dst)
-        .arg("-ProgId")
-        .arg(progid)
-        .output()
-        .map_err(|e| format!("can't run {powershell}: {e}"))?;
+/// Opens `src` in an independent application, recalculates it, saves a copy at `dst` (as `format`:
+/// 51 = xlsx, 56 = `.xls`) and reads that copy back with our own reader.
+fn probe_app(powershell: &str, script: &Path, src: &Path, dst: &Path, progid: &str, format: Option<u16>) -> Result<Option<Workbook>, String> {
+    let mut cmd = Command::new(powershell);
+    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(script).arg("-Src").arg(src).arg("-Dst").arg(dst).arg("-ProgId").arg(progid);
+    if let Some(f) = format {
+        cmd.arg("-Format").arg(f.to_string());
+    }
+    let out = cmd.output().map_err(|e| format!("can't run {powershell}: {e}"))?;
     if out.status.code() == Some(2) {
         return Ok(None);
     }
@@ -412,11 +420,97 @@ fn probe_app(
         return Err(format!("the application could not open and save it: {}", err.trim()));
     }
     let bytes = std::fs::read(dst).map_err(|e| format!("can't read {}: {e}", dst.display()))?;
-    let (reopened, _reports) =
-        cella_engine::io::open_bytes("oracle.xlsx", &bytes).map_err(|e| format!("we cannot read the application's own copy: {e}"))?;
-    Ok(Some(compare_values(wb, &reopened, skips, text_skips)))
+    // The name picks the reader: a `.xls` copy goes through the legacy reader, which is the point.
+    let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "oracle.xlsx".into());
+    let (reopened, _reports) = cella_engine::io::open_bytes(&name, &bytes).map_err(|e| format!("we cannot read the application's own copy: {e}"))?;
+    Ok(Some(reopened))
 }
-
+/// What an Excel-written `.xls` must still say, beyond the values `compare_values` covers: a cell's
+/// formula text, its number format and its font, the merges, the column widths and the defined names.
+/// The legacy format cannot hold everything the model does — a fill pattern or an alignment setting
+/// can be dropped by the format itself — so this compares the facts the reader promises for `.xls`
+/// (gaps §7), not the whole workbook.
+fn compare_xls(model: &Workbook, reopened: &Workbook, skips: &[String]) -> Vec<String> {
+    let mut issues = Vec::new();
+    for (index, sheet) in model.sheets.iter().enumerate() {
+        let Some(other) = reopened.sheets.get(index) else { continue };
+        if skips.iter().any(|skip| skip == sheet.name.as_str()) {
+            continue;
+        }
+        for (cell_ref, cell) in sheet.cells.iter() {
+            if let Some(formula) = &cell.formula {
+                // BIFF8 has no tables, so Excel expands every structured reference to the range it
+                // names when it saves one (Sales[Q1] becomes C5:C10). That is the format, not a loss:
+                // the values are compared above.
+                if let Some(text) = formula.text_at(cell_ref).as_deref().filter(|t| !t.contains('[')) {
+                    let got = other.cell(cell_ref).and_then(|c| c.formula).and_then(|f| f.text_at(cell_ref));
+                    if got.as_deref() != Some(text) {
+                        issues.push(format!("{}!{}: formula {text:?} became {:?}", sheet.name, cell_ref.a1(), got));
+                    }
+                }
+            }
+            let style = model.styles.get(sheet.style_id(cell_ref));
+            let got = reopened.styles.get(other.style_id(cell_ref));
+            // Formats that spell the accounting currency are left alone: BIFF8 keeps that family as
+            // builtin ids 5..8, and the application renders those with the *locale* currency — Excel
+            // turns our `_("$"* #,##0.00_)...` into `_ "¥"* #,##0.00_ ;...` on this machine in every
+            // path (its own .xlsx reports the same code).
+            let accountant = |code: &str| code.starts_with("_(") || code.starts_with("_ \\");
+            // Everything else is compared by what it *renders*: Excel spells one code two ways
+            // (`#,##0.00 "units"` comes back as `#,##0.00\ "units"`), and the cell looks the same.
+            let render = |code: &str| cella_engine::display::format(&Value::number(1234.5), code, model).text;
+            if !accountant(style.num_fmt.as_str())
+                && !accountant(got.num_fmt.as_str())
+                && render(style.num_fmt.as_str()) != render(got.num_fmt.as_str())
+            {
+                issues.push(format!(
+                    "{}!{}: number format {:?} became {:?} (it renders {:?} against {:?})",
+                    sheet.name,
+                    cell_ref.a1(),
+                    style.num_fmt.as_str(),
+                    got.num_fmt.as_str(),
+                    render(style.num_fmt.as_str()),
+                    render(got.num_fmt.as_str())
+                ));
+            }
+            if (style.font.bold, style.font.size) != (got.font.bold, got.font.size) {
+                issues.push(format!(
+                    "{}!{}: font bold/size {:?}/{} became {:?}/{}",
+                    sheet.name,
+                    cell_ref.a1(),
+                    style.font.bold,
+                    style.font.size,
+                    got.font.bold,
+                    got.font.size
+                ));
+            }
+        }
+        if sheet.merges.len() != other.merges.len() {
+            issues.push(format!("{}: {} merge(s) became {}", sheet.name, sheet.merges.len(), other.merges.len()));
+        }
+        for merge in &sheet.merges {
+            if !other.merges.contains(merge) {
+                issues.push(format!("{}: the merge {} is missing", sheet.name, merge.a1()));
+            }
+        }
+        // Column widths are stored in whole pixels, so compare what the file can hold.
+        for col in sheet.cols.keys() {
+            let (want, got) = (sheet.col_width(col), other.col_width(col));
+            if (want - got).abs() > 1.0 {
+                issues.push(format!("{}: column {} width {} became {}", sheet.name, col + 1, want, got));
+            }
+        }
+    }
+    if model.names.len() != reopened.names.len() {
+        issues.push(format!("{} defined name(s) became {}", model.names.len(), reopened.names.len()));
+    }
+    for name in &model.names {
+        if !reopened.names.iter().any(|n| n.name.eq_ignore_ascii_case(&name.name)) {
+            issues.push(format!("the defined name {:?} is missing", name.name));
+        }
+    }
+    issues
+}
 /// Every value a foreign application wrote must be the value we had.
 fn compare_values(model: &Workbook, reopened: &Workbook, skips: &[String], text_skips: &[String]) -> Vec<String> {
     let mut issues = Vec::new();
