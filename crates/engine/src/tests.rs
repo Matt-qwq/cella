@@ -1162,6 +1162,43 @@ fn move_columns_can_reorder_left_and_ignores_drops_inside_the_selection() {
 }
 
 #[test]
+fn a_moved_column_keeps_the_text_of_its_formulas() {
+    // The seed-160 soak finding (gaps §6): a formula whose cell moves *left* of the cells it reads
+    // kept the shape it had where it was. A shape is a cache of (text, position), so at the
+    // destination it resolved to no text at all -- the cell showed #REF!, saved as an empty
+    // formula, and the round trip read a different formula on another cell.
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[1, 2]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=A1+B1"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C2", "input": "=$A$1*10"})).unwrap();
+    s.execute("cell.set", json!({"cell": "D1", "input": "=C1*2"})).unwrap();
+    s.execute("sheet.moveColumns", json!({"cols": "C:C", "before": 0})).unwrap();
+    // C first: the moved formulas name the cells they read, which the move put one column right.
+    assert_eq!(s.execute("cell.get", json!({"cell": "A1"})).unwrap()["formula"], "=B1+C1");
+    assert_eq!(v(&s, "A1"), Value::Number(3.0));
+    assert_eq!(s.execute("cell.get", json!({"cell": "A2"})).unwrap()["formula"], "=$B$1*10");
+    assert_eq!(v(&s, "A2"), Value::Number(10.0));
+    // A reference *to* the moved column follows it.
+    assert_eq!(s.execute("cell.get", json!({"cell": "D1"})).unwrap()["formula"], "=A1*2");
+    assert_eq!(v(&s, "D1"), Value::Number(6.0));
+    // The file keeps the same formulas: the invariant the soak checks.
+    let bytes = crate::io::save_bytes(&s.doc().unwrap().wb, "book.xlsx").unwrap();
+    let (back, _) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
+    let sh = back.active().unwrap();
+    let text = |cell: &str| {
+        let at = CellRef::parse(cell).unwrap();
+        sh.cell(at).and_then(|c| c.formula).and_then(|f| f.text_at(at))
+    };
+    assert_eq!(text("A1").as_deref(), Some("B1+C1"));
+    assert_eq!(text("A2").as_deref(), Some("$B$1*10"));
+    assert_eq!(text("D1").as_deref(), Some("A1*2"));
+    // One undo puts the column back, formulas and all.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.execute("cell.get", json!({"cell": "C1"})).unwrap()["formula"], "=A1+B1");
+    assert_eq!(v(&s, "C1"), Value::Number(3.0));
+}
+
+#[test]
 fn insert_copied_cells_inserts_rows_columns_and_blocks() {
     // Issue #21: Insert Copied Cells.
     let mut s = s();

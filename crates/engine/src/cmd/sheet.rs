@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cella_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef};
 use cella_formula::adjust::{Axis, Edit};
-use cella_model::{Anchor, AnchorMode, Sheet, Visibility};
+use cella_model::{Anchor, AnchorMode, Formula, Sheet, Visibility};
 use serde_json::{Value as Json, json};
 
 use super::*;
@@ -499,8 +499,25 @@ fn move_columns(s: &mut Session, p: &Json) -> Result<Json> {
                     object.cell.col = destination + (object.cell.col - moved_from);
                 }
             }
-            for (cell, value) in cells {
+            // A formula's shape is a cache of (text, position), so the one a moved cell carries
+            // does not resolve at the destination -- a formula that lands left of every cell it
+            // reads clamps there, and the cell holds no text at all (it showed #REF!, saved as an
+            // empty formula and the round trip read another cell's, gaps §6). Intern the tree the
+            // cell reads at the source at the destination, which is the re-basing a cut does.
+            let mut shapes = cella_formula::ShapeTable::default();
+            for (cell, mut value) in cells {
                 let dest = CellRef::new(cell.row, destination + (cell.col - moved_from));
+                let rebased = value.formula.as_ref().and_then(|f| {
+                    let e = f.expr_at(cell)?;
+                    let rewrite = cella_xlsx::needs_file_rewrite(&e);
+                    let mut nf = Formula::from_expr_at(e, dest, &mut shapes, rewrite);
+                    nf.array = f.array.clone();
+                    nf.dynamic = f.dynamic;
+                    Some(std::sync::Arc::new(nf))
+                });
+                if rebased.is_some() {
+                    value.formula = rebased;
+                }
                 sh.cells.set(dest, value);
                 touched.extend([cell, dest]);
             }
