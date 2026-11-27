@@ -290,15 +290,18 @@ pub struct LabelStyle {
     pub typeface: Option<std::sync::Arc<str>>,
     /// `None` keeps the contrast colour the label is drawn in.
     pub color: Option<Rgba>,
+    /// The box behind the label, resolved; `None` draws the text alone.
+    #[serde(default)]
+    pub fill: Option<Rgba>,
 }
 
 impl LabelStyle {
     /// The empty style, for a drawing path that takes one by reference.
-    pub const NONE: LabelStyle = LabelStyle { size: None, bold: None, italic: None, typeface: None, color: None };
+    pub const NONE: LabelStyle = LabelStyle { size: None, bold: None, italic: None, typeface: None, color: None, fill: None };
 
     /// Whether the style says anything (a style with nothing set is no style).
     pub fn is_set(&self) -> bool {
-        self.size.is_some() || self.bold.is_some() || self.italic.is_some() || self.typeface.is_some() || self.color.is_some()
+        self.size.is_some() || self.bold.is_some() || self.italic.is_some() || self.typeface.is_some() || self.color.is_some() || self.fill.is_some()
     }
 }
 
@@ -318,6 +321,9 @@ pub struct PointLabelData {
     pub show_percentage: Option<bool>,
     /// This label's own font, overriding the series' or the chart's.
     pub font: Option<LabelStyle>,
+    /// This label's own box fill, overriding the series' or the chart's.
+    #[serde(default)]
+    pub fill: Option<Rgba>,
 }
 
 impl PointLabelData {

@@ -697,6 +697,12 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(bad(cmd, "`fontName` must be a font name (at most 64 characters)"));
     }
     let font_color = p.get("color").map(|v| color_param_for(cmd, v, "color")).transpose()?.flatten();
+    // The box behind the labels: its fill, or `"none"` to take it away.
+    let fill_given = p.get("fill").is_some();
+    let label_fill: Option<Option<Color>> = match p.get("fill") {
+        None => None,
+        Some(v) => Some(color_param_for(cmd, v, "fill")?),
+    };
     let font_given = font_size.is_some() || font_bold.is_some() || font_italic.is_some() || font_name.is_some() || p.get("color").is_some();
     let font = font_given.then_some(LabelFont {
         size: font_size,
@@ -714,7 +720,8 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         || delete.is_some()
         || show.is_some()
         || text.is_some()
-        || font_given;
+        || font_given
+        || fill_given;
     if !on && other_options {
         return Err(bad(cmd, "`on: false` turns labels off; remove the other options"));
     }
@@ -752,7 +759,7 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
             return set_chartex_labels(c, cmd, on, series, point, &flags, position, separator.clone(), number_format.clone(), font, delete, show);
         }
         if let (Some(i), Some(pi)) = (series, point) {
-            set_one_point_label(c, i, pi, on, text, position, &flags, any_flag, font);
+            set_one_point_label(c, i, pi, on, text, position, &flags, any_flag, font, label_fill);
             return Ok(());
         }
         // A series can hide its labels while the chart keeps them: `on: false` with a series.
@@ -771,7 +778,10 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
             if let Some(f) = font.clone() {
                 o.font = Some(merge_font(o.font, f));
             }
-            if !o.shows_anything() && !any_flag && !font_given {
+            if let Some(fill) = label_fill {
+                o.fill = fill;
+            }
+            if !o.shows_anything() && !any_flag && !font_given && !fill_given {
                 o = LabelOptions::values();
             }
             if let Some(se) = c.series.get_mut(i) {
@@ -803,7 +813,10 @@ fn set_data_labels(s: &mut Session, p: &Json) -> Result<Json> {
         if let Some(f) = font {
             o.font = Some(merge_font(o.font, f));
         }
-        if on && !o.shows_anything() && !any_flag && !font_given {
+        if let Some(fill) = label_fill {
+            o.fill = fill;
+        }
+        if on && !o.shows_anything() && !any_flag && !font_given && !fill_given {
             // No part asked for: the plain value label, as the on/off flag alone meant.
             o = LabelOptions::values();
         }
@@ -841,6 +854,7 @@ fn set_one_point_label(
     flags: &[(&str, Option<bool>)],
     any_flag: bool,
     font: Option<LabelFont>,
+    fill: Option<Option<Color>>,
 ) {
     let Some(se) = c.series.get_mut(series) else { return };
     if !on {
@@ -862,6 +876,9 @@ fn set_one_point_label(
     if let Some(f) = font {
         label.font = Some(merge_font(label.font, f));
     }
+    if let Some(fill) = fill {
+        label.fill = fill;
+    }
     for (key, value) in flags {
         let Some(v) = value else { continue };
         match *key {
@@ -872,7 +889,7 @@ fn set_one_point_label(
             _ => {}
         }
     }
-    let given = any_flag || label.text.is_some() || label.position != LabelPosition::Auto || label.font.is_some();
+    let given = any_flag || label.text.is_some() || label.position != LabelPosition::Auto || label.font.is_some() || label.fill.is_some();
     if !given {
         // Nothing asked for: the point's label shows again (the way `showPoint` does).
         if let Some(pt) = se.point(pi as usize).copied()

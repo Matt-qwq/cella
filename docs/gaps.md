@@ -710,9 +710,20 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   point. A theme reference (`+mn-lt`) and a name past 64 characters are refused rather than stored;
   `a_label_font_is_set_at_each_level_and_survives_a_save` and the chartex golden patch pin the round
   trip.
-- **Missing:** a label's own **fill** and **callout shape** are not modelled; date-axis units are kept
-  but not editable; from-cells labels, callouts added through the UI, chart templates and an
-  element-level pane for shapes/pictures are not there.
+- **Landed 11-27 (the label's own box):** `LabelOptions.fill` and `PointLabel.fill` model
+  `c:dLbls/c:spPr` and `c:dLbl/c:spPr` — a label's box fill at the chart, series and point level: read,
+  written in `CT_DLbls`/`CT_DLbl` order (before the text properties), patched in place (`spPr` joins the
+  tags the patch owns), set from `chart.setDataLabels {fill: "#RRGGBB"}` (`"none"` takes it away) and from
+  the Format pane's **Label fill** rows, and drawn as a rectangle behind the label — two points of
+  padding, 1.3 lines tall, pushed immediately before the text so the prim order says which box belongs to
+  which label. A point's own box wins over the series' and the chart's; a theme-slot colour is written and
+  read but not drawn (the drawing carries no theme). Tests:
+  `a_label_box_is_set_at_each_level_and_survives_a_save` and `a_label_box_is_drawn_behind_the_text`;
+  `chart_options_roundtrip` carries a box through build → save → reopen → save. Only a classic part: a
+  chartex `cx:dataLabels` has no `spPr` Cella models, so a chartex label box is not written. [chart-parity.md](chart-parity.md)
+- **Missing:** a label's own **callout shape** is not modelled (its fill landed 11-27, above); date-axis
+  units are kept but not editable; from-cells labels, callouts added through the UI, chart templates and
+  an element-level pane for shapes/pictures are not there.
 - **Evidence:** `Chart` (`crates/model/src/features.rs`) holds the option families above;
   `chart_options_roundtrip` and `chart_unmodelled_kinds` pin build → save → reopen → second save
   byte equality; the patch path is pinned per chart kind; `ui-egui` `chart_format_pane` and

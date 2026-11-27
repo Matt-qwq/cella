@@ -796,14 +796,14 @@ fn patch_axis(
 
 /// The `<c:dLbls>` children the model sets from its label options (everything except the repeated
 /// `dLbl` markers and the callouts' own formatting).
-fn label_option_tags() -> [&'static str; 9] {
-    ["numFmt", "dLblPos", "showLegendKey", "showVal", "showCatName", "showSerName", "showPercent", "showBubbleSize", "separator"]
+fn label_option_tags() -> [&'static str; 10] {
+    ["numFmt", "spPr", "dLblPos", "showLegendKey", "showVal", "showCatName", "showSerName", "showPercent", "showBubbleSize", "separator"]
 }
 
 /// The `dLbl` children the model owns: the point's index, its deletion and its label. Anything else
 /// in the element (layout, text formatting, a callout's leader lines) is somebody else's and stays.
 fn is_own_label_child(name: &str) -> bool {
-    matches!(name, "idx" | "delete" | "tx" | "txPr" | "dLblPos" | "showVal" | "showCatName" | "showSerName" | "showPercent")
+    matches!(name, "idx" | "delete" | "tx" | "spPr" | "txPr" | "dLblPos" | "showVal" | "showCatName" | "showSerName" | "showPercent")
 }
 
 /// [`is_own_label_child`] for a whole element: nothing in it would be lost by rebuilding it.
@@ -981,7 +981,7 @@ fn patch_point_labels(plan: &mut Plan, xml: &str, dlbls: &Node, then: &LabelStat
                     }
                 } else {
                     let pe = plan.edits(n, DLABEL_ORDER);
-                    for tag in ["delete", "tx", "txPr", "dLblPos", "showVal", "showCatName", "showSerName", "showPercent"] {
+                    for tag in ["delete", "tx", "spPr", "txPr", "dLblPos", "showVal", "showCatName", "showSerName", "showPercent"] {
                         pe.set(tag, None);
                     }
                 }

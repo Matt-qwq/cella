@@ -6741,6 +6741,44 @@ fn a_label_font_is_set_at_each_level_and_survives_a_save() {
     );
 }
 
+/// A data label's own **box**: its fill (`c:dLbls/c:spPr`, `c:dLbl/c:spPr`) set at each level, merged the
+/// same way the font is, drawn as a rectangle behind the text, and kept through a save.
+#[test]
+fn a_label_box_is_set_at_each_level_and_survives_a_save() {
+    use cella_model::Color;
+    let mut s = s();
+    chart_data(&mut s);
+    s.execute("insert.chart", json!({"type": "column", "range": "A1:E7"})).unwrap();
+    let chart = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts[0].clone();
+
+    // The chart's labels get a box; `"none"` takes one away.
+    s.execute("chart.setDataLabels", json!({"value": true, "fill": "F2F2F2"})).unwrap();
+    assert_eq!(chart(&s).labels.fill, Some(Color::Rgb(0xF2F2F2)), "the chart's label box");
+    // One series: its own colour, and the chart's stays where it is.
+    s.execute("chart.setDataLabels", json!({"series": 0, "fill": "DDEBF7"})).unwrap();
+    assert_eq!(chart(&s).series[0].labels.as_ref().unwrap().fill, Some(Color::Rgb(0xDDEBF7)));
+    assert_eq!(chart(&s).labels.fill, Some(Color::Rgb(0xF2F2F2)), "the chart level is untouched");
+    assert_eq!(chart(&s).series[1].labels, None, "another series has no box");
+    // One point: its own box, and only its own.
+    s.execute("chart.setDataLabels", json!({"series": 0, "point": 1, "fill": "FFF2CC"})).unwrap();
+    assert_eq!(chart(&s).series[0].point_label(1).and_then(|l| l.fill), Some(Color::Rgb(0xFFF2CC)));
+    assert_eq!(chart(&s).series[0].point_label(0), None, "the other point has none");
+    assert!(s.execute("chart.setDataLabels", json!({"fill": "not a colour"})).is_err());
+
+    // Every level survives a save and reopen.
+    let r = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap();
+    let b64 = r["base64"].as_str().unwrap().to_string();
+    s.execute("file.open", json!({"name": "label-box.xlsx", "base64": b64})).unwrap();
+    let c = chart(&s);
+    assert_eq!(c.labels.fill, Some(Color::Rgb(0xF2F2F2)), "the chart's box, read back");
+    assert_eq!(c.series[0].labels.as_ref().unwrap().fill, Some(Color::Rgb(0xDDEBF7)), "the series' box");
+    assert_eq!(c.series[0].point_label(1).and_then(|l| l.fill), Some(Color::Rgb(0xFFF2CC)), "the point's box");
+
+    // `"none"` takes a box away at the level asked.
+    s.execute("chart.setDataLabels", json!({"fill": "none"})).unwrap();
+    assert_eq!(chart(&s).labels.fill, None);
+    assert_eq!(chart(&s).series[0].labels.as_ref().unwrap().fill, Some(Color::Rgb(0xDDEBF7)), "a series keeps its own");
+}
 #[test]
 fn a_combo_charts_secondary_axis_and_category_bounds_are_commands() {
     use cella_model::{AxisCrossing, ChartKind};

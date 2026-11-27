@@ -1196,6 +1196,44 @@ fn funnel_value_labels_follow_the_data_labels_flag() {
     }
 }
 
+/// A data label's own box is drawn: the fill becomes a rectangle behind the text, and a filled label
+/// is drawn for the point that set one only.
+#[test]
+fn a_label_box_is_drawn_behind_the_text() {
+    let box_fill = [0xF2, 0xF2, 0xF2, 0xFF];
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = true;
+    c.labels = LabelOptions { show_value: true, fill: Some(cella_model::Color::Rgb(0xF2F2F2)), ..LabelOptions::default() };
+    let d = ChartData {
+        label_font: None,
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["a".into(), "b".into(), "c".into()],
+        series: vec![series("S", &[10.0, 20.0, 30.0], [20, 96, 130, 255], ChartKind::ColumnClustered)],
+    };
+    let prims = render(&c, &d, 500.0, 350.0, &ApproxMeasure);
+    let boxes: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some(f), .. } if *f == box_fill)).collect();
+    assert_eq!(boxes.len(), 3, "one box a label: {boxes:?}");
+    // Each box is pushed immediately before the text it belongs to (a box, then its label).
+    let paired = prims
+        .windows(2)
+        .filter(|w| matches!(&w[0], Prim::Rect { fill: Some(f), .. } if *f == box_fill) && matches!(&w[1], Prim::Text { .. }))
+        .count();
+    assert_eq!(paired, 3, "one box under each of the three labels");
+    // A point's own fill wins over the level's.
+    let point_fill = [0xFF, 0xF2, 0xCC, 0xFF];
+    let mut d = d;
+    d.series[0].point_labels = vec![PointLabelData { index: 1, fill: Some(point_fill), ..PointLabelData::default() }];
+    c.labels.show_value = true;
+    let prims = render(&c, &d, 500.0, 350.0, &ApproxMeasure);
+    assert!(prims.iter().any(|p| matches!(p, Prim::Rect { fill: Some(f), .. } if *f == point_fill)), "the point's own box is drawn");
+    assert_eq!(
+        prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some(f), .. } if *f == box_fill)).count(),
+        2,
+        "the other two labels keep the level's box"
+    );
+}
+
 /// A chartex series' own point fills reach the drawn primitives: a funnel band, a treemap box, a
 /// waterfall bar and a box & whisker box take the point's colour over the series' one.
 #[test]
@@ -1248,24 +1286,24 @@ fn a_label_font_is_resolved_field_by_field_for_a_chartex_kind() {
     c.data_labels = true;
     c.labels = LabelOptions::values();
     let mut d = ChartData {
-        label_font: Some(LabelStyle { size: Some(18.0), bold: None, italic: None, typeface: None, color: Some(chart_colour) }),
+        label_font: Some(LabelStyle { size: Some(18.0), bold: None, italic: None, typeface: None, color: Some(chart_colour), fill: None }),
         category_levels: vec![],
         palette: vec![],
         categories: vec!["a".into(), "b".into(), "c".into()],
         series: vec![series("S", &[10.0, 20.0, 30.0], [20, 96, 130, 255], ChartKind::Funnel)],
     };
     // The series sets the weight and a colour; the size stays the chart's.
-    d.series[0].label_font = Some(LabelStyle { size: None, bold: Some(true), italic: None, typeface: None, color: Some(series_colour) });
+    d.series[0].label_font = Some(LabelStyle { size: None, bold: Some(true), italic: None, typeface: None, color: Some(series_colour), fill: None });
     // Point 1 sets a colour of its own, point 2 a size of its own.
     d.series[0].point_labels = vec![
         PointLabelData {
             index: 1,
-            font: Some(LabelStyle { size: None, bold: None, italic: None, typeface: None, color: Some(point_colour) }),
+            font: Some(LabelStyle { size: None, bold: None, italic: None, typeface: None, color: Some(point_colour), fill: None }),
             ..PointLabelData::default()
         },
         PointLabelData {
             index: 2,
-            font: Some(LabelStyle { size: Some(7.0), bold: None, italic: None, typeface: None, color: None }),
+            font: Some(LabelStyle { size: Some(7.0), bold: None, italic: None, typeface: None, color: None, fill: None }),
             ..PointLabelData::default()
         },
     ];
@@ -1686,6 +1724,7 @@ fn every_kind_renders_sanely_with_every_option_set() {
         };
         c.labels = LabelOptions {
             font: None,
+            fill: None,
             show_value: true,
             show_percentage: true,
             show_series: true,

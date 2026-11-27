@@ -234,6 +234,7 @@ fn read_dlbl(dl: &El, index: u32) -> PointLabel {
         show_percentage: dl.child("showPercent").map(|c| c.flag("val", true)),
         position: dl.child_val("dLblPos").and_then(label_position).unwrap_or_default(),
         font: read_label_font(dl),
+        fill: dl.path(&["spPr", "solidFill"]).and_then(dml_color),
     }
 }
 
@@ -301,6 +302,7 @@ fn read_labels(d: &El) -> LabelOptions {
         separator: d.child("separator").map(|s| s.text.clone()).filter(|s| !s.is_empty()),
         number_format: d.child("numFmt").and_then(|n| n.attr("formatCode")).map(str::to_string).filter(|c| !c.is_empty()),
         hidden: bool_val(d, "delete"),
+        fill: d.path(&["spPr", "solidFill"]).and_then(dml_color),
     }
 }
 
@@ -1050,6 +1052,11 @@ pub(crate) fn label_tx_xml(t: &str, wb: &Workbook, si: usize) -> String {
 /// `<c:txPr>` for a label font, in CT_TextBody order: body properties, the paragraph and its
 /// default run properties (size in hundredths of a point, bold, italic, colour — the fill comes
 /// before the typeface, which is where CT_TextCharacterProperties puts `a:latin`).
+/// A label's box: its fill only, in `a:solidFill` order (`c:spPr` on `c:dLbls` and `c:dLbl`).
+pub(crate) fn label_box_xml(fill: String) -> String {
+    format!("<c:spPr><a:solidFill>{fill}</a:solidFill></c:spPr>")
+}
+
 pub(crate) fn label_tx_pr_xml(f: &LabelFont, wb: &Workbook) -> String {
     let f = f.sane();
     let mut attrs = String::new();
@@ -1078,6 +1085,10 @@ pub(crate) fn dlbl_xml(index: u32, no_label: bool, label: Option<&PointLabel>, w
     } else if let Some(l) = label {
         if let Some(t) = l.text.as_deref().filter(|t| !t.trim().is_empty()) {
             x.push_str(&label_tx_xml(t, wb, si));
+        }
+        // CT_DLbl order: tx, numFmt, spPr, txPr.
+        if let Some(b) = l.fill.as_ref().and_then(|c| srgb(c, &wb.theme)) {
+            x.push_str(&label_box_xml(b));
         }
         if let Some(f) = l.font.as_ref().filter(|f| f.is_set()) {
             x.push_str(&label_tx_pr_xml(f, wb));
@@ -1314,6 +1325,8 @@ pub(crate) fn label_children(l: &LabelOptions, wb: &Workbook) -> Vec<(&'static s
                 .filter(|c| !c.is_empty())
                 .map(|code| format!("<c:numFmt formatCode=\"{}\" sourceLinked=\"0\"/>", esc_attr(code))),
         ),
+        // CT_DLbls order: numFmt, spPr, txPr.
+        ("spPr", l.fill.as_ref().and_then(|c| srgb(c, &wb.theme)).map(label_box_xml)),
         ("txPr", l.font.as_ref().filter(|f| f.is_set()).map(|f| label_tx_pr_xml(f, wb))),
         ("dLblPos", (l.position != LabelPosition::Auto).then(|| format!("<c:dLblPos val=\"{}\"/>", label_position_file(l.position)))),
         ("showLegendKey", Some(format!("<c:showLegendKey val=\"{}\"/>", l.show_legend_key as u8))),

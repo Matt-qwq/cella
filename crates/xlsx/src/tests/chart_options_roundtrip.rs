@@ -66,6 +66,7 @@ fn full_chart() -> Chart {
         number_format: Some("0.0".into()),
         hidden: false,
         font: Some(LabelFont { size: Some(11.0), bold: Some(true), color: Some(Color::Rgb(0xC00000)), ..LabelFont::default() }),
+        fill: Some(Color::Rgb(0xF2F2F2)),
     };
     c.series[0].labels = Some(LabelOptions {
         show_value: false,
@@ -327,6 +328,7 @@ fn excel_style_labels_and_error_bars_are_read() {
             number_format: Some("0.0\"%\"".into()),
             hidden: false,
             font: None,
+            fill: None,
         }),
         "series-level labels"
     );

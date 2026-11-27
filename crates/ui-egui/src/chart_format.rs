@@ -1044,7 +1044,7 @@ fn data_labels(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: 
                     });
                 }
             }
-            label_font_controls(app, ui, id, series, None, o.font);
+            label_font_controls(app, ui, id, series, None, o.font, o.fill);
         });
     });
 }
@@ -1284,7 +1284,15 @@ fn data_point(app: &mut SheetApp, ui: &mut Ui, chart: &Chart, id: u32, series: O
             m.insert("deleteLabel".into(), json!(no_label));
             app.run_or_alert("chart.formatPoint", Json::Object(m));
         }
-        label_font_controls(app, ui, id, Some(scope), Some(index as u32), s.point_label(index).and_then(|l| l.font.clone()));
+        label_font_controls(
+            app,
+            ui,
+            id,
+            Some(scope),
+            Some(index as u32),
+            s.point_label(index).and_then(|l| l.font.clone()),
+            s.point_label(index).and_then(|l| l.fill),
+        );
         if ui.button(tr(ui, "Clear point formatting")).clicked() {
             let mut m = Map::new();
             m.insert("chart".into(), json!(id));
@@ -1377,7 +1385,18 @@ fn point_colour(
 
 /// A label's own font — size, weight and colour — for the chart's, a series' or one point's
 /// labels, through `chart.setDataLabels`.
-fn label_font_controls(app: &mut SheetApp, ui: &mut Ui, id: u32, series: Option<usize>, point: Option<u32>, font: Option<LabelFont>) {
+/// The label's own text formatting — size, weight, italic, typeface and colour — and the **box**
+/// behind it with its fill (the drawing pads the box two points a side).
+#[allow(clippy::too_many_arguments)]
+fn label_font_controls(
+    app: &mut SheetApp,
+    ui: &mut Ui,
+    id: u32,
+    series: Option<usize>,
+    point: Option<u32>,
+    font: Option<LabelFont>,
+    fill: Option<Color>,
+) {
     let f = font.unwrap_or_default();
     let mut params = Map::new();
     params.insert("chart".into(), json!(id));
@@ -1430,6 +1449,8 @@ fn label_font_controls(app: &mut SheetApp, ui: &mut Ui, id: u32, series: Option<
     });
     let theme = app.session.active().map(|d| d.wb.theme.clone()).unwrap_or_default();
     colour_row(app, ui, &theme, "Label colour", f.color, "chart.setDataLabels", &params, "color", "");
+    // The box behind the label: its fill, or none at all.
+    colour_row(app, ui, &theme, "Label fill", fill, "chart.setDataLabels", &params, "fill", "None");
 }
 
 /// The series a chart-level section works on, remembered per chart.

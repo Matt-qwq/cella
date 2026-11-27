@@ -644,6 +644,11 @@ pub struct LabelOptions {
     ///
     /// Both part kinds store it (`c:dLbls/c:txPr`, `cx:dataLabels/cx:txPr`).
     pub font: Option<LabelFont>,
+    /// The box behind the labels and its fill (`c:dLbls/c:spPr/a:solidFill`); `None` draws no box.
+    ///
+    /// Only a classic part stores one: a chartex `cx:dataLabels` has no `spPr` Cella models, so this
+    /// is not written to one.
+    pub fill: Option<Color>,
 }
 
 impl LabelOptions {
@@ -751,6 +756,9 @@ pub struct PointLabel {
     ///
     /// Both part kinds store it (`cx:dataLabel/cx:txPr` in a chartex part).
     pub font: Option<LabelFont>,
+    /// This label's own box fill (`c:dLbl/c:spPr`), overriding the series' or the chart's. A classic
+    /// part only, like the series-level one.
+    pub fill: Option<Color>,
 }
 
 impl PointLabel {
@@ -768,6 +776,7 @@ impl PointLabel {
             || self.show_percentage == Some(true)
             || self.position != LabelPosition::Auto
             || self.font.as_ref().is_some_and(|f| f.is_set())
+            || self.fill.is_some()
     }
 
     /// Nothing but its index: the record carries no label and is dropped.

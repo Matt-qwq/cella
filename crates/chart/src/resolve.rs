@@ -124,6 +124,12 @@ fn ref_format(wb: &Workbook, sheet: usize, formula: &str) -> String {
         .unwrap_or_else(|| "General".into())
 }
 
+/// A model colour as an `Rgba`: an explicit one directly, a theme slot against the theme, and
+/// automatic as nothing.
+fn rgba(c: &Option<cella_model::Color>, theme: &Theme) -> Option<Rgba> {
+    c.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF])
+}
+
 /// Colours of a point override, resolved against the workbook theme.
 fn point_styles(points: &[PointFormat], theme: &Theme) -> Vec<PointStyle> {
     let rgba = |c: &Option<cella_model::Color>| c.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]);
@@ -175,6 +181,7 @@ fn point_labels(wb: &Workbook, sheet: usize, labels: &[PointLabel], theme: &Them
                 show_category: l.show_category,
                 show_percentage: l.show_percentage,
                 font: label_font(l.font.as_ref(), theme),
+                fill: rgba(&l.fill, theme),
             })
         })
         .collect();
@@ -191,6 +198,8 @@ fn label_font(f: Option<&LabelFont>, theme: &Theme) -> Option<LabelStyle> {
         italic: f.italic,
         typeface: f.typeface,
         color: f.color.as_ref().and_then(|c| c.resolve(theme)).map(|[r, g, b]| [r, g, b, 0xFF]),
+        // The box is not part of the font: the drawing resolves it from the label options.
+        fill: None,
     };
     style.is_set().then_some(style)
 }

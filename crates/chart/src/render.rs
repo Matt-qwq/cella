@@ -355,7 +355,19 @@ fn label_style(s: &SeriesData, j: usize, data: &ChartData) -> Option<LabelStyle>
         out.typeface = f.typeface.clone().or(out.typeface);
         out.color = f.color.or(out.color);
     }
+    // A point owns its box when it set one; the series and chart levels are read by the drawing
+    // from the options it was handed (see draw_label_colored).
+    out.fill = s.point_label(j).and_then(|l| l.fill);
     out.is_set().then_some(out)
+}
+
+/// A label box's fill when the model named an explicit colour. A theme slot would need the workbook's
+/// theme, which the drawing does not carry: such a box is written and read but not drawn.
+fn explicit_rgb(c: &cella_model::Color) -> Option<Rgba> {
+    match *c {
+        cella_model::Color::Rgb(v) => Some([(v >> 16) as u8, (v >> 8) as u8, v as u8, 0xFF]),
+        _ => None,
+    }
 }
 
 /// Draws a data label, with a small legend-key square before it when the options ask for one.
@@ -388,6 +400,25 @@ fn draw_label_colored(
     let bold = font.bold.unwrap_or(false);
     let italic = font.italic.unwrap_or(false);
     let family = font.typeface.as_deref();
+    // The box behind the label: its own when the point set one, otherwise the level's options — two
+    // points of padding a side, 1.3 lines tall (c:dLbls/c:spPr, c:dLbl/c:spPr).
+    if let Some(box_fill) = font.fill.or(o.fill.as_ref().and_then(explicit_rgb)) {
+        let tw = ctx.tw(text, size);
+        let key_w = if o.show_legend_key { size * 0.65 + 2.0 } else { 0.0 };
+        let w = tw + key_w + 4.0;
+        let h = size * 1.3;
+        let bx = match align {
+            HAlign::Left => x - 2.0,
+            HAlign::Center => x - w / 2.0,
+            HAlign::Right => x - w + 2.0,
+        };
+        let by = match valign {
+            VAlign::Top => y,
+            VAlign::Bottom => y - h,
+            _ => y - h / 2.0,
+        };
+        ctx.rect(bx, by, w, h, box_fill, None);
+    }
     if !o.show_legend_key {
         ctx.text_styled(x, y, text, size, color, bold, italic, family, align, valign);
         return;
